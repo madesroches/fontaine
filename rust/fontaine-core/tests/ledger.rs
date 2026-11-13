@@ -47,6 +47,7 @@ fn session_with_history(w: &World, pairs: usize) -> (Session, Vec<String>) {
         session
             .ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: question.clone(),
                 attachments: Vec::new(),
                 agent: None,
@@ -240,6 +241,7 @@ fn a_scheduled_record_is_kept_but_adds_nothing_to_what_the_user_asked() {
     let ledger = Ledger::create(dir.path()).unwrap();
     ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "check the build every 5 minutes".into(),
             attachments: Vec::new(),
             agent: None,
@@ -286,6 +288,7 @@ fn the_ledger_is_append_only_and_owner_only() {
     let ledger = &session.ledger;
     ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "one".into(),
             attachments: Vec::new(),
             agent: None,
@@ -351,6 +354,7 @@ fn a_reused_session_id_is_refused_and_leaves_the_first_ledger_alone() {
     first
         .ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "kept".into(),
             attachments: Vec::new(),
             agent: None,

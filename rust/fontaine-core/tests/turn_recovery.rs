@@ -329,6 +329,7 @@ async fn clear_drops_the_pending_journal_and_its_marks() {
 async fn say(runtime: &fontaine_core::agent::AgentRuntime, prompt: &str) {
     runtime.begin_turn(prompt, false);
     runtime.append(Record::UserMessage {
+        origin: Default::default(),
         text: prompt.to_string(),
         attachments: Vec::new(),
         agent: None,

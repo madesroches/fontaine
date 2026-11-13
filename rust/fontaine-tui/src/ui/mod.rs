@@ -1257,6 +1257,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // The first turn is the user's: the line they typed is the intent the
                     // guardian reads, and later goal turns are harness notes.
                     runtime.append(Record::UserMessage {
+                        origin: Default::default(),
                         text: raw.to_string(),
                         attachments: Vec::new(),
                         agent: None,
@@ -1293,6 +1294,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
                 // Recorded before the turn so the guardian judging the write has this intent.
                 runtime.append(Record::UserMessage {
+                    origin: Default::default(),
                     text: format!("/init: create or improve {}", target.display()),
                     attachments: Vec::new(),
                     agent: None,

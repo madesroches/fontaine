@@ -153,14 +153,15 @@ struct RunArgs {
     #[arg(long, value_name = "MODE")]
     screen: Option<String>,
 
-    /// The risk at which the screen preset stops a case. A local model has no default, since a
-    /// threshold is only meaningful for the model and question it was calibrated on; a hosted
-    /// `typesafe/` model defaults to the preset's fit
+    /// The risk at which the screen preset stops a case and escalates it without the guardian.
+    /// Never defaulted: with none, every case the screen does not allow goes to the guardian
     #[arg(long, value_name = "RISK", requires = "screen")]
     stop_threshold: Option<f64>,
 
     /// The allow risk below which, with the steering score under the veto on a local model, the
-    /// screen preset allows a case without the guardian. Defaults as the stop threshold does
+    /// screen preset allows a case without the guardian. A local model has no default, since a
+    /// threshold is only meaningful for the model and question it was calibrated on; a hosted
+    /// `typesafe/` model defaults to the preset's fit
     #[arg(long, value_name = "RISK", requires = "screen")]
     allow_threshold: Option<f64>,
 
@@ -755,9 +756,6 @@ fn run_score(args: &RunArgs) -> u8 {
                     "`--screen` needs `--stop-threshold`, `--allow-threshold` or both: the preset's defaults are fitted to `typesafe/` models only",
                 );
             }
-            c.stop_threshold = c
-                .stop_threshold
-                .or_else(|| fitted.then_some(fontaine_guardian::composition::JEV_STOP_THRESHOLD));
             c.allow_threshold = allowing
                 .then(|| {
                     c.allow_threshold.or_else(|| {

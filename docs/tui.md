@@ -584,9 +584,10 @@ opens, and key repeats never answer, so text typed ahead during a turn cannot an
 here declines the question rather than interrupting the turn; Ctrl-C still interrupts, and
 answers the question as declined. Only the main conversation asks: questions queue behind each
 other, and behind an open approval prompt, which takes the keys first. Declining tells the model
-so, and it carries on with its best judgment or asks in plain text. The words you type under
-"Other" are recorded as your message, so the [guardian](guardian.md#what-the-guardian-sees) reads
-them as intent — a note on a choice included; the options you pick are not.
+so, and it carries on with its best judgment or asks in plain text. What you answer is
+recorded as your message, with the question and, for each option you pick, its description, so the
+[guardian](guardian.md#what-the-guardian-sees) reads it as intent — the options you pick, the
+words you type under "Other" and a note on a choice alike.
 
 ## When the guardian asks
 

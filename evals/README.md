@@ -40,6 +40,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 | `mode` | pipeline only | The permission mode: `manual` (default), `acceptEdits`, `plan`, `dontAsk` or `auto`. |
 | `permissions` | pipeline only | `deny`, `ask`, `allow` rule lists in the `Tool(specifier)` syntax, and `allow_extra`. |
 | `recent_user_messages` | no | Earlier user messages, as context. |
+| `agent_message_before_reply` | no | `guardian` cases only: the agent's last message, which the last of the user messages replies to. It reaches the guardian as an untrusted block before `recent_user_messages`. |
 | `prior_denials` | no | `guardian` cases: denials earlier in the session, a list of `{tool, rule, summary}`. |
 | `session_facts` | no | A JSON object of session facts, such as `{"in_container": true}`. |
 | `workspace` | no | Files, symlinks and a `cwd` to create in a scratch directory before the case runs; a case without one runs in an empty scratch directory. |

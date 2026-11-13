@@ -208,7 +208,7 @@ impl Offer {
                 lines.push(format!("benchmark: {}", benchmark.evidence));
             }
             Offer::Jev { .. } => {
-                use fontaine_guardian::composition::{JEV_ALLOW_THRESHOLD, JEV_STOP_THRESHOLD};
+                use fontaine_guardian::composition::JEV_ALLOW_THRESHOLD;
                 lines.push(
                     "no threshold is written: the preset's defaults apply, so a recalibration reaches you without a config change"
                         .to_owned(),
@@ -217,7 +217,7 @@ impl Offer {
                     "data leaves this machine: for every call the guardian judges, the screen sends the task intent, recent user messages, the tool name and arguments, and project facts to OpenRouter and Typesafe ({JEV_MODEL})"
                 ));
                 lines.push(format!(
-                    "the allow path is on: a call scored below {JEV_ALLOW_THRESHOLD} risk skips the LLM guardian, and one scored {JEV_STOP_THRESHOLD} or above is escalated"
+                    "the allow path is on: a call scored below {JEV_ALLOW_THRESHOLD} risk skips the LLM guardian; every other call goes to it"
                 ));
                 lines.push(
                     "to check real traffic before it acts, set `shadow = true` under [guardian.composition]; to turn the allow path off, set `allow = false` under [guardian.composition.params]"
@@ -656,6 +656,14 @@ mod tests {
         assert!(text.contains("data leaves this machine"), "{text}");
         assert!(text.contains("OpenRouter"), "{text}");
         assert!(text.contains("the allow path is on"), "{text}");
+        assert!(
+            !text.contains("escalated"),
+            "the hosted offer names no stop: {text}"
+        );
+        assert!(
+            !text.contains("0.34"),
+            "the hosted offer names no stop: {text}"
+        );
         assert!(text.contains("allow = false"), "{text}");
         assert!(text.contains("shadow = true"), "{text}");
         assert!(text.contains("shadow = false"), "{text}");

@@ -207,6 +207,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         prompt: String,
     ) -> ControlFlow<()> {
         runtime.append(Record::UserMessage {
+            origin: Default::default(),
             text: typed.to_string(),
             attachments: Vec::new(),
             agent: None,

@@ -1,15 +1,48 @@
-//! The model's questions for the human, put through the approver. Only the text the human typed
-//! becomes guardian intent: option labels and question text are model-written, so recording
-//! them would let the model launder its own words into what the user asked for.
+//! The model's questions for the human, put through the approver. What the human chose becomes
+//! guardian intent, with the question and option text that framed it: the human saw exactly that
+//! text in the dialog, and the guardian credits only the picked option read with its question.
 
 use std::sync::Arc;
 
-use fontaine_tools::ask_user::{Question, QuestionReply, QuestionSource};
+use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionReply, QuestionSource};
 use futures::future::BoxFuture;
 
 use crate::gate::SessionState;
-use crate::ledger::Record;
+use crate::ledger::{MessageOrigin, Record};
 use crate::permissions::Approver;
+
+/// What every recorded dialog answer starts with; the guardian's prompt and the evals name it.
+pub const ANSWER_LINE_PREFIX: &str = "Answered the agent's question";
+
+/// One answer as the guardian reads it. The answer is paired with the question whose text it
+/// carries; with none, the picks render without descriptions.
+fn answer_line(asked: &[Question], answer: &QuestionAnswer) -> String {
+    let question = asked.iter().find(|q| q.question == answer.question);
+    let picks: Vec<String> = answer
+        .selected
+        .iter()
+        .map(|label| {
+            let option =
+                question.and_then(|q| q.options.iter().find(|option| option.label == *label));
+            match option {
+                Some(option) => format!("\"{label}\" ({})", option.description),
+                None => format!("\"{label}\""),
+            }
+        })
+        .collect();
+    let mut parts = Vec::new();
+    if !picks.is_empty() {
+        parts.push(format!("picked {}", picks.join(", ")));
+    }
+    if let Some(other) = &answer.other {
+        parts.push(format!("typed \"{other}\""));
+    }
+    format!(
+        "{ANSWER_LINE_PREFIX} \"{}\": {}",
+        answer.question,
+        parts.join("; ")
+    )
+}
 
 pub struct HumanQuestions {
     approver: Arc<dyn Approver>,
@@ -25,16 +58,18 @@ impl HumanQuestions {
 impl QuestionSource for HumanQuestions {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async move {
+            let asked = questions.clone();
             let reply = self.approver.ask_user(agent, questions).await;
             if let QuestionReply::Answered(answers) = &reply {
-                let typed: Vec<String> = answers
+                let lines: Vec<String> = answers
                     .iter()
-                    .filter_map(|answer| answer.other.as_deref())
-                    .map(|text| format!("Other: \"{text}\""))
+                    .filter(|answer| !answer.selected.is_empty() || answer.other.is_some())
+                    .map(|answer| answer_line(&asked, answer))
                     .collect();
-                if !typed.is_empty() {
+                if !lines.is_empty() {
                     self.state.append(Record::UserMessage {
-                        text: typed.join("\n"),
+                        origin: MessageOrigin::Dialog,
+                        text: lines.join("\n"),
                         attachments: Vec::new(),
                         agent: None,
                     });
@@ -121,14 +156,18 @@ mod tests {
     }
 
     fn question() -> Question {
-        let option = |label: &str| QuestionOption {
+        question_named("Which?")
+    }
+
+    fn question_named(text: &str) -> Question {
+        let option = |label: &str, description: &str| QuestionOption {
             label: label.into(),
-            description: "d".into(),
+            description: description.into(),
         };
         Question {
-            question: "Which?".into(),
+            question: text.into(),
             header: "Pick".into(),
-            options: vec![option("a"), option("b")],
+            options: vec![option("a", "first"), option("b", "second")],
             multi_select: false,
         }
     }
@@ -141,39 +180,116 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn typed_other_text_becomes_one_user_message_in_order() {
-        let reply = QuestionReply::Answered(vec![
-            answer("One?", &["a"], None),
-            answer("Two?", &[], Some("first")),
-            answer("Three?", &["b"], Some("second")),
-        ]);
-        let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply.clone())))));
-        assert_eq!(questions.ask(ROOT_AGENT, vec![question()]).await, reply);
-        assert_eq!(
-            ledger.view().user_messages,
-            vec!["Other: \"first\"\nOther: \"second\""]
-        );
-        let request = crate::adjudication::build(
+    fn command_request(questions: &HumanQuestions) -> fontaine_guardian::AdjudicationRequest {
+        crate::adjudication::build(
             &questions.state,
             fontaine_tools::gate::ROOT_AGENT,
             "shell",
             &serde_json::json!({ "command": "ls" }),
             Vec::new(),
             None,
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn answers_share_one_message_one_line_per_question_in_order() {
+        let reply = QuestionReply::Answered(vec![
+            answer("One?", &["a"], None),
+            answer("Two?", &[], Some("first")),
+            answer("Three?", &["b"], Some("second")),
+        ]);
+        let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply.clone())))));
+        let asked = vec![
+            question_named("One?"),
+            question_named("Two?"),
+            question_named("Three?"),
+        ];
+        assert_eq!(questions.ask(ROOT_AGENT, asked).await, reply);
+        let expected = "Answered the agent's question \"One?\": picked \"a\" (first)\n\
+             Answered the agent's question \"Two?\": typed \"first\"\n\
+             Answered the agent's question \"Three?\": picked \"b\" (second); typed \"second\"";
+        assert_eq!(ledger.view().user_messages, vec![expected]);
         assert_eq!(
-            request.recent_user_messages,
-            vec!["Other: \"first\"\nOther: \"second\""]
+            command_request(&questions).recent_user_messages,
+            vec![expected]
         );
     }
 
     #[tokio::test]
-    async fn selected_labels_never_become_intent() {
+    async fn a_picked_option_becomes_intent_with_its_question_and_description() {
+        let force_push = Question {
+            question: "The rebase rewrote 584-x. Force-push it to origin?".into(),
+            header: "Push".into(),
+            options: vec![
+                QuestionOption {
+                    label: "Force-push".into(),
+                    description: "Overwrite origin/584-x with the rebased commits".into(),
+                },
+                QuestionOption {
+                    label: "Skip".into(),
+                    description: "Leave origin alone".into(),
+                },
+            ],
+            multi_select: false,
+        };
+        let reply =
+            QuestionReply::Answered(vec![answer(&force_push.question, &["Force-push"], None)]);
+        let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply)))));
+        questions.ask(ROOT_AGENT, vec![force_push]).await;
+        let line = "Answered the agent's question \"The rebase rewrote 584-x. Force-push it to origin?\": \
+             picked \"Force-push\" (Overwrite origin/584-x with the rebased commits)";
+        assert_eq!(ledger.view().user_messages, vec![line]);
+        assert_eq!(command_request(&questions).recent_user_messages, vec![line]);
+    }
+
+    #[tokio::test]
+    async fn a_multi_select_answer_lists_every_pick() {
+        let mut asked = question();
+        asked.multi_select = true;
+        let reply = QuestionReply::Answered(vec![answer("Which?", &["a", "b"], None)]);
+        let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply)))));
+        questions.ask(ROOT_AGENT, vec![asked]).await;
+        assert_eq!(
+            ledger.view().user_messages,
+            vec!["Answered the agent's question \"Which?\": picked \"a\" (first), \"b\" (second)"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_label_or_question_with_no_match_renders_without_a_description() {
+        let reply = QuestionReply::Answered(vec![
+            answer("Which?", &["zzz"], None),
+            answer("Unasked?", &["a"], None),
+        ]);
+        let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply)))));
+        questions.ask(ROOT_AGENT, vec![question()]).await;
+        assert_eq!(
+            ledger.view().user_messages,
+            vec![
+                "Answered the agent's question \"Which?\": picked \"zzz\"\n\
+                 Answered the agent's question \"Unasked?\": picked \"a\""
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_answer_record_has_the_dialog_origin() {
         let reply = QuestionReply::Answered(vec![answer("Which?", &["a"], None)]);
         let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply)))));
         questions.ask(ROOT_AGENT, vec![question()]).await;
-        assert!(ledger.view().user_messages.is_empty());
+        let entries = ledger.read().unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            &entry.record,
+            Record::UserMessage {
+                origin: MessageOrigin::Dialog,
+                agent: None,
+                ..
+            }
+        )));
+        assert!(
+            command_request(&questions).screen_intent.is_some(),
+            "the screen reads the intent without the answer"
+        );
     }
 
     #[tokio::test]

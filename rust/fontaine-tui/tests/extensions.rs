@@ -324,6 +324,42 @@ async fn a_message_queued_after_a_skill_waits_with_it_and_runs_after_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn only_the_message_typed_at_the_idle_prompt_is_recorded_as_a_prompt() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("current answer"),
+        text_turn("skill answer"),
+        text_turn("message answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.send("typed before the answer was shown");
+        ui.wait_for("queued: typed before the answer was shown")
+            .await;
+        ui.wait_for("message answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let origin_of = |text: &str| -> Option<String> {
+        w.ledger_text()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|record| record["kind"] == "user_message" && record["text"] == text)
+            .unwrap_or_else(|| panic!("no user message {text:?}"))["origin"]
+            .as_str()
+            .map(str::to_string)
+    };
+    assert_eq!(origin_of("start").as_deref(), Some("prompt"));
+    // Typed while the first turn ran, so before its answer was on screen: it replies to nothing.
+    assert_eq!(origin_of("typed before the answer was shown"), None);
+    assert_eq!(origin_of("/review 42"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn typed_order_spans_replay_and_newer_input_cannot_overtake_it() {
     let w = skill_world(vec![
         tool_turn("c1", "shell", json!({"command": "sleep 1"})),

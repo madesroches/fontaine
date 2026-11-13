@@ -915,6 +915,7 @@ async fn a_goal_turn_is_a_harness_note_and_adds_no_user_message() {
         ScannerStart::default(),
     );
     runtime.append(Record::UserMessage {
+        origin: Default::default(),
         text: "/goal the file exists".into(),
         attachments: Vec::new(),
         agent: None,
@@ -1128,6 +1129,7 @@ fn a_goal_record_adds_nothing_to_what_the_user_asked() {
     let f = Fixture::new();
     f.ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "/goal the build is green".into(),
             attachments: Vec::new(),
             agent: None,

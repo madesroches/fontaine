@@ -136,8 +136,8 @@ lists, a derived or mapped model counting as listed, and, without that setting, 
 toward the spend and the model-call count). A compaction that cannot finish leaves the
 conversation as it was, prints a warning on stderr and does not stop the run.
 
-A separate, append-only ledger beside it records what the user said, verbatim, and what the
-harness did. Compaction never touches it. See [Architecture](architecture.md#the-session-ledger).
+A separate, append-only ledger beside it records what the user said, verbatim, what the
+harness did, and the tail of the agent's final answer. Compaction never touches it. See [Architecture](architecture.md#the-session-ledger).
 
 ### Continuing a session
 

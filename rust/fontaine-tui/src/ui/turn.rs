@@ -11,7 +11,7 @@ use fontaine_core::audit::Decision;
 use fontaine_core::config::HookEvent;
 use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
-use fontaine_core::ledger::Record;
+use fontaine_core::ledger::{MessageOrigin, Record};
 use fontaine_core::model_roles::Tried;
 use fontaine_core::quota::UsageRole;
 use fontaine_core::schedule::{Fired, Kind};
@@ -313,7 +313,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 "an agent reported back"
             },
         );
-        let end = self.turn(runtime, prompt, None, Vec::new()).await;
+        let end = self
+            .turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
+            .await;
         self.harness_turn_tail(runtime, launch_dir, end).await
     }
 
@@ -366,7 +368,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(end) => end,
             None => {
                 Self::keep_leftover_turn(runtime).await;
-                self.turn(runtime, prompt, None, Vec::new()).await
+                self.turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
+                    .await
             }
         };
         if matches!(end, TurnEnd::InputClosed) {
@@ -394,7 +397,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(end) => end,
             None => {
                 Self::keep_leftover_turn(runtime).await;
-                self.turn(runtime, prompt, None, Vec::new()).await
+                self.turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
+                    .await
             }
         };
         self.harness_turn_tail(runtime, launch_dir, end).await
@@ -512,6 +516,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // Recorded before the skill's commands run so the guardian judging them has
         // this turn's intent in the ledger.
         runtime.append(Record::UserMessage {
+            origin: Default::default(),
             text: raw.to_string(),
             attachments: Vec::new(),
             agent: None,
@@ -562,6 +567,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.set_running(true);
         // Recorded before the fetch so the guardian judging the turn has this intent.
         runtime.append(Record::UserMessage {
+            origin: Default::default(),
             text: raw.to_string(),
             attachments: Vec::new(),
             agent: None,
@@ -654,7 +660,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
         mut pending: VecDeque<Submission>,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        let mut first = true;
         while let Some(submission) = pending.pop_front() {
+            // Only the first submission was typed after the previous answer was on screen; a
+            // later one was typed while a turn ran, before its reply was shown.
+            let origin = if std::mem::take(&mut first) {
+                MessageOrigin::Prompt
+            } else {
+                MessageOrigin::Other
+            };
             if self.quitting() {
                 runtime.steering.set_delivery_hold(false);
                 return Break(());
@@ -686,7 +700,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                                 // A prompt from the user resumes a paused goal.
                                 runtime.goal_user_prompt();
                                 runtime.begin_turn(&text, false);
-                                self.turn(runtime, text.clone(), Some(&text), Vec::new())
+                                self.turn(runtime, text.clone(), Some(&text), origin, Vec::new())
                                     .await
                             }
                         }
@@ -720,7 +734,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                                 // A prompt from the user resumes a paused goal.
                                 runtime.goal_user_prompt();
                                 runtime.begin_turn(&text, false);
-                                self.turn(runtime, text.clone(), Some(&text), files).await
+                                self.turn(runtime, text.clone(), Some(&text), origin, files)
+                                    .await
                             }
                         }
                     }
@@ -738,7 +753,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Self::keep_leftover_turn(runtime).await;
                             // Recorded as the human's message before this point.
                             runtime.begin_turn(&text, true);
-                            self.turn(runtime, prompt, None, Vec::new()).await
+                            self.turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
+                                .await
                         }
                     }
                 }
@@ -923,6 +939,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         text: String,
         human: Option<&str>,
+        origin: MessageOrigin,
         attachments: Vec<Attachment>,
     ) -> TurnEnd {
         let mut text = text;
@@ -934,7 +951,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if self.quitting() {
                 return TurnEnd::InputClosed;
             }
-            let mut end = self.attempt(runtime, text, human, attachments).await;
+            let mut end = self
+                .attempt(runtime, text, human, origin, attachments)
+                .await;
             let mut tried = Tried::default();
             while let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &end
                 && failure.falls_through
@@ -942,7 +961,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let class = failure.class.unwrap_or("quota");
                 if runtime.fall_through(class, &mut tried).await.is_some() {
                     end = self
-                        .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                        .attempt(
+                            runtime,
+                            RETRY_NOTE.to_string(),
+                            None,
+                            MessageOrigin::Other,
+                            Vec::new(),
+                        )
                         .await;
                     continue;
                 }
@@ -952,7 +977,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if failure.usage_limit.is_some() && self.apply_usage_switch(runtime).await {
                     tried = Tried::default();
                     end = self
-                        .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                        .attempt(
+                            runtime,
+                            RETRY_NOTE.to_string(),
+                            None,
+                            MessageOrigin::Other,
+                            Vec::new(),
+                        )
                         .await;
                     continue;
                 }
@@ -970,7 +1001,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             tried = Tried::default();
                             self.apply_usage_switch(runtime).await;
                             end = self
-                                .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                                .attempt(
+                                    runtime,
+                                    RETRY_NOTE.to_string(),
+                                    None,
+                                    MessageOrigin::Other,
+                                    Vec::new(),
+                                )
                                 .await;
                             continue;
                         }
@@ -1045,6 +1082,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &AgentRuntime,
         text: String,
         human: Option<&str>,
+        origin: MessageOrigin,
         attachments: Vec<Attachment>,
     ) -> TurnEnd {
         // A wait that ended in failure stopped the run before; this is a new one.
@@ -1056,6 +1094,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(typed) = human {
             let labels: Vec<String> = attachments.iter().map(|a| a.label.clone()).collect();
             runtime.append(Record::UserMessage {
+                origin,
                 text: typed.to_string(),
                 attachments: labels,
                 agent: None,

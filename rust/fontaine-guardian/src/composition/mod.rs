@@ -17,9 +17,7 @@ use rune::{Context, Diagnostics, Source, Sources, Unit, Vm};
 use tracing::Instrument;
 
 pub use eval::ReadRecord;
-pub use preset::{
-    JEV_ALLOW_THRESHOLD, JEV_STOP_THRESHOLD, NAMES as PRESETS, SCREEN, has_default_thresholds,
-};
+pub use preset::{JEV_ALLOW_THRESHOLD, NAMES as PRESETS, SCREEN, has_default_thresholds};
 
 use eval::EvalCtx;
 use host::{Call, VerdictKind, verdict_of};
@@ -714,6 +712,8 @@ mod tests {
         AdjudicationRequest {
             task_intent: "fix the build".into(),
             recent_user_messages: vec![],
+            screen_intent: None,
+            agent_message_before_reply: None,
             project_instructions: None,
             environment: EnvironmentConfig::default(),
             rules: RuleConfig::default(),

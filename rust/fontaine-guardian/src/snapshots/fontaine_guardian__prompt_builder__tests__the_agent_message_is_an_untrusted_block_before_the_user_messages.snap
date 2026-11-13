@@ -1,0 +1,11 @@
+---
+source: fontaine-guardian/src/prompt_builder.rs
+expression: "&text[intent..recent]"
+---
+<untrusted source="user" kind="task_intent">
+Run the tests and fix failures
+</untrusted>
+
+<untrusted kind="agent_message_before_reply">
+Rebased 584-x. Shall I force-push it to origin?
+</untrusted>

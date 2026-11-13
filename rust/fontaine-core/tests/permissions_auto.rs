@@ -904,6 +904,7 @@ async fn the_request_is_built_from_the_ledger_and_never_from_a_compaction_summar
         rig.session
             .ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: question.clone(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1185,6 +1186,7 @@ async fn the_request_after_a_clear_carries_only_what_the_human_asked_since() {
         rig.session
             .ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: text.into(),
                 attachments: Vec::new(),
                 agent: None,

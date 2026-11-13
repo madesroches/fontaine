@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::audit::DecisionRecord;
 use crate::gate::{DecisionFeed, Published, SessionState};
-use crate::ledger::Record;
+use crate::ledger::{AGENT_REPLY_CHARS, Record};
 use crate::preview::DiffPreview;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
@@ -277,7 +277,8 @@ pub async fn run_turn(
     let mut feed = params.state.feed().await;
     // A guard, not a trailing call: an interrupted turn drops this future at an await point.
     let _grants = EndTurnOnDrop(params.state);
-    drive(
+    let state = params.state;
+    let outcome = drive(
         Drive {
             agent: params.agent,
             state: params.state,
@@ -298,7 +299,17 @@ pub async fn run_turn(
         Some(&mut feed),
         on_event,
     )
-    .await
+    .await;
+    // Only the final answer: the user's next message replies to it, not to text streamed
+    // before a tool call.
+    if let TurnOutcome::Answer(text) = &outcome
+        && !text.trim().is_empty()
+    {
+        state.append(Record::AgentReply {
+            text: fontaine_guardian::trailing_chars(text, AGENT_REPLY_CHARS).to_string(),
+        });
+    }
+    outcome
 }
 
 /// Ends the loan of skill rules when dropped, however the turn ends.

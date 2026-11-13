@@ -744,7 +744,7 @@ How the guardian is composed from the LLM guardian and cheap local reads in `aut
 mode: a built-in preset or a Rune script. With the `screen` preset it is an allow screen in front
 of the guardian: a small model, local (Ollama, yes/no questions) or hosted (Jev on OpenRouter), allows
 a call that is clearly safe without waiting for the guardian, and escalates a call that is
-confidently outside what you asked for (on a local model only if you set `stop_threshold`). Every
+confidently outside what you asked for (only if you set `stop_threshold`; no model has a default). Every
 other call meets the guardian.
 [Composing the guardian](guardian.md#composing-the-guardian) explains it, how to calibrate it and
 how to write a script. The section is read from the user file only: other scopes may set
@@ -766,7 +766,7 @@ booleans passed to a script as `params`. The `screen` preset takes:
 | Param | Meaning | Default |
 |---|---|---|
 | `question` | Local model only (refused for a hosted one, which asks a single five-level question). The stop read's question: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
-| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | local model: unset, the screen never escalates; hosted `typesafe/` model: `0.34`; another hosted model: unset |
+| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | unset: the screen never escalates, and every call it does not allow goes to the guardian |
 | `allow_threshold` | Allow a call without the guardian when the allow read's risk is below this (and, on a local model, the steering score is below `steering_veto`). Greater than 0 and less than 1. On a local model or a hosted model that is not `typesafe/`, with `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | local model: unset, no allow path; hosted `typesafe/` model: `0.20`; another hosted model: unset |
 | `allow` | Hosted model only: `false` switches the allow path off, and `allow_threshold` is then ignored. Refused on a local model. | `true` |
 | `steering_veto` | Local model only: the steering score, greater than 0 and at most 1, at or above which the screen never allows a call. A hosted model has no steering read, and this is refused for it. | `0.001` |
@@ -807,7 +807,7 @@ model = "openrouter/typesafe/jev-1.14"
 shadow = false
 
 # [guardian.composition.params]
-# allow = false            # keep the stop path, switch the allow path off
+# allow = false            # switch the allow path off; with no stop_threshold every call goes to the guardian
 ```
 
 With no `shadow` key a hand-written section stays in shadow mode; `fontaine auto-mode setup` is

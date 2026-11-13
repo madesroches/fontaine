@@ -15,7 +15,7 @@ use fontaine_core::audit::{Converted, Decision, DecisionRecord};
 use fontaine_core::config::{OnUsageLimit, PermissionMode};
 use fontaine_core::gate::UsageWait;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
-use fontaine_core::ledger::Record;
+use fontaine_core::ledger::{MessageOrigin, Record};
 use fontaine_core::model_roles::Tried;
 use fontaine_core::providers::ExternalLogin;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
@@ -1136,6 +1136,12 @@ async fn handle_message(
     text: String,
 ) -> Handled {
     let session_id = runtime.session.id.clone();
+    // A stream-json line can be written before the previous reply arrives, so only the one
+    // text prompt is known to follow what the user saw.
+    let origin = match options.input_format {
+        InputFormat::Text => MessageOrigin::Prompt,
+        InputFormat::StreamJson => MessageOrigin::Other,
+    };
     if runtime.state.afk().stopped.is_some() {
         // A stopped session denies every call; no model request is made on its behalf.
         return Handled {
@@ -1176,6 +1182,7 @@ async fn handle_message(
                 .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
+                origin,
                 text: text.clone(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1225,6 +1232,7 @@ async fn handle_message(
                 .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
+                origin,
                 text,
                 attachments: Vec::new(),
                 agent: None,

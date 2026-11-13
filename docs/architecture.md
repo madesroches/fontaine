@@ -215,7 +215,7 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
   turn continues the interrupted task.
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
   never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
-  recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
+  recorded when the agent receives it with a tool result, not when it is typed) with the answers you picked or typed in a question dialog, each message tagged with where it came from, the tail of each root turn's final answer (`agent_reply`, at most 2,000 characters), mode changes, approvals and grants,
   denials, actions taken, model requests that ended an agent's turn (`request_failed`, with the
   error class and message), a model list moving to its next entry after the serving one ran out of quota, or a subagent moving to the `fallback` role's list after its own was spent on a usage window (`model_fell_through`, with the agent, role (`fallback` for the latter), both models and the error class), the run being held for a spent usage window (`usage_paused`, with the role, the account and the reset time when known) and how the hold ended (`usage_resumed`), `!` commands you ran in the terminal UI (`user_shell`, the command and its
   exit code), the workspace roots, the trust state, the repository's git remotes
@@ -241,7 +241,10 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
 Compaction changes the first store only, and so does `/clear`, which empties the model context in
 the same session and adds a `context_cleared` record to the ledger. The ledger keeps everything it
 held; only the guardian's view of what you asked restarts after the record. A summary is model-written text and is never an input to a
-safety decision; the ledger is the only record of what the human asked for. The ledger lives in its
+safety decision; the ledger is the only record of what the human asked for. The one model-written
+text the guardian sees beside it is the root turn's final answer, in an untrusted block, which is
+never intent and earns credit only when your next message at the prompt plainly affirms the one
+action it proposed. The ledger lives in its
 own subdirectory because the memory store refuses a directory that holds a top-level `.jsonl` file.
 
 ### Resuming and forking
