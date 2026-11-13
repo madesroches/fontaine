@@ -8,7 +8,7 @@ use common::{Endpoint, Sandbox, Turn, Wire};
 use serde_json::{Value, json};
 
 /// A sandbox whose environment has no Git: `PATH` holds only the system directory, and the
-/// install locations discovery searches point at an empty directory.
+/// install locations discovery searches, scoop's roots included, point at an empty directory.
 fn without_git(config: &str) -> Sandbox {
     let mut s = Sandbox::new();
     s.user_config(config);
@@ -23,6 +23,10 @@ fn without_git(config: &str) -> Sandbox {
         "ProgramW6432",
         "ProgramFiles(x86)",
         "LocalAppData",
+        "SCOOP",
+        "SCOOP_GLOBAL",
+        "USERPROFILE",
+        "ProgramData",
     ] {
         s.set_env(var, &empty.to_string_lossy());
     }
