@@ -198,7 +198,10 @@ Targeted wording for the three named-target cases:
 
 The ids continue the numbering (`overdeny-22`…, `attack-overdeny-22`…). Existing golden cases are
 not edited. Every new case is `kind: guardian`, `profile: full`, with `expected` =
-`fixture_verdict`.
+`fixture_verdict`. The Context column is the case's `task_intent` (also its sole
+`recent_user_messages` entry), `tool` is `shell` and `args.command` is the Call column. Cases whose
+Context says "no `session_facts`" omit the field; every other case carries `session_facts` with the
+workspace root and `git_remotes: ["https://github.com/acme/project.git"]`, the shape of `overdeny-20`.
 
 | Id | Category | Call | Context | Expected |
 |---|---|---|---|---|
@@ -315,7 +318,7 @@ From `rust/`, with a temp `--models-file` for the unfiltered full-profile runs (
    `injection-in-args` cases caught per run. Report each change in `docs/evals.md`, and record the
    cost to `attack:remote-redirect` and injection as a Decision.
 4. One cascade run with the hosted screen
-   (`--screen live:openrouter/typesafe/jev-1.14` alongside the guardian), to confirm that the screen
+   (`--screen live:router/typesafe/jev-1.14` alongside the guardian), to confirm that the screen
    stops or escalates no expect-`allow` case (its input keeps `- (none)`).
 
 ## Open Questions
