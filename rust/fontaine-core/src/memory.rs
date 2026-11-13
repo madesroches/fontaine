@@ -200,6 +200,17 @@ pub fn slug(topic: &str) -> Option<String> {
     Some(format!("{slug}.md"))
 }
 
+/// Windows reserves these base names regardless of extension, so a topic that
+/// slugs to one names a file that cannot be created on Windows at all.
+fn is_windows_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|rest| matches!(rest.as_bytes(), [b'1'..=b'9']))
+}
+
 /// What a [`save`] did to the index line of the topic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineState {
@@ -296,7 +307,7 @@ fn normalized_target(target: &str) -> String {
 /// The byte spans of the link text and of the destination path inside the first
 /// `[text](target)` on `line` whose destination, read the way `check` reads it, is `wanted`
 /// (ignoring case). The destination span covers only the path: a `#fragment`, a title and
-/// any angle brackets around the path stay in place when a save rewrites the destination.
+/// any angle brackets around the path stay in place when a save rewrites the path.
 /// A save rewrites the text to the topic and the path to the generated file, keeping the
 /// line's place in the index.
 fn matching_link_spans(
@@ -369,6 +380,17 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
             format!("topic {topic:?} names {INDEX_FILE}, the index; pick another topic"),
         ));
     }
+    let stem = file
+        .strip_suffix(".md")
+        .expect("the slug always ends in .md");
+    if is_windows_device_name(stem) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "topic {topic:?} would name the file {file}, a device name Windows reserves; pick another topic"
+            ),
+        ));
+    }
     if topic.contains(['[', ']']) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -410,26 +432,16 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
             && let Some((text_span, dest_span)) = matching_link_spans(line, &file)
         {
             found = true;
-            // An angled destination keeps its brackets around the rewritten path; a title or
-            // fragment after the path stays in place on its own.
-            let angled =
-                line[..dest_span.start].ends_with('<') && line[dest_span.end..].starts_with('>');
-            let dest = if angled {
-                format!("<{file}>")
-            } else {
-                file.clone()
-            };
-            let tail_start = if angled {
-                dest_span.end + 1
-            } else {
-                dest_span.end
-            };
+            // Only the link text and the path are rewritten; the `](` between
+            // them, the brackets of an angled destination and any `#fragment`
+            // or title after the path stay exactly where they were.
             let updated = format!(
-                "{}{}]({}{}",
+                "{}{}{}{}{}",
                 &line[..text_span.start],
                 topic,
-                dest,
-                &line[tail_start..]
+                &line[text_span.end..dest_span.start],
+                file,
+                &line[dest_span.end..]
             );
             if updated == line {
                 state = LineState::Unchanged;
@@ -1328,11 +1340,55 @@ mod tests {
     }
 
     #[test]
+    fn an_update_keeps_an_angled_destination_with_a_fragment_intact() {
+        let (_tmp, dir) = store();
+        std::fs::write(
+            dir.join(INDEX_FILE),
+            "- [a](<commands.md#build>)\n- [b](<beta.md> \"Beta notes\")\n",
+        )
+        .unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(1));
+        let saved = save(&dir, "Beta", "y\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(2));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](<commands.md#build>)\n- [Beta](<beta.md> \"Beta notes\")\n"
+        );
+    }
+
+    #[test]
     fn a_topic_that_would_name_the_index_file_is_refused() {
         let (_tmp, dir) = store();
         let error = save(&dir, "MEMORY", "x\n").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_topic_that_would_name_a_windows_device_file_is_refused() {
+        let (_tmp, dir) = store();
+        for topic in [
+            "CON", "con", "NUL", "Prn", "AUX", "COM1", "com9", "LPT1", "lpt9",
+        ] {
+            let error = save(&dir, topic, "x\n").unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{topic}");
+            assert!(error.to_string().contains("Windows"), "{error}");
+        }
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn topics_near_but_not_on_a_reserved_name_are_saved() {
+        let (_tmp, dir) = store();
+        for topic in ["Console", "com1a", "lpt10", "Com", "COM0"] {
+            let saved = save(&dir, topic, "x\n").unwrap();
+            assert_eq!(saved.index, LineState::Added, "{topic}");
+        }
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            5 + 1 // topic files plus the index
+        );
     }
 
     #[test]

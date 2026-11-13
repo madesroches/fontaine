@@ -4,6 +4,7 @@
 //! no path: the store it writes is the one the session holds, and the permission
 //! pipeline gates every call like the workspace write it is.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use rig_core::tool::{Scope, Tool, ToolContext, ToolExecutionError, Touches};
@@ -127,8 +128,15 @@ impl Tool for MemoryTool {
         args: MemoryArgs,
     ) -> Result<String, ToolExecutionError> {
         validate(&args).map_err(ToolExecutionError::invalid_args)?;
-        let saved = memory::save(&self.root, &args.topic, &args.content)
-            .map_err(|e| ToolExecutionError::other(fontaine_tools::error_chain::chain(&e)))?;
+        let saved = memory::save(&self.root, &args.topic, &args.content).map_err(|e| {
+            let message = fontaine_tools::error_chain::chain(&e);
+            // A semantic refusal of the topic (unsluggable, reserved name, link
+            // delimiter) is the model's wrong argument, not an execution failure.
+            match e.kind() {
+                io::ErrorKind::InvalidInput => ToolExecutionError::invalid_args(message),
+                _ => ToolExecutionError::other(message),
+            }
+        })?;
         Ok(report(&self.root, &saved))
     }
 }
@@ -224,6 +232,35 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("not-a-dir"), "{error}");
+    }
+
+    async fn call(tool: &MemoryTool, topic: &str) -> Result<String, ToolExecutionError> {
+        let args: MemoryArgs = serde_json::from_value(json!({"topic": topic, "content": "x"}))
+            .expect("hardcoded arguments parse");
+        tool.call(&mut ToolContext::new(), args).await
+    }
+
+    #[tokio::test]
+    async fn a_semantic_topic_refusal_is_invalid_args_not_an_execution_error() {
+        use rig_core::tool::ToolErrorKind;
+        let (_tmp, dir) = store();
+        let tool = MemoryTool { root: dir };
+        for topic in ["MEMORY", "!!!", "Commands\\", "CON"] {
+            let error = call(&tool, topic).await.unwrap_err();
+            assert_eq!(error.kind(), ToolErrorKind::InvalidArgs, "{topic}");
+            assert!(
+                error.message().contains(topic.trim_end_matches('\\')),
+                "{error}"
+            );
+        }
+
+        // A store the write itself fails on is an execution error, not bad arguments.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("not-a-dir");
+        std::fs::write(&root, "x").unwrap();
+        let tool = MemoryTool { root };
+        let error = call(&tool, "a").await.unwrap_err();
+        assert_eq!(error.kind(), ToolErrorKind::Other, "{error}");
     }
 
     #[test]
