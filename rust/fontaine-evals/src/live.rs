@@ -723,8 +723,14 @@ mod memory_slice_tests {
         assert_eq!(
             paths,
             vec![
-                format!("{MEMORY_DIR}/commands.md"),
-                format!("{MEMORY_DIR}/MEMORY.md"),
+                std::path::Path::new(MEMORY_DIR)
+                    .join("commands.md")
+                    .display()
+                    .to_string(),
+                std::path::Path::new(MEMORY_DIR)
+                    .join("MEMORY.md")
+                    .display()
+                    .to_string(),
             ]
         );
     }
