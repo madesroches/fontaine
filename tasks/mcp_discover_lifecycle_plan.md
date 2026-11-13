@@ -46,7 +46,9 @@ same three things with public API:
    with `peer.list_all_tools()` (bounded by `CONNECT_TIMEOUT` through the caller's timeout) and
    turn its error into `McpError::from_client` as `connect` did: a server whose tool list fails
    still fails to connect rather than connecting with no tools. The probe's result is discarded;
-   one extra `tools/list` at connect is the price of not forking rig-rmcp.
+   one extra `tools/list` at connect is the price of not forking rig-rmcp. Unlike `connect`
+   (`add_managed_tools`), the commit goes through `reconcile_managed_tools(expected = {})`, which
+   skips already-registered names.
 3. `McpConnection::new(service)`.
 
 Everything wrapping the transport (`MetaTap`, `ElicitationTap`, `CallTracker`) is unchanged: the
@@ -55,7 +57,9 @@ discover negotiates 2026-07-28.
 
 `Auto` semantics worth knowing: a legacy server that answers `server/discover` with method-not-found
 falls back at once; one that never answers it delays connect by the 10 s probe timeout before
-falling back. That fits inside `CONNECT_TIMEOUT` (30 s).
+falling back. The whole sequence (discover wait, initialize, tool list) shares the 30 s `CONNECT_TIMEOUT` budget
+wrapped by `connect()`; `connect_transport` has no wrapper, so the paused-time test supplies its own
+explicit bound.
 
 The shim is deliberately small and isolated so it can be replaced by a call to an upstream
 `connect_with_lifecycle` if rig-rmcp adds one.
@@ -63,11 +67,17 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 ## Implementation Steps
 
 1. `rust/fontaine-tools/src/mcp/servers.rs`: add `start_service` (above) and call it from `serve()`
-   in place of `handler.connect`; map errors through `McpError::from_client` (extend
-   `McpClientError` conversion for the probe's `ServiceError` if needed).
+   in place of `handler.connect`; map errors through `McpError::from_client` (the
+   existing `McpClientError` conversions from `ServiceError` and `ClientInitializeError` cover the
+   probe and `serve_with_lifecycle`).
+   Also make `classify_init` (`servers.rs:317-324`) unwrap
+   `ClientInitializeError::LegacyFallbackFailed` and classify its `fallback` error, so a transient
+   fallback failure stays Transient instead of falling to Permanent.
 2. Update the doc comment of `client_config()` and `serve()` to say the lifecycle is `Auto`.
 3. `rust/fontaine-tools/tests/mcp_mrtr.rs` (or a sibling `mcp_discover.rs`): scripted servers for
-   the cases in Testing Strategy.
+   the cases in Testing Strategy. The existing scripted server answers unknown methods (including
+   `server/discover`) with `{}`, so add arms for discover, `initialize` rejection, method-not-found
+   and an unanswered discover.
 4. Docs, changelog, master-plan Decisions line (below).
 
 ## Files to Modify
@@ -88,6 +98,8 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 
 ## Decisions
 
+- 2026-11-13: `classify_init` unwraps `LegacyFallbackFailed` and classifies the fallback error, so retry behavior is unchanged under `Auto`.
+
 ## Documentation
 
 - `docs/mcp.md`: state that Fontaine probes `server/discover` first and falls back to `initialize`,
@@ -103,13 +115,16 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 Automated, driven through an in-process scripted server (as `mcp_mrtr.rs`):
 
 - A server that answers `server/discover` (2026-07-28) and rejects `initialize` connects, lists its
-  tools, and serves an MRTR elicitation round (the headline case of #613).
+  tools, and serves an MRTR elicitation round (the headline case of #613); the test also asserts the discover
+  round trip passes through `MetaTap` and `ElicitationTap`.
 - A legacy server that answers `server/discover` with method-not-found falls back to `initialize`
   and registers its tools exactly once (no duplicate registration from the probe).
 - A server whose `tools/list` fails fails to connect (the probe's guard), classified as before.
 - A server that never answers `server/discover` falls back after the probe timeout (use paused
   tokio time).
-- A later `tools/list_changed` still reconciles tools after a discover-lifecycle connect.
+- A later `tools/list_changed` (sent by the scripted server) still reconciles tools after a
+  discover-lifecycle connect.
+- A transient failure of the `initialize` fallback (`LegacyFallbackFailed`) is classified Transient.
 - The existing `client_config()` and MRTR tests stay green.
 
 ## Open Questions
