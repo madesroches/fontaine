@@ -57,19 +57,33 @@ generalises to cover swallowed poll responses.
    - `Working`: re-arm `PollDue` with the (possibly updated) interval.
    - `InputRequired`: for each not-yet-surfaced input key start the same dialogs as an MRTR round
      (reusing the `start` / `start_url` / `deliver` path, sampling and roots fail the call as
-     today); when all are answered send one `tasks/update {taskId, inputResponses}` and resume polling.
+     today); when all are answered send one `tasks/update {taskId, inputResponses}` and resume polling. Each `tasks/update` counts against the
+     same `MAX_REQUESTS` (10) counter as MRTR rounds, kept per task; beyond it the call fails. `working`
+     poll loops need no cap: rig-rmcp's call timeout cancels the call (step 5).
    - `Completed`: deserialise `result` as `CallToolResult` and write it to rmcp as a response under the
      original call id (an `isError: true` result is a normal result). A result that does not parse
      fails the call.
-   - `Failed`: write a JSON-RPC error under the call id from the task's `error` object.
+   - `Failed`: write a JSON-RPC error under the call id. `error` is a `JsonObject`, not `ErrorData`:
+     build the error leniently from its `code` / `message` / `data`, with fallbacks (internal-error
+     code, generic message) when a field is missing or mistyped.
    - `Cancelled`: write a JSON-RPC error "the server cancelled the task".
+   - `TaskStatus` / `TaskPayload` are `non_exhaustive`: a wildcard arm fails the call.
 4. A JSON-RPC error answering a poll (unknown or expired task) fails the call with that error. An
    expired `ttl_ms` is the server's business: it surfaces as such an error.
 5. Cancellation (rig-rmcp's timeout or the user's interrupt): `outgoing` sees
    `notifications/cancelled` for the call; the tap drops the `Driven`, sends `tasks/cancel {taskId}`
    (fire and forget; its ack and any in-flight poll response are swallowed) instead of a
    `cancelled` notification for a retry, and aborts pending dialogs through the existing
-   `drop_call`. Transport close and `end_calls` behave as for MRTR.
+   `drop_call`. `outgoing` currently does `let retry = driven.retry?;`, which returns early for a task
+   call: branch on the phase first. `end_calls` also sends `tasks/cancel` for task-phase calls. A
+   stale `PollDue` for a dropped call is a no-op, and every terminal status removes the `Driven` and
+   its poll mapping.
+
+Every tap-sent `tasks/get`, `tasks/update` and `tasks/cancel` id is registered (in `task_poll_ids` or
+`dropped_retries`) at send time so no response leaks to rmcp. The `tasks/update` and `tasks/cancel`
+acks are always swallowed (the update ack keeps the call alive). On every drop path (cancel, fail,
+`end_calls`, `finish`) the in-flight poll id moves to `dropped_retries`, so a late `tasks/get`
+response is swallowed.
 
 The three failure paths funnel through the existing `fail(call, text)` so the user-visible error text
 is built in one place; a new `finish(call, ServerResult)` writes a synthetic success the same way.
@@ -96,9 +110,11 @@ would be a fork of a pinned dependency.
    retry).
 2. `elicitation.rs` `outgoing`: on cancellation of a task-phase call send `tasks/cancel`.
 3. `servers.rs`: declare the tasks extension in `client_config()`; update its doc comment and the
-   test at `servers.rs:1322` area.
+   test at `servers.rs:1322` area, which only checks elicitation today: add an assertion that
+   `extensions` holds `TASKS_EXTENSION_ID` (`ClientCapabilities::supports_tasks()`).
 4. Docs: `docs/mcp.md` (tasks section: what Fontaine does, that it polls transparently and honours
-   the call timeout and interrupt); `CHANGELOG.md` entry; the master plan `## Decisions` MCP
+   the call timeout and interrupt, and that the existing "given up after 10 requests" limit applies to
+   a task's `tasks/update` rounds); `CHANGELOG.md` entry; the master plan `## Decisions` MCP
    subsection gets a dated line recording that Fontaine declares and serves the tasks extension for
    `tools/call` only.
 
@@ -108,22 +124,15 @@ would be a fork of a pinned dependency.
 - `rust/fontaine-tools/src/mcp/servers.rs`
 - `docs/mcp.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 
-## Trade-offs
-
-- **Decline to support (record only)**: smallest, but a server that returns tasks to clients that
-  declare the extension would then never work with Fontaine; long-running tools are the extension's
-  purpose. Rejected.
-- **Support without declaring the extension**: conformant servers would never send a task, leaving
-  the code dead in practice. Rejected.
-- **Surface the task to the model as a handle with a poll tool**: new model-facing tools and
-  semantics, at odds with the transparent MRTR approach and the permission model. Rejected.
-
 ## Decisions
 
 - In-task `input_required` is served through the existing dialogs rather than failing, because a
   task that blocks on input would otherwise hang until its TTL; sampling and roots still fail the
   call, as in MRTR.
-- Poll interval is clamped to 50 ms..5 s (1 s default) so a server cannot spin or stall the client.
+- Rejected alternatives: declining to support tasks (long-running tools are the extension's purpose);
+  supporting without declaring the extension (servers would never send a task, dead code); exposing
+  the task to the model as a handle with a poll tool (new model-facing semantics, at odds with the
+  transparent MRTR approach and the permission model).
 
 ## Documentation
 
@@ -145,10 +154,10 @@ All unit tests in `elicitation.rs` using the existing `Script` transport double 
 - `notifications/cancelled` for a task call sends `tasks/cancel`, swallows the late poll response,
   and aborts pending dialogs; transport close drops the task.
 - A task result for a `prompts/get` or `resources/read` fails that call.
-- `servers.rs`: `client_config()` declares the tasks extension and still the elicitation capability.
+- More than `MAX_REQUESTS` `tasks/update` rounds fails the call.
+- `servers.rs`: `client_config()` declares the tasks extension (`supports_tasks()`) and still the
+  elicitation capability.
 - Regression guard: existing MRTR tests stay green (the `Driven` refactor must not change them).
 
-## Open Questions
-
-- Whether a real task-returning server is reachable to qualify against; if not, the scripted tests are
-  the only coverage and the live check is a follow-up.
+No task-returning server exists in `evals/` or the tests (`rust/fontaine-tools/tests/mcp_mrtr.rs` has
+no task support), so the scripted unit tests are the only coverage; a live check is a follow-up issue.
