@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
+use super::deferral::Deferral;
 use super::elicitation::CallTracker;
 use super::meta::ToolMeta;
 use super::output::{OutputLimits, cap};
@@ -64,6 +65,8 @@ pub struct GuardedSink<S> {
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
     muted: Arc<AtomicBool>,
+    deferral: Deferral,
+    connection: u64,
 }
 
 /// What a connection's [`GuardedSink`] shares with the rest of the connection.
@@ -78,6 +81,8 @@ pub(crate) struct Shared {
     /// Set when the server is being unloaded: a later `list_changed` refresh must not register
     /// the tools again.
     pub(crate) muted: Arc<AtomicBool>,
+    /// This connection's token in the session's deferral registry.
+    pub(crate) connection: u64,
 }
 
 impl<S> GuardedSink<S> {
@@ -100,6 +105,8 @@ impl<S> GuardedSink<S> {
             tool_count: shared.tool_count.clone(),
             tool_names: shared.tool_names.clone(),
             muted: shared.muted.clone(),
+            deferral: options.deferral.clone(),
+            connection: shared.connection,
         }
     }
 
@@ -111,6 +118,13 @@ impl<S> GuardedSink<S> {
             .iter()
             .map(|tool| tool.definition().name.to_string())
             .collect();
+        // Every wrapped tool is registered the same whether or not the session defers it; the
+        // registry only decides what is advertised.
+        self.deferral.record(
+            &self.server,
+            self.connection,
+            wrapped.iter().map(DynamicTool::definition).collect(),
+        );
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {

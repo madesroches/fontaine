@@ -123,8 +123,8 @@ Provider-specific backends (#439) are separate.
    scope, no loosening classification), `/config` display.
 8. Decision logic + threshold in `agent/mcp.rs`; prompt section in `prompt.rs`; claude-subscription forced off.
 9. `/context`: show deferred names and loaded schemas separately (`context.rs`, TUI context view).
-10. Subagent registry: `tool_search` follows the parent's MCP entries; each child gets its own `tool_search` instance, loaded-set
-    object and completion hook, starting empty.
+10. Subagent registry: `tool_search` follows the parent's MCP entries; each child gets its own loaded set (keyed by agent id,
+    enrolled with the names its toolset holds) and completion hook, starting empty.
 11. Telemetry: a `tool_search` span/event with counts only (names hidden unless `log_tool_details`, as for MCP
     calls).
 12. Docs (below), CHANGELOG entry, `## Decisions` line in the master plan's MCP subsection.

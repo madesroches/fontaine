@@ -22,6 +22,7 @@ use fontaine_tools::schedule::{
 };
 use fontaine_tools::skill::SkillTool;
 use fontaine_tools::todo::TodoTool;
+use fontaine_tools::tool_search::ToolSearchTool;
 use rig_agent::agent::{
     AgentHook, CompletionCallAction, CompletionCallEvent, DispatchAction, DispatchEvent,
     HookContext,
@@ -30,6 +31,7 @@ use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::{ErrorKind, ErrorReport};
 
+use super::deferred::DeferredAdvertiser;
 use super::mcp::output_limits;
 use super::{ReportedAdvisor, SessionModels, Setup};
 use crate::bug_drafts::FileDrafts;
@@ -248,7 +250,8 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
     });
     // Assembled from the listings the connected servers hold now, so it appears with the
     // first build after a resources-capable server connects and goes when the last unloads.
-    pieces.mcp = prompt::mcp_resource_section(&p.mcp.listings());
+    p.mcp.sync_deferral(p.config, p.models);
+    pieces.mcp = p.mcp.prompt_section();
     (pieces, sources, loaded)
 }
 
@@ -353,6 +356,11 @@ fn extension_tools(
                 approver: p.approver.clone(),
             }),
         }),
+        ExtensionTool::new(ToolSearchTool {
+            deferral: p.mcp.deferral.clone(),
+            loaded: p.mcp.loaded.clone(),
+            reveal_names: p.config.telemetry.enabled && p.config.telemetry.log_tool_details,
+        }),
         ExtensionTool::new(ModelsTool {
             source: Arc::new(SessionModels {
                 roles: p.setup.roles.describe(),
@@ -424,6 +432,12 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
             CONVERSATION_LOG.to_owned(),
             p.approver.clone(),
         ))
+        .add_hook(DeferredAdvertiser {
+            agent: ROOT_AGENT.to_string(),
+            tools: p.tool_server.clone(),
+            deferral: p.mcp.deferral.clone(),
+            loaded: p.mcp.loaded.clone(),
+        })
         .add_hook(InflightHook::root(
             p.session.store(),
             CONVERSATION_LOG.to_owned(),

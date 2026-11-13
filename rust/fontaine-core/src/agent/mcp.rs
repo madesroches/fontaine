@@ -742,6 +742,7 @@ impl AgentRuntime {
             )
         };
         let mut options = McpOptions::new(guard, reveal);
+        options.deferral = self.mcp.deferral.clone();
         options.limits = Arc::new(limits);
         options.elicitor = Arc::new(HookElicitor::new(
             self.setup.elicitation_hooks.clone(),

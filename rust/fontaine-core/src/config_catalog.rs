@@ -523,6 +523,11 @@ pub const KEYS: &[KeyRow] = &[
         c.hooks.get(HookEvent::Elicitation).len()
     )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
+    row!("mcp.tool_search", Scalar, |c, _| c
+        .mcp
+        .tool_search
+        .as_str()
+        .to_string()),
     row!("lsp.servers", Map, |c, _| names(
         c.lsp_table().servers.iter().map(|(name, _)| name)
     )),

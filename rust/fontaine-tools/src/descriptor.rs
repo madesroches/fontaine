@@ -307,6 +307,16 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &[],
     ),
+    // Reads only the in-memory registry of tool definitions and takes no path. Loading a
+    // definition grants nothing: a call to the loaded tool takes its own gate.
+    row(
+        "tool_search",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &[],
+    ),
     row(
         DRAFT_BUG_REPORT,
         RiskClass::Arbitrary,
@@ -379,7 +389,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Tools Claude Code has no counterpart for.
-    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT, "advisor", "memory"];
+    const FONTAINE_ONLY: &[&str] = &["models", "tool_search", DRAFT_BUG_REPORT, "advisor", "memory"];
 
     #[test]
     fn names_are_unique_rule_names() {
@@ -640,6 +650,7 @@ mod tests {
                 &["ScheduleWakeup"],
             ),
             ("models", R::ReadOnly, true, D::Never, S::None, &[]),
+            ("tool_search", R::ReadOnly, true, D::Never, S::None, &[]),
             (
                 "draft_bug_report",
                 R::Arbitrary,

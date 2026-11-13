@@ -1044,6 +1044,31 @@ impl McpServer {
 #[serde(deny_unknown_fields)]
 pub struct McpSection {
     pub servers: Option<BTreeMap<String, McpServer>>,
+    pub tool_search: Option<ToolSearch>,
+}
+
+/// Whether MCP tool definitions wait behind the `tool_search` tool instead of riding every
+/// request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolSearch {
+    /// Defer when the definitions would take more than a tenth of the model's context window.
+    #[default]
+    Auto,
+    /// Always defer MCP tools.
+    On,
+    /// Advertise every MCP tool.
+    Off,
+}
+
+impl ToolSearch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolSearch::Auto => "auto",
+            ToolSearch::On => "on",
+            ToolSearch::Off => "off",
+        }
+    }
 }
 
 /// A language server: a program that runs on the user's machine, so only the user file,
@@ -2695,6 +2720,12 @@ pub struct Shell {
     pub max_timeout_secs: u64,
 }
 
+/// The merged `[mcp]` settings beside the server table.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mcp {
+    pub tool_search: ToolSearch,
+}
+
 /// The merged `[feedback]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feedback {
@@ -2788,6 +2819,7 @@ pub struct Config {
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub statusline: Statusline,
     pub feedback: Feedback,
+    pub mcp: Mcp,
     pub telemetry: Telemetry,
     pub websearch: Websearch,
     pub tui: Tui,
@@ -2933,6 +2965,7 @@ impl Config {
             feedback: Feedback {
                 drafts: DraftsMode::default(),
             },
+            mcp: Mcp::default(),
             tui: Tui {
                 theme: ThemeName::default(),
                 screen_reader: None,
@@ -3223,6 +3256,9 @@ impl Config {
         }
         if let Some(v) = s.feedback.as_ref().and_then(|f| f.drafts) {
             self.feedback.drafts = v;
+        }
+        if let Some(v) = s.mcp.as_ref().and_then(|m| m.tool_search) {
+            self.mcp.tool_search = v;
         }
         if let Some(sl) = &s.statusline {
             if let Some(v) = &sl.command {

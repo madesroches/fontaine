@@ -191,6 +191,9 @@ impl AgentRuntime {
             result
         };
         if let CompactResult::Compacted { summary, .. } = &result {
+            // The summary replaced the turns that carried the loaded definitions' results, so
+            // the model searches again.
+            self.mcp.loaded.clear(ROOT_AGENT);
             self.lifecycle().post_compact(trigger, summary).await;
             self.fire_session_start("compact").await;
         }

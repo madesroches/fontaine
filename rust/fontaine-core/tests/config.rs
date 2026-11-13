@@ -751,6 +751,26 @@ fn account_and_server_shapes() {
 }
 
 #[test]
+fn tool_search_defaults_to_auto_and_either_scope_may_set_it() {
+    use fontaine_core::config::ToolSearch;
+    let w = World::new();
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::Auto);
+    w.user_file("[mcp]\ntool_search = \"off\"\n");
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::Off);
+    // The project scope can set it: deferral hides schemas and changes no gate. It wins over the
+    // user's value like any other scalar.
+    w.project_file("[mcp]\ntool_search = \"on\"\n");
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::On);
+    for bad in ["maybe", "true"] {
+        let text = format!("[mcp]\ntool_search = \"{bad}\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn allow_extra_entries_are_flag_free_command_pairs() {
     user_ok("[shell_preclassifier]\nallow_extra = [\"tree\", \"cargo metadata\"]\n");
     for bad in ["ls -la", "a b c", "-x", ""] {

@@ -225,6 +225,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::any("hooks.notification"),
     Rule::any("hooks.elicitation"),
     Rule::any("mcp.servers"),
+    Rule::any("mcp.tool_search"),
     Rule::user_trust("auto_mode.environment", TIGHTEN),
     Rule::user_trust("auto_mode.allow", TIGHTEN),
     Rule::any("auto_mode.soft_deny"),
@@ -637,6 +638,7 @@ mod tests {
             None,
         ),
         ("mcp.servers", "[mcp.servers.s]\ncommand = \"srv\"\n", None),
+        ("mcp.tool_search", "[mcp]\ntool_search = \"on\"\n", None),
         (
             "auto_mode.environment",
             "[auto_mode]\nenvironment = [\"x\"]\n",

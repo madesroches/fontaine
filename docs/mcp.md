@@ -99,6 +99,39 @@ fetches the list again and registers the new tools the same way; tools that went
 Besides tools, a server can offer [resources](#resources) and [prompts](#prompts). A server may
 also ask you for input while a tool runs, as [described below](#requests-for-input).
 
+## Tool search
+
+A server with many tools puts every definition (description and input schema) into every request.
+Fontaine can keep those definitions out of the request until the model asks for them, as Claude Code
+does: the model sees only the tool *names*, grouped by server, in the system prompt, and loads the
+definitions it needs by calling the built-in [`tool_search`](tools.md#built-in-tools) tool.
+
+`[mcp] tool_search` in [configuration](configuration.md#mcp) picks when this happens:
+
+- `auto` (the default) defers MCP tools when their definitions are estimated at more than a tenth of
+  the model's context window (10,000 tokens when the window is unknown). `/context` uses the same
+  estimate.
+- `on` always defers them. `off` never does.
+
+When tools are deferred, `tool_search` takes `query`, either keywords matched against tool names and
+descriptions or `select:name1,name2` for exact names, and `max_results`. The matching tools'
+descriptions and input schemas come back as the result, and from the next request on those tools
+are advertised like any other. A loaded tool appears at its usual position in the tool list, which is
+sorted by name within each server, not after the tools loaded earlier; the provider's prompt cache
+restarts from the first position that changed. Loaded tools are remembered for the session only:
+after a resume or a compaction the model searches again. A subagent sees and loads only the
+deferred tools its own tool set holds, and what it loads never reaches its parent's requests or the
+reverse. `/context` lists the deferred names and the loaded definitions separately.
+
+Deferral changes nothing about permissions. Deferred tools are registered and guarded exactly like
+loaded ones: they are `arbitrary` tools, your rules and hooks match their `mcp__<server>__<tool>`
+names, and every call is judged by the same gate. A call to a deferred tool whose definition was
+never loaded is not run and is not judged: the model gets a note to search first. `tool_search`
+itself is read-only (it reads only the in-memory list of definitions), and loading a definition
+grants nothing. The setting is not a loosening key, so a repository's settings may set it. With the
+`claude-subscription` provider Fontaine never defers, because the Claude CLI owns the tool list
+(see [Claude subscription](claude-subscription.md)).
+
 ## Resources
 
 A resource is data a server exposes behind a URI. After a server connects, Fontaine pulls its

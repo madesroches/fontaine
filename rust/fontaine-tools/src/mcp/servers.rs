@@ -35,6 +35,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport, TokioChildProcess};
 use tokio::sync::Notify;
 
+use super::deferral::Deferral;
 use super::elicitation::{CallGuard, CallTracker, CancelAll, ElicitationTap, Elicitor};
 use super::listings::{Listings, pull_listings};
 use super::meta::{MetaTap, ToolMeta};
@@ -131,6 +132,8 @@ pub struct McpOptions {
     pub elicitor: Arc<dyn Elicitor>,
     /// Reports a failure the person would care about but the model's call survives.
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
+    /// The session's registry of MCP tool definitions, which decides which are advertised.
+    pub deferral: Deferral,
 }
 
 impl McpOptions {
@@ -142,6 +145,7 @@ impl McpOptions {
             limits: Arc::new(OutputLimits::default()),
             elicitor: Arc::new(CancelAll),
             warn: Arc::new(|message| tracing::warn!("{message}")),
+            deferral: Deferral::default(),
         }
     }
 
@@ -423,6 +427,22 @@ pub struct Connected {
     /// A stdio server's process group (its leader's pid), recorded before `serve` hands the
     /// child to rmcp, whose own cleanup reaches only the direct child.
     group: Option<u32>,
+    /// Takes the server's tools out of the deferral registry when the connection goes.
+    _registration: Box<Registration>,
+}
+
+/// A connection's entry in the deferral registry, removed on drop unless a newer connection of
+/// the same server has replaced it.
+struct Registration {
+    deferral: Deferral,
+    server: String,
+    connection: u64,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.deferral.forget(&self.server, self.connection);
+    }
 }
 
 impl Connected {
@@ -468,6 +488,10 @@ impl Connected {
     /// before removing the tools of a server that is going away.
     pub fn mute(&self) {
         self.muted.store(true, Ordering::SeqCst);
+        let registration = &self._registration;
+        registration
+            .deferral
+            .forget(&registration.server, registration.connection);
     }
 
     /// Waits for the calls in flight to finish, up to `bound`. Returns whether they did.
@@ -709,9 +733,10 @@ struct Wiring {
 }
 
 impl Wiring {
-    fn new() -> Self {
+    fn new(deferral: &Deferral) -> Self {
         Wiring {
             shared: Shared {
+                connection: deferral.begin_connection(),
                 meta: ToolMeta::default(),
                 tracker: CallTracker::new(),
                 transport_failed: Arc::new(Notify::new()),
@@ -738,7 +763,7 @@ where
     T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
     E: StdError + Send + Sync + 'static,
 {
-    let wiring = Wiring::new();
+    let wiring = Wiring::new(&options.deferral);
     let handler = McpClientHandler::new(
         client_config(),
         GuardedSink::new(sink, name, options, &wiring.shared),
@@ -770,6 +795,11 @@ where
         muted: wiring.shared.muted,
         tracker: wiring.shared.tracker,
         group,
+        _registration: Box::new(Registration {
+            deferral: options.deferral.clone(),
+            server: name.to_string(),
+            connection: wiring.shared.connection,
+        }),
     })
 }
 

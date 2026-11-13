@@ -274,7 +274,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
 | `monitor` | words, as for `shell` | the parsed command line, as for `shell`; a `shell` deny or ask rule covers `monitor` too, an allow rule does not |
-| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `models`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel`, `list_mcp_resources`, `read_mcp_resource` | none | the tool name |
+| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `models`, `tool_search`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel`, `list_mcp_resources`, `read_mcp_resource` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

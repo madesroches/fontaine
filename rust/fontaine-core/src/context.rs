@@ -37,8 +37,14 @@ pub struct ContextUsage {
     pub skills: u64,
     /// Built-in and extension tools.
     pub tools: Vec<(String, u64)>,
-    /// `mcp__*` tools.
+    /// `mcp__*` tools whose definitions the request carries.
     pub mcp_tools: Vec<(String, u64)>,
+    /// `mcp__*` tools that were deferred and then loaded with `tool_search`; their definitions
+    /// ride the request too.
+    pub loaded_tools: Vec<(String, u64)>,
+    /// `mcp__*` tools whose definitions are deferred and not loaded: only their names are in
+    /// the prompt.
+    pub deferred_tools: Vec<String>,
     /// The conversation's messages.
     pub messages: u64,
 }
@@ -54,6 +60,7 @@ impl ContextUsage {
             + self.skills
             + sum(&self.tools)
             + sum(&self.mcp_tools)
+            + sum(&self.loaded_tools)
             + self.messages
     }
 }
