@@ -146,7 +146,7 @@ loaded the skill**: it asks, is judged by the guardian or is denied exactly as i
 called `shell`. A denied command's place shows `[command failed: ...]` and the skill still loads.
 On Windows without Git Bash there is no `shell`, so each command is reported as not run
 (`[command not run: the shell tool is not available]`) and the skill still loads.
-A repository's skill commands run only when the workspace is trusted; a headless run (`fontaine -p`) runs them without asking, as it does for hooks and MCP servers.
+A repository's skill commands run only when the workspace is trusted; a headless run (`fontaine -p`) runs them without asking, as it does for hooks and MCP servers, unless `[headless] require_trust = true` and the workspace is not trusted.
 
 ### `allowed-tools`
 

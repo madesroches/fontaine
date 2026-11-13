@@ -35,6 +35,8 @@ fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
             workspace_trust: "trusted".into(),
             git_remotes: Vec::new(),
             env_keys: Vec::new(),
+            headless: false,
+            project_executables: false,
             project_environment: None,
         })
         .unwrap();

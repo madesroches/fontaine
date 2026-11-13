@@ -28,6 +28,8 @@ fn start(session: &Session, root: &std::path::Path) {
             workspace_trust: "trusted".into(),
             git_remotes: Vec::new(),
             env_keys: Vec::new(),
+            headless: false,
+            project_executables: false,
             project_environment: None,
         })
         .unwrap();

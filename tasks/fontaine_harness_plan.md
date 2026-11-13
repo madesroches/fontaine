@@ -488,6 +488,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-03: `fontaine doctor` finding levels: only conditions that stop a session working as configured (unavailable guardian, `models::resolve` error, unreadable `trust.toml`, config, plugin, skill or memory load failures) are `fail`; an untrusted workspace, a failed MCP probe and model notices are `warn`. It adds no reachability probe of its own beyond `models::resolve`.
 - 2026-11-08: `[models.roles]` is user file or `--settings` only. `[model] model` and `[models.roles] main` in one layer are a config error; across layers the higher-precedence one wins, so a project-local `[model] model` still overrides. Unknown accounts, unknown roles and cycles are load errors (#324).
 - 2026-11-11: (#115) `[headless] max_usage_wait_secs` is user scope or CLI only (a repository must not make an unattended run wait longer), and `[headless] on_usage_limit` may be set to `exit` from project scopes, which only ends a run sooner. The same cap bounds a pause in the terminal UI while AFK is on, because nobody can cancel there.
+- 2026-11-12: (#228) Amends the 2026-10-21 workspace-trust line: headless still loads project executables by default (Claude Code parity), and the opt-in user-scope `[headless] require_trust = true` (user file or `--settings`) makes it skip them in an untrusted workspace, with one stderr line. The headless `init` event and the ledger's `session_start` record `project_executables` (and `headless`) so the exposure is countable.
 
 ### Core
 

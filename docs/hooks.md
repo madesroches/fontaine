@@ -318,7 +318,7 @@ repository chose:
 
 - In the terminal UI they start only after you trust the workspace; see
   [Workspace trust](tui.md#workspace-trust). A headless run loads them without asking, as Claude
-  Code's `-p` does.
+  Code's `-p` does, unless `[headless] require_trust = true` and the workspace is not trusted.
 - **They can only tighten.** A repository hook's `allow` and its `retry` are ignored; its `deny`,
   `ask`, `updatedInput`, `guardian_context` and `additionalContext` work as for any hook. An
   untracked `settings.local.toml` of a trusted root is your own file, and its hooks' `allow` counts.

@@ -84,6 +84,12 @@ Enabled [plugins](plugins.md) load in a headless run exactly as they do in the t
 hooks, MCP servers and skill `!` commands run without the workspace-trust gate, because install
 approved them.
 
+A headless run loads a repository's hooks, MCP servers and skill commands without asking, as Claude
+Code's `-p` does, unless `[headless] require_trust = true` and the workspace was not trusted in the
+terminal UI: then it skips them all, as the terminal UI does after "Don't trust", and prints one
+line on stderr saying so. The setting is read from your user file or `--settings` only. The `init`
+event's `project_executables` reports whether they loaded.
+
 A headless run never asks about [skill trust](extensions.md#trusted-skills). A plugin skill that is
 untrusted, or that changed since you trusted it, lends nothing; invoking one that declares
 `allowed-tools` warns once on stderr. Trust skills with `fontaine plugin trust <name>` ahead of
@@ -250,7 +256,7 @@ these is one line, in the order the run produces them. The table lists the kinds
 
 | `type` | When | Main fields |
 |---|---|---|
-| `init` | Once, first | `model`, `guardian_model` and `guardian_profile` (the guardian and profile in force, which may differ from the configured ones: a default pick, the main model, or `full` after a failed containment check), `guardian_available`, `permission_mode`, `workspace_roots` (the session's [scratch directory](tools.md#the-scratch-directory) is the last entry when it could be created), `config_sources` (scope, path, whether loaded), `workspace_trust`, `suspended_allow_rules` (the broad allow rules `auto` sets aside; empty outside `auto`), `tools` |
+| `init` | Once, first | `model`, `guardian_model` and `guardian_profile` (the guardian and profile in force, which may differ from the configured ones: a default pick, the main model, or `full` after a failed containment check), `guardian_available`, `permission_mode`, `workspace_roots` (the session's [scratch directory](tools.md#the-scratch-directory) is the last entry when it could be created), `config_sources` (scope, path, whether loaded), `workspace_trust`, `project_executables` (whether project hooks, MCP servers and skill commands loaded), `suspended_allow_rules` (the broad allow rules `auto` sets aside; empty outside `auto`), `tools` |
 | `assistant` | A complete assistant message | `text` |
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `model_call` | A model call finished: after its `assistant` text and before its `tool_call` events. Main-conversation calls in call order; subagent usage is in `result.usage.subagents` and guardian calls are not events | `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `calls_tool` (whether the call asked for a tool) |

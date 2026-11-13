@@ -391,6 +391,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     // The interactive UI asks before anything the repository defines may run. A headless run
     // loads it without asking, as Claude Code's `-p` does.
     let mut project_executables = true;
+    if cli.print
+        && config.headless.require_trust
+        && !trust::is_trusted(&dirs.data, &config.workspace)
+    {
+        project_executables = false;
+        eprintln!(
+            "fontaine: workspace is not trusted; project hooks, MCP servers and project skill commands are skipped ([headless] require_trust = true)"
+        );
+    }
     if !cli.print && !trust::is_trusted(&dirs.data, &config.workspace) {
         match fontaine_tui::trust_prompt::ask(
             &config.workspace,

@@ -348,6 +348,8 @@ fn the_ledger_view_keeps_the_latest_value_and_a_new_start_clears_it() {
         workspace_trust: "trusted".into(),
         git_remotes: vec![URL.into()],
         env_keys: Vec::new(),
+        headless: false,
+        project_executables: false,
         project_environment: environment,
     };
     let first = record("2026-10-01T00:00:00.000Z", Visibility::Public, &[URL]);

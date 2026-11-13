@@ -1209,6 +1209,8 @@ pub struct HeadlessSection {
     /// The longest a run waits for a spent usage window, in seconds; at least one.
     pub max_usage_wait_secs: Option<u64>,
     pub on_usage_limit: Option<OnUsageLimit>,
+    /// Skip project hooks, MCP servers and skill commands in a workspace not trusted in the TUI.
+    pub require_trust: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -2668,6 +2670,8 @@ pub struct Headless {
     /// The longest a `-p` run waits for a spent usage window.
     pub max_usage_wait_secs: u64,
     pub on_usage_limit: OnUsageLimit,
+    /// Whether a `-p` run skips project executables unless the workspace was trusted in the TUI.
+    pub require_trust: bool,
 }
 
 /// How long a `-p` run waits for a spent usage window unless told otherwise: longer than one
@@ -2908,6 +2912,7 @@ impl Config {
             headless: Headless {
                 max_usage_wait_secs: DEFAULT_MAX_USAGE_WAIT_SECS,
                 on_usage_limit: OnUsageLimit::default(),
+                require_trust: false,
             },
             shell: Shell {
                 max_timeout_secs: DEFAULT_SHELL_MAX_TIMEOUT_SECS,
@@ -3194,6 +3199,9 @@ impl Config {
             }
             if let Some(v) = h.on_usage_limit {
                 self.headless.on_usage_limit = v;
+            }
+            if let Some(v) = h.require_trust {
+                self.headless.require_trust = v;
             }
         }
         if let Some(v) = s.shell.as_ref().and_then(|sh| sh.max_timeout_secs) {

@@ -129,6 +129,7 @@ const GOAL: &str =
 const AFK_CEILING: &str =
     "a repository can only lower the AFK temperature ceiling, and only to a positive, finite value";
 const HEADLESS_WAIT: &str = "how long an unattended run waits for a usage window is set only in the user file or --settings";
+const HEADLESS_TRUST: &str = "whether an unattended run loads project executables in an untrusted workspace is set only in the user file or --settings";
 const HEADLESS_EXIT: &str = "only `exit` may be set here: a repository can end a run at a spent usage window but not make it wait longer";
 const SHELL: &str =
     "how long a model's shell command may block or run is set only in the user file or --settings";
@@ -172,6 +173,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::if_project_local("afk.temperature_ceiling", is_positive_finite, AFK_CEILING),
     Rule::user_or_cli("headless.max_usage_wait_secs", HEADLESS_WAIT),
     Rule::if_project_local("headless.on_usage_limit", is_exit, HEADLESS_EXIT),
+    Rule::user_or_cli("headless.require_trust", HEADLESS_TRUST),
     Rule::user_or_cli("shell", SHELL),
     Rule::user_only("checkpoints", CHECKPOINTS),
     Rule::user_only("plugins.auto_update", PLUGINS),
@@ -668,6 +670,11 @@ mod tests {
             "headless.on_usage_limit",
             "[headless]\non_usage_limit = \"exit\"\n",
             Some("[headless]\non_usage_limit = \"wait\"\n"),
+        ),
+        (
+            "headless.require_trust",
+            "[headless]\nrequire_trust = true\n",
+            None,
         ),
         ("shell", "[shell]\nmax_timeout_secs = 900\n", None),
         (
