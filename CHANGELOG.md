@@ -209,6 +209,10 @@ All notable changes are recorded here. The format follows
 - The `windows_without_git_bash` tests no longer fail on a machine with scoop-installed Git: the
   test sandbox now also points `SCOOP`, `SCOOP_GLOBAL`, `USERPROFILE` and `ProgramData` at an
   empty directory, so Git Bash discovery cannot find the host's copy (#604).
+- Test helper `fontaine_testkit::example_bin` returns a per-process copy of the example binary
+  instead of the path cargo re-links on every nested build, so a sibling test process's build can
+  no longer remove it between the build and the spawn (the flaky macOS ENOENT on
+  `fontaine_claude_cli_double`) (#607).
 
 ### Changed
 

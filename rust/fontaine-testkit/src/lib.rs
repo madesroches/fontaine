@@ -1,23 +1,32 @@
 //! Dev-only test helpers shared by the workspace's integration tests.
 //!
 //! Integration tests spawn Cargo example binaries (`hook_marker`, `repo_mcp_server`, ...) as
-//! helper processes and locate them under `target/<profile>/examples/`. A workspace-wide
+//! helper processes, from a private copy of the binary cargo built under
+//! `target/<profile>/examples/`. A workspace-wide
 //! `cargo test` builds every member's examples, but a per-package run builds only that
 //! package's targets and would silently use whatever example binaries happen to be on disk;
 //! stale ones fail with timeouts far from the cause.
 //!
 //! [`example_bin`] builds the requested example on first use (a no-op under the workspace
-//! run, since cargo's own freshness check is exact) and returns its path. The build is not
-//! deduplicated across threads: concurrent first calls for the same example each invoke
-//! cargo, whose own build lock serializes them, and only the first path is cached.
+//! run, since cargo's own freshness check is exact) and returns the path of a copy private to
+//! this process. Cargo re-links `examples/<name>` on every nested build, so a sibling test
+//! process's build could remove it between this process's build and its spawn. Concurrent
+//! first calls for the same example are serialized per example, so the build and the copy
+//! happen once per process.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::Duration;
 
-static CACHE: OnceLock<Mutex<HashMap<(String, String), PathBuf>>> = OnceLock::new();
+type Key = (String, String);
+type Slot = Arc<Mutex<Option<PathBuf>>>;
+
+/// One entry per example, so a build holds only its own lock: other examples and cache hits
+/// never wait on it.
+static CACHE: OnceLock<Mutex<HashMap<Key, Slot>>> = OnceLock::new();
 
 /// The triple the outer build compiled this crate (and the test binaries linking it) for,
 /// captured by the build script from Cargo's `TARGET`: exactly the outer build's target,
@@ -29,26 +38,39 @@ const BUILD_RUSTC: &str = env!("FONTAINE_TESTKIT_RUSTC");
 
 static BUILTIN_TARGETS: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Returns the path to the built example `name` of workspace package `package`. The first
-/// call builds it; concurrent first calls may each invoke cargo, whose own build lock
-/// serializes them, and only the first resulting path is cached. Panics with cargo's
+/// Returns the path to a private copy of the built example `name` of workspace package
+/// `package`, which cargo never touches. The first call builds and copies it; concurrent first
+/// calls for the same example wait for that one and share its path. Panics with cargo's
 /// combined output if the build fails. Panics early when the outer build targeted a
 /// custom JSON specification that cannot be resolved back to its file: cargo exports the
 /// target to the test process only as the spec file's stem, which resolves only against
 /// a spec file in this crate's directory or on RUST_TARGET_PATH.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
     let key = (package.to_string(), name.to_string());
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    // The lock is only held for the cache get/insert. The build below panics on failure, and
-    // holding the guard across it would poison the mutex, making unrelated tests that share
-    // the process panic on their next `example_bin` call instead of building.
-    if let Some(path) = cache
+    let entry = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .expect("fontaine-testkit cache mutex poisoned")
-        .get(&key)
-    {
+        .entry(key)
+        .or_default()
+        .clone();
+    fill_slot(&entry, || build_and_copy(package, name))
+}
+
+/// Fills the slot with `build()` once; later callers get the stored path.
+fn fill_slot(entry: &Slot, build: impl FnOnce() -> PathBuf) -> PathBuf {
+    // A build that panics poisons only this entry, which is still `None`, so the next caller
+    // retries the build instead of failing on the poison.
+    let mut slot = entry.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(path) = slot.as_ref() {
         return path.clone();
     }
+    let path = build();
+    *slot = Some(path.clone());
+    path
+}
+
+fn build_and_copy(package: &str, name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe() unavailable in a test process");
     let cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
     let layout = Layout::from_exe(&exe, cargo_target_dir.as_deref()).unwrap_or_else(|| {
@@ -104,16 +126,57 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
             .join("examples")
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     });
-    assert!(
-        path.is_file(),
-        "{} was not produced by the build",
-        path.display()
-    );
-    cache
-        .lock()
-        .expect("fontaine-testkit cache mutex poisoned")
-        .insert(key, path.clone());
-    path
+    copy_private(&path, &layout.profile_dir, package, name)
+}
+
+/// Copies the built executable to a path only this process uses. The copy sits under the
+/// target dir so it shares the filesystem and `cargo clean` removes it.
+fn copy_private(src: &Path, profile_dir: &Path, package: &str, name: &str) -> PathBuf {
+    let dir = profile_dir.join("example-bin");
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("cannot create {}: {e}", dir.display()));
+    let dest = dir.join(format!(
+        "{package}-{name}-{}{}",
+        std::process::id(),
+        std::env::consts::EXE_SUFFIX
+    ));
+    // The source can be missing for an instant while a sibling build re-links it, and
+    // `NotFound` does not say whether the source or the destination directory was missing.
+    // The destination is removed first so the copy lands on a fresh inode: reusing a pid would
+    // otherwise truncate and rewrite a file a previous run executed, which macOS kills
+    // (code-signing cache) and Linux can refuse with ETXTBSY.
+    retry_not_found(50, Duration::from_millis(100), || {
+        match std::fs::remove_file(&dest) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        std::fs::copy(src, &dest).map(|_| ())
+    })
+    .unwrap_or_else(|e| {
+        if !src.is_file() {
+            panic!("{} was not produced by the build", src.display());
+        }
+        panic!("cannot copy {} to {}: {e}", src.display(), dest.display())
+    });
+    dest
+}
+
+/// Runs `f` up to `attempts` times, sleeping `delay` between tries, while it fails with
+/// `NotFound`; any other error returns at once.
+fn retry_not_found<F>(attempts: u32, delay: Duration, mut f: F) -> std::io::Result<()>
+where
+    F: FnMut() -> std::io::Result<()>,
+{
+    let mut tries = 1;
+    loop {
+        match f() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && tries < attempts => {
+                tries += 1;
+                std::thread::sleep(delay);
+            }
+            other => return other,
+        }
+    }
 }
 
 /// The target triples built into the toolchain, from `rustc --print target-list`,
@@ -789,5 +852,82 @@ mod tests {
         assert_eq!(profile_flag(Path::new("/ws/target/debug")), "test");
         assert_eq!(profile_flag(Path::new("/ws/target/release")), "release");
         assert_eq!(profile_flag(Path::new("/ws/target/ci")), "ci");
+    }
+
+    #[test]
+    fn retry_not_found_succeeds_after_transient_not_found() {
+        let mut calls = 0;
+        let r = retry_not_found(5, Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::ErrorKind::NotFound.into())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(r.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn retry_not_found_gives_up_at_the_cap() {
+        let mut calls = 0;
+        let r = retry_not_found(4, Duration::ZERO, || {
+            calls += 1;
+            Err(std::io::ErrorKind::NotFound.into())
+        });
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn retry_not_found_does_not_retry_other_errors() {
+        let mut calls = 0;
+        let r = retry_not_found(5, Duration::ZERO, || {
+            calls += 1;
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn copy_private_copies_content_and_permissions() {
+        let dir = unique_temp_dir("copy-private");
+        let src = dir.join("src-bin");
+        std::fs::write(&src, b"payload").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&src).unwrap().permissions();
+            p.set_mode(0o751);
+            std::fs::set_permissions(&src, p).unwrap();
+        }
+        let dest = copy_private(&src, &dir.join("profile"), "pkg", "ex");
+        assert!(dest.starts_with(dir.join("profile").join("example-bin")));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"payload");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o751);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panicking_build_leaves_the_key_retryable() {
+        let entry: Slot = Arc::default();
+        let e2 = entry.clone();
+        let r = std::thread::spawn(move || fill_slot(&e2, || panic!("build failed"))).join();
+        assert!(r.is_err());
+        assert_eq!(
+            fill_slot(&entry, || PathBuf::from("/built")),
+            Path::new("/built")
+        );
+        assert_eq!(
+            fill_slot(&entry, || panic!("built twice")),
+            Path::new("/built")
+        );
     }
 }
