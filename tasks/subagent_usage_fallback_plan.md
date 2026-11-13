@@ -54,8 +54,11 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
 - Does not settle any shared chain: the role's other subagents are unaffected and the spent
   role keeps its entry, so a later child still tries it and pauses/falls back for itself.
 - The child then serves from the fallback chain: its later quota fall-throughs walk the fallback
-  chain, not back onto the spent own list. On switching chains `fall_back_child` resets `tried`
-  (`*tried = Tried::default()`) and notes the chosen fallback index; the fallback walk keeps using
+  chain, not back onto the spent own list. `fall_back_child` sets `*tried = Tried::default()`
+  before its walk, then notes into that `tried` every fallback index it skips (spent account,
+  resolve failure, unpriced) as well as the chosen one, since the fallback chain is never settled,
+  `active` stays 0, and a skipped entry left un-noted would be walked back onto on a later
+  fall-through, making the wait run on the spent account; the fallback walk keeps using
   that `tried` for the fallback chain, so an exhausted fallback chain ends the walk and goes to the
   pause. `RunShared.list` becomes the serving state that `fall_through_child` and `served_of` read:
   a `Mutex<Option<Arc<ChildList>>>` that `fall_back_child` swaps to
@@ -76,7 +79,7 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
 1. `model_roles.rs`: add `FALLBACK_ROLE`; document it with the other reserved roles.
 2. `child_runner.rs`: fetch the chain at switch time with
    `shared.context.chains.chain_of_role(&shared.context.roles, FALLBACK_ROLE)`; turn `RunShared.list` into the
-   serving state (`Mutex<Option<Arc<ChildList>>>`); extract the shared entry-switch helper from `fall_through_child`;
+   serving state (`Mutex<Option<Arc<ChildList>>>`, locked with `fontaine_tools::lock::lock`); extract the shared entry-switch helper from `fall_through_child`;
    add `fall_back_child`; call it before the `wait_out_usage_limit` block.
 3. Add the usage-window notice wording in `model_roles.rs`, beside `fall_through_notice`.
 4. Docs and CHANGELOG (below).
@@ -119,13 +122,19 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
   same list; add a clause for a subagent moving to the `fallback` role's list after its own list was
   spent on a usage window, recorded with role `fallback`.
 - `CHANGELOG.md`: Added entry, noting a pre-existing user role named `fallback` now also serves as
-  the usage-window fallback. On completion add a dated line at the end of the `### Agents`
-  subsection of `tasks/fontaine_harness_plan.md` `## Decisions`.
+  the usage-window fallback. On completion add a dated line at the end of the `### Providers`
+  subsection of `tasks/fontaine_harness_plan.md` `## Decisions`, saying it amends the Providers
+  line "a spent list pauses the run until the reset" (#115, line 1011) for subagents when a
+  `fallback` role is defined.
 
 ## Testing Strategy
 
-Unit/integration with `rig_core::test_utils` deterministic models (no live APIs), in the style of
-`rust/fontaine-core/tests/usage_pause_turn.rs` and `model_roles_runtime.rs`:
+Unit/integration with `rig_core::test_utils` deterministic models (no live APIs). The subagent cases
+use `rust/fontaine/tests/model_roles.rs` (e.g. `subagents_on_a_role_share_the_entry_that_worked`
+drives a child through a quota fall-through with mock endpoints and asserts the `model_fell_through`
+ledger record) and `rust/fontaine/tests/usage_limit_headless.rs` (`refusal(WINDOW, n)` helper,
+`--max-usage-wait` bound) as seams; `rust/fontaine-core/tests/usage_pause_turn.rs` and
+`model_roles_runtime.rs` stay for the wait itself:
 
 - Spent-window subagent with a defined `fallback`: moves to its first usable entry, continues, no
   pause begins, notice and ledger/audit record emitted.
