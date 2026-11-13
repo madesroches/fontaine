@@ -51,7 +51,7 @@ model = "local/qwen3:4b"
 ```
 
 Then run `fontaine` for the terminal UI, or `fontaine -p "explain what a Cargo workspace is"` for a
-headless run. Other providers and accounts are in [Configuration](docs/configuration.md).
+headless run. Other providers and accounts are in the [provider guide](docs/providers.md) and [Configuration](docs/configuration.md).
 
 ## Why Fontaine
 
@@ -60,7 +60,7 @@ headless run. Other providers and accounts are in [Configuration](docs/configura
 - [Permission modes and the floor](docs/permissions.md): six modes (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `afk`) over one deterministic floor.
 - [Subagents and task boards](docs/agents.md) run asynchronously, and a child is never looser than its parent.
 - Claude Code compatibility: `CLAUDE.md` and `AGENTS.md` are read directly ([instructions](docs/instructions.md)). Skills, agent files, [plugins](docs/plugins.md) and hooks use Claude Code's formats, and `.claude/` files port by copying ([extensions](docs/extensions.md)).
-- Any provider: Anthropic, OpenAI, Gemini, OpenRouter, Ollama and OpenAI-compatible endpoints, plus a Claude subscription ([configuration](docs/configuration.md)).
+- Any provider: the [provider guide](docs/providers.md) covers Anthropic, OpenAI, Gemini, OpenRouter, Ollama, Kimi, OpenCode Go, Databricks, OpenAI-compatible endpoints and a Claude subscription.
 
 ## Documentation
 

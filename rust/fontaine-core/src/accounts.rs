@@ -59,9 +59,7 @@ impl fmt::Display for SignInState {
             SignInState::EnvUnset { var } => write!(f, "${var} is not set"),
             SignInState::NotSignedIn => f.write_str("not signed in"),
             SignInState::NoKeyNeeded => f.write_str("no key needed"),
-            SignInState::ExternalCli => {
-                f.write_str("login owned by the external CLI (experimental)")
-            }
+            SignInState::ExternalCli => f.write_str("login owned by the external CLI"),
         }
     }
 }

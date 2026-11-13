@@ -8,6 +8,8 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
+  example each. `claude-subscription` is no longer labeled experimental.
 - MCP tool calls that a server answers with a task (protocol 2026-07-28, tasks extension) now
   work (#614). Fontaine declares the extension, polls the task until it ends, serves the task's
   requests for input through the usual dialogs, and cancels the task when the call times out or is

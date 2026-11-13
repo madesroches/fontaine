@@ -13,6 +13,8 @@ describe what the current build does; each page covers one topic.
 - [Configuration](configuration.md): every settings key, the settings scope stack and its merge
   rules, workspace trust, model accounts, where files live, and the command-line flags that affect
   configuration.
+- [Providers](providers.md): every account kind side by side, how to choose between them, the
+  easily confused pairs, and a minimal example for each.
 - [Tools](tools.md): the built-in tools, their risk classes, workspace roots and what earns the
   read-only fast path, the shell and web fetch settings.
 - [Permissions](permissions.md): the modes, the deterministic floor, the `Tool(specifier)` rules and
@@ -58,7 +60,7 @@ describe what the current build does; each page covers one topic.
   colour themes and `NO_COLOR`, notifications for pending prompts, and screen-reader mode.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
-- [Claude subscription](claude-subscription.md): the experimental account kind that runs your
+- [Claude subscription](claude-subscription.md): the account kind that runs your
   installed Claude Code CLI as the model transport on a Max or Ultra plan, its checks, limits and
   billing caveats.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,

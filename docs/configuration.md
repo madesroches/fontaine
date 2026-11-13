@@ -172,13 +172,14 @@ any scope turns the guardian off.
 
 ### `[accounts.<name>]`
 
-Named model accounts. Several accounts of one kind are allowed, and each keeps its own endpoint
+Named model accounts; the [provider guide](providers.md) compares the kinds and gives a minimal
+example of each. Several accounts of one kind are allowed, and each keeps its own endpoint
 and credential. A model is addressed as `<account>/<model>`, split at the first `/`, so a model id
 may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `kimi`, `ollama`, `opencode-go`, `databricks`, `openrouter` or `claude-subscription` (experimental). Required. | none |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `kimi`, `ollama`, `opencode-go`, `databricks`, `openrouter` or `claude-subscription`; the [provider guide](providers.md) compares them. Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
 | `base_url` | Endpoint override. Required for `openai-compatible` and `databricks` (the workspace origin, with no path). | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
@@ -522,7 +523,7 @@ Go usage is billed against the subscription's allowances, so its models are unpr
 reports, including Extra usage, is not shown or counted, and `--max-budget-usd` with a Go main
 model is a usage error (exit code 2).
 
-Claude Code CLI as a subscription transport (experimental; see
+Claude Code CLI as a subscription transport (see
 [Claude subscription](claude-subscription.md) for scope, checks and limits):
 
 ```toml

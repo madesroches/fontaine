@@ -1,9 +1,8 @@
-# Claude subscription (experimental)
+# Claude subscription
 
 The `claude-subscription` account kind runs your installed, unmodified Claude Code CLI as the
 model transport. The CLI owns your Claude sign-in and its subscription billing; Fontaine keeps its
-own agent loop, tools, permission pipeline, guardian, sessions, memory and compaction. It is an
-experiment: selecting such an account as the main model prints a notice saying so.
+own agent loop, tools, permission pipeline, guardian, sessions, memory and compaction.
 
 ## Scope
 
@@ -16,7 +15,7 @@ experiment: selecting such an account as the main model prints a notice saying s
   fallback-model routing. The CLI's own fallback is never used; a [model list](configuration.md#falling-through-to-the-next-entry)
   you write moves to its next entry in Fontaine, never inside the CLI.
 - Anthropic's terms for the Agent SDK and for signing in to Claude Code apply to you. Check them
-  before relying on this account kind; it is not offered as a stable feature.
+  before relying on this account kind.
 
 ## Setup
 
