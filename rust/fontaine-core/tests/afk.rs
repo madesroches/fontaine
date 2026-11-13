@@ -518,6 +518,7 @@ async fn the_approver_decorator_forwards_the_usage_pause_prompt_and_skips_it_whi
 fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
     fontaine_tools::mcp::ElicitForm {
         server: "srv".into(),
+        id: String::new(),
         message: "Who?".into(),
         schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
             .required_string("name")
@@ -563,6 +564,41 @@ async fn the_approver_decorator_cancels_an_mcp_elicitation_only_while_afk_is_on(
         1,
         "the user's approver is never reached"
     );
+}
+
+#[tokio::test]
+async fn a_trusted_elicitation_hook_answers_while_afk_and_with_no_hook_it_cancels() {
+    use fontaine_core::agent::HookElicitor;
+    use fontaine_core::config::{Hook, HookEvent};
+    use fontaine_core::user_hooks::{HookDeps, HookProcess, UserHook};
+    use fontaine_tools::mcp::{ElicitReply, Elicitor};
+    let rig = Rig::new(Manual);
+    afk_on(&rig);
+    let afk: Arc<dyn Approver> =
+        Arc::new(AfkApprover::new(rig.approver.clone(), rig.state.clone()));
+    let live = || Arc::new(fontaine_tools::live::Live::new(Default::default()));
+    let bare = HookElicitor::new(Vec::new(), live(), afk.clone(), rig.state.clone());
+    assert_eq!(bare.elicit(elicit_form()).await, ElicitReply::Cancel);
+
+    let reply = r#"{"hookSpecificOutput":{"hookEventName":"Elicitation","action":"accept","content":{"name":"Ada"}}}"#;
+    let double = fontaine_testkit::example_bin("fontaine-core", "hook_double");
+    let command = format!("'{}' --reply '{reply}'", double.display());
+    let process = Arc::new(HookProcess {
+        scrub_env: Vec::new(),
+        set_env: Vec::new(),
+        shell: common::command_shell(),
+        project_dir: std::env::temp_dir(),
+    });
+    let hook = UserHook::new(
+        HookEvent::Elicitation,
+        &Hook::command(None, &command),
+        &HookDeps::new(process),
+    );
+    let hooked = HookElicitor::new(vec![Arc::new(hook)], live(), afk, rig.state.clone());
+    let mut map = serde_json::Map::new();
+    map.insert("name".into(), serde_json::json!("Ada"));
+    assert_eq!(hooked.elicit(elicit_form()).await, ElicitReply::Accept(map));
+    assert!(rig.approver.elicited.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

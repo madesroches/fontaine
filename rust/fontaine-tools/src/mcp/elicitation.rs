@@ -28,6 +28,8 @@ const TARGET: &str = "fontaine::telemetry";
 #[derive(Clone, Debug)]
 pub struct ElicitForm {
     pub server: String,
+    /// The JSON-RPC request id, for hooks; empty in hand-built fixtures.
+    pub id: String,
     /// Untrusted text from the server.
     pub message: String,
     pub schema: ElicitationSchema,
@@ -37,6 +39,8 @@ pub struct ElicitForm {
 #[derive(Clone, Debug)]
 pub struct ElicitUrl {
     pub server: String,
+    /// The JSON-RPC request id, for hooks; empty in hand-built fixtures.
+    pub id: String,
     /// Untrusted text from the server.
     pub message: String,
     /// Untrusted text from the server; validated as an `http`/`https` URL before it is shown
@@ -796,6 +800,7 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         };
         let form = ElicitForm {
             server: self.server.clone(),
+            id: id.to_string(),
             message,
             schema,
         };
@@ -831,6 +836,7 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         };
         let request = ElicitUrl {
             server: self.server.clone(),
+            id: id.to_string(),
             message,
             url,
         };
@@ -1258,10 +1264,21 @@ mod tests {
         assert_eq!(urls[0].server, "srv");
         assert_eq!(urls[0].message, "Sign in");
         assert_eq!(urls[0].url, "https://example.com/auth");
+        assert_eq!(urls[0].id, "3");
         assert_eq!(
             response(&rig.script.sent(), 3)["result"]["action"],
             json!("cancel")
         );
+    }
+
+    #[tokio::test]
+    async fn the_request_id_reaches_the_form() {
+        let elicitor = Scripted::new(vec![ElicitReply::Cancel]);
+        let mut rig = rig(elicitor.clone());
+        rig.script.push(elicit_request(11, name_schema()));
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        settle().await;
+        assert_eq!(elicitor.forms.lock().unwrap()[0].id, "11");
     }
 
     #[tokio::test]
@@ -1527,6 +1544,7 @@ mod tests {
     fn form(schema: ElicitationSchema) -> ElicitForm {
         ElicitForm {
             server: "srv".into(),
+            id: String::new(),
             message: "m".into(),
             schema,
         }

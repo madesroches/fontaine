@@ -923,7 +923,7 @@ from the primary root only. A `.fontaine/settings.toml` in an added root is not 
 events are `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `permission_denied`,
 `task_created`, `task_completed`, `teammate_idle`, `session_start`, `session_end`,
 `user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`, `subagent_stop`, `pre_compact`,
-`post_compact` and `notification`; any other key under `[hooks]` is a config error. What a
+`post_compact`, `notification` and `elicitation`; any other key under `[hooks]` is a config error. What a
 `matcher` selects on depends on the event, and an event with nothing to select on rejects one (see
 [Matchers](hooks.md#matchers)).
 

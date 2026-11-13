@@ -671,6 +671,8 @@ pub enum MatcherKind {
     Values(&'static [&'static str]),
     /// Any agent type name, `|`-separated.
     AgentType,
+    /// Any MCP server name, `|`-separated.
+    ServerName,
     /// The event has nothing to select on.
     None,
 }
@@ -706,6 +708,7 @@ pub enum HookEvent {
     PreCompact,
     PostCompact,
     Notification,
+    Elicitation,
 }
 
 /// The values a `stop_failure` matcher names.
@@ -730,7 +733,7 @@ const ALL_HANDLERS: &[HandlerKind] =
     &[HandlerKind::Command, HandlerKind::Http, HandlerKind::Prompt];
 
 impl HookEvent {
-    pub const ALL: [HookEvent; 17] = [
+    pub const ALL: [HookEvent; 18] = [
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::PostToolUseFailure,
@@ -748,6 +751,7 @@ impl HookEvent {
         HookEvent::PreCompact,
         HookEvent::PostCompact,
         HookEvent::Notification,
+        HookEvent::Elicitation,
     ];
 
     /// The key in `[[hooks.<key>]]`.
@@ -770,6 +774,7 @@ impl HookEvent {
             HookEvent::PreCompact => "pre_compact",
             HookEvent::PostCompact => "post_compact",
             HookEvent::Notification => "notification",
+            HookEvent::Elicitation => "elicitation",
         }
     }
 
@@ -793,6 +798,7 @@ impl HookEvent {
             HookEvent::PreCompact => "PreCompact",
             HookEvent::PostCompact => "PostCompact",
             HookEvent::Notification => "Notification",
+            HookEvent::Elicitation => "Elicitation",
         }
     }
 
@@ -814,6 +820,7 @@ impl HookEvent {
             }
             HookEvent::StopFailure => MatcherKind::Values(STOP_FAILURE_KINDS),
             HookEvent::SubagentStart | HookEvent::SubagentStop => MatcherKind::AgentType,
+            HookEvent::Elicitation => MatcherKind::ServerName,
             HookEvent::PreCompact | HookEvent::PostCompact => {
                 MatcherKind::Values(&["manual", "auto"])
             }
@@ -837,7 +844,8 @@ impl HookEvent {
             | HookEvent::SubagentStart
             | HookEvent::PreCompact
             | HookEvent::PostCompact
-            | HookEvent::Notification => COMMAND_HTTP,
+            | HookEvent::Notification
+            | HookEvent::Elicitation => COMMAND_HTTP,
             HookEvent::PreToolUse
             | HookEvent::PostToolUse
             | HookEvent::PostToolUseFailure
@@ -879,13 +887,13 @@ impl HookEvent {
             }
             // The rule grammar is checked by the caller, which owns the file path for the error.
             MatcherKind::Tool => Ok(()),
-            MatcherKind::AgentType | MatcherKind::Values(_)
+            MatcherKind::AgentType | MatcherKind::ServerName | MatcherKind::Values(_)
                 if matcher.contains('|')
                     && matcher.split('|').any(|name| name.trim().is_empty() || name == "*") =>
             {
                 Err("a `|` list takes exact, non-empty names; `*` and empty entries only work as the whole matcher".to_string())
             }
-            MatcherKind::AgentType => Ok(()),
+            MatcherKind::AgentType | MatcherKind::ServerName => Ok(()),
             MatcherKind::Values(values) => {
                 for name in matcher.split('|') {
                     if name != "*" && !name.is_empty() && !values.contains(&name) {

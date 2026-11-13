@@ -481,6 +481,125 @@ pub trait PermissionDeniedHook: Send + Sync {
     ) -> BoxFuture<'a, Result<bool, HookError>>;
 }
 
+/// What the pipeline tells an `elicitation` hook about an MCP server's request for input.
+#[derive(Clone, Copy)]
+pub struct ElicitationEvent<'a> {
+    pub server: &'a str,
+    /// "form" or "url".
+    pub mode: &'a str,
+    /// Untrusted text from the server.
+    pub message: &'a str,
+    pub url: Option<&'a str>,
+    pub elicitation_id: &'a str,
+    pub requested_schema: Option<&'a Value>,
+    pub session_id: &'a str,
+    pub cwd: &'a Path,
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
+}
+
+/// The slot for `elicitation` hooks. A hook that errors, times out or answers something
+/// unreadable contributes no verdict, so the request falls through to the dialog or the
+/// unattended `cancel`.
+pub trait ElicitationHook: Send + Sync {
+    fn id(&self) -> String;
+
+    /// The MCP server names the hook is configured for, `|`-separated.
+    fn matcher(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Whether this hook's `accept` counts. A hook the repository defines can tighten a
+    /// request but never answer for the person.
+    fn can_accept(&self) -> bool {
+        true
+    }
+
+    /// As [`PreToolUseHook::gate`].
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// `Ok(None)` when the hook has no opinion on the request.
+    fn run<'a>(
+        &'a self,
+        event: ElicitationEvent<'a>,
+    ) -> BoxFuture<'a, Result<Option<ElicitReply>, HookError>>;
+}
+
+fn elicitation_matcher_covers(matcher: Option<&str>, server: &str) -> bool {
+    match matcher {
+        None | Some("") | Some("*") => true,
+        Some(matcher) => matcher.split('|').any(|name| name == server),
+    }
+}
+
+/// Runs the matching `elicitation` hooks, the frozen ones before the plugin layer's, and
+/// returns their combined verdict. The most conservative answer wins (cancel, then decline,
+/// then accept), and an accept counts only from a hook that may accept. A hook that fails
+/// decides nothing and is told to the human; `None` means nobody answered.
+pub async fn run_elicitation_hooks(
+    hooks: &[Arc<dyn ElicitationHook>],
+    plugins: &LivePlugins,
+    event: ElicitationEvent<'_>,
+    approver: &dyn Approver,
+) -> Option<ElicitReply> {
+    let layer = plugins.get();
+    let mut cancel = false;
+    let mut decline = false;
+    let mut accept: Option<ElicitReply> = None;
+    for hook in hooks.iter().chain(layer.elicitation.iter()) {
+        if !elicitation_matcher_covers(hook.matcher().as_deref(), event.server) {
+            continue;
+        }
+        let id = hook.id();
+        let ran = match hook.gate().await {
+            Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+            Err(e) => Ok(Err(e)),
+        };
+        let verdict = match ran {
+            Ok(Ok(verdict)) => verdict,
+            Ok(Err(e)) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` failed: {}; it decides nothing",
+                    chain(&e)
+                ));
+                continue;
+            }
+            Err(_) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` timed out; it decides nothing"
+                ));
+                continue;
+            }
+        };
+        match verdict {
+            Some(ElicitReply::Cancel) => cancel = true,
+            Some(ElicitReply::Decline) => decline = true,
+            Some(reply @ ElicitReply::Accept(_)) if hook.can_accept() => {
+                accept.get_or_insert(reply);
+            }
+            Some(ElicitReply::Accept(_)) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` is not from your own config, so its accept is ignored"
+                ));
+            }
+            None => {}
+        }
+    }
+    if cancel {
+        Some(ElicitReply::Cancel)
+    } else if decline {
+        Some(ElicitReply::Decline)
+    } else {
+        accept
+    }
+}
+
 pub struct PipelineParams {
     pub state: Arc<SessionState>,
     pub approver: Arc<dyn Approver>,
@@ -2790,6 +2909,7 @@ mod tests {
     fn url_request() -> ElicitUrl {
         ElicitUrl {
             server: "srv".into(),
+            id: String::new(),
             message: "Sign in".into(),
             url: "https://example.com".into(),
         }

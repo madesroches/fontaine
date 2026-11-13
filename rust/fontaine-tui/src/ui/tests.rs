@@ -685,6 +685,7 @@ use fontaine_tools::mcp::{ElicitForm, ElicitReply, ElicitRequest};
 fn elicit_form() -> ElicitForm {
     ElicitForm {
         server: "srv".into(),
+        id: String::new(),
         message: "Who?".into(),
         schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
             .required_string("name")

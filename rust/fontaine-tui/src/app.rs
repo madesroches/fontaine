@@ -2783,6 +2783,7 @@ mod tests {
     fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
         fontaine_tools::mcp::ElicitForm {
             server: "srv".into(),
+            id: String::new(),
             message: "Who?".into(),
             schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
                 .required_string("name")
@@ -2805,6 +2806,7 @@ mod tests {
         app.begin_elicitation(
             ElicitRequest::Url(fontaine_tools::mcp::ElicitUrl {
                 server: "srv".into(),
+                id: String::new(),
                 message: "Sign in".into(),
                 url: "https://example.com".into(),
             }),

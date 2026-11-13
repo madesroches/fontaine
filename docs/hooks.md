@@ -28,6 +28,7 @@ A handler is a shell [`command`](#command-handlers), an [`http`](#http-handlers)
 | `pre_compact` | When a compaction is about to ask the model for a summary. | Block it, or add focus to the summary. | command, http |
 | `post_compact` | After a compaction saved its summary. | Nothing: it is told. | command, http |
 | `notification` | When an approval or a question waits for you in the terminal UI. | Nothing: it is told. | command, http |
+| `elicitation` | When an MCP server asks for input, before any dialog, on every surface. | Accept, decline or cancel the request. | command, http |
 
 In the terminal UI, `/hooks` lists the configured hooks by event with their type and scope, marks
 the ones that do not run and why, and names the events that have none.
@@ -75,10 +76,12 @@ workspace root.
 | `subagent_start`, `subagent_stop` | The agent type name. |
 | `pre_compact`, `post_compact` | `manual` (`/compact`) or `auto` (the threshold). |
 | `notification` | `permission_prompt` (an approval) or `elicitation_dialog` (a question). |
+| `elicitation` | The MCP server's name. |
 | `user_prompt_submit`, `stop`, `task_created`, `task_completed`, `teammate_idle` | Nothing: a `matcher` is a load error. |
 
 Outside the tool events a matcher is a `|`-separated list of exact names; an omitted matcher, `""`
-and `*` match everything. A name outside the event's set is a load error.
+and `*` match everything. A name outside the event's set is a load error; the agent type and MCP
+server name lists are open, so any non-empty names load.
 
 Hooks come from any scope. Hooks of different scopes are all kept; the same hook defined twice is
 kept once, under the scope with more trust. No setting in a scope turns off the hooks of another.
@@ -101,6 +104,7 @@ One JSON object on standard input:
 | `tool_response` | `post_tool_use` only: `{"is_error": false, "output": "..."}`. |
 | `error` | `post_tool_use_failure` only: the error text the agent reads. |
 | `reason`, `tier` | `permission_denied` only: why, and which part of the pipeline denied it. |
+| `mcp_server_name`, `message`, `mode`, `url`, `elicitation_id`, `requested_schema` | `elicitation` only: the server, its message (untrusted text), `form` or `url`, the link (URL mode), the request id, and the form's JSON schema (form mode). |
 
 The task-board events send only `session_id`, `cwd`, `hook_event_name` and `agent_id` (for `task_completed`, the agent completing the task, which is not always its owner), plus their own
 field (see [below](#task-boards-task_created-task_completed-and-teammate_idle)): they carry no
@@ -141,6 +145,7 @@ object's `hookSpecificOutput` holds the answer; `hookEventName`, when present, m
 | `pre_tool_use` | `permissionDecision` (`allow`, `deny` or `ask`), `permissionDecisionReason`, `updatedInput` (an object that replaces the call's arguments), `guardian_context` (a note for the guardian). |
 | `post_tool_use`, `post_tool_use_failure` | `additionalContext`, a string added after the tool's result or error. |
 | `permission_denied` | `retry`, a boolean. A `command` or `http` hook only; a `prompt` hook's answer is discarded. |
+| `elicitation` | `action` (`accept`, `decline` or `cancel`) and, for a form `accept`, `content`: an object of field values. See [Elicitation](#elicitation). |
 | the other events | See [Lifecycle events](#lifecycle-events). |
 
 Any handler can also block with `{"decision": "block", "reason": "..."}`. Exit code 2 blocks too,
@@ -157,6 +162,41 @@ the turn**.
 Text a hook adds for the model (`additionalContext`, plain standard output, a block reason fed
 back to the agent) is cut at 10,000 characters with a marker, where Claude Code saves the rest to
 a file.
+
+## Elicitation
+
+An `elicitation` hook runs when an MCP server asks for input (see
+[Requests for input](mcp.md#requests-for-input)), before any dialog, in the terminal UI, headless
+runs and AFK mode alike; with none configured nothing changes. A hook answers `accept` (with
+`content` for a form), `decline` or `cancel`; exit code 2 and `{"decision": "block"}` decline.
+
+```toml
+[[hooks.elicitation]]
+matcher = "my-server"
+command = "/home/me/.config/fontaine/hooks/answer.sh"
+```
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "Elicitation",
+    "action": "accept",
+    "content": { "name": "Ada" }
+  }
+}
+```
+
+- Several hooks combine as **cancel beats decline beats accept**. A hook that fails, times out or
+  answers something unreadable decides nothing and is reported as a warning, so the request goes on
+  to the dialog (or, unattended, to `cancel`).
+- A hook from the repository or a plugin can decline or cancel, but its `accept` is ignored with a
+  warning: only your own config can answer for you.
+- A hook never accepts a URL-mode request. The link opens only after you confirm it in the
+  terminal UI; a hook's `decline` and `cancel` are honored.
+- A form answer is still checked against the server's schema; one that does not fit is sent as
+  `decline`.
+- Requests a subagent's call causes, and links that are not `http` or `https`, are handled before
+  the hook and never reach it.
 
 ## How hooks compose and where they sit
 
@@ -355,8 +395,8 @@ session; they run at the next session. See [Plugins](plugins.md#in-the-terminal-
 - **Events:** `PermissionRequest` (an `allow` there would answer the human prompt, a second way to
   loosen next to `pre_tool_use`), `Setup`, `UserPromptExpansion`, `PostToolBatch`,
   `MessageDisplay`, `InstructionsLoaded`, `ConfigChange`, `CwdChanged`, `DirectoryAdded`,
-  `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `PreModelSwitch`, `PostModelSwitch`,
-  `Elicitation` and `ElicitationResult`. A plugin that names one loads with a warning.
+  `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `PreModelSwitch`, `PostModelSwitch` and
+  `ElicitationResult`. A plugin that names one loads with a warning.
 - **Handler types:** `agent` and `mcp_tool`. An `mcp_tool` hook would call a tool outside the
   per-call gate. A plugin hook of those types is skipped with a warning.
 - **Handler fields:** `args`, `if` and `shell: "powershell"` skip a plugin's hook with a warning;

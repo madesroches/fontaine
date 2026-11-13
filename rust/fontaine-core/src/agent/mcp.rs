@@ -31,12 +31,14 @@ use super::mcp_supervisor::{
 };
 use super::{AgentRuntime, EnvLookup};
 use crate::config::{Config, McpServer, Origin, Slot};
+use crate::gate::SessionState;
 use crate::mcp_auth::McpAuth;
 use crate::mcp_json::{StartContext, expand_at_start};
-use crate::permissions::Approver;
+use crate::permissions::{Approver, ElicitationEvent, ElicitationHook, run_elicitation_hooks};
 use crate::runtime_error::RuntimeError;
 use crate::tools;
 use crate::trust;
+use crate::user_hooks::LivePlugins;
 
 /// An MCP server the session may start, and whether the user has to say so first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -508,6 +510,112 @@ impl Elicitor for ApproverElicitor {
     }
 }
 
+/// Lets `elicitation` hooks answer an MCP server's request for input before any dialog. A
+/// request nobody answers goes on to the approver, so a session with no hook behaves as before.
+pub struct HookElicitor {
+    hooks: Vec<Arc<dyn ElicitationHook>>,
+    plugin_hooks: LivePlugins,
+    inner: ApproverElicitor,
+    approver: Arc<dyn Approver>,
+    state: Arc<SessionState>,
+}
+
+impl HookElicitor {
+    pub fn new(
+        hooks: Vec<Arc<dyn ElicitationHook>>,
+        plugin_hooks: LivePlugins,
+        approver: Arc<dyn Approver>,
+        state: Arc<SessionState>,
+    ) -> HookElicitor {
+        HookElicitor {
+            hooks,
+            plugin_hooks,
+            inner: ApproverElicitor(approver.clone()),
+            approver,
+            state,
+        }
+    }
+
+    async fn ask_hooks(
+        &self,
+        server: &str,
+        id: &str,
+        message: &str,
+        url: Option<&str>,
+        schema: Option<&serde_json::Value>,
+    ) -> Option<ElicitReply> {
+        let layer = self.plugin_hooks.get();
+        if self.hooks.is_empty() && layer.elicitation.is_empty() {
+            return None;
+        }
+        let scope = self.state.scope();
+        let roots: Vec<String> = scope
+            .roots()
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect();
+        let mode = self.state.mode().rules();
+        run_elicitation_hooks(
+            &self.hooks,
+            &self.plugin_hooks,
+            ElicitationEvent {
+                server,
+                mode: if url.is_some() { "url" } else { "form" },
+                message,
+                url,
+                elicitation_id: id,
+                requested_schema: schema,
+                session_id: &self.state.session_id,
+                cwd: scope.primary(),
+                permission_mode: mode.as_str(),
+                workspace_roots: &roots,
+            },
+            &*self.approver,
+        )
+        .await
+    }
+}
+
+impl Elicitor for HookElicitor {
+    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async move {
+            let schema = serde_json::to_value(&form.schema).ok();
+            match self
+                .ask_hooks(&form.server, &form.id, &form.message, None, schema.as_ref())
+                .await
+            {
+                Some(reply) => reply,
+                None => self.inner.elicit(form).await,
+            }
+        })
+    }
+
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async move {
+            match self
+                .ask_hooks(
+                    &request.server,
+                    &request.id,
+                    &request.message,
+                    Some(&request.url),
+                    None,
+                )
+                .await
+            {
+                Some(reply @ (ElicitReply::Decline | ElicitReply::Cancel)) => reply,
+                // A link opens only after the person confirms, so a hook never accepts one.
+                Some(ElicitReply::Accept(_)) => {
+                    self.approver.warn(
+                        "an elicitation hook accepted a link request; links open only after you confirm, so the request goes to the dialog",
+                    );
+                    self.inner.elicit_url(request).await
+                }
+                None => self.inner.elicit_url(request).await,
+            }
+        })
+    }
+}
+
 /// Why `name`, which has no slot, was never started. A configured server the plan leaves out is
 /// the repository's, withheld because the workspace is not trusted; one the plan holds back for
 /// approval was left off.
@@ -635,7 +743,12 @@ impl AgentRuntime {
         };
         let mut options = McpOptions::new(guard, reveal);
         options.limits = Arc::new(limits);
-        options.elicitor = Arc::new(ApproverElicitor(approver.clone()));
+        options.elicitor = Arc::new(HookElicitor::new(
+            self.setup.elicitation_hooks.clone(),
+            self.setup.plugin_hooks.clone(),
+            approver.clone(),
+            self.state.clone(),
+        ));
         let warner = approver.clone();
         options.warn = Arc::new(move |message| warner.warn(message));
         let connector = ServerConnector {

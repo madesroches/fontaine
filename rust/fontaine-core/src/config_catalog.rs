@@ -519,6 +519,9 @@ pub const KEYS: &[KeyRow] = &[
     row!("hooks.notification", List, |c, _| entries(
         c.hooks.get(HookEvent::Notification).len()
     )),
+    row!("hooks.elicitation", List, |c, _| entries(
+        c.hooks.get(HookEvent::Elicitation).len()
+    )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
     row!("lsp.servers", Map, |c, _| names(
         c.lsp_table().servers.iter().map(|(name, _)| name)

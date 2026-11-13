@@ -45,10 +45,11 @@ use crate::goal::{JudgeFailure, judge};
 use crate::models::GuardianModel;
 use crate::permission_rules::{CallContext, Posture, matches, parse_rule};
 use crate::permissions::{
-    Approver, DenyAll, HookDecision, HookError, HookPermission, PermissionDeniedEvent,
-    PermissionDeniedHook, PreToolUseEvent, PreToolUseHook,
+    Approver, DenyAll, ElicitationEvent, ElicitationHook, HookDecision, HookError, HookPermission,
+    PermissionDeniedEvent, PermissionDeniedHook, PreToolUseEvent, PreToolUseHook,
 };
 use crate::usage_pause::UsagePause;
+use fontaine_tools::mcp::ElicitReply;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -753,6 +754,25 @@ fn base_event(event: &str, wire: Wire<'_>) -> Value {
     })
 }
 
+fn base_fields(
+    event: &str,
+    session_id: &str,
+    cwd: &Path,
+    mode: &str,
+    roots: &[String],
+) -> Map<String, Value> {
+    let Value::Object(map) = json!({
+        "session_id": session_id,
+        "cwd": cwd.display().to_string(),
+        "hook_event_name": event,
+        "permission_mode": mode,
+        "workspace_roots": roots,
+    }) else {
+        unreachable!("a json! object")
+    };
+    map
+}
+
 /// The fields every event carries, for the events that are not about one tool call.
 fn session_event(state: &SessionState, event: HookEvent, agent: &str) -> Map<String, Value> {
     let scope = state.scope();
@@ -916,6 +936,85 @@ impl PermissionDeniedHook for UserHook {
                 None => Ok(false),
                 Some(Value::Bool(retry)) => Ok(*retry),
                 Some(_) => Err(HookError::malformed("`retry` is not a boolean")),
+            }
+        })
+    }
+}
+
+impl ElicitationHook for UserHook {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    fn matcher(&self) -> Option<String> {
+        self.matcher.clone()
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    fn can_accept(&self) -> bool {
+        self.user_trust
+    }
+
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(self.wait_for_model())
+    }
+
+    fn run<'a>(
+        &'a self,
+        event: ElicitationEvent<'a>,
+    ) -> BoxFuture<'a, Result<Option<ElicitReply>, HookError>> {
+        Box::pin(async move {
+            let mut input = Value::Object(base_fields(
+                HookEvent::Elicitation.wire_name(),
+                event.session_id,
+                event.cwd,
+                event.permission_mode,
+                event.workspace_roots,
+            ));
+            input["mcp_server_name"] = json!(event.server);
+            input["message"] = json!(event.message);
+            input["mode"] = json!(event.mode);
+            input["elicitation_id"] = json!(event.elicitation_id);
+            if let Some(url) = event.url {
+                input["url"] = json!(url);
+            }
+            if let Some(schema) = event.requested_schema {
+                input["requested_schema"] = schema.clone();
+            }
+            let answer = self.answer(input).await?;
+            answer.require_json()?;
+            // Exit 2 and `decision: "block"` decline; the specific output is then ignored.
+            if answer.blocked.is_some() {
+                return Ok(Some(ElicitReply::Decline));
+            }
+            let Some(specific) = answer.specific(HookEvent::Elicitation)? else {
+                return Ok(None);
+            };
+            let content = match specific.get("content") {
+                None | Some(Value::Null) => None,
+                Some(Value::Object(map)) => Some(map.clone()),
+                Some(_) => return Err(HookError::malformed("`content` is not an object")),
+            };
+            match specific.get("action").and_then(Value::as_str) {
+                None => Ok(None),
+                Some("decline") => Ok(Some(ElicitReply::Decline)),
+                Some("cancel") => Ok(Some(ElicitReply::Cancel)),
+                Some("accept") if event.mode == "url" => match content {
+                    Some(map) if !map.is_empty() => Err(HookError::malformed(
+                        "`content` must be absent for a URL-mode accept",
+                    )),
+                    _ => Ok(Some(ElicitReply::Accept(Map::new()))),
+                },
+                Some("accept") => match content {
+                    Some(map) => Ok(Some(ElicitReply::Accept(map))),
+                    None => Err(HookError::malformed("an accept needs `content`")),
+                },
+                Some(other) => Err(HookError::malformed(format!(
+                    "`action` is `{other}`, not accept, decline or cancel"
+                ))),
             }
         })
     }
@@ -1748,6 +1847,7 @@ impl HookLayer {
 pub struct BuiltHooks {
     pub pre: Vec<Arc<dyn PreToolUseHook>>,
     pub denied: Vec<Arc<dyn PermissionDeniedHook>>,
+    pub elicitation: Vec<Arc<dyn ElicitationHook>>,
     pub post: Vec<UserHook>,
     pub post_failure: Vec<UserHook>,
     pub task_completed: Vec<UserHook>,
@@ -1852,6 +1952,7 @@ pub fn build_layer(
             match event {
                 HookEvent::PreToolUse => built.pre.push(Arc::new(user)),
                 HookEvent::PermissionDenied => built.denied.push(Arc::new(user)),
+                HookEvent::Elicitation => built.elicitation.push(Arc::new(user)),
                 HookEvent::PostToolUse => built.post.push(user),
                 HookEvent::PostToolUseFailure => built.post_failure.push(user),
                 HookEvent::TaskCompleted => built.task_completed.push(user),

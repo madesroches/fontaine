@@ -618,9 +618,11 @@ pub(super) fn gates(
         post_failure,
         lifecycle,
         plugins,
+        elicitation,
     } = permission_pipeline(setup, state, &retained.hook_deps)?;
     retained.lifecycle = lifecycle;
     retained.plugin_hooks = plugins.clone();
+    retained.elicitation_hooks = elicitation;
     retained
         .jobs
         .set_sink(Arc::new(TreeJobs { tree: tree.clone() }));
@@ -718,6 +720,7 @@ pub(super) struct HookStages {
     pub(super) lifecycle: LifecycleHooks,
     /// The hooks plugins bring, which a reload swaps.
     pub(super) plugins: LivePlugins,
+    pub(super) elicitation: Vec<Arc<dyn crate::permissions::ElicitationHook>>,
 }
 
 /// The one client every `http` hook posts with. Always built, so a plugin loaded later in the
@@ -847,6 +850,7 @@ pub(super) fn permission_pipeline(
         .with_plugins(plugins.clone())
         .with_guardian(guardian.clone()),
         plugins,
+        elicitation: std::mem::take(&mut hooks.elicitation),
     })
 }
 
@@ -945,6 +949,7 @@ pub(super) fn retained(
         hook_deps,
         // The hooks replace these once they are built.
         plugin_hooks: Arc::default(),
+        elicitation_hooks: Vec::new(),
         lifecycle: LifecycleHooks::new(Default::default(), state.clone(), setup.approver.clone()),
     })
 }

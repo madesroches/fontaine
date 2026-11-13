@@ -510,6 +510,7 @@ mod tests {
         let mut panel = ElicitationPanel::new(
             ElicitForm {
                 server: "srv".into(),
+                id: String::new(),
                 message: "Who\u{1b}[31m are you?\nSecond line".into(),
                 schema,
             },
@@ -637,6 +638,7 @@ mod tests {
         let mut panel = ElicitationPanel::new(
             ElicitForm {
                 server: "srv".into(),
+                id: String::new(),
                 message: String::new(),
                 schema: name_and_age(),
             },
