@@ -1713,12 +1713,12 @@ async fn the_memory_tool_routes_by_mode_and_never_takes_a_fast_path() {
         (Deny, Tier::PlanBlock)
     );
 
-    // The asking modes prompt; headless and dontAsk deny.
+    // The asking modes prompt with the protected-path tier; headless and dontAsk deny.
     for mode in [Manual, AcceptEdits] {
         let rig = Rig::with(Options::new(mode).memory());
         assert_eq!(
             first(&rig, "memory", args.clone()).await,
-            (Prompt, Tier::Mode),
+            (Prompt, Tier::ProtectedPath),
             "{mode:?}"
         );
     }
@@ -1726,11 +1726,11 @@ async fn the_memory_tool_routes_by_mode_and_never_takes_a_fast_path() {
     let d = rig.check("memory", args.clone()).await;
     assert!(!allowed(&d));
     assert!(denied_message(&d).contains("headless"));
-    assert_eq!(rig.audit()[0].tier, Tier::Mode);
+    assert_eq!(rig.audit()[0].tier, Tier::ProtectedPath);
     let rig = Rig::with(Options::new(DontAsk).memory());
     assert_eq!(
         first(&rig, "memory", args.clone()).await,
-        (Deny, Tier::DontAsk)
+        (Deny, Tier::ProtectedPath)
     );
 }
 
@@ -1739,7 +1739,21 @@ async fn memory_tool_allow_and_deny_rules_are_respected() {
     use Decision::{Allow, Deny};
     let args = memory_args();
 
-    // A whole-tool allow rule runs the call without the guardian, in every mode.
+    // A whole-tool allow rule does not approve the call: the memory store is protected
+    // exactly like a raw write to it, so in `auto` the guardian still judges and in
+    // `dontAsk` the protected-path denial stands.
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(PermissionMode::Auto)
+            .guardian(fake.guardian.clone())
+            .memory()
+            .settings("[permissions]\nallow = [\"memory\"]\n"),
+    );
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Allow, Tier::Guardian)
+    );
+    assert_eq!(fake.calls(), 1, "the guardian is asked");
     let rig = Rig::with(
         Options::new(DontAsk)
             .memory()
@@ -1747,7 +1761,7 @@ async fn memory_tool_allow_and_deny_rules_are_respected() {
     );
     assert_eq!(
         first(&rig, "memory", args.clone()).await,
-        (Allow, Tier::AllowRule)
+        (Deny, Tier::ProtectedPath)
     );
 
     // A whole-tool deny rule wins over the guardian in `auto`.

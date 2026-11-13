@@ -103,8 +103,9 @@ in containment because the call names no path:
 | `plan` | Denied: plan mode never writes. |
 | `dontAsk`, headless | Denied. |
 
-`allow = ["memory"]` and `deny = ["memory"]` name the tool whole; it takes no specifier. See
-[the tool's entry](tools.md#memory) in the tools reference.
+`allow = ["memory"]` and `deny = ["memory"]` name the tool whole; it takes no specifier. An
+`allow` rule does not approve the call — the store is protected like a raw write to it, so
+the floor decides first. See [the tool's entry](tools.md#memory) in the tools reference.
 
 A shell command that writes there (`echo ... >> MEMORY.md`) is not covered by the protected-path
 floor, which gates only `write` and `edit`: it takes the ordinary shell gate, a prompt outside

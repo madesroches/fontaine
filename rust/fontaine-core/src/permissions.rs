@@ -1187,6 +1187,25 @@ impl PermissionPipeline {
                 },
             );
         }
+        // The memory tool writes the session's store without naming a path, so the floor
+        // above cannot see it; it takes the store's protected-path outcome here instead,
+        // before any allow rule or hook allow — a raw write to the store cannot be
+        // allow-ruled past the floor either. `auto` (and AFK, which routes like it) reaches
+        // the guardian; the asking modes keep the protected prompt.
+        if tool == "memory" && self.state.memory_root.is_some() {
+            if matches!(mode, PermissionMode::Auto | PermissionMode::Afk) {
+                return Verdict::Guardian;
+            }
+            return self.would_prompt(
+                mode,
+                Prompt {
+                    tier: Tier::ProtectedPath,
+                    reason: "it writes a protected location (the memory store)".to_string(),
+                    rule: None,
+                    forced: true,
+                },
+            );
+        }
 
         // Unusable out-of-root file arguments end here, after the floor: they are never
         // put to a human or the guardian.

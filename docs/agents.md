@@ -85,7 +85,7 @@ Three types are built in:
 | Type | Model | Tools |
 |---|---|---|
 | `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `send_message` |
-| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
+| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `memory`, `shell`, `send_message` |
 | `fork` | the session model | every tool the main conversation has, except `ask_user_question` and `advisor` |
 
 On Windows without Git Bash the main conversation has no `shell`, and `worker` gets `powershell` in

@@ -277,6 +277,7 @@ impl AgentTypes {
                     "edit",
                     "write",
                     "notebook_edit",
+                    "memory",
                     "shell",
                     "send_message",
                 ]
@@ -533,6 +534,15 @@ mod tests {
         let worker = AgentTypes::builtin().get("worker").unwrap().clone();
         let set = worker.toolset(&names(&["read", "notebook_edit"]));
         assert_eq!(set, names(&["read", "notebook_edit"]));
+    }
+
+    #[test]
+    fn the_worker_type_can_save_memory_when_its_parent_can() {
+        let worker = AgentTypes::builtin().get("worker").unwrap().clone();
+        let set = worker.toolset(&names(&["read", "memory"]));
+        assert_eq!(set, names(&["read", "memory"]));
+        // Never a tool the parent lacks.
+        assert_eq!(worker.toolset(&names(&["read"])), names(&["read"]));
     }
 
     #[test]

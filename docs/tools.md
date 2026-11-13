@@ -603,13 +603,14 @@ the raw store writes it replaces:
 | `plan` | Denied: plan mode never writes. |
 | `dontAsk`, headless | Denied. |
 
-There is no fast path, and an `allow` rule names the tool whole
-(`allow = ["memory"]`, no specifier). The note's content is model-typed text that reaches
-future sessions' prompts, so in `auto` the guardian judges the call exactly as it judges a
-raw write into the store. The store is a workspace root, so reads need no subcommand:
-`read`, `ls` and `glob` reach it at read-only fast-path cost. Raw `write` and `edit` on the
-store's files remain available for repairing the store by hand, at the same gating. See
-[Auto memory](memory.md).
+There is no fast path, and an `allow` rule does not approve the call: the store is
+protected like a raw write to it, so the floor decides before any allow rule. (`allow =
+["memory"]` names the tool whole; it takes no specifier.) The note's content is model-typed
+text that reaches future sessions' prompts, so in `auto` the guardian judges the call exactly
+as it judges a raw write into the store. The store is a workspace root, so reads need no
+subcommand: `read`, `ls` and `glob` reach it at read-only fast-path cost. Raw `write` and
+`edit` on the store's files remain available for repairing the store by hand, at the same
+gating. See [Auto memory](memory.md).
 
 ## Permissions
 

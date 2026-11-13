@@ -261,6 +261,12 @@ permissions either way.
   sized for durable notes, not file dumps (#329).
 - AFK: 2026-11-03: the index line's link text is the topic verbatim; the file name already
   carries the normalization and the line is model-facing (#329).
+- 2026-11-12: the "deliberately not added to the protected-path floor match" note above is
+  corrected — `memory` now takes the memory store's protected-path decision in
+  `permissions.rs::evaluate` before allow rules and hook allows: allow rules precede mode
+  dispatch, so without the protected-path treatment an `allow = ["memory"]` rule bypassed the
+  guardian in `auto` and ran the call in `dontAsk`/headless, making the tool looser than a
+  raw write to the store, whose allow rules cannot override protection (#329).
 
 ## Documentation
 
@@ -289,4 +295,3 @@ permissions either way.
   today (`allow`, no escalation). Cases set `expected` = `fixture_verdict` so the offline run
   stays green; the live nightly run is where the soft-deny class is actually probed, which no
   fixture can catch.
-

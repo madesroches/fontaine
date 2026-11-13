@@ -282,10 +282,23 @@ fn read_index_text(path: &Path) -> io::Result<Option<String>> {
     })
 }
 
-/// The byte spans of the link text and of the destination inside the first
+/// A link target read the way `check` reads one: `./` components away and `\` as `/`, so
+/// `./commands.md` and `commands.md` are one topic.
+fn normalized_target(target: &str) -> String {
+    Path::new(target)
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect::<PathBuf>()
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// The byte spans of the link text and of the destination path inside the first
 /// `[text](target)` on `line` whose destination, read the way `check` reads it, is `wanted`
-/// (ignoring case). A save rewrites the text to the topic and the destination to the
-/// generated file, keeping the line's place in the index.
+/// (ignoring case). The destination span covers only the path: a `#fragment`, a title and
+/// any angle brackets around the path stay in place when a save rewrites the destination.
+/// A save rewrites the text to the topic and the path to the generated file, keeping the
+/// line's place in the index.
 fn matching_link_spans(
     line: &str,
     wanted: &str,
@@ -305,14 +318,23 @@ fn matching_link_spans(
                     let inner_start = i + 2;
                     if let Some(rel) = bytes[inner_start..].iter().position(|b| *b == b')') {
                         let inner_end = inner_start + rel;
-                        let raw = line[inner_start..inner_end].trim();
-                        let raw = match raw.strip_prefix('<') {
-                            Some(angled) => angled.split('>').next().unwrap_or_default(),
-                            None => raw.split_whitespace().next().unwrap_or_default(),
+                        let inner = &line[inner_start..inner_end];
+                        let trimmed = inner.trim();
+                        let lead = inner.len() - inner.trim_start().len();
+                        let (token_start, token) = match trimmed.strip_prefix('<') {
+                            Some(angled) => (
+                                inner_start + lead + 1,
+                                angled.split('>').next().unwrap_or_default(),
+                            ),
+                            None => (
+                                inner_start + lead,
+                                trimmed.split_whitespace().next().unwrap_or_default(),
+                            ),
                         };
-                        let target = raw.split('#').next().unwrap_or_default();
-                        if !target.is_empty() && target.eq_ignore_ascii_case(wanted) {
-                            return Some((text_start..i, inner_start..inner_end));
+                        let path = token.split('#').next().unwrap_or_default();
+                        if !path.is_empty() && normalized_target(path).eq_ignore_ascii_case(wanted)
+                        {
+                            return Some((text_start..i, token_start..token_start + path.len()));
                         }
                         i = inner_end + 1;
                         continue;
@@ -1247,6 +1269,35 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
             "- [Commands](commands.md): notes\n"
+        );
+    }
+
+    #[test]
+    fn a_dotted_entry_is_the_same_topic_not_a_duplicate() {
+        let (_tmp, dir) = store();
+        std::fs::write(dir.join(INDEX_FILE), "- [Commands](./commands.md)\n").unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](commands.md)\n"
+        );
+        assert_eq!(check(&dir), [], "the re-save leaves no duplicate entry");
+    }
+
+    #[test]
+    fn an_update_keeps_the_fragment_title_and_angles_of_an_entry() {
+        let (_tmp, dir) = store();
+        std::fs::write(
+            dir.join(INDEX_FILE),
+            "- [cmds](commands.md#build)\n- [tests](tests.md \"Test commands\")\n- [arch](<arch.md>)\n",
+        )
+        .unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](commands.md#build)\n- [tests](tests.md \"Test commands\")\n- [arch](<arch.md>)\n"
         );
     }
 
