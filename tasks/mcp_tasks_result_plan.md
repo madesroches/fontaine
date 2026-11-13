@@ -57,12 +57,14 @@ generalises to cover swallowed poll responses.
    - `Working`: re-arm `PollDue` with the (possibly updated) interval.
    - `InputRequired`: for each not-yet-surfaced input key start the same dialogs as an MRTR round
      (reusing the `start` / `start_url` / `deliver` path, sampling and roots fail the call as
-     today); when all are answered send one `tasks/update {taskId, inputResponses}` and resume polling. Each `tasks/update` counts against the
-     same `MAX_REQUESTS` (10) counter as MRTR rounds, kept per task; beyond it the call fails. `working`
+     today); when all are answered send one `tasks/update {taskId, inputResponses}` and resume polling. Each `tasks/update` increments
+     `Driven.sent` (1 for the `tools/call`), checked `>= MAX_REQUESTS` (10) on each `input_required` as in the MRTR
+     path, so the tenth `input_required` fails the call after nine updates. `sent` supplies the dialog `round` in the synthetic
+     ids, and `answers` / `awaiting` are cleared per round. `working`
      poll loops need no cap: rig-rmcp's call timeout cancels the call (step 5).
    - `Completed`: deserialise `result` as `CallToolResult` and write it to rmcp as a response under the
      original call id (an `isError: true` result is a normal result). A result that does not parse
-     fails the call.
+     fails the call without `tasks/cancel`.
    - `Failed`: write a JSON-RPC error under the call id. `error` is a `JsonObject`, not `ErrorData`:
      build the error leniently from its `code` / `message` / `data`, with fallbacks (internal-error
      code, generic message) when a field is missing or mistyped.
@@ -81,8 +83,7 @@ generalises to cover swallowed poll responses.
    call: branch on the phase first. `end_calls` also sends `tasks/cancel` for task-phase calls. A
    stale `PollDue` for a dropped call is a no-op, and every terminal status removes the `Driven` and
    its poll mapping. `fail` sends a best-effort `tasks/cancel {taskId}` (ack swallowed) for a
-   task-phase call, so a call the tap fails itself (sampling/roots input, `MAX_REQUESTS`, an
-   unparseable result, a poll error) does not leave the server task live until its TTL; not for
+   task-phase call, so a call the tap fails itself (sampling/roots input, `MAX_REQUESTS`, a poll error) does not leave the server task live until its TTL; not for
    `Completed` / `Failed` / `Cancelled` terminal statuses and not on transport close.
 
 Every tap-sent `tasks/get`, `tasks/update` and `tasks/cancel` id is registered (in `task_poll_ids` or
@@ -104,7 +105,7 @@ polls are protocol traffic, not tool calls.
 
 ### Why in the tap
 
-The tap is below rig-rmcp and rmcp, so every connection kind (stdio, HTTP, subagent clients) gets the
+The tap is below rig-rmcp and rmcp, so every connection kind (stdio, HTTP, pipe) gets the
 behaviour from one implementation and rmcp's `UnexpectedResponse` is never hit. A rig-rmcp change
 would be a fork of a pinned dependency.
 
@@ -121,7 +122,7 @@ would be a fork of a pinned dependency.
    `extensions` holds `TASKS_EXTENSION_ID` (`ClientCapabilities::supports_tasks()`).
 4. Docs: `docs/mcp.md` (tasks section: what Fontaine does, that it polls transparently and honours
    the call timeout and interrupt, and that the existing "given up after 10 requests" limit applies to
-   a task's `tasks/update` rounds); `CHANGELOG.md` entry; the master plan `## Decisions` MCP
+   a task's `tasks/update` rounds: the tenth `input_required` fails the call after nine updates); `CHANGELOG.md` entry; the master plan `## Decisions` MCP
    subsection gets a dated line recording that Fontaine declares and serves the tasks extension for
    `tools/call` only.
 
@@ -156,12 +157,12 @@ All unit tests in `elicitation.rs` using the existing `Script` transport double 
 - An error answering `tasks/get` fails the call.
 - Interval clamping (absent, 0, huge) via paused tokio time.
 - `input_required` task: dialog answered, `tasks/update` sent with the answers under the server's keys,
-  polling resumes; sampling/roots input fails the call; a subagent's call still gets the dialog
+  polling resumes; a subagent's call still gets the dialog
   cancelled.
 - `notifications/cancelled` for a task call sends `tasks/cancel`, swallows the late poll response,
   and aborts pending dialogs; transport close drops the task.
 - A task result for a `prompts/get` or `resources/read` fails that call.
-- More than `MAX_REQUESTS` `tasks/update` rounds fails the call.
+- The tenth `input_required` (after nine `tasks/update` rounds) fails the call.
 - Sampling/roots input in a task fails the call and sends `tasks/cancel` from `fail`.
 - An error answering `tasks/update` fails the call.
 - `servers.rs`: `client_config()` declares the tasks extension (`supports_tasks()`) and still the
