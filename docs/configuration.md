@@ -1417,7 +1417,8 @@ entry per root, server name and definition digest; a changed definition is asked
 
 Trust covers what a repository can *run*: hooks, MCP servers and skill commands. It never lets any
 of them approve a tool call. A headless run (`fontaine -p`) loads a repository's hooks and MCP
-servers without asking, as Claude Code's `-p` does (unless `[headless] require_trust = true` and the workspace is not trusted), and holds them to the same rule. Prompt
+servers without asking, as Claude Code's `-p` does (unless `[headless] require_trust = true` and
+the workspace is not trusted), and holds them to the same rule. Prompt
 content (instruction files such as `FONTAINE.md`, `CLAUDE.md`, `AGENTS.md` and rules under `.claude/` or
 `.fontaine/`, skills, agent files, output styles) and the keys that only tighten load
 whatever the answer.

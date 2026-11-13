@@ -62,8 +62,9 @@ script as `set` and its params as `<hidden>` (keys only).
 **Trust.** Whether the workspace root is trusted (an untrusted one is a warning), whether
 `trust.toml` can be read, and what the repository defines that would load: hooks, MCP servers and
 skills. It states the two outcomes separately. A headless run loads all of it and starts every
-server, unless `[headless] require_trust = true` and the workspace is not trusted. The interactive UI loads it only for a trusted workspace and asks before starting an
-unapproved repository server. See [workspace trust](configuration.md#workspace-trust).
+server, unless `[headless] require_trust = true` and the workspace is not trusted. The interactive
+UI loads it only for a trusted workspace and asks before starting an unapproved repository server.
+See [workspace trust](configuration.md#workspace-trust).
 
 **Guardian and models.** The resolved main model, the guardian model and how it was chosen
 (`pinned`, `default` or `main model`), the guardian profile, and any startup notice. An

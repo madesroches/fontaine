@@ -998,6 +998,13 @@ mod tests {
                 .any(|f| f.subject == "plugins" && f.level == Level::Fail)
         );
         assert_eq!(s.findings.last().unwrap().level, Level::Warn);
+
+        let gated = ExtensionFacts {
+            headless_requires_trust: true,
+            ..facts
+        };
+        let s = extensions_section(&gated);
+        assert!(s.findings[1].detail.contains("headless: not loaded"));
     }
 
     #[test]

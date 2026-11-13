@@ -106,7 +106,8 @@ settings files) and asks:
 
 Enter acts on the highlighted answer, which starts on "do not trust". Whatever you answer, nothing
 the repository defines can approve a tool call: a repository's hook `allow` is ignored and its MCP
-tools are checked like any `arbitrary` tool. A headless run does not ask and loads them, unless `[headless] require_trust = true` and the workspace is not trusted.
+tools are checked like any `arbitrary` tool. A headless run does not ask and loads them, unless
+`[headless] require_trust = true` and the workspace is not trusted.
 
 ## Status bar
 

@@ -231,7 +231,8 @@ repository chose. A repository written for Claude Code works as it is: Fontaine 
    command, arguments, environment variable names or URL change is asked about again, and a repository cannot approve its own
    servers.
 
-A headless run (`fontaine -p`) starts them without asking, as Claude Code's `-p` does, unless `[headless] require_trust = true` and the workspace is not trusted. In both
+A headless run (`fontaine -p`) starts them without asking, as Claude Code's `-p` does, unless
+`[headless] require_trust = true` and the workspace is not trusted. In both
 surfaces a project server's tools are ordinary `arbitrary` tools, except that a tool can mark itself
 as [requiring your approval](#requiring-approval-for-a-tool): a repository can add a server, but it
 cannot make a call of that server run without the same approval any call needs, and it can only
