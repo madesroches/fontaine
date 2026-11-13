@@ -165,7 +165,9 @@ billing failure from the CLI is reported once, without a retry. A plan limit tha
 window (the CLI's rate-limit event said `rejected`) is a
 [usage window](headless.md#usage-windows) that resets by itself: the first request fails without a
 retry, a [model list](configuration.md#falling-through-to-the-next-entry) moves on to its next entry,
-and when none is left the run pauses until the reset time the CLI reported. A rate limit the CLI
+and when none is left (a subagent first tries the
+[`fallback` role](configuration.md#subagent-fallback)) the run pauses until the reset time the CLI
+reported. A rate limit the CLI
 reports without a rejected window, and a billing failure, are not waited for.
 
 ## Failures
@@ -175,7 +177,7 @@ reports without a rejected window, and a billing failure, are not waited for.
 | At startup: credit-billed model | exit code 2 with the corrective text; no turn runs |
 | CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried. A protocol failure names the rejected event, such as `(event: system/notification)` |
 | Billing error, or a rate limit with no spent window, from the CLI | the same, after the run began; it also moves a [model list](configuration.md#falling-through-to-the-next-entry) on to its next entry |
-| Plan limit with the usage window spent | not retried; a model list moves on to its next entry, and a spent list pauses the run until the reset (see [usage windows](headless.md#usage-windows)) |
+| Plan limit with the usage window spent | not retried; a model list moves on to its next entry, a subagent whose list is spent tries the `fallback` role, and a spent list pauses the run until the reset (see [usage windows](headless.md#usage-windows)) |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
 

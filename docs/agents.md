@@ -103,7 +103,9 @@ file or `[agents.types]` and a spawn error when the model passes it. Every subag
 role shares the role's current entry: when the entry in use runs out of quota and a subagent moves to
 the next one, the others, and later spawns, start on the entry that worked. A subagent on `$main`
 moves for itself and leaves the main conversation's entry alone. When every entry of its list is
-spent on a [usage window](headless.md#usage-windows), the whole session pauses, the subagent
+spent on a [usage window](headless.md#usage-windows), the subagent first moves to the
+[`fallback` role](configuration.md#subagent-fallback) when one is defined; if none is or all of it is
+spent, the whole session pauses, the subagent
 included, and its displayed run time and wall-clock accounting leave the wait out; its token and
 cost budgets are not touched, because waiting spends nothing. A bare `main` is the role of that
 name, a list of its own, not the live session model; use `$main` for that. The tool description the main

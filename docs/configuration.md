@@ -639,7 +639,7 @@ coding     = ["sonnet", "kimi/kimi-for-coding"]
 thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
 ```
 
-Fontaine reads five role names itself. Every other name is yours, so Claude Code's `sonnet` and
+Fontaine reads six role names itself. Every other name is yours, so Claude Code's `sonnet` and
 `opus` aliases port unchanged once you define them.
 
 | Role | Used for | When it is not defined |
@@ -649,6 +649,7 @@ Fontaine reads five role names itself. Every other name is yours, so Claude Code
 | `setup` | The model scan of `/auto-mode-setup` and `fontaine auto-mode setup`. | The guardian's model |
 | `compaction` | The summary request of a [compaction](tui.md#context). The threshold still follows the main model's window. | The main model, at its current entry |
 | `advisor` | The [`advisor` tool](tools.md#advisor): the model the main model consults. | The tool does not exist |
+| `fallback` | Where a subagent goes when its own list is [spent on a usage window](#falling-through-to-the-next-entry), before the run pauses. | The run pauses until the window resets |
 
 Roles never apply to the guardian: `[guardian] model` and the `[guardian.composition]` models stay
 one `<account>/<model>`, and a pinned guardian is never substituted.
@@ -685,12 +686,32 @@ and not the account's.
 - Each request tries every entry once. When the whole list is spent on a quota error the turn fails
   with `every model in <role> failed` added. When it is spent on a usage window that has run out
   (a provider's window code, a `Retry-After` of more than five minutes, or a `claude-subscription`
-  plan limit), the whole run is paused until the window resets instead, and the request then goes
-  through the list again from the entry the list is on; see
-  [Usage windows](headless.md#usage-windows).
+  plan limit), the whole run is paused until the window resets instead (a subagent first tries the
+  [`fallback` role](#subagent-fallback)), and the request then goes through the list again from the
+  entry the list is on; see [Usage windows](headless.md#usage-windows).
 - With an explicit `--max-budget-usd`, an entry with no known price is skipped, because a capped run
   has to stay measurable.
 - A resumed session starts every list at its first entry again.
+
+##### Subagent fallback
+
+Define a `fallback` role to keep subagents working when their own list is spent on a usage window.
+Before the run pauses, such a subagent moves to the first entry of `fallback` that can serve, says
+so (`agent-1: kimi/kimi-for-coding usage window spent; continuing on claudemax/sonnet`), and
+continues; the move is recorded in the session log and the audit log with role `fallback`. The run
+pauses only when every entry of `fallback` is spent too. With no `fallback` role, a spent usage
+window pauses the run as before: a different model is a cost and capability change, so the role is
+opt-in, and the entries you list are the only ones ever used.
+
+- Entries on an account whose window is already spent, entries that do not resolve (with a warning)
+  and, under an explicit `--max-budget-usd`, entries with no known price are skipped.
+- The move is the subagent's own: the role's other subagents keep their entry, and a later subagent
+  on the spent role tries it first. The subagent's mode, permissions and guardian do not change.
+- The subagent stays on `fallback`: a later quota failure walks that list, never back onto a spent
+  entry, and after a pause it retries its current entry. A subagent already on `fallback` does not
+  fall back again.
+- The main conversation does not use it; its `main` list holds its own fallbacks. A user role that
+  was already named `fallback` now serves this purpose too.
 
 Falling through reacts to what happens at run time. A typo, a missing credential or an account
 that no longer exists is still an error at startup and never silently skipped. The `/cost` report

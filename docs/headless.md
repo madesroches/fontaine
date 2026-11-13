@@ -186,6 +186,10 @@ wait, and a tool call that is waiting for a guardian verdict stays pending. It i
 nor run. When the window resets, the run goes on and the guardian checks the pending call again
 from the start.
 
+A subagent whose own list is spent on a window first moves to the
+[`fallback` role](configuration.md#subagent-fallback), when one is defined, and the run pauses only
+if that list is spent too.
+
 The wait ends at the reset time the provider gave (a `Retry-After` header, a reset time in the
 reply, or the account's own usage figures), plus a margin, with one request let through to check;
 without a reset time Fontaine checks after 1 minute, doubling to 15 minutes. It never lasts longer

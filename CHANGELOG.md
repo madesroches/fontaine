@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `fallback` model role (#601). A subagent whose own model list is spent on a usage window moves to
+  the first usable entry of the user-scope `fallback` role, says so, and continues instead of
+  pausing the whole session; the run pauses only when `fallback` is spent too. With no `fallback`
+  role nothing changes. A user role that was already named `fallback` now also serves as the
+  usage-window fallback.
 - `[headless] require_trust` (#228). Opt-in, user file or `--settings` only: a `fontaine -p` run
   skips project hooks, repository MCP servers and project skill commands unless the workspace was
   trusted in the terminal UI, and prints one line on stderr. The default is unchanged (headless

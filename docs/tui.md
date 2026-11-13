@@ -218,7 +218,8 @@ sits on the rows below the bar.
 
 When an account's usage window is spent (a subscription that answers every request with a 429 until
 it resets), the whole run pauses at its next provider call: the main agent, the guardian and every
-subagent. A tool call that is waiting for a guardian verdict stays pending, neither denied nor run,
+subagent (a subagent first tries the [`fallback` role](configuration.md#subagent-fallback), when one
+is defined, and the run pauses only if that is spent too). A tool call that is waiting for a guardian verdict stays pending, neither denied nor run,
 and is checked again from the start when the window reopens. Calls already running are not
 interrupted. A prompt names the account and offers:
 

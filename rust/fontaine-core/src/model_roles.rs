@@ -20,6 +20,9 @@ pub const SETUP_ROLE: &str = "setup";
 pub const COMPACTION_ROLE: &str = "compaction";
 /// The role that switches the `advisor` tool on and names the models that serve it.
 pub const ADVISOR_ROLE: &str = "advisor";
+/// The role a subagent whose own list is spent on a usage window moves to before the session
+/// pauses.
+pub const FALLBACK_ROLE: &str = "fallback";
 
 /// The config's roles with each list flattened to concrete references.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -374,6 +377,11 @@ impl Tried {
 /// list's role for the main conversation, an agent for a subagent.
 pub fn fall_through_notice(subject: &str, from: &ModelRef, to: &ModelRef, class: &str) -> String {
     format!("{subject}: {from} is out of quota ({class}); continuing on {to}")
+}
+
+/// The warning for a subagent that left its spent usage window for the `fallback` role.
+pub fn fall_back_notice(subject: &str, from: &str, to: &ModelRef) -> String {
+    format!("{subject}: {from} usage window spent; continuing on {to}")
 }
 
 /// A one-shot job that ran through a chain.
