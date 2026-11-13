@@ -95,6 +95,15 @@ All notable changes are recorded here. The format follows
   support them, including inside tmux. Notices link their URLs; code does not, except inline
   code that is one URL or path and whole-word URLs in fenced blocks. `FORCE_HYPERLINK=0` or `1` overrides detection (#83).
 
+- An `elicitation` hook event (`[[hooks.elicitation]]`, `command` or `http`, matcher on the MCP
+  server's name) that answers a server's request for input with `accept` (plus `content` for a
+  form), `decline` or `cancel` before any dialog, on every surface. Several hooks combine as cancel
+  beats decline beats accept. A hook from the repository or a plugin can only decline or cancel;
+  its `accept` is ignored with a warning. Unlike Claude Code, a hook never accepts a URL-mode
+  request: the link opens only after you confirm it in the terminal UI. A form answer is still
+  checked against the server's schema. Headless and AFK runs now `cancel` only when no hook
+  answers (#537).
+
 ### Fixed
 
 - A guardian denial after a provider HTTP error response no longer says the guardian model
