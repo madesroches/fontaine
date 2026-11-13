@@ -73,32 +73,47 @@ Delete the "experimental" framing for `claude-subscription`:
 
 A test in `rust/fontaine-core/tests/` (new `provider_docs.rs`, or an existing providers test file)
 reads `docs/providers.md` via `CARGO_MANIFEST_DIR/../../docs/providers.md` (the pattern used by
-`fontaine/tests/analytics_notebook.rs`) and asserts, for every name in `providers::names()`, that
-the guide has a heading `` ## `<kind>` `` and that the comparison table contains a row starting
-with `` | `<kind>` ``. A new registered kind then fails CI until documented.
+`fontaine/tests/analytics_notebook.rs`) and asserts, matching whole lines, for every name in `providers::names()`, that
+the guide has a line `` ## `<kind>` `` and a table line starting with `` | `<kind>` ``, and that
+the section headings appear in registry order. A new registered kind then fails CI until documented.
+
+The `claude-subscription` comparison row and section replace the label with the subscription-specific
+facts: Max/Ultra plans only, the external CLI login (no Fontaine credential), the scope limits and
+the Anthropic-terms caveat, each linking to `claude-subscription.md`. This is how the issue's
+"experimental and subscription-specific behavior remains clearly identified" item is met once the
+label is dropped; the PR description notes that the issue's "(experimental)" wording is superseded.
 
 ## Implementation Steps
 
 1. Verify per-kind facts in `providers/*.rs`, `native_search.rs`, `models.rs` and
    `configuration.md` (endpoints, wires, auth, caching defaults, pricing, web search, quota).
 2. Write `docs/providers.md` per the structure above.
-3. Link the guide: `docs/SUMMARY.md` and `docs/index.md` (new entry beside Configuration);
-   README: replace the partial list at line 63 with "Many providers, from Anthropic and OpenAI to
-   local Ollama and Claude subscriptions ([provider guide](docs/providers.md))" using a docs-relative
-   link, or the full list; keep line 54's pointer and add the guide link; `docs/configuration.md`:
-   add a pointer at the top of `### [accounts.<name>]`, and from the kind row of the key table.
+3. Link the guide: `docs/SUMMARY.md` (entry directly after Configuration) and `docs/index.md`
+   (entry directly after Configuration, line 13); README line 63 becomes "Any provider: the
+   [provider guide](docs/providers.md) covers Anthropic, OpenAI, Gemini, OpenRouter, Ollama, Kimi,
+   OpenCode Go, Databricks, OpenAI-compatible endpoints and a Claude subscription."; line 54 also
+   points at the guide; `docs/configuration.md`: add a pointer at the top of
+   `### [accounts.<name>]` and in the `kind` row of the key table. `docs/index.md:61` becomes
+   "the account kind that runs your installed Claude Code CLI as the model transport on a Max or
+   Ultra plan, its checks, limits and billing caveats."
 4. Remove the experimental label (list above) and fix affected tests.
 5. Add the registry-coverage test.
 6. Add a `CHANGELOG.md` entry under Unreleased: the provider guide, and `claude-subscription` no
    longer labeled experimental.
-7. Run `.github/scripts/docs-site.sh <dir>` if `mdbook` and `lychee` are installed (Linux only);
-   otherwise rely on CI and check relative links by hand.
+7. Add the dated line to `tasks/fontaine_harness_plan.md` Decisions, at the end of the subsection
+   holding the 2026-11-04 `claude-subscription` lines: the kind is no longer experimental (user
+   directive 2026-11-13), superseding "experimental" in the 2026-11-04 line, and the policy
+   constraints it asks to re-read stay in `docs/claude-subscription.md` unchanged.
+8. Run `.github/scripts/docs-site.sh <dir>` on Linux (WSL or CI) before declaring done; it is a
+   definition-of-done gate. Also check by hand that every relative link and `configuration.md#...`
+   anchor in the new page resolves.
 
 ## Files to Modify
 
 - New: `docs/providers.md`, `rust/fontaine-core/tests/provider_docs.rs`
 - `README.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/configuration.md`,
   `docs/claude-subscription.md`, `docs/tui.md`, `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md` (one Decisions line)
 - `rust/fontaine-core/src/accounts.rs`, `rust/fontaine-tui/src/provider_dialog.rs`,
   `rust/fontaine-core/src/providers/claude_subscription/cli.rs` and tests asserting those strings
 
@@ -113,7 +128,7 @@ with `` | `<kind>` ``. A new registered kind then fails CI until documented.
 ## Decisions
 
 - 2026-11-13 (user): `claude-subscription` is no longer documented or labeled experimental; the
-  scope and terms caveats stay.
+  scope and terms caveats stay. The master plan records it (step 7).
 - 2026-11-13: CHANGELOG history entries that say "experimental" are left as written, as they record
   past releases.
 
@@ -121,8 +136,7 @@ with `` | `<kind>` ``. A new registered kind then fails CI until documented.
 
 This plan is documentation: `docs/providers.md` is new; `README.md`, `docs/index.md`,
 `docs/SUMMARY.md`, `docs/configuration.md`, `docs/claude-subscription.md` and `docs/tui.md` change
-as above. The master plan's Decisions section gets a dated line that `claude-subscription` is no
-longer experimental (its 2026-11-04 line calls it experimental).
+as above. `tasks/fontaine_harness_plan.md` Decisions gets the dated line (step 7).
 
 ## Testing Strategy
 
