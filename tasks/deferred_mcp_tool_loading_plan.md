@@ -36,8 +36,7 @@ calling a deferred tool is unchanged.
   Claude Code's `ENABLE_TOOL_SEARCH`. `auto` defers when the MCP tool definitions' estimated tokens
   (`HeuristicTokenCounter::count_tool`, as `/context` uses) exceed a fraction of the model's context window
   (10%, the Claude Code default; no window known → 10,000 tokens). `on` always defers MCP tools, `off` never
-  does. Deferral hides schemas but changes no gate, so it is not a loosening key and either
-  scope may set it.
+  does.
 - When active, MCP tools are *deferred*: registered and guarded exactly as today, but not part of the
   advertised definitions. The system prompt gains a section listing deferred tool names grouped by server
   (names only, sorted, so the prefix is stable).
@@ -60,9 +59,10 @@ calling a deferred tool is unchanged.
   safety claim for MCP tools, and loading a schema grants nothing).
 - A deferred tool, loaded or not, keeps `RiskClass::Arbitrary` and the same `guard_callback`; a call to it,
   whatever route the model reached the name by, goes through the identical gate. A call to a deferred tool
-  that was never loaded is refused with a message telling the model to search first (the model has no schema;
-  it would be guessing arguments). This refusal is a tool error, not a gate decision, and never reaches
-  past the floor.
+  that was never loaded never reaches the wrapped callback: rig-agent narrows dispatch to the advertised set
+  and classes the call `InvalidToolCallReason::UnknownTool`, which fails the run by default. A per-agent
+  `on_invalid_tool_call` hook (Step 6) turns it into a `Skip` refusal telling the model to search first. This
+  refusal never touches the gate or the audit log, because the call never reaches the gate.
 - A subagent only sees deferred names its own toolset allows, and its `tool_search` only loads those.
   Loaded sets are per-agent (a child's loads never widen its parent's `tools[]` or the reverse): the
   connection-scoped handle holds no loaded set.
@@ -92,8 +92,7 @@ calling a deferred tool is unchanged.
 
 ### Out of scope
 
-Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi mid-history `tools` message
-(#439) are separate, provider-specific backends for the same feature; this plan is provider-neutral.
+Provider-specific backends (#439) are separate.
 
 ## Implementation Steps
 
@@ -108,8 +107,10 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
    table; add to the default toolsets that include MCP tools (and not to children whose toolset has no MCP).
 5. Advertisement: the per-agent `CompletionCall` hook with `RequestPatch::active_tools` (Mechanism 2) so
    request definitions = always-exposed + loaded.
-6. Refusal for unloaded deferred calls (in the wrapped callback, before the gate runs? No: after the gate, so
-   the gate decision is recorded for the attempted call; the refusal is the tool result).
+6. Refusal for unloaded deferred calls: a per-agent `on_invalid_tool_call` hook (root builder in
+   `agent/build.rs`, child builder in `child_runner.rs`) returning
+   `InvalidToolCallAction::Skip { reason: "search first with tool_search" }` for names that are
+   registered-but-deferred-and-unloaded; every other invalid call stays on the default fail path.
 7. Config: `McpSection.tool_search` in `config.rs`, schema (`docs/schemas`), config catalog/merge (either
    scope, no loosening classification), `/config` display.
 8. Decision logic + threshold in `agent/mcp.rs`; prompt section in `prompt.rs`; claude-subscription forced off.
@@ -124,23 +125,11 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
 
 - `rust/fontaine-tools/src/mcp/register.rs`, new `mcp/deferral.rs`, `mcp/servers.rs` (options)
 - `rust/fontaine-tools/src/tool_search.rs` (new), `descriptor.rs`, `builtins.rs`, `lib.rs`
-- `rust/fontaine-core/src/agent/mcp.rs`, `agent/build.rs`, `agent.rs`, `prompt.rs`, `context.rs`, `config.rs`,
+- `rust/fontaine-core/src/agent/mcp.rs`, `agent/build.rs`, `child_runner.rs`, `agent.rs`, `prompt.rs`, `context.rs`, `config.rs`,
   `config_catalog.rs`, `providers/claude_subscription/*` (forced off)
 - `rust/fontaine-agents/src/registry.rs` (child toolsets)
 - `rust/fontaine-tui` context view
 - `docs/mcp.md`, `docs/configuration.md`, `docs/tools.md`, `docs/schemas/*`, `CHANGELOG.md`
-
-## Trade-offs
-
-- **Names-only prompt + search tool (chosen)** vs. a `tool_call` proxy meta-tool (Hermes style): a proxy
-  would hide the real tool name from the gate's rule matching and from `mcp__server__tool` permission rules;
-  loading the real definition keeps every rule, hook and audit record keyed on the real name.
-- **Append-only loading** vs. re-sorting loaded tools into the stable set: re-sorting would break the cached
-  prefix on every search.
-- **Provider-neutral client-side deferral** vs. provider-native tool search: native needs per-provider wire
-  support and is unavailable on most providers; #439 tracks the Kimi variant.
-- **Auto threshold on estimated tokens**: matches Claude Code's behavior; the estimate is heuristic, which is
-  acceptable because the setting only trades context for one extra round trip.
 
 ## Decisions
 
@@ -167,8 +156,8 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
   the loaded tool is appended after the always-exposed set without reordering it.
 - Integration (existing MCP test server in `fontaine-tools/tests/mcp_common`): a call to a deferred tool,
   loaded or not, passes through the same gate (extend `choke_point.rs` so deferred MCP tools stay covered; a
-  silent bypass here would be a security regression, hence automated); an unloaded call is refused with the
-  search-first message; a `list_changed` refresh updates names and loaded set.
+  silent bypass here would be a security regression, hence automated); an unloaded call is refused by the
+  `on_invalid_tool_call` hook with the search-first message and no gate decision is recorded; a `list_changed` refresh updates names and loaded set.
 - Headless `fontaine -p` scripted-model test: deferred names in the prompt, search, then call.
 - `/context` rendering test for deferred/loaded split.
 
