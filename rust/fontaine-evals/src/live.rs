@@ -426,13 +426,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
                 .filter(|message| !message.starts_with(ANSWER_LINE_PREFIX))
                 .cloned()
                 .collect();
-            let from = kept
-                .len()
-                .saturating_sub(fontaine_guardian::RECENT_USER_MESSAGES);
-            fontaine_guardian::ScreenIntent {
-                task_intent: task_intent(&kept, fontaine_guardian::TASK_INTENT_CHARS),
-                recent_user_messages: kept[from..].to_vec(),
-            }
+            fontaine_guardian::ScreenIntent::from_kept(&kept)
         });
     AdjudicationRequest {
         task_intent: task_intent(&messages, fontaine_guardian::TASK_INTENT_CHARS),

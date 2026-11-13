@@ -294,11 +294,7 @@ pub fn build(
                 .filter(|(_, origin)| *origin != MessageOrigin::Dialog)
                 .map(|(text, _)| text.clone())
                 .collect();
-            let from = kept.len().saturating_sub(RECENT_USER_MESSAGES);
-            ScreenIntent {
-                task_intent: task_intent(&kept, TASK_INTENT_CHARS),
-                recent_user_messages: kept[from..].to_vec(),
-            }
+            ScreenIntent::from_kept(&kept)
         });
     let destructive = destructive::derive(
         tool,

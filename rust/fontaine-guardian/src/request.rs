@@ -186,6 +186,17 @@ pub struct ScreenIntent {
     pub recent_user_messages: Vec<String>,
 }
 
+impl ScreenIntent {
+    /// From the user messages left after dropping dialog answers.
+    pub fn from_kept(kept: &[String]) -> Self {
+        let from = kept.len().saturating_sub(RECENT_USER_MESSAGES);
+        Self {
+            task_intent: task_intent(kept, TASK_INTENT_CHARS),
+            recent_user_messages: kept[from..].to_vec(),
+        }
+    }
+}
+
 /// A denial earlier in the session, reason-coded, for loop detection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DenialRecord {
