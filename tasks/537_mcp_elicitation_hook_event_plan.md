@@ -57,8 +57,10 @@ Add the variant to `HookEvent` in `rust/fontaine-core/src/config.rs`:
 
 - `Elicitation` in `HookEvent::ALL`, `config_key()` → `"elicitation"`, `wire_name()` →
   `"Elicitation"`, `from_wire_name()` arm (so plugin `hooks.json` stops warning).
-- `matcher_kind()` — matches on the MCP server name, like Claude Code. Reuse the string-list
-  matcher shape `Notification` uses.
+- `matcher_kind()` — matches on the MCP server name, like Claude Code. Add a new
+  `MatcherKind::ServerName` variant: an open name list validated like `AgentType`, because
+  `Values` is a closed set (`Notification`'s two names) that would reject arbitrary server
+  names at config load.
 - `handlers()` — `COMMAND_HTTP`. No `prompt` handler: a model verdict auto-answering a
   server's request for input is a loosening this plan does not introduce. (Claude Code also
   supports `mcp_tool` handlers, which Fontaine does not build at all.)
@@ -66,7 +68,8 @@ Add the variant to `HookEvent` in `rust/fontaine-core/src/config.rs`:
   `accept` never counts (see `can_accept` below).
 - `default_timeout()` — 30 seconds, the same default the other deciding events use; an
   elicitation blocks an in-flight tool call, like `PreToolUse`.
-- `check_matcher()` — accepts the same string values as other list matchers.
+- `check_matcher()` — validates like `AgentType`: any non-empty `|`-separated names, with
+  `*` allowed only as the entire matcher.
 
 Add the `hooks.elicitation` key to the project-scope allowlist in
 `rust/fontaine-core/src/config_scope.rs:207-223` and the sample config at :551-628, and a
@@ -273,6 +276,10 @@ to `Decline`, so a hook cannot send the server a malformed answer.
 - Elicituations arriving during a subagent call or with a non-HTTP(S) URL are cancelled or
   declined by the tap as today, without firing the hook.
 - `ElicitationResult` stays unbuilt.
+- AFK: Design 1's matcher was corrected during review — `MatcherKind::Values` is a closed
+  list that would reject server names at config load, so `Elicitation` gets a new
+  `MatcherKind::ServerName` variant validated like `AgentType` (any non-empty `|`-separated
+  names; `*` only as the whole matcher) instead of reusing `Notification`'s matcher shape.
 
 ## Documentation
 
