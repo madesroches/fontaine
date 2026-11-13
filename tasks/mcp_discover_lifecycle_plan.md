@@ -58,8 +58,7 @@ discover negotiates 2026-07-28.
 `Auto` semantics worth knowing: a legacy server that answers `server/discover` with method-not-found
 falls back at once; one that never answers it delays connect by the 10 s probe timeout before
 falling back. The whole sequence (discover wait, initialize, tool list) shares the 30 s `CONNECT_TIMEOUT` budget
-wrapped by `connect()`; `connect_transport` has no wrapper, so the paused-time test supplies its own
-explicit bound.
+wrapped by `connect()`.
 
 The shim is deliberately small and isolated so it can be replaced by a call to an upstream
 `connect_with_lifecycle` if rig-rmcp adds one.
@@ -69,15 +68,20 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 1. `rust/fontaine-tools/src/mcp/servers.rs`: add `start_service` (above) and call it from `serve()`
    in place of `handler.connect`; map errors through `McpError::from_client` (the
    existing `McpClientError` conversions from `ServiceError` and `ClientInitializeError` cover the
-   probe and `serve_with_lifecycle`).
+   probe and `serve_with_lifecycle`; convert explicitly with `McpClientError::from`/`.into()` before
+   `McpError::from_client`).
    Also make `classify_init` (`servers.rs:317-324`) unwrap
    `ClientInitializeError::LegacyFallbackFailed` and classify its `fallback` error, so a transient
    fallback failure stays Transient instead of falling to Permanent.
 2. Update the doc comment of `client_config()` and `serve()` to say the lifecycle is `Auto`.
 3. `rust/fontaine-tools/tests/mcp_mrtr.rs` (or a sibling `mcp_discover.rs`): scripted servers for
    the cases in Testing Strategy. The existing scripted server answers unknown methods (including
-   `server/discover`) with `{}`, so add arms for discover, `initialize` rejection, method-not-found
-   and an unanswered discover.
+   `server/discover`) with `{}`, which under `Auto` would change the legacy path the current MRTR
+   test relies on, so give it an explicit `server/discover` arm (method-not-found for legacy cases)
+   and an `initialize` rejection arm; parameterize it per scenario or put the scenarios in a sibling
+   file. Its loop only writes replies, so give it a writer handle for sending notifications
+   (`tools/list_changed`). The rmcp double in `mcp_common` always answers `initialize` with the older
+   version, so it cannot serve as the discover-lifecycle server.
 4. Docs, changelog, master-plan Decisions line (below).
 
 ## Files to Modify
@@ -120,11 +124,10 @@ Automated, driven through an in-process scripted server (as `mcp_mrtr.rs`):
 - A legacy server that answers `server/discover` with method-not-found falls back to `initialize`
   and registers its tools exactly once (no duplicate registration from the probe).
 - A server whose `tools/list` fails fails to connect (the probe's guard), classified as before.
-- A server that never answers `server/discover` falls back after the probe timeout (use paused
-  tokio time).
 - A later `tools/list_changed` (sent by the scripted server) still reconciles tools after a
   discover-lifecycle connect.
-- A transient failure of the `initialize` fallback (`LegacyFallbackFailed`) is classified Transient.
+- Unit test of `classify_init` (beside the existing ones in `servers.rs`):
+  `ClientInitializeError::LegacyFallbackFailed { fallback: ConnectionClosed }` is classified Transient.
 - The existing `client_config()` and MRTR tests stay green.
 
 ## Open Questions
