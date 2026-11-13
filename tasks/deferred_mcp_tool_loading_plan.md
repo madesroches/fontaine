@@ -47,7 +47,8 @@ calling a deferred tool is unchanged.
   from the next request on.
 - **Append-only loading.** Loaded tools are appended after the always-exposed set in load order, never
   re-sorted, so a load only invalidates the cache from the append point, never the stable prefix. The loaded
-  set lives for the session (and is rebuilt on resume from the transcript's `tool_search` results).
+  set lives for the session (and is rebuilt on resume from the transcript's `tool_search` results; compaction
+  may drop some of those results, so the rebuild is best-effort from whatever remains).
 - Tool-list-changed refreshes and reconnects keep working: a deferred tool that disappears is dropped from
   the name list and the loaded set; a new one lands in the name list.
 - Servers' `instructions`/resources/prompts are unaffected.
@@ -63,23 +64,23 @@ calling a deferred tool is unchanged.
   it would be guessing arguments). This refusal is a tool error, not a gate decision, and never reaches
   past the floor.
 - A subagent only sees deferred names its own toolset allows, and its `tool_search` only loads those.
-  Loaded sets are per-agent (a child's loads never widen its parent's `tools[]` or the reverse).
-- Deferral never changes what `/context` reports as MCP tools' cost beyond showing the deferred names' tokens
-  and the loaded schemas separately.
+  Loaded sets are per-agent (a child's loads never widen its parent's `tools[]` or the reverse): the
+  connection-scoped handle holds no loaded set.
 
 ### Mechanism
 
-1. **Registration side** (`fontaine-tools/src/mcp/register.rs`): `GuardedSink` gains a shared
-   `Deferral` handle (decision cell: active or not, plus the loaded-name set). The wrapped tools are
-   unchanged; only advertisement differs.
-2. **Advertisement side**: the set of definitions a request carries is the always-exposed set plus the loaded
-   deferred tools. Preferred route: register deferred tools as retrievable and pin loaded ids with
-   rig-agent's `snapshot_with_dynamic`. If the engine's request path does not accept per-run dynamic ids
-   (verified in step 1), fall back to a thin `ToolDefinition` filter at the single place Fontaine builds
-   each agent's request, keyed on the `Deferral` handle.
-3. **`tool_search` tool** (`fontaine-tools`, new `tool_search.rs`): holds the `Deferral` handle (read-only
-   index of names + descriptions + schemas), ranks matches (case-insensitive term overlap on name then
-   description; `select:` exact), marks them loaded, renders the result. Matching logic is a pure function.
+1. **Registration side** (`fontaine-tools/src/mcp/register.rs`): `GuardedSink` gains a shared,
+   connection-scoped `Deferral` handle holding only the registry (names, descriptions, schemas) and the
+   active flag. The wrapped tools are unchanged; only advertisement differs.
+2. **Advertisement side**: deferred tools are registered normally (always-exposed side). Each agent gets a
+   rig `CompletionCall` hook returning `CompletionCallAction::Patch(RequestPatch::active_tools(..))` listing
+   the non-deferred tool names followed by that agent's loaded names in load order, so a request carries the
+   always-exposed set plus the loaded deferred tools. rig-agent 0.46 has no per-run dynamic-id injection
+   (`snapshot_with_dynamic` ids come only from retrieval indexes), so this is the route.
+3. **`tool_search` tool** (`fontaine-tools`, new `tool_search.rs`): one instance per agent, holding the
+   connection-scoped `Deferral` handle (read-only registry) and that agent's own loaded-set object, which its
+   completion hook also reads. Ranks matches (case-insensitive term overlap on name then description;
+   `select:` exact), marks them loaded in its own set, renders the result. Matching logic is a pure function.
 4. **Decision** (`fontaine-core/src/agent/mcp.rs`, after `connect_mcp` and after each refresh): compute
    deferral from the setting and the MCP definitions' token estimate; recompute when the toolset changes. If
    the decision flips from deferred to not (e.g. servers removed), the loaded set is cleared and everything is
@@ -96,23 +97,25 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
 
 ## Implementation Steps
 
-1. **Spike the advertisement route**: in `fontaine-agents`/`fontaine-core`, check whether the agent run path
-   can pass dynamic ids to `snapshot_with_dynamic` or must use a definition filter; record the finding in
-   Decisions. Add a failing unit test asserting an unloaded deferred tool is absent from `tool_defs`.
-2. `fontaine-tools/src/mcp/deferral.rs` (new): `Deferral` (active flag, loaded names in order, index of
-   name/description/schema), `search(query, max)` pure function, `load`, `clear`.
-3. `register.rs`: thread the `Deferral` handle through `Shared`/`McpOptions`; keep `record` feeding it on each
-   `add`/`reconcile`; drop names that disappeared.
+1. Add the failing test that an unloaded deferred tool is absent from the request's tool definitions.
+2. `fontaine-tools/src/mcp/deferral.rs` (new): `Deferral` (active flag, index of name/description/schema),
+   `search(query, max)` pure function; and a per-agent loaded-set object (loaded names in order, `load`,
+   `clear`).
+3. `register.rs`: thread the connection-scoped `Deferral` handle through `Shared`/`McpOptions`; keep `record`
+   feeding it on each `add`/`reconcile`; names that disappeared are dropped from the registry and from each
+   agent's loaded set on its next read.
 4. `tool_search.rs` + descriptor entry (`descriptor.rs`) with `RiskClass::ReadOnly`; register in the built-in
    table; add to the default toolsets that include MCP tools (and not to children whose toolset has no MCP).
-5. Advertisement: implement the route chosen in step 1 so request definitions = always-exposed + loaded.
+5. Advertisement: the per-agent `CompletionCall` hook with `RequestPatch::active_tools` (Mechanism 2) so
+   request definitions = always-exposed + loaded.
 6. Refusal for unloaded deferred calls (in the wrapped callback, before the gate runs? No: after the gate, so
    the gate decision is recorded for the attempted call; the refusal is the tool result).
 7. Config: `McpSection.tool_search` in `config.rs`, schema (`docs/schemas`), config catalog/merge (either
    scope, no loosening classification), `/config` display.
 8. Decision logic + threshold in `agent/mcp.rs`; prompt section in `prompt.rs`; claude-subscription forced off.
 9. `/context`: show deferred names and loaded schemas separately (`context.rs`, TUI context view).
-10. Subagent registry: `tool_search` follows the parent's MCP entries; a child's loaded set is its own.
+10. Subagent registry: `tool_search` follows the parent's MCP entries; each child gets its own `tool_search` instance, loaded-set
+    object and completion hook, starting empty.
 11. Telemetry: a `tool_search` span/event with counts only (names hidden unless `log_tool_details`, as for MCP
     calls).
 12. Docs (below), CHANGELOG entry, `## Decisions` line in the master plan's MCP subsection.
@@ -141,7 +144,11 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
 
 ## Decisions
 
-(none yet)
+- 2026-11-13: (#34) Names-only prompt plus loading the real tool definition, not a `tool_call` proxy tool: keeps rules, hooks and audit keyed on the real `mcp__server__tool` name.
+- 2026-11-13: (#34) Loading is append-only (loaded tools after the always-exposed set, in load order, never re-sorted): a load only invalidates the provider's cached prefix from the append point.
+- 2026-11-13: (#34) Deferral is provider-neutral and client-side, not provider-native tool search: native needs per-provider wire support; #439 tracks the Kimi variant.
+- 2026-11-13: (#34) `[mcp] tool_search = "auto"` decides on a heuristic token estimate (10% of the context window, 10,000 tokens if unknown), as Claude Code does; the estimate only trades context for one round trip.
+- 2026-11-13: (#34) `[mcp] tool_search` is not a loosening key and either scope may set it: deferral hides schemas but changes no gate.
 
 ## Documentation
 
@@ -167,7 +174,6 @@ Server-side provider tool-search (Anthropic `tool_search_tool_*`) and the Kimi m
 
 ## Open Questions
 
-- Whether rig-agent 0.46's run path accepts per-run dynamic tool ids (step 1 settles it; the definition
-  filter is the fallback).
-- Whether resume should rebuild the loaded set from transcript `tool_search` results (planned) or start empty
-  and let the model search again (cheaper to build, costs one round trip).
+- Whether resume should rebuild the loaded set from transcript `tool_search` results (planned; best-effort,
+  since compaction may drop some) or start empty and let the model search again (cheaper to build, costs one
+  round trip).
