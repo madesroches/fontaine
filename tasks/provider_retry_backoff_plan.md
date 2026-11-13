@@ -45,28 +45,24 @@ Defaults: `max_retries = 4` (5 attempts), `base_delay = 500ms`, `max_delay = 30s
 `max_total_delay = 120s`. Pure function
 `next_delay(&self, attempt, retry_after: Option<Duration>, elapsed: Duration, jitter: f64) -> Option<Duration>`:
 exponential `base * 2^attempt` capped at `max_delay`, multiplied by full-ish jitter in `[0.5, 1.0]`;
-a `Retry-After` takes the larger of it and the computed delay (never shortened by jitter) but is capped
-at `max_delay`; returns `None` when the wait would push `elapsed + wait` past `max_total_delay`, which
-ends the retries. The jitter source is injected (a `fn() -> f64` or a parameter) so unit tests are
+order: `delay = max(jittered exponential, Retry-After)`; returns `None` (ends the retries) when
+`delay > max_delay` or `elapsed + delay > max_total_delay`. A `Retry-After` above `max_delay` therefore
+settles the failure now: the server asked for longer than we will wait. The jitter source is injected (a `fn() -> f64` or a parameter) so unit tests are
 deterministic; production uses `rand` (check it is already a dependency; else a tiny
 `fastrand`/time-seeded source already in the tree).
 
 **Retry-After**: make `usage_limit::retry_after` `pub(crate)` and reuse it (DRY) on the provider
-response (`ProviderError::provider_response()` / `ErrorReport.provider_response`). A `Retry-After`
-above `TRANSIENT_RETRY_AFTER_MAX` is already a usage window and exits via `usage_limit` before the
-retry decision, so it never reaches the policy.
+response (`ProviderError::provider_response()` / `ErrorReport.provider_response`). The 300 s
+usage-window exit in `usage_limit.rs` applies only to status 402/429, so a 503 with `Retry-After: 600`
+does reach the policy (and, exceeding `max_delay`, settles as failed).
 
-**Classification**: keep `retryable()` (rig's `is_retryable`) as the single decision, and add
-explicit coverage that 500/502/503/504/529-class statuses, resets and timeouts retry while 400/401/
-403/404 do not. Guardian denials never pass through `drive` (they are tool-gate results, not model
-failures), so they are untouched. If rig's `is_retryable` treats a 529 as non-retryable, add 529 to
-`retryable()` — but 529 is in `QUOTA_CODES` and "falls through" a model list; the existing order
-(usage-limit and list fall-through are the caller's decision after `drive` returns) must hold, so a
-529 retries within `drive` first, then falls through once attempts are exhausted. Verify against rig
-in the implementation and record the outcome in `## Decisions`.
+**Classification**: keep `retryable()` (rig's `is_retryable`) as the single decision; rig-core 0.46
+already retries 408/425/429, every 5xx (including 502/504/529), truncated and stalled replies, and
+transient transport errors, so nothing is added to it. Guardian denials never pass through `drive`
+(they are tool-gate results, not model failures), so they are untouched.
 
 **drive loop**: replace the constants with `params.state.retry_policy()`; track `started =
-Instant::now()` across the loop; on a retryable failure compute `next_delay`; `None` or no attempts
+tokio::time::Instant::now()` across the loop; on a retryable failure compute `next_delay`; `None` or no attempts
 left settles `TurnOutcome::Failed` exactly as today (full chain via `failure_text`). Before sleeping,
 call `state.approver().warn(...)` with the agent id, attempt `n of N`, the delay, and the error's
 one-line status/class (no body: a provider's message can echo the request). The sleep must stay
@@ -89,17 +85,24 @@ conversation; no tool call is replayed. No change to the permission pipeline, gu
    `Retry-After` from a `PromptError` (provider response or report).
 3. `config.rs`: `RetrySection`, validation, merge, `Config.retry`; `config_catalog.rs`;
    `config_scope.rs` (user/CLI only); regenerate any schema fixture the repo checks in.
-4. `gate.rs`: carry `RetryPolicy` in `SessionState` with `retry_policy()` and an approver accessor if
-   none exists; thread from the two construction sites (`fontaine/src/lib.rs`, tui if it builds one)
-   and test helpers (`tests/common`).
+4. `gate.rs`: carry `RetryPolicy` in `SessionState` (new `StateParams` field with a `Default`, so the
+   test/eval helper sites need no edits) with `retry_policy()` and a `SessionState::warn` method (the
+   `approver` field is private with no accessor). Thread `Config.retry` from the one production
+   construction site, `rust/fontaine-core/src/agent/setup.rs:~499`.
 5. `turn.rs`: use the policy in `drive`, emit the warn line, drop `MAX_RETRIES`/`BACKOFF`.
-6. Docs and CHANGELOG (below).
+6. Update tests broken by the new defaults: `tests/turn_recovery.rs::retries_run_out_and_the_failure_is_reported_once`
+   (3 scripted turns, `request_count() == 3` becomes 5 with `max_retries = 4`) and
+   `tests/usage_pause_turn.rs` (`a_throttle_is_still_retried...`,
+   `a_retryable_failure_is_retried_and_the_task_continues`); test helpers use a zero-delay/small policy
+   and the 3 -> 5 request-count change is explicit.
+7. Docs and CHANGELOG (below).
 
 ## Files to Modify
 
 `fontaine-core/src/{retry.rs (new), lib.rs, turn.rs, usage_limit.rs, config.rs, config_catalog.rs,
-config_scope.rs, gate.rs}`, session-state construction sites and test helpers, `docs/architecture.md`,
-`docs/configuration.md`, `docs/agents.md` (one sentence), `CHANGELOG.md`.
+config_scope.rs, gate.rs, agent/setup.rs}`, `tests/{turn_recovery,usage_pause_turn}.rs`,
+`docs/architecture.md`, `docs/configuration.md`, `docs/claude-subscription.md`, `docs/headless.md`,
+`docs/agents.md` (one sentence), `CHANGELOG.md`.
 
 ## Trade-offs
 
@@ -113,11 +116,13 @@ config_scope.rs, gate.rs}`, session-state construction sites and test helpers, `
 ## Decisions
 
 - 2026-11-13: No project-scope `[retry]` keys; retrying is spend and a repository must not raise it.
+- 2026-11-13: Retries run first inside `drive`; model-list fall-through happens only once attempts are exhausted.
 
 ## Documentation
 
 - `docs/architecture.md`: replace "retried twice with a short backoff" with the new behavior.
 - `docs/configuration.md`: `[retry]` key reference, per-key scope table row (user file and CLI only).
+- `docs/claude-subscription.md` (~line 182) and `docs/headless.md` (~line 75): replace "retried twice".
 - `docs/agents.md`: a failed subagent now means retries were exhausted.
 - `CHANGELOG.md` entry.
 
@@ -126,16 +131,13 @@ config_scope.rs, gate.rs}`, session-state construction sites and test helpers, `
 Unit tests (`retry.rs`): the delay grows exponentially, is capped by `max_delay`, jitter stays within
 bounds, `Retry-After` raises but is capped, and the total-delay cap returns `None`.
 Config tests (`tests/config.rs`): defaults, user override, out-of-range refused, project scope refused.
-Integration tests in `fontaine-core` using `rig_core::test_utils` deterministic models / wiremock with
-tokio paused time (`start_paused`) and a zero-jitter policy: 503 then success completes; persistent 503
-fails after `max_retries + 1` calls with the full chain; 401 and 400 are not retried; a 429 with a short
+Classification: extend the `turn.rs` unit test `throttling_and_server_errors_are_retried_client_errors_are_not`
+with 502/503/504/529 (retry) and 401/403/404 (no retry).
+Integration tests extend the `error_turn` deterministic-model tests in `turn_recovery.rs` with tokio
+paused time (`start_paused`; the elapsed clock is `tokio::time::Instant`, so the total-delay cap is
+exercisable) and a zero-jitter policy: a 429 with a short
 `Retry-After` waits at least that long; a retry never re-executes a tool call (tool-call counter stays
 1 across a retry after a tool result); each retry produces one `Approver::warn`; a subagent run through
 `child_runner` retries the same way (pins the issue's reported bug: a worker dying on a 503). The
 `claude-subscription` double (`claude_cli_double`) with a CLI-reported server error then success covers
 the CLI path.
-
-## Open Questions
-
-- Whether rig's `is_retryable` covers 502/504/529 and cut streams; the implementer verifies in the
-  rig source and adds explicit cases to `retryable()` if not.
