@@ -829,6 +829,7 @@ fn session_start_round_trips_with_and_without_env_keys() {
         workspace_roots: vec!["/w".into()],
         workspace_trust: "trusted".into(),
         git_remotes: Vec::new(),
+        git_remote_names: None,
         env_keys,
         headless: false,
         project_executables: false,
@@ -851,6 +852,7 @@ fn session_start_round_trips_the_headless_and_project_executables_flags() {
         workspace_roots: vec!["/w".into()],
         workspace_trust: "untrusted".into(),
         git_remotes: Vec::new(),
+        git_remote_names: None,
         env_keys: Vec::new(),
         headless,
         project_executables,
@@ -865,6 +867,47 @@ fn session_start_round_trips_the_headless_and_project_executables_flags() {
             record(headless, loaded)
         );
     }
+}
+
+#[tokio::test]
+async fn the_session_start_records_the_remotes_git_names_for_the_guardian() {
+    use common::runtime::build;
+    use fontaine_core::adjudication;
+    use fontaine_core::config::PermissionMode::Manual;
+
+    let w = World::new();
+    common::git_init(&w.work);
+    common::git(
+        &w.work,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:token@example.com/org/repo.git",
+        ],
+    );
+    let built = build(&w, Manual, Vec::new(), true);
+    let facts = |runtime: &fontaine_core::agent::AgentRuntime| {
+        adjudication::build(
+            &runtime.state,
+            fontaine_tools::gate::ROOT_AGENT,
+            "shell",
+            &serde_json::json!({"command": "ls"}),
+            Vec::new(),
+            None,
+        )
+        .session_facts
+    };
+    assert_eq!(
+        facts(&built.runtime).git_remote_names,
+        None,
+        "nothing is claimed before the session start is recorded"
+    );
+    built.runtime.record_session_start().await;
+    assert_eq!(
+        facts(&built.runtime).git_remote_names,
+        Some(vec!["origin https://example.com/org/repo.git".to_string()])
+    );
 }
 
 #[tokio::test]

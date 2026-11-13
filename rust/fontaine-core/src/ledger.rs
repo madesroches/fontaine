@@ -60,6 +60,9 @@ pub enum Record {
         workspace_roots: Vec<String>,
         workspace_trust: String,
         git_remotes: Vec<String>,
+        /// Each remote as `<git name> <fetch url>`; `None` when the ledger predates the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_remote_names: Option<Vec<String>>,
         /// Names of the `[env]` overrides every subprocess gets; never their values.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
@@ -394,6 +397,8 @@ pub struct LedgerView {
     pub workspace_roots: Vec<String>,
     pub workspace_trust: String,
     pub git_remotes: Vec<String>,
+    /// `<git name> <fetch url>` per remote; `None` when the session start did not record them.
+    pub git_remote_names: Option<Vec<String>>,
     pub env_keys: Vec<String>,
     pub project_environment: Option<ProjectEnvironment>,
     index: HashSet<String>,
@@ -447,6 +452,7 @@ impl Default for LedgerView {
             workspace_roots: Vec::new(),
             workspace_trust: String::new(),
             git_remotes: Vec::new(),
+            git_remote_names: None,
             env_keys: Vec::new(),
             project_environment: None,
             index: HashSet::new(),
@@ -619,6 +625,7 @@ impl LedgerView {
                 workspace_roots,
                 workspace_trust,
                 git_remotes,
+                git_remote_names,
                 env_keys,
                 project_environment,
                 ..
@@ -626,6 +633,7 @@ impl LedgerView {
                 self.workspace_roots = workspace_roots.clone();
                 self.workspace_trust = workspace_trust.clone();
                 self.git_remotes = git_remotes.clone();
+                self.git_remote_names = git_remote_names.clone();
                 self.env_keys = env_keys.clone();
                 // Assigned even when absent, so a resume after the file is gone clears it.
                 self.project_environment = project_environment.clone();
@@ -976,6 +984,19 @@ fn named_remotes(root: &Path) -> Vec<(String, String)> {
 /// The remotes of every root, sorted and deduplicated: what a session records at start.
 pub fn git_remotes_of(roots: &[PathBuf]) -> Vec<String> {
     let mut remotes: Vec<String> = roots.iter().flat_map(|root| git_remotes(root)).collect();
+    remotes.sort();
+    remotes.dedup();
+    remotes
+}
+
+/// The remotes of every root as `<git name> <fetch url>`, sorted and deduplicated: what a session
+/// shows the guardian, which judges a call by the git name it uses.
+pub fn git_remote_names_of(roots: &[PathBuf]) -> Vec<String> {
+    let mut remotes: Vec<String> = roots
+        .iter()
+        .flat_map(|root| named_remotes(root))
+        .map(|(name, url)| format!("{name} {url}"))
+        .collect();
     remotes.sort();
     remotes.dedup();
     remotes

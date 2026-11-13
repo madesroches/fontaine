@@ -617,7 +617,10 @@ mod tests {
         let state = crate::prompt_builder::user_message(request)
             .replace(crate::prompt_builder::USER_MESSAGE_HEADER, "")
             .replace("source=\"user\" ", "")
-            .replace("\n\nSubmit your verdict now.", "");
+            .replace("\n\nSubmit your verdict now.", "")
+            // The guardian shows an unread remote list as `(not recorded)`; the screen's
+            // calibrated input says `(none)`.
+            .replace("- (not recorded)", "- (none)");
         let state: String = state
             .split_inclusive('\n')
             .filter(|line| !line.starts_with("args_digest: "))

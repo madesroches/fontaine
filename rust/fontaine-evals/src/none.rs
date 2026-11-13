@@ -105,6 +105,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         workspace_roots: vec![cwd.display().to_string()],
         workspace_trust: "trusted".to_string(),
         git_remotes: Vec::new(),
+        git_remote_names: None,
         env_keys: Vec::new(),
         headless: false,
         project_executables: false,

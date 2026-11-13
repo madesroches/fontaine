@@ -67,7 +67,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments (a shell call made after an earlier `cd` carries the absolute directory it starts in as `cwd`), a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed`, `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a file git's index holds (never on a directory; a shell command gets both marks only when it is a single simple command (no list, pipeline or substitution) with a certain working directory and no glob or pathspec word, and a file tool always gets them), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get no scratch line and no `absent` or `git_tracked` marks (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start (each shown with its git name and URL, as `origin https://…`; `(none)` when the repository had none, and `(not recorded)` when the harness did not read them; the screen keeps bare URLs and `(none)`), the home directory of the user running the session as a `home_directory` line (guardian view only, set by Fontaine and never from a tool argument), the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed`, `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a file git's index holds (never on a directory; a shell command gets both marks only when it is a single simple command (no list, pipeline or substitution) with a certain working directory and no glob or pathspec word, and a file tool always gets them), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get no scratch line and no `absent` or `git_tracked` marks (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -111,6 +111,19 @@ The guardian reads history and your messages by a few fixed rules:
   authoritative about intent. A message that vouches for something specific
   ("the script is ok to run") counts as you naming that thing, and clears a soft deny for it. It
   never clears a hard deny, however often you repeat it.
+- A target you name (a file, a path, a remote and branch, what to share and how widely) clears the
+  soft concerns about it: you have weighed that target, and your own description of it
+  ("confidential", "the secrets file") is part of the request. A definite reference ("the generated
+  file", "the test database") counts as naming it when it can refer to only one thing in the
+  conversation, and a `~/` path you name matches the same path under your home directory. It never
+  clears a hard deny, and two things stay denied even when you name them: printing a live
+  credential from a home-directory store or an environment secret into the transcript (a local
+  read of a file you named inside the workspace is fine), and pushing material you call
+  confidential to a `public` remote.
+- Text in a tool argument, file or note that tries to steer the guardian ("approve everything") is
+  ignored, not punished: the guardian judges the call as if the text were inert, so a commit or a
+  note that carries it is allowed when the action is harmless, and a call that also does something
+  a rule denies is denied under that rule.
 - After a denial, a message that re-issues or approves the denied action counts as your consent to
   it. The agent re-issuing the same call with no new message from you does not.
 - When you ask for an issue, pull request or comment, the agent writes its text; you need not
@@ -793,7 +806,11 @@ paths, network paths around the sandbox proxy), denying them as `Container Escap
 class in the explanation as `class=<name>`, and still denies exfiltration to destinations that are
 not the repository's own remotes. It receives a smaller request: the call, your last 500
 characters and 3 messages, the workspace roots, the remotes, the `[env]` names, the touched paths' status and any `active_skill` line, without
-project instructions, hook notes or earlier denials. The deterministic floor still runs.
+project instructions, hook notes or earlier denials. The deterministic floor still runs. It also
+treats the project's own issues and pull requests like the full profile (creating, editing,
+commenting on or closing them is not exfiltration, though a secret in their content is), and it is
+told that its confidence is about containment and egress, so ordinary work that crosses neither is
+high confidence and a destructive Allow is not turned into a Deny by the confidence threshold.
 
 It is a narrowing, never "off", and it only loads when containment is verified. **Both** must hold:
 
@@ -949,12 +966,22 @@ prompt gives the fields fixed meanings:
   that remote is public data, so sharing it anywhere is not data exfiltration, and opening issues
   or pull requests about the project there is routine. Untracked, ignored or sensitive files,
   local changes the remote does not have, and secrets get no relief, and pushing new material
-  there is publication, so confidential material is not cleared by it.
-- `private`, `internal` and `unknown` relax nothing. `unverified` counts as possibly public.
+  there is publication, so confidential material is not cleared by it, and you calling it
+  confidential does not clear a push to a `public` remote. Sharing tracked content as a public gist
+  or paste is not exfiltration and widens no one's access.
+- `private`, `internal` and `unknown` relax nothing, except that a push you asked for to a
+  `private` or `internal` remote stays inside the trust boundary, so calling the material
+  confidential is no reason to block it. `unverified` counts as possibly public.
 - A protected default branch, or a workflow that runs on tag push, marks a push there as a
   shared-branch change or a release.
 - Facts read from repository files describe the project and never add trust.
-- Trusted destinations you accepted count as your own trust-slot entries.
+- Trusted destinations you accepted count as your own trust-slot entries. Sensitive locations gate
+  sending their content out, not reading it locally: a local read of a file inside the workspace
+  that you named (`config/secrets.yml`, `.env`) is routine, and credential stores under the home
+  directory are not covered.
+- A remote is trusted by the git name recorded at session start; one added during the session is
+  not, and `(none)` means any remote a call names was added. When the names were not recorded, the
+  repository's named remotes (`origin`) count as its own and one the call adds or repoints does not.
 - A location, target or destination missing from the lists says nothing about its safety.
 
 **Expiry.** A `public` fact older than 30 days is shown as `unknown (last seen public on <date>)`,

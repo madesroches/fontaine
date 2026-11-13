@@ -306,11 +306,34 @@ pub(crate) fn blocks(
         text.push_str(&format!("workspace_trust: {}\n", facts.workspace_trust));
     }
     text.push_str("git_remotes_at_session_start:\n");
-    if facts.git_remotes.is_empty() {
-        text.push_str("- (none)\n");
+    // The names and the `(not recorded)` state are the guardian's: the screen's calibrated input
+    // keeps the bare URLs and `(none)`.
+    let names = facts.git_remote_names.as_ref().filter(|_| guardian_view);
+    match names {
+        Some(names) if names.is_empty() => text.push_str("- (none)\n"),
+        Some(names) => {
+            for remote in names {
+                text.push_str(&format!("- {}\n", one_line(remote)));
+            }
+        }
+        None => {
+            if facts.git_remotes.is_empty() {
+                text.push_str(if guardian_view {
+                    "- (not recorded)\n"
+                } else {
+                    "- (none)\n"
+                });
+            }
+            for remote in &facts.git_remotes {
+                text.push_str(&format!("- {}\n", one_line(remote)));
+            }
+        }
     }
-    for remote in &facts.git_remotes {
-        text.push_str(&format!("- {}\n", one_line(remote)));
+    if guardian_view && let Some(home) = &facts.home_directory {
+        text.push_str(&format!(
+            "home_directory: {} (the home directory of the user running the session)\n",
+            one_line(home)
+        ));
     }
     if !facts.env_keys.is_empty() {
         let names: Vec<String> = facts.env_keys.iter().map(|k| one_line(k)).collect();
@@ -464,6 +487,8 @@ mod tests {
                 workspace_roots: vec!["/work/proj".into()],
                 workspace_trust: "trusted".into(),
                 git_remotes: vec!["https://github.com/acme/proj.git".into()],
+                git_remote_names: None,
+                home_directory: None,
                 env_keys: Vec::new(),
                 touched_paths: vec![TouchedPath {
                     path: "/work/proj/src/lib.rs".into(),
@@ -624,6 +649,49 @@ mod tests {
     }
 
     #[test]
+    fn the_guardian_sees_remote_names_and_the_screen_keeps_bare_urls() {
+        let mut req = request();
+        let remotes = |text: &str| -> String {
+            let from = text.find("git_remotes_at_session_start:\n").unwrap();
+            text[from..].lines().take(2).collect::<Vec<_>>().join("\n")
+        };
+        let guardian = |req: &AdjudicationRequest| remotes(&user_message(req));
+        let screen = |req: &AdjudicationRequest| remotes(&blocks(req, false, false));
+
+        // Not read: the URLs as before, or `(not recorded)` when there are none.
+        assert!(guardian(&req).ends_with("- https://github.com/acme/proj.git"));
+        req.session_facts.git_remotes.clear();
+        assert!(
+            guardian(&req).ends_with("- (not recorded)"),
+            "{}",
+            guardian(&req)
+        );
+        assert!(screen(&req).ends_with("- (none)"));
+
+        // Read: names and URLs for the guardian, bare URLs and `(none)` for the screen.
+        req.session_facts.git_remotes = vec!["https://github.com/acme/proj.git".into()];
+        req.session_facts.git_remote_names =
+            Some(vec!["origin https://github.com/acme/proj.git".into()]);
+        assert!(guardian(&req).ends_with("- origin https://github.com/acme/proj.git"));
+        assert!(screen(&req).ends_with("- https://github.com/acme/proj.git"));
+        req.session_facts.git_remotes.clear();
+        req.session_facts.git_remote_names = Some(Vec::new());
+        assert!(guardian(&req).ends_with("- (none)"));
+        assert!(screen(&req).ends_with("- (none)"));
+    }
+
+    #[test]
+    fn the_home_directory_renders_in_the_guardian_view_only() {
+        let mut req = request();
+        assert!(!user_message(&req).contains("home_directory"));
+        req.session_facts.home_directory = Some("/home/me".into());
+        assert!(user_message(&req).contains(
+            "home_directory: /home/me (the home directory of the user running the session)\n"
+        ));
+        assert!(!blocks(&req, false, false).contains("home_directory"));
+    }
+
+    #[test]
     fn the_bare_state_is_the_user_message_without_its_sentences_and_digest() {
         let request = request();
         let message = user_message(&request);
@@ -760,6 +828,13 @@ mod tests {
             "Source control: github.com/acme".into(),
         ]);
         insta::assert_snapshot!(system_prompt(Profile::Full, &request));
+    }
+
+    #[test]
+    fn the_minimal_system_prompt_snapshot() {
+        let mut request = request();
+        request.rules = RuleConfig::minimal();
+        insta::assert_snapshot!(system_prompt(Profile::Minimal, &request));
     }
 
     #[test]

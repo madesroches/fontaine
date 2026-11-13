@@ -85,6 +85,12 @@ pub struct SessionFacts {
     pub workspace_trust: String,
     /// Fetch URLs of the repositories around the roots, read when the session started.
     pub git_remotes: Vec<String>,
+    /// The same remotes as `<git name> <fetch url>`. `None` when the harness did not read them,
+    /// which is different from `Some` of an empty list: the repository had no remotes.
+    pub git_remote_names: Option<Vec<String>>,
+    /// The home directory of the user running the session, set by the harness and never from a
+    /// tool argument. Only the guardian sees it.
+    pub home_directory: Option<String>,
     /// Names of the variables the user's config sets on every subprocess; values are never
     /// carried.
     pub env_keys: Vec<String>,

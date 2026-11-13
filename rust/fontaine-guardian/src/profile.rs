@@ -70,6 +70,8 @@ impl Profile {
                         workspace_roots: request.session_facts.workspace_roots.clone(),
                         workspace_trust: String::new(),
                         git_remotes: request.session_facts.git_remotes.clone(),
+                        git_remote_names: request.session_facts.git_remote_names.clone(),
+                        home_directory: request.session_facts.home_directory.clone(),
                         env_keys: request.session_facts.env_keys.clone(),
                         touched_paths: request
                             .session_facts
@@ -130,6 +132,42 @@ mod tests {
         assert_eq!(
             shaped.session_facts.memory_dir.as_deref(),
             Some("/d/memory/k")
+        );
+    }
+
+    #[test]
+    fn the_minimal_shape_keeps_the_remote_names_and_the_home_directory() {
+        let request = AdjudicationRequest {
+            task_intent: String::new(),
+            recent_user_messages: Vec::new(),
+            screen_intent: None,
+            agent_message_before_reply: None,
+            project_instructions: None,
+            environment: EnvironmentConfig::default(),
+            rules: RuleConfig::default(),
+            tool_call: ToolCallSummary {
+                tool: "shell".into(),
+                args: serde_json::json!({}),
+                args_digest: String::new(),
+                destructive: false,
+                annotations: None,
+            },
+            session_facts: SessionFacts {
+                git_remote_names: Some(vec!["origin https://x/y.git".into()]),
+                home_directory: Some("/home/me".into()),
+                ..SessionFacts::default()
+            },
+            hook_context: Vec::new(),
+            prior_denials: Vec::new(),
+        };
+        let shaped = Profile::Minimal.shape(&request);
+        assert_eq!(
+            shaped.session_facts.git_remote_names,
+            Some(vec!["origin https://x/y.git".to_string()])
+        );
+        assert_eq!(
+            shaped.session_facts.home_directory.as_deref(),
+            Some("/home/me")
         );
     }
 
