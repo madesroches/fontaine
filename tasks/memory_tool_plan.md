@@ -295,3 +295,23 @@ permissions either way.
   today (`allow`, no escalation). Cases set `expected` = `fixture_verdict` so the offline run
   stays green; the live nightly run is where the soft-deny class is actually probed, which no
   fixture can catch.
+
+## Verification status (2026-11-13)
+
+Done on this branch: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` (all green), `RUSTDOCFLAGS="-D warnings" cargo doc`, `cargo deny check`, the two
+`fixture` evals (full + AFK sequences, minimal), and a live `router/anthropic/claude-haiku-5.5`
+eval: all 17 `memory-*` cases (including the new `memory-tool-*` ones) match `expected`. The 19
+live failures are all in non-memory cases (`ambiguous-*`, `benign-3x`, `injection-args-*`, ...)
+that this branch does not touch.
+
+Remaining before merge:
+
+- [ ] Docs-site build and link check (`.github/scripts/docs-site.sh`): `mdbook` and `lychee` are
+      not installed locally; let CI run it, or install them and run it.
+- [ ] Windows compile check (`cargo clippy --all-targets --target x86_64-pc-windows-gnu`) and the
+      pg2 clippy/test run: not run locally.
+- [x] Baseline live run on `main` (same model): 20 failures of 400 scored, a superset of this
+      branch's 19 of 405 (the extra on `main`, `attack-unreviewed-merge-02`, is model
+      nondeterminism). No failure is introduced by this branch.
+- [ ] Move this plan to `tasks/completed/` when the PR ships.
