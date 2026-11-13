@@ -1131,6 +1131,14 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-09 (#553): Supersedes "follows Claude Code's pattern" for Git Bash discovery in one respect: a `git.exe` on `PATH` that is not a Git install gets one hop through a sibling scoop `git.shim`, and the `%SCOOP%`/`%SCOOP_GLOBAL%` `apps\git\current` roots are probed, because a scoop install puts only a shim on `PATH`, which Claude Code's pattern does not recognize, so the override would otherwise be needed (Claude Code needs its own override on the same machine, #562).
 - 2026-11-10 (#562): Supersedes the 2026-10-30 "only the direct language-server child is killed" line: `procgroup::force_kill` runs `taskkill /T /F` on Windows, so the LSP client and websearch gain a tree kill, as do the status line, command hooks (through a `TreeGuard` drop guard, since the hook timeout stays caller-owned) and the claude CLI provider, which shares the helper. `taskkill` cannot reach descendants of an exited leader, so `TreeGuard` and the guardian's local copy also hold the child in a kill-on-close Job Object that the kill path closes (cleared on a finished run, so intentional daemons survive). `fontaine-guardian` keeps a local copy for its BYO scanner rather than depend on `fontaine-tools`.
 - 2026-11-12: The `memory` tool (#329, `tasks/memory_tool_plan.md`) is Fontaine-only: Claude Code saves memory with raw file writes, while Fontaine adds one structured `WorkspaceWrite` tool that writes the topic file and maintains the `MEMORY.md` index line deterministically. It is path-free (`Specifier::None`, no argument specifier; the store path is harness-held session state), `Destructive::Always` (the store is not checkpointed), offered only while auto memory is on, and subagents get it with every call gated on its own. Gating falls out of the class with no new name matches: plan mode blocks it, every fast path is name-gated so it reaches none, and `auto` routes it to the guardian. The out-of-scope containment deny gains a path-free exemption (`&& !names_no_path(tool)`) so the call's locate error denies nothing before the mode dispatch — the first path-free `WorkspaceWrite` row would otherwise Mode-deny it in every mode. No read/list subcommand in v1: reads use `read`/`ls`/`glob` on the store root.
+- 2026-11-13 (#329): Amends the 2026-11-12 line's "Gating falls out of the class with no new
+  name matches": gating is an explicit `tool == "memory"` protected-path branch in the floor
+  dispatch, placed before any allow rule or hook allow (a whole-tool allow rule must not
+  approve the store), with `auto`/AFK routed to the guardian from that branch and the asking
+  modes keeping the protected prompt; the plan block and the fast-path name gates still hold
+  by class. The ledger also records a `memory` call's absent topic file and index as
+  created-this-session, so a consecutive save or raw rewrite reads back as
+  `created_this_session`, not `unindexed`.
 
 ### TUI
 

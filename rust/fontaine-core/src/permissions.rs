@@ -1686,8 +1686,10 @@ impl PermissionPipeline {
             )
         };
         // Checked before the tool runs. A shell command only names paths, so its words prove
-        // nothing was created; only `write` creates a file (`edit` reads its target first).
-        let created = if cx.call.tool == "write" {
+        // nothing was created; only `write` and `memory` create files (`edit` reads its target
+        // first) — without `memory` here a follow-up save of its own topic would read back as
+        // possibly pre-existing.
+        let created = if matches!(cx.call.tool, "write" | "memory") {
             paths
                 .iter()
                 .filter(|p| !Path::new(p).exists())
@@ -2826,6 +2828,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         }),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),
+        "memory" => text("topic").map(|topic| format!("memory note: {topic}")),
         "glob" => text("pattern").map(|pattern| match text("path") {
             Some(path) => format!("{pattern} in {path}"),
             None => pattern.to_string(),

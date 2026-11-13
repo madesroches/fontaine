@@ -1982,4 +1982,11 @@ fn the_approval_summary_names_a_directory_only_when_the_call_has_one() {
         summarize("powershell", &json!({"command": "dir", "cwd": "C:/w/sub"})),
         "in C:/w/sub: dir"
     );
+    assert_eq!(
+        summarize(
+            "memory",
+            &json!({"topic": "Commands", "content": "a very long note"})
+        ),
+        "memory note: Commands"
+    );
 }

@@ -352,8 +352,8 @@ fn matching_link_spans(
 /// atomically, then keeps `MEMORY.md`'s line for it — the line whose link target is the
 /// file, ignoring case, gets the topic as its new link text and the file as its
 /// destination in place, anything else appends one. A topic is refused when it would
-/// name the index file or carries Markdown link delimiters it could smuggle into the
-/// index. Two sessions saving at once are last-writer-wins on the index, as with raw
+/// name the index file or carries Markdown link delimiters (a trailing backslash included)
+/// it could smuggle into the index. Two sessions saving at once are last-writer-wins on the index, as with raw
 /// edits; the atomic renames keep individual files whole. The index caps are a warning, not a
 /// failure: the note is saved and `Saved.warning` says the index no longer loads whole.
 pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
@@ -373,6 +373,14 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("topic {topic:?} contains a Markdown link delimiter"),
+        ));
+    }
+    if topic.ends_with('\\') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "topic {topic:?} ends in a backslash, which would escape the index link's closing bracket"
+            ),
         ));
     }
     let target = dir.join(&file);
@@ -402,12 +410,26 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
             && let Some((text_span, dest_span)) = matching_link_spans(line, &file)
         {
             found = true;
+            // An angled destination keeps its brackets around the rewritten path; a title or
+            // fragment after the path stays in place on its own.
+            let angled =
+                line[..dest_span.start].ends_with('<') && line[dest_span.end..].starts_with('>');
+            let dest = if angled {
+                format!("<{file}>")
+            } else {
+                file.clone()
+            };
+            let tail_start = if angled {
+                dest_span.end + 1
+            } else {
+                dest_span.end
+            };
             let updated = format!(
                 "{}{}]({}{}",
                 &line[..text_span.start],
                 topic,
-                file,
-                &line[dest_span.end..]
+                dest,
+                &line[tail_start..]
             );
             if updated == line {
                 state = LineState::Unchanged;
@@ -1295,9 +1317,13 @@ mod tests {
         .unwrap();
         let saved = save(&dir, "Commands", "x\n").unwrap();
         assert_eq!(saved.index, LineState::Updated(1));
+        let saved = save(&dir, "Tests", "y\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(2));
+        let saved = save(&dir, "Arch", "z\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(3));
         assert_eq!(
             std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
-            "- [Commands](commands.md#build)\n- [tests](tests.md \"Test commands\")\n- [arch](<arch.md>)\n"
+            "- [Commands](commands.md#build)\n- [Tests](tests.md \"Test commands\")\n- [Arch](<arch.md>)\n"
         );
     }
 
@@ -1313,6 +1339,14 @@ mod tests {
     fn a_topic_with_a_markdown_link_delimiter_is_refused() {
         let (_tmp, dir) = store();
         let error = save(&dir, "x](other.md) [y", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_topic_ending_in_a_backslash_is_refused() {
+        let (_tmp, dir) = store();
+        let error = save(&dir, "Commands\\", "x\n").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
     }
