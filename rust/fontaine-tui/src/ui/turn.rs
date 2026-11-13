@@ -337,8 +337,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         match end_of_turn(&end, runtime.steering.retract()) {
             EndOfTurn::Submit(submissions) => {
-                self.converse(runtime, launch_dir, VecDeque::from(submissions))
-                    .await
+                self.converse(
+                    runtime,
+                    launch_dir,
+                    VecDeque::from(submissions),
+                    MessageOrigin::Other,
+                )
+                .await
             }
             EndOfTurn::RestoreToInput(back) => {
                 self.app.restore_to_input(&back);
@@ -658,17 +663,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
         mut pending: VecDeque<Submission>,
+        first_origin: MessageOrigin,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
-        let mut first = true;
+        let mut first = Some(first_origin);
         while let Some(submission) = pending.pop_front() {
-            // Only the first submission was typed after the previous answer was on screen; a
-            // later one was typed while a turn ran, before its reply was shown.
-            let origin = if std::mem::take(&mut first) {
-                MessageOrigin::Prompt
-            } else {
-                MessageOrigin::Other
-            };
+            // Only an idle-prompt submission was typed after the previous answer was on screen;
+            // queued input was typed while a turn ran, before its reply was shown.
+            let origin = first.take().unwrap_or(MessageOrigin::Other);
             if self.quitting() {
                 runtime.steering.set_delivery_hold(false);
                 return Break(());

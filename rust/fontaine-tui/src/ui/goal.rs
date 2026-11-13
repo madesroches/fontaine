@@ -7,7 +7,7 @@ use std::path::Path;
 
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::goal::{Applied, Judgment, Step};
-use fontaine_core::ledger::GoalEvent;
+use fontaine_core::ledger::{GoalEvent, MessageOrigin};
 use fontaine_core::turn::TurnOutcome;
 
 use crate::ui::turn::{EndOfTurn, Serve, TurnEnd, end_of_turn};
@@ -66,8 +66,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let finished = TurnEnd::Finished(TurnOutcome::Answer(String::new()));
         if let EndOfTurn::Submit(submissions) = end_of_turn(&finished, runtime.steering.retract()) {
             return Some(
-                self.converse(runtime, launch_dir, VecDeque::from(submissions))
-                    .await,
+                self.converse(
+                    runtime,
+                    launch_dir,
+                    VecDeque::from(submissions),
+                    MessageOrigin::Other,
+                )
+                .await,
             );
         }
         match step.flatten() {

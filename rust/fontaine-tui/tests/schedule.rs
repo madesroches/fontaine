@@ -102,6 +102,45 @@ async fn a_scheduled_turn_is_not_the_user_speaking() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_message_queued_during_a_scheduled_turn_is_not_recorded_as_a_prompt() {
+    let w = World::new(vec![
+        tool_turn("c1", "cron_create", every_minute("tick", false)),
+        text_turn("set"),
+        tool_turn("c2", "shell", json!({"command": "sleep 1"})),
+        text_turn("scheduled answer"),
+        text_turn("skill answer"),
+        text_turn("queued answer"),
+    ])
+    .with_user_file(
+        "skills/review/SKILL.md",
+        "---\ndescription: Review a pull request\nargument-hint: [pr-number]\n---\nReview pull request $0 and report.\n",
+    )
+    .with_config(ALLOW_SCHEDULING);
+    let clock = w.clock.clone();
+    w.run(|ui| async move {
+        ui.send("tick in a minute");
+        ui.wait_for("set").await;
+        idle(&ui).await;
+        clock.advance(minutes(1) + Duration::from_secs(1));
+        ui.wait_for("• shell sleep 1").await;
+        // A queued skill holds steering delivery, so the message waits for its own turn.
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.send("typed before the answer was shown");
+        ui.wait_for("queued answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let record = w
+        .ledger_text()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|r| r["kind"] == "user_message" && r["text"] == "typed before the answer was shown")
+        .expect("the queued message is recorded");
+    assert!(record["origin"].is_null(), "{record}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_task_that_comes_due_mid_turn_waits_and_then_fires_once() {
     let w = World::new(vec![
         tool_turn("c1", "cron_create", every_minute("tick", true)),

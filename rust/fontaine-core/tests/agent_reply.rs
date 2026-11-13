@@ -184,7 +184,8 @@ async fn a_dialog_answer_is_left_out_of_the_screens_intent() {
     let built = runtime::build(&w, Manual, Vec::new(), false);
     say(&built, "rebase PR 584", Prompt, None);
     assert_eq!(request_for(&built, "root").screen_intent, None);
-    let line = "Answered the agent's question \"Force-push?\": picked \"Yes\" (Overwrite origin)";
+    let line =
+        "Answered the agent's question \"Force-push?\": picked \"Yes\" (\"Overwrite origin\")";
     say(&built, line, Dialog, None);
     let request = request_for(&built, "root");
     assert_eq!(request.recent_user_messages, vec!["rebase PR 584", line]);

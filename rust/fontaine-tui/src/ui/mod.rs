@@ -30,6 +30,7 @@ use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::AfkRefusal;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
 use fontaine_core::instructions;
+use fontaine_core::ledger::MessageOrigin;
 use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
@@ -1005,8 +1006,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // A picker or dialog the command opened is served by the idle loop.
                     Continue(CommandOutcome::Done | CommandOutcome::AwaitingModal) => Continue(()),
                     Continue(CommandOutcome::Turn(submission)) => {
-                        self.converse(runtime, launch_dir, VecDeque::from([submission]))
-                            .await
+                        self.converse(
+                            runtime,
+                            launch_dir,
+                            VecDeque::from([submission]),
+                            MessageOrigin::Prompt,
+                        )
+                        .await
                     }
                 }
             }
@@ -1016,8 +1022,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 } else {
                     Submission::Attached { text, attachments }
                 };
-                self.converse(runtime, launch_dir, VecDeque::from([submission]))
-                    .await
+                self.converse(
+                    runtime,
+                    launch_dir,
+                    VecDeque::from([submission]),
+                    MessageOrigin::Prompt,
+                )
+                .await
             }
         }
     }

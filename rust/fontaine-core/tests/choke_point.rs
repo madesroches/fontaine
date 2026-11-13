@@ -699,7 +699,7 @@ async fn no_mode_answers_the_question_for_the_human() {
         // The human's pick is recorded as their answer, never decided by a mode.
         assert_eq!(
             rig.state.ledger.view().user_messages,
-            vec!["Answered the agent's question \"Which?\": picked \"b\" (second)"],
+            vec!["Answered the agent's question \"Which?\": picked \"b\" (\"second\")"],
             "{mode:?}"
         );
     }
