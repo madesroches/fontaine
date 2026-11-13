@@ -1198,6 +1198,8 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
 
     /// Waits out `interval`, then polls the task of `call`.
     fn schedule_poll(&mut self, call: RequestId, interval: Duration) {
+        // A set keeps each finished timer until it is joined.
+        while self.tasks.try_join_next().is_some() {}
         let events = self.event_sender.clone();
         self.tasks.spawn(async move {
             tokio::time::sleep(interval).await;
@@ -1360,13 +1362,6 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
 
     /// Takes a task handle for `call`, answered to a `tools/call`, and starts polling it.
     fn task_created(&mut self, call: RequestId, mut driven: Driven, created: &CreateTaskResult) {
-        if !matches!(driven.request, ClientRequest::CallToolRequest(_)) {
-            self.fail(
-                call,
-                "the server answered with a task, which only a tool call may be",
-            );
-            return;
-        }
         let interval = poll_interval(created.task.poll_interval_ms);
         driven.phase = Phase::Task(TaskState {
             task_id: created.task.task_id.clone(),
@@ -1374,6 +1369,14 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             interval,
             surfaced: BTreeSet::new(),
         });
+        if !matches!(driven.request, ClientRequest::CallToolRequest(_)) {
+            self.cancel_task(&driven);
+            self.fail(
+                call,
+                "the server answered with a task, which only a tool call may be",
+            );
+            return;
+        }
         driven.retry = None;
         self.driven.insert(call.clone(), driven);
         self.schedule_poll(call, interval);
@@ -1423,8 +1426,9 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             phase: Phase::Task(task),
             ..
         }) = self.driven.get_mut(&call)
+            && let Some(millis) = polled.task.task.poll_interval_ms
         {
-            task.interval = poll_interval(polled.task.task.poll_interval_ms);
+            task.interval = poll_interval(Some(millis));
         }
         match polled.task.payload {
             TaskPayload::Working => {
@@ -3195,7 +3199,82 @@ mod tests {
             assert_eq!(out.len(), 1, "{out:?}");
             assert_eq!(out[0]["id"], json!(1));
             assert!(out[0].get("error").is_some());
+            settle().await;
+            assert_eq!(task_requests(&rig.script.sent(), "tasks/cancel").len(), 1);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_without_an_interval_keeps_the_previous_one() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(200)).await;
+        let mut working = json!({
+            "resultType": "complete", "taskId": "t1", "status": "working",
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:01Z",
+            "ttlMs": null,
+        });
+        working["pollIntervalMs"] = Value::Null;
+        rig.script.push(done(get, working));
+        drain(&mut rig.tap, Duration::from_millis(300)).await;
+        settle().await;
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/get").len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_poll_or_update_that_cannot_be_sent_fails_the_call_once() {
+        let mut first = rig(Scripted::new(vec![]));
+        first.tap.send(call_tool(1)).await.unwrap();
+        *first.script.fail_sends.lock().unwrap() = true;
+        first.script.push(created(1, Some(100)));
+        let out = drain(&mut first.tap, Duration::from_millis(400)).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        let get = start_task(&mut rig, Some(100)).await;
+        *rig.script.fail_sends.lock().unwrap() = true;
+        rig.script.push(input_status(get, &["k"]));
+        let out = drain(&mut rig.tap, Duration::from_millis(400)).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_answered_with_a_task_is_polled_under_the_original_id() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        let retry = retries(&rig.script.sent())[0]["id"].clone();
+        let mut task = json!({
+            "resultType": "task", "taskId": "t1", "status": "working",
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:00Z",
+            "ttlMs": null, "pollIntervalMs": 100,
+        });
+        task["pollIntervalMs"] = json!(100);
+        rig.script.push(done(retry, task));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(150))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 1, "{gets:?}");
+        rig.script.push(task_status(
+            gets[0]["id"].clone(),
+            "completed",
+            json!({"result": {"content": [{"type": "text", "text": "fin"}]}}),
+            100,
+        ));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert_eq!(out[0]["result"]["content"][0]["text"], json!("fin"));
     }
 
     #[tokio::test]
