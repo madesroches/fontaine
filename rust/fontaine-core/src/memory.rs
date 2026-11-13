@@ -1,6 +1,8 @@
-//! Auto memory: a per-project store of notes the agent saves with the ordinary file tools, whose
-//! `MEMORY.md` index loads into the next session's prompt. The store lives in the data directory,
-//! so every write to it crosses the protected-path floor.
+//! Auto memory: a per-project store of notes the agent saves, whose `MEMORY.md` index loads
+//! into the next session's prompt. The normal save path is the structured `memory` tool, which
+//! writes the store without naming a path and is gated per permission mode like the workspace
+//! write it is. Hand repairs with `write`/`edit` on store paths target the files directly, and
+//! those cross the protected-path floor like any other write to the data directory.
 
 use std::fmt::Write as _;
 use std::io::{self, Read};
@@ -203,8 +205,8 @@ pub fn slug(topic: &str) -> Option<String> {
 pub enum LineState {
     /// The index had no line linking the file; one was appended.
     Added,
-    /// The line linking the file had its link text replaced with the topic; the 1-based
-    /// line kept its position.
+    /// The line linking the file had its link text replaced with the topic and its
+    /// destination with the generated file; the 1-based line kept its position.
     Updated(usize),
     /// The index already linked the file under this topic; nothing changed.
     Unchanged,
@@ -280,10 +282,14 @@ fn read_index_text(path: &Path) -> io::Result<Option<String>> {
     })
 }
 
-/// The byte span of the link text inside the first `[text](target)` on `line` whose
-/// destination, read the way `check` reads it, is `wanted` (ignoring case). A save
-/// rewrites only the text, keeping the target and the line's place in the index.
-fn link_text_span(line: &str, wanted: &str) -> Option<std::ops::Range<usize>> {
+/// The byte spans of the link text and of the destination inside the first
+/// `[text](target)` on `line` whose destination, read the way `check` reads it, is `wanted`
+/// (ignoring case). A save rewrites the text to the topic and the destination to the
+/// generated file, keeping the line's place in the index.
+fn matching_link_spans(
+    line: &str,
+    wanted: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let bytes = line.as_bytes();
     let mut open: Option<usize> = None;
     let mut i = 0;
@@ -306,7 +312,7 @@ fn link_text_span(line: &str, wanted: &str) -> Option<std::ops::Range<usize>> {
                         };
                         let target = raw.split('#').next().unwrap_or_default();
                         if !target.is_empty() && target.eq_ignore_ascii_case(wanted) {
-                            return Some(text_start..i);
+                            return Some((text_start..i, inner_start..inner_end));
                         }
                         i = inner_end + 1;
                         continue;
@@ -322,9 +328,11 @@ fn link_text_span(line: &str, wanted: &str) -> Option<std::ops::Range<usize>> {
 
 /// Saves `content` as the note on `topic` in the store at `dir`: writes the topic file
 /// atomically, then keeps `MEMORY.md`'s line for it — the line whose link target is the
-/// file gets the topic as its new link text in place, anything else appends one. Two
-/// sessions saving at once are last-writer-wins on the index, as with raw edits; the
-/// atomic renames keep individual files whole. The index caps are a warning, not a
+/// file, ignoring case, gets the topic as its new link text and the file as its
+/// destination in place, anything else appends one. A topic is refused when it would
+/// name the index file or carries Markdown link delimiters it could smuggle into the
+/// index. Two sessions saving at once are last-writer-wins on the index, as with raw
+/// edits; the atomic renames keep individual files whole. The index caps are a warning, not a
 /// failure: the note is saved and `Saved.warning` says the index no longer loads whole.
 pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
     let file = slug(topic).ok_or_else(|| {
@@ -333,6 +341,18 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
             format!("topic {topic:?} has no letters or digits to name a file with"),
         )
     })?;
+    if file.eq_ignore_ascii_case(INDEX_FILE) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("topic {topic:?} names {INDEX_FILE}, the index; pick another topic"),
+        ));
+    }
+    if topic.contains(['[', ']']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("topic {topic:?} contains a Markdown link delimiter"),
+        ));
+    }
     let target = dir.join(&file);
     refuse_link(&target)?;
     owner_only::write_atomic(&target, content.as_bytes())?;
@@ -357,10 +377,16 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
         }
         if !found
             && !skippable
-            && let Some(span) = link_text_span(line, &file)
+            && let Some((text_span, dest_span)) = matching_link_spans(line, &file)
         {
             found = true;
-            let updated = format!("{}{}{}", &line[..span.start], topic, &line[span.end..]);
+            let updated = format!(
+                "{}{}]({}{}",
+                &line[..text_span.start],
+                topic,
+                file,
+                &line[dest_span.end..]
+            );
             if updated == line {
                 state = LineState::Unchanged;
                 out.push_str(line);
@@ -1204,10 +1230,40 @@ mod tests {
         std::fs::write(dir.join(INDEX_FILE), "- [c](Commands.md)\n").unwrap();
         let saved = save(&dir, "Commands", "x\n").unwrap();
         assert_eq!(saved.index, LineState::Updated(1));
+        // The destination is rewritten to the generated file too, so the entry cannot
+        // dangle on a case-sensitive filesystem.
         assert_eq!(
             std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
-            "- [Commands](Commands.md)\n"
+            "- [Commands](commands.md)\n"
         );
+    }
+
+    #[test]
+    fn an_update_rewrites_the_destination_of_a_cased_match() {
+        let (_tmp, dir) = store();
+        std::fs::write(dir.join(INDEX_FILE), "- [c](Commands.md): notes\n").unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](commands.md): notes\n"
+        );
+    }
+
+    #[test]
+    fn a_topic_that_would_name_the_index_file_is_refused() {
+        let (_tmp, dir) = store();
+        let error = save(&dir, "MEMORY", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_topic_with_a_markdown_link_delimiter_is_refused() {
+        let (_tmp, dir) = store();
+        let error = save(&dir, "x](other.md) [y", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
     }
 
     #[test]

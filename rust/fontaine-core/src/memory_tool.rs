@@ -34,7 +34,11 @@ fn validate(args: &MemoryArgs) -> Result<(), String> {
     if args.topic.trim().is_empty() {
         return Err("topic must not be blank".to_string());
     }
-    if args.topic.contains('\n') {
+    if args
+        .topic
+        .chars()
+        .any(|c| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+    {
         return Err("topic must be one line".to_string());
     }
     if args.topic.chars().count() > MAX_TOPIC_CHARS {
@@ -172,6 +176,8 @@ mod tests {
             json!({"topic": "", "content": "x"}),
             json!({"topic": "   ", "content": "x"}),
             json!({"topic": "two\nlines", "content": "x"}),
+            json!({"topic": "two\rlines", "content": "x"}),
+            json!({"topic": "two\u{2028}lines", "content": "x"}),
             json!({"topic": "x".repeat(MAX_TOPIC_CHARS + 1), "content": "x"}),
             json!({"topic": "x", "content": "x".repeat(MAX_CONTENT_BYTES + 1)}),
         ] {
