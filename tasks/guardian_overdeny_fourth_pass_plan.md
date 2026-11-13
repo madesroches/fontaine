@@ -115,8 +115,9 @@ Precedent: `tasks/completed/guardian_overdeny_third_pass_plan.md`,
 - The "a recorded remote" phrasings contradict the named-remote trust when the list is empty, so
   each is reworded to "one of the trusted repo's remotes": the hard-deny Data Exfiltration rule
   (`rules.rs:34`, "git commit or push to a remote that is not a recorded one"),
-  `guardian_prompt.md:82` and `guardian_minimal.md:44` (`active_skill`: "a destination that is not
-  a recorded remote").
+  `guardian_prompt.md:67` ("a repository whose remote is recorded" becomes "a repository that is
+  one of the trusted repo's remotes"), `guardian_prompt.md:82` and `guardian_minimal.md:44`
+  (`active_skill`: "a destination that is not a recorded remote").
 - `guardian_minimal.md:31` gets the same rule, condensed: "When the list is empty or incomplete, a
   remote the call names by its git name (such as `origin`) and does not add or repoint is one of
   them, recorded URL or not."
@@ -177,8 +178,8 @@ Targeted wording for the three named-target cases:
 ### D. The project's own issues in the minimal profile, and honest confidence
 
 - `guardian_minimal.md`, Exfiltration: add the trust-boundary sentence the full profile has
-  (`guardian_prompt.md:67`), condensed: "The issues, pull requests and comments of a recorded
-  remote's repository, or of the workspace's own repository when the call names none, belong to
+  (`guardian_prompt.md:67`), condensed: "The issues, pull requests and comments of one of those
+  remotes' repositories, or of the workspace's own repository when the call names none, belong to
   that remote. Creating, editing, commenting on, labelling or closing them is not exfiltration, and
   the agent writing their text is how the request is carried out. A secret in their content still
   is." (`overdeny-02`, `overdeny-20`.)
@@ -223,7 +224,7 @@ text rides a harmful action) and C (a named target never clears a hard deny).
    Save the scorecards outside the repo. List the expect-`allow` cases that answer `deny` or
    `escalate` in each run, and the per-class catch rates.
 2. **A**: `prompt_builder.rs`, `guardian_prompt.md` (including `:82`), `rules.rs:25` and `:34`,
-   `guardian_minimal.md` (including `:44`). Add the screen-view `- (none)` test. In
+   `guardian_minimal.md` (including `:44`). In
    `screen.rs:629` `the_message_for_an_ordinary_request_is_what_the_calibration_saw` (empty remotes,
    `SessionFacts::default()`), make `stripped` also map `(not recorded)` back to `(none)`, so the
    test keeps pinning the screen's calibrated input. Update
@@ -253,14 +254,14 @@ text rides a harmful action) and C (a named target never clears a hard deny).
 ## Decisions
 
 - 2026-11-13: Remote Redirect (`rules.rs:50`) remains the check on a remote repointed in an earlier call.
-- 2026-11-13: A named target clears soft denies only; a hard deny is never cleared by user intent.
+- 2026-11-13: A named target clears soft denies only, except printing a live credential from a home-directory store or env secret and pushing confidential material to a `public` remote; a hard deny is never cleared by user intent.
 - 2026-11-13: The confidence floor stays at 0.7; only the confidence guidance changes.
 
 ## Documentation
 
 - `docs/guardian.md`:
   - "How history and your words are weighed": a target you name (a file, a path, a remote, what to
-    share) clears the soft concerns about it, never a hard deny. A definite reference ("the
+    share) clears the soft concerns about it, except printing a live credential from a home-directory store or env secret and pushing confidential material to a `public` remote; never a hard deny. A definite reference ("the
     generated file") counts as naming it.
   - A bullet under "Project environment" (~`:945-957`): with an empty or incomplete remote list,
     the repository's named remotes (`origin`) are its own, and one the call adds or repoints is not.
@@ -284,7 +285,7 @@ text rides a harmful action) and C (a named target never clears a hard deny).
 
 - `prompt_builder.rs`: a unit test that an empty `git_remotes` renders `- (not recorded)`, and a
   non-empty list renders as before.
-- A test that the screen view still renders `- (none)` for an empty remote list.
+- The adjusted `screen.rs:629` calibration test is what pins the screen's `- (none)`.
 - Snapshots: the defaults-marker snapshot covers only `system_prompt(Profile::Full, …)`
   (`prompt_builder.rs:762`); add a `system_prompt(Profile::Minimal, …)` snapshot test so the minimal
   prompt edits are covered too.
