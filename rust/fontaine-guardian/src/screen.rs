@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn the_screen_reads_the_intent_without_a_dialog_answer() {
         use crate::request::ScreenIntent;
-        const ANSWER: &str = "Answered the agent's question \"Force-push 584-x?\": picked \"Yes\" (Overwrite origin)";
+        const ANSWER: &str = "Answered the agent's question \"Force-push 584-x?\": picked \"Yes\" (\"Overwrite origin\")";
         let mut answered = request();
         answered.task_intent = format!("rebase PR 584\n\n{ANSWER}");
         answered.recent_user_messages = vec!["rebase PR 584".into(), ANSWER.into()];

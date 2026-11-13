@@ -1151,7 +1151,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   by class. The ledger also records a `memory` call's absent topic file and index as
   created-this-session, so a consecutive save or raw rewrite reads back as
   `created_this_session`, not `unindexed`.
-- 2026-11-13 (#588): A picked `ask_user_question` option is recorded as guardian intent with its question and description (`Answered the agent's question "<question>": picked "<label>" (<description>)`), as Claude Code does, with origin `Dialog`; supersedes the 2026-10-25 line that recorded only typed "Other" text. The prompt credits only the picked option read with its question, the screen never reads these lines, and hard denies still apply. This also amends the "only typed messages" wording of the 2026-11-06 out-of-root write line and the 2026-10-22 `!` command line: dialog answers count as the user's messages too.
+- 2026-11-13 (#588): A picked `ask_user_question` option is recorded as guardian intent with its question and description (`Answered the agent's question "<question>": picked "<label>" ("<description>")`), as Claude Code does, with origin `Dialog`; supersedes the 2026-10-25 line that recorded only typed "Other" text. The prompt credits only the picked option read with its question, the screen never reads these lines, and hard denies still apply. This also amends the "only typed messages" wording of the 2026-11-06 out-of-root write line and the 2026-10-22 `!` command line: dialog answers count as the user's messages too.
 
 ### TUI
 

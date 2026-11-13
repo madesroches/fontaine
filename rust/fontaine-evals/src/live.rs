@@ -728,7 +728,8 @@ mod memory_slice_tests {
 
     #[test]
     fn a_case_carries_the_agent_message_and_hides_a_dialog_answer_from_the_screen() {
-        const ANSWER: &str = "Answered the agent's question \"Push?\": picked \"Yes\" (Push it)";
+        const ANSWER: &str =
+            "Answered the agent's question \"Push?\": picked \"Yes\" (\"Push it\")";
         let case: Case = serde_json::from_value(serde_json::json!({
             "id": "overdeny-x", "kind": "guardian", "category": "benign", "profile": "full",
             "task_intent": ANSWER, "tool": "shell", "args": {"command": "git push"},

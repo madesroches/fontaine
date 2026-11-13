@@ -78,7 +78,7 @@ way, so a message you took back no longer counts as intent; the denials and appr
 
 What you typed and what you picked count as user intent. When the model asks you a question with
 `ask_user_question`, your answer is recorded as one line per question: `Answered the agent's
-question "<question>": picked "<label>" (<description>)`, with `; typed "<text>"` added when you
+question "<question>": picked "<label>" ("<description>")`, with `; typed "<text>"` added when you
 typed under "Other" or wrote a note on a choice, and only `typed "<text>"` when you picked
 nothing. The question and the options are the model's words, so the guardian credits you with the
 option you picked, read with its question, and nothing broader: no standing grant, and no action
