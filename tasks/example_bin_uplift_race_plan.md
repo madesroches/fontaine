@@ -25,14 +25,18 @@ window. Non-atomic uplift is unreproduced; the fix does not depend on it.
 After a successful nested build, copy the executable to a path private to this process and
 return that, so later spawns never touch a file cargo manages:
 
-- Destination: `<profile_dir>/example-bin/<name>-<pid><EXE_SUFFIX>`. It sits under the target dir,
-  so it shares the filesystem and `cargo clean` removes it. Files from earlier runs accumulate
-  until then; that is accepted.
+- Destination: `<profile_dir>/example-bin/<package>-<name>-<pid><EXE_SUFFIX>`. It sits under the
+  target dir, so it shares the filesystem and `cargo clean` removes it. Files from earlier runs
+  accumulate until then; that is accepted.
+- Concurrent first calls in one process (the cache lock is held only for get and insert) share
+  that destination, so `copy_private` copies to a unique temp name in the same directory
+  (`<destination>.<thread-unique suffix>.tmp`) and atomically `fs::rename`s it onto the
+  destination. No thread ever writes to a file another thread may be spawning.
 - The copy itself can hit the window, so retry `fs::copy` on `NotFound` a bounded number of
   times (50 x 100 ms) and panic with the last error afterwards. Other error kinds fail at once.
 - `fs::copy` preserves permission bits, so the executable bit survives.
 - The cache stores the private path. The `is_file()` assertion moves to after the copy.
-- The retry loop is a small helper taking a closure, so it is unit-testable.
+- The copy-then-rename sits inside the retry loop; the retry loop is a small helper taking a closure, so it is unit-testable.
 
 ## Implementation Steps
 
@@ -60,8 +64,6 @@ return that, so later spawns never touch a file cargo manages:
 - CI pre-build plus skipping the nested build: changes CI and local workflows, and leaves the
   per-package `cargo test` stale-binary hazard the helper exists to prevent.
 - Cross-process file lock around build and use: the lock would have to span the whole test.
-
-## Decisions
 
 ## Documentation
 
