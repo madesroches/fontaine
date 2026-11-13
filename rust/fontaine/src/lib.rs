@@ -389,7 +389,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
         screen_reader_mode(&cli, &config, &host)
     };
     // The interactive UI asks before anything the repository defines may run. A headless run
-    // loads it without asking, as Claude Code's `-p` does.
+    // loads it without asking, as Claude Code's `-p` does, unless `[headless] require_trust` is
+    // set and the workspace is untrusted.
     let mut project_executables = true;
     if cli.print
         && config.headless.require_trust
