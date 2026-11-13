@@ -71,7 +71,7 @@ Delete the "experimental" framing for `claude-subscription`:
 
 ### Registry-coverage test
 
-A test in `rust/fontaine-core/tests/` (new `provider_docs.rs`, or an existing providers test file)
+A test in `rust/fontaine-core/tests/docs.rs`, beside `the_tools_page_names_every_registered_built_in_tool` (reusing its `repo_root()`),
 reads `docs/providers.md` via `CARGO_MANIFEST_DIR/../../docs/providers.md` (the pattern used by
 `fontaine/tests/analytics_notebook.rs`) and asserts, matching whole lines, for every name in `providers::names()`, that
 the guide has a line `` ## `<kind>` `` and a table line starting with `` | `<kind>` ``, and that
@@ -110,7 +110,8 @@ label is dropped; the PR description notes that the issue's "(experimental)" wor
 
 ## Files to Modify
 
-- New: `docs/providers.md`, `rust/fontaine-core/tests/provider_docs.rs`
+- New: `docs/providers.md`
+- `rust/fontaine-core/tests/docs.rs` (the registry-coverage test)
 - `README.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/configuration.md`,
   `docs/claude-subscription.md`, `docs/tui.md`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (one Decisions line)
@@ -139,6 +140,10 @@ This plan is documentation: `docs/providers.md` is new; `README.md`, `docs/index
 as above. `tasks/fontaine_harness_plan.md` Decisions gets the dated line (step 7).
 
 ## Testing Strategy
+
+- `docs.rs` already runs over every `docs/*.md`: the TOML examples in `providers.md` must pass
+  `every_toml_block_validates` (valid user-scope settings, required `base_url` present), links must
+  pass `every_relative_link_resolves`, and the page must contain no `TODO`/`TBD`.
 
 - The registry-coverage test above (automated; a unit-level file read, no live service).
 - Existing tests asserting the removed strings are updated; `cargo test` for `fontaine-core` and
