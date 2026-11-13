@@ -965,7 +965,7 @@ authenticates with:
 
 The state column is `key stored`, `key from $VAR` or `$VAR is not set` for an account with
 `api_key_env`, `signed in (<email>)`, `not signed in` for an account that needs a key or sign-in
-and has none, `no key needed` for an `ollama`, `openai-compatible` or `kimi` account without one, and `login owned by the external CLI (experimental)` for a `claude-subscription` account. It
+and has none, `no key needed` for an `ollama`, `openai-compatible` or `kimi` account without one, and `login owned by the external CLI` for a `claude-subscription` account. It
 is what resolving the account would do, so a key left behind by a changed `kind` counts as not
 signed in.
 

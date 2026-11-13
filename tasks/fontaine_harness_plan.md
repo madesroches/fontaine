@@ -1029,6 +1029,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-11: On `anthropic`, a turn on a model with no known limit and no `[model] max_output_tokens` fails unless the model is mapped under `model_facts`, because rig's wire fills `max_tokens` only for ids it knows; this corrects the 2026-11-10 "the Messages wire fills its own" claim (#167).
 - AFK: 2026-11-11: A `model_facts` key the kind already lists is refused at load and a mapped model stays unpriced, because an unpriced model never trips a cost cap, so stripping a listed price would silently loosen spend caps and a host need not bill at list prices (#167).
 - 2026-11-13: (#601) Amends the 2026-11-11 (#115) line "a spent list pauses the run until the reset" for subagents when a user-scope `fallback` role is defined: a subagent whose list is spent on a usage window first moves to the first usable entry of `fallback` (skipping spent accounts), and the run pauses only when that is spent too; with no `fallback` role the pause is unchanged. Reason: a spent subagent model stalled the whole session (394h window) while another configured model had budget; a model switch is a cost change, so it is opt-in.
+- 2026-11-13: (#578, user directive) `claude-subscription` is no longer experimental, superseding the 2026-11-04 label; the scope and Anthropic-terms caveats stay in `docs/claude-subscription.md`.
 
 ### Sessions
 

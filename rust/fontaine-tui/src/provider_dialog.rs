@@ -242,7 +242,7 @@ impl ProviderDialog {
                 account: account.to_string(),
                 url: None,
                 code: None,
-                notes: vec!["checking the external login (experimental)…".to_string()],
+                notes: vec!["checking the external login…".to_string()],
             };
             return DialogKey::ExternalCheck(account.to_string());
         }

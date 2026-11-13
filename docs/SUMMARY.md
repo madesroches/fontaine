@@ -5,6 +5,7 @@
 - [Installing Fontaine](installing.md)
 - [Architecture](architecture.md)
 - [Configuration](configuration.md)
+- [Providers](providers.md)
 - [Tools](tools.md)
 - [Permissions](permissions.md)
 - [AFK mode](afk.md)

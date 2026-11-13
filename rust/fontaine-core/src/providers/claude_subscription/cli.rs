@@ -467,7 +467,7 @@ impl Cli {
         if !(plan.contains("max") || plan.contains("ultra")) {
             return Err(ClaudeError::new(
                 ErrorKind::Plan,
-                "the Claude CLI's plan is not Max or Ultra, the only plans this experimental adapter accepts",
+                "the Claude CLI's plan is not Max or Ultra, the only plans this account kind accepts",
             ));
         }
         Ok(())

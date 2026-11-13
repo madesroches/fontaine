@@ -224,6 +224,30 @@ fn the_required_pages_exist_with_content() {
 }
 
 #[test]
+fn the_provider_guide_covers_every_registered_kind_in_registry_order() {
+    let text = std::fs::read_to_string(repo_root().join("docs/providers.md")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut last_heading = None;
+    for kind in fontaine_core::providers::names() {
+        let heading = format!("## `{kind}`");
+        let at = lines
+            .iter()
+            .position(|line| *line == heading)
+            .unwrap_or_else(|| panic!("docs/providers.md has no `{heading}` section"));
+        assert!(
+            last_heading.is_none_or(|previous| previous < at),
+            "docs/providers.md lists `{kind}` out of registry order"
+        );
+        last_heading = Some(at);
+        let row = format!("| `{kind}` |");
+        assert!(
+            lines.iter().any(|line| line.starts_with(&row)),
+            "docs/providers.md has no comparison row for `{kind}`"
+        );
+    }
+}
+
+#[test]
 fn the_tools_page_names_every_registered_built_in_tool() {
     let root = repo_root();
     let text = std::fs::read_to_string(root.join("docs/tools.md")).unwrap();
