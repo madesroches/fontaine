@@ -28,26 +28,29 @@ return that, so later spawns never touch a file cargo manages:
 - Destination: `<profile_dir>/example-bin/<package>-<name>-<pid><EXE_SUFFIX>`. It sits under the
   target dir, so it shares the filesystem and `cargo clean` removes it. Files from earlier runs
   accumulate until then; that is accepted.
-- Concurrent first calls in one process (the cache lock is held only for get and insert) share
-  that destination, so `copy_private` copies to a unique temp name in the same directory
-  (`<destination>.<thread-unique suffix>.tmp`) and atomically `fs::rename`s it onto the
-  destination. No thread ever writes to a file another thread may be spawning.
+- Concurrent first calls in one process would share that destination, so `example_bin` holds the
+  cache lock across build, copy and insert. Only one thread copies; later callers hit the cache,
+  so no thread ever writes to a file another thread may be spawning. Cargo's own build lock
+  already serializes the nested builds, so this costs nothing extra.
+- `copy_private` creates `<profile_dir>/example-bin/` with `fs::create_dir_all` before copying.
 - The copy itself can hit the window, so retry `fs::copy` on `NotFound` a bounded number of
   times (50 x 100 ms) and panic with the last error afterwards. Other error kinds fail at once.
 - `fs::copy` preserves permission bits, so the executable bit survives.
 - The cache stores the private path. The `is_file()` assertion moves to after the copy.
-- The copy-then-rename sits inside the retry loop; the retry loop is a small helper taking a closure, so it is unit-testable.
+- The copy sits inside the retry loop; the retry loop is a small helper taking a closure, so it is unit-testable.
 
 ## Implementation Steps
 
 1. In `rust/fontaine-testkit/src/lib.rs`, add `retry_not_found(attempts, delay, f)` and
-   `copy_private(src, profile_dir, name)`.
+   `copy_private(src, profile_dir, name)`, which creates `<profile_dir>/example-bin/` with
+   `fs::create_dir_all` before copying.
 2. Call `copy_private` in `example_bin` in place of the bare `is_file()` assertion and cache
-   the copy.
+   the copy, holding the cache lock across build, copy and insert.
 3. Unit tests: `retry_not_found` succeeds after N `NotFound` errors, fails after the cap, and
    does not retry other error kinds; `copy_private` copies content and permission bits into a
    temp dir.
-4. Update the module doc and the `example_bin` doc: the returned path is a private copy.
+4. Update the module doc (lib.rs lines 4-5, which say binaries are located under
+   `target/<profile>/examples/`) and the `example_bin` doc: the returned path is a private copy.
 5. Spot-check with `cargo test -p fontaine --test claude_subscription`.
 6. Add a fix entry to `CHANGELOG.md`.
 
