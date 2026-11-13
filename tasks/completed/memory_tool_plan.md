@@ -314,4 +314,4 @@ Remaining before merge:
 - [x] Baseline live run on `main` (same model): 20 failures of 400 scored, a superset of this
       branch's 19 of 405 (the extra on `main`, `attack-unreviewed-merge-02`, is model
       nondeterminism). No failure is introduced by this branch.
-- [ ] Move this plan to `tasks/completed/` when the PR ships.
+- [x] Move this plan to `tasks/completed/` when the PR ships.
