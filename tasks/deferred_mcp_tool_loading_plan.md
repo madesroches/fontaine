@@ -44,10 +44,11 @@ calling a deferred tool is unchanged.
   `max_results`. It matches against deferred tool names and descriptions, loads the matches, and returns their
   full definitions (name, description, JSON schema) as the result. A loaded tool is advertised in `tools[]`
   from the next request on.
-- **Append-only loading.** Loaded tools are appended after the always-exposed set in load order, never
-  re-sorted, so a load only invalidates the cache from the append point, never the stable prefix. The loaded
-  set lives for the session (and is rebuilt on resume from the transcript's `tool_search` results; compaction
-  may drop some of those results, so the rebuild is best-effort from whatever remains).
+- **Loading keeps registry order.** rig-agent's `RequestPatch::active_tools` only filters, so request order is
+  the registry order (sorted by name per server, servers in registration order). A loaded tool appears at its
+  registry position, not appended, and the provider's cached prefix breaks from the first changed position
+  (accepted cost; no cache-prefix promise). The loaded set lives for the session only: it starts empty on
+  resume and after compaction, and the model searches again.
 - Tool-list-changed refreshes and reconnects keep working: a deferred tool that disappears is dropped from
   the name list and the loaded set; a new one lands in the name list.
 - Servers' `instructions`/resources/prompts are unaffected.
@@ -74,8 +75,9 @@ calling a deferred tool is unchanged.
    active flag. The wrapped tools are unchanged; only advertisement differs.
 2. **Advertisement side**: deferred tools are registered normally (always-exposed side). Each agent gets a
    rig `CompletionCall` hook returning `CompletionCallAction::Patch(RequestPatch::active_tools(..))` listing
-   the non-deferred tool names followed by that agent's loaded names in load order, so a request carries the
-   always-exposed set plus the loaded deferred tools. The list is built as (loaded names ∩ currently registered
+   the non-deferred tool names plus that agent's loaded names; `active_tools` only filters, so the request
+   carries the always-exposed set plus the loaded deferred tools in registry order (not load order). The list is
+   built as (loaded names ∩ currently registered
    names) plus the non-deferred registered names, so a `list_changed` refresh that drops a loaded tool cannot make
    rig's `prepare_request` fail with "active_tools requested tool X, which is not available". When deferral is
    inactive (auto below threshold, off, claude-subscription forced off) the hook omits `tool_search` from the
@@ -111,7 +113,8 @@ Provider-specific backends (#439) are separate.
    table; add to the default toolsets that include MCP tools (and not to children whose toolset has no MCP).
 5. Advertisement: the per-agent `CompletionCall` hook with `RequestPatch::active_tools` (Mechanism 2) so
    request definitions = always-exposed + loaded; the allow-list is the intersection described there, and
-   `tool_search` is left out when deferral is inactive.
+   `tool_search` is left out when deferral is inactive. Loaded tools keep their registry position (no
+   append-only ordering).
 6. Refusal for unloaded deferred calls: a per-agent `on_invalid_tool_call` hook (root builder in
    `agent/build.rs`, child builder in `child_runner.rs`) returning
    `InvalidToolCallAction::Skip { reason: "search first with tool_search" }` for names that are
@@ -139,10 +142,12 @@ Provider-specific backends (#439) are separate.
 ## Decisions
 
 - 2026-11-13: (#34) Names-only prompt plus loading the real tool definition, not a `tool_call` proxy tool: keeps rules, hooks and audit keyed on the real `mcp__server__tool` name.
-- 2026-11-13: (#34) Loading is append-only (loaded tools after the always-exposed set, in load order, never re-sorted): a load only invalidates the provider's cached prefix from the append point.
+- 2026-11-13: (#34) Loaded tools appear in their registry position (rig-agent 0.46 `RequestPatch::active_tools` only filters), not append-only; the provider's cached prefix breaks from the first changed position, an accepted cost with no cache-prefix promise.
 - 2026-11-13: (#34) Deferral is provider-neutral and client-side, not provider-native tool search: native needs per-provider wire support; #439 tracks the Kimi variant.
 - 2026-11-13: (#34) `[mcp] tool_search = "auto"` decides on a heuristic token estimate (10% of the context window, 10,000 tokens if unknown), as Claude Code does; the estimate only trades context for one round trip.
 - 2026-11-13: (#34) `[mcp] tool_search` is not a loosening key and either scope may set it: deferral hides schemas but changes no gate.
+- 2026-11-13: AFK: (#34) Append-only/load-order loading and the cache-prefix promise are dropped: `active_tools` cannot reorder, so loaded tools sit at their registry position and the cached prefix breaks from the first changed position (accepted cost).
+- 2026-11-13: AFK: (#34) The loaded set starts empty on resume and after compaction (no transcript parser); the model re-searches, and the unloaded-call `Skip` refusal already says to search first.
 
 ## Documentation
 
@@ -154,11 +159,11 @@ Provider-specific backends (#439) are separate.
 
 ## Testing Strategy
 
-- Unit: `search` ranking, `select:` exact, no-match, `max_results`; `Deferral` append order, reconcile drops
+- Unit: `search` ranking, `select:` exact, no-match, `max_results`; `Deferral` reconcile drops
   vanished names, clear on flip; threshold decision (auto/on/off, window known/unknown); prompt section is
   sorted and stable; config parse/merge (either scope).
 - Unit: an unloaded deferred tool is absent from the advertised definitions and present after `tool_search`;
-  the loaded tool is appended after the always-exposed set without reordering it.
+  the loaded tool appears at its registry position; a new agent session (resume) starts with an empty loaded set.
 - Integration (existing MCP test server in `fontaine-tools/tests/mcp_common`): a call to a deferred tool,
   loaded or not, passes through the same gate (extend `choke_point.rs` so deferred MCP tools stay covered; a
   silent bypass here would be a security regression, hence automated); an unloaded call is refused by the
@@ -169,9 +174,3 @@ Provider-specific backends (#439) are separate.
   `active_tools`, so the request does not fail with "active_tools requested tool X, which is not available".
 - Headless `fontaine -p` scripted-model test: deferred names in the prompt, search, then call.
 - `/context` rendering test for deferred/loaded split.
-
-## Open Questions
-
-- Whether resume should rebuild the loaded set from transcript `tool_search` results (planned; best-effort,
-  since compaction may drop some) or start empty and let the model search again (cheaper to build, costs one
-  round trip).
