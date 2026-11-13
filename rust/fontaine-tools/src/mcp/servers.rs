@@ -23,7 +23,7 @@ use rig_rmcp::{McpClientError, McpClientHandler, McpConnection};
 use rmcp::ServiceError;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, ElicitationCapability, FormElicitationCapability,
-    Implementation, ProtocolVersion, UrlElicitationCapability,
+    Implementation, UrlElicitationCapability,
 };
 use rmcp::service::ClientInitializeError;
 use rmcp::transport::auth::{
@@ -542,9 +542,10 @@ impl CallScope {
     }
 }
 
-/// Elicitation in form and URL mode, over the last protocol version whose elicitation arrives
-/// as a request: at the newest version it arrives as a result inside the tool call, which
-/// rig-rmcp cannot surface.
+/// Elicitation in form and URL mode, over the newest protocol version rmcp offers. A server
+/// that answers `initialize` with an older version is served the request form; one that answers
+/// with the newest sends it as an `input_required` result, which the elicitation tap drives
+/// because rig-rmcp cannot surface it.
 fn client_config() -> ClientConfig {
     let mut capabilities = ClientCapabilities::default();
     capabilities.elicitation = Some(
@@ -556,7 +557,6 @@ fn client_config() -> ClientConfig {
         capabilities,
         Implementation::new("fontaine", env!("CARGO_PKG_VERSION")),
     )
-    .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
 }
 
 /// The client rmcp builds for `from_uri` (no idle pooling, same-origin 307/308 redirects only),
@@ -1318,11 +1318,11 @@ mod tests {
     }
 
     #[test]
-    fn the_client_offers_the_last_initialize_version_and_the_form_and_url_capabilities() {
+    fn the_client_offers_the_newest_version_and_the_form_and_url_capabilities() {
         let config = client_config();
         assert_eq!(
             config.protocol_version,
-            ProtocolVersion::LATEST_WITH_INITIALIZE
+            rmcp::model::ProtocolVersion::LATEST
         );
         let elicitation = config
             .capabilities

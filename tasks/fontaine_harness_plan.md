@@ -882,6 +882,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-13: (#34) `[mcp] tool_search` is not a loosening key and either scope may set it: deferral hides schemas but changes no gate.
 - 2026-11-13: AFK: (#34) The loaded set starts empty on resume and after compaction (no transcript parser); the model re-searches, and the unloaded-call `Skip` refusal already says to search first.
 - 2026-11-13: (#34) One `tool_search` instance serves every agent and keeps a loaded set per agent id (as `todo_write` keeps its list), rather than one instance per child: a child's forked toolset shares the parent's wrapped tools, so a per-child instance would need its own guard; the set and the completion hook are still per agent, and a child's toolset bounds what it can load.
+- 2026-11-13: (#542) Supersedes the 2026-11-08 protocol-version-pin line: `client_config()` no longer overrides the version, so rmcp's newest (2026-07-28) is offered in `initialize`, and `ElicitationTap` drives `input_required` (MRTR) rounds for `tools/call`, `prompts/get` and `resources/read`, serving their elicitations through the same dialogs and retrying with the answers (at most 10 requests per call; sampling and roots input requests fail the call). Servers that answer `initialize` with an older version stay on the request path; servers that reject `initialize` altogether stay unreachable until rig-rmcp exposes the `server/discover` lifecycle (follow-up issue).
 
 ### Observability
 
