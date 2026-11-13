@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP servers that ask for input as a result of the call (protocol 2026-07-28, "input required")
+  are served (#542). Fontaine now offers the newest protocol version and drives those rounds for
+  tool calls, prompt fetches and resource reads: the request is answered through the usual
+  elicitation dialogs and the call is retried with your answer, up to 10 requests per call.
+  Requests for a model sample or the roots list fail the call.
 - `fallback` model role (#601). A subagent whose own model list is spent on a usage window moves to
   the first usable entry of the user-scope `fallback` role, says so, and continues instead of
   pausing the whole session; the run pauses only when `fallback` is spent too. With no `fallback`

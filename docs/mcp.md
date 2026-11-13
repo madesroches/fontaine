@@ -422,9 +422,12 @@ server's say-so, and there is no "always allow": every request is confirmed. The
 - **It decides nothing.** Answering never changes a permission decision; the call that led to the
   request was already approved like any other.
 
-Fontaine offers the MCP protocol version 2025-11-25, which delivers a request for input as a
-request to the client. A server that only speaks a newer version still connects, but its requests
-for input are not served.
+A server can ask for input in either of the two forms the protocol has: as a request to the client
+while a call runs, or, at protocol version 2026-07-28, as a result that says the call needs input
+first. Fontaine serves both with the same dialogs and the same limits. For the second form it
+retries the call with your answer, and the server may ask again; a call is given up after 10
+requests in total. A server that asks for something other than a form or a link (a model sample or
+the list of roots) fails the call, because Fontaine offers neither.
 
 ## Reconnecting
 

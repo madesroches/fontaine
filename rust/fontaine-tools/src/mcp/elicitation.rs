@@ -3,16 +3,24 @@
 //! and cannot be wrapped, so the request is taken off the wire by a transport wrapper before
 //! rmcp sees it, and the answer is written back as the response. Nothing a person types here
 //! reaches the model, the transcript or the audit log.
+//!
+//! At protocol 2026-07-28 a server asks inside the answer to a `tools/call`, `prompts/get` or
+//! `resources/read` instead (an `input_required` result). The same wrapper drives those rounds:
+//! it takes the result off the wire, serves its elicitations through the same dialogs and retries
+//! the call with the answers, so rmcp only ever sees the call's final response.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rmcp::RoleClient;
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientResult, ElicitRequestParams, ElicitResult, ElicitationAction,
-    EnumSchema, MultiSelectEnumSchema, PrimitiveSchemaDefinition, RequestId, ServerJsonRpcMessage,
-    ServerNotification, ServerRequest, SingleSelectEnumSchema, StringFormat,
+    CancelledNotification, CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification,
+    ClientRequest, ClientResult, ElicitRequestParams, ElicitResult, ElicitationAction, EnumSchema,
+    ErrorData, InputRequest, InputRequiredResult, MultiSelectEnumSchema, PrimitiveSchemaDefinition,
+    RequestId, ServerJsonRpcMessage, ServerNotification, ServerRequest, ServerResult,
+    SingleSelectEnumSchema, StringFormat,
 };
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -672,6 +680,66 @@ struct Answer {
     reply: ElicitReply,
 }
 
+/// What a spawned task tells the tap, which owns all the state.
+enum Event {
+    /// A `requestState`-only round has waited out its back-off.
+    RetryDue(RequestId),
+    /// The retry for a driven call could not be written.
+    RetryFailed(RequestId),
+}
+
+/// Requests sent for one call, the first included; rmcp's own driver stops at the same count.
+const MAX_REQUESTS: usize = 10;
+
+/// A call whose server answered with `input_required`, between the first answer and the final one.
+struct Driven {
+    request: ClientRequest,
+    /// Requests sent so far, the first included.
+    sent: usize,
+    /// Answers to this round's input requests, by the server's key.
+    answers: BTreeMap<String, Value>,
+    /// Keys of this round's requests nobody has answered yet.
+    awaiting: BTreeSet<String>,
+    state: Option<String>,
+    /// The id the retry in flight was sent under.
+    retry: Option<RequestId>,
+    /// Consecutive rounds that carried only `requestState`, for the back-off.
+    state_only_rounds: u32,
+}
+
+fn is_eligible(request: &ClientRequest) -> bool {
+    matches!(
+        request,
+        ClientRequest::CallToolRequest(_)
+            | ClientRequest::GetPromptRequest(_)
+            | ClientRequest::ReadResourceRequest(_)
+    )
+}
+
+/// Sets what the server asked to have echoed on a retry; `responses` is omitted when empty.
+fn set_inputs(
+    request: &mut ClientRequest,
+    responses: BTreeMap<String, Value>,
+    state: Option<String>,
+) {
+    let responses = (!responses.is_empty()).then_some(responses);
+    match request {
+        ClientRequest::CallToolRequest(r) => {
+            r.params.input_responses = responses;
+            r.params.request_state = state;
+        }
+        ClientRequest::GetPromptRequest(r) => {
+            r.params.input_responses = responses;
+            r.params.request_state = state;
+        }
+        ClientRequest::ReadResourceRequest(r) => {
+            r.params.input_responses = responses;
+            r.params.request_state = state;
+        }
+        _ => {}
+    }
+}
+
 /// Serves form elicitations off the wire and passes everything else through unchanged.
 pub(crate) struct ElicitationTap<T> {
     inner: T,
@@ -686,6 +754,21 @@ pub(crate) struct ElicitationTap<T> {
     tasks: JoinSet<()>,
     answers: mpsc::UnboundedReceiver<Answer>,
     answer_sender: mpsc::UnboundedSender<Answer>,
+    events: mpsc::UnboundedReceiver<Event>,
+    event_sender: mpsc::UnboundedSender<Event>,
+    /// Calls sent and not yet answered, which a server may answer with `input_required`.
+    eligible: HashMap<RequestId, ClientRequest>,
+    /// Calls being driven, by the id rmcp knows them under.
+    driven: HashMap<RequestId, Driven>,
+    /// Retry id to the driven call it belongs to.
+    retries: HashMap<RequestId, RequestId>,
+    /// Retries whose call was cancelled; their late responses are swallowed.
+    dropped_retries: HashSet<RequestId>,
+    /// Synthetic dialog id to the driven call and the server's key it answers.
+    mrtr_inputs: HashMap<RequestId, (RequestId, String)>,
+    /// Responses the tap made up, handed to rmcp before anything else.
+    outbox: VecDeque<ServerJsonRpcMessage>,
+    retry_count: u64,
 }
 
 impl<T> ElicitationTap<T> {
@@ -697,6 +780,7 @@ impl<T> ElicitationTap<T> {
         tracker: &CallTracker,
     ) -> Self {
         let (answer_sender, answers) = mpsc::unbounded_channel();
+        let (event_sender, events) = mpsc::unbounded_channel();
         ElicitationTap {
             inner,
             server: server.to_string(),
@@ -708,6 +792,15 @@ impl<T> ElicitationTap<T> {
             tasks: JoinSet::new(),
             answers,
             answer_sender,
+            events,
+            event_sender,
+            eligible: HashMap::new(),
+            driven: HashMap::new(),
+            retries: HashMap::new(),
+            dropped_retries: HashSet::new(),
+            mrtr_inputs: HashMap::new(),
+            outbox: VecDeque::new(),
+            retry_count: 0,
         }
     }
 }
@@ -722,7 +815,8 @@ fn action_name(action: &ElicitationAction) -> &'static str {
 }
 
 impl<T: Transport<RoleClient>> ElicitationTap<T> {
-    /// Writes `result` as the response to request `id`. rmcp drops the `receive` future whenever
+    /// Writes `result` as the response to request `id`, or, for a dialog of a driven call, keeps it
+    /// for that call's retry. rmcp drops the `receive` future whenever
     /// another `select!` branch wins, so an awaited send could be dropped half done; the send's
     /// own future is `'static` and runs on its own task, as rmcp's does.
     fn respond(&mut self, id: RequestId, result: ElicitResult) {
@@ -732,6 +826,10 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             action = action_name(&result.action),
             "mcp_elicitation"
         );
+        if let Some((call, key)) = self.mrtr_inputs.remove(&id) {
+            self.record_answer(call, key, &result);
+            return;
+        }
         let message: ClientJsonRpcMessage =
             ClientJsonRpcMessage::response(ClientResult::ElicitResult(result), id);
         let sending = self.inner.send(message);
@@ -867,11 +965,282 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             .map(|(id, _)| id.clone())
             .collect();
         for id in ended {
+            if let Some((call, _)) = self.mrtr_inputs.get(&id).cloned() {
+                // The call is over, so nobody is left to retry it.
+                self.drop_call(&call);
+                continue;
+            }
             if let Some(pending) = self.pending.remove(&id) {
                 pending.abort.abort();
             }
             self.answer_with(id, ElicitationAction::Cancel);
         }
+    }
+
+    /// Forgets a driven call and aborts its dialogs; what is left of it is the caller's to settle.
+    fn drop_call(&mut self, call: &RequestId) -> Option<Driven> {
+        self.eligible.remove(call);
+        let inputs: Vec<RequestId> = self
+            .mrtr_inputs
+            .iter()
+            .filter(|(_, (owner, _))| owner == call)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in inputs {
+            self.mrtr_inputs.remove(&id);
+            if let Some(pending) = self.pending.remove(&id) {
+                pending.abort.abort();
+            }
+        }
+        let driven = self.driven.remove(call);
+        if let Some(retry) = driven.as_ref().and_then(|d| d.retry.as_ref()) {
+            self.retries.remove(retry);
+        }
+        driven
+    }
+
+    /// Ends a call the tap cannot continue with an error response to rmcp.
+    fn fail(&mut self, call: RequestId, text: &str) {
+        self.drop_call(&call);
+        tracing::warn!(server = %self.shown, call = %call, reason = text, "ending an MCP call that asked for input");
+        self.outbox.push_back(ServerJsonRpcMessage::error(
+            ErrorData::internal_error(text.to_string(), None),
+            Some(call),
+        ));
+    }
+
+    fn record_answer(&mut self, call: RequestId, key: String, result: &ElicitResult) {
+        let value = match serde_json::to_value(result) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(server = %self.shown, error = %crate::error_chain::chain(&e), "cannot serialise an elicitation answer");
+                self.fail(
+                    call,
+                    "an answer to the server's request could not be encoded",
+                );
+                return;
+            }
+        };
+        let Some(driven) = self.driven.get_mut(&call) else {
+            return;
+        };
+        driven.answers.insert(key.clone(), value);
+        driven.awaiting.remove(&key);
+        if driven.awaiting.is_empty() {
+            self.retry(call);
+        }
+    }
+
+    /// Sends the driven call again with this round's answers. The write runs on its own task for
+    /// the same reason `respond` does.
+    fn retry(&mut self, call: RequestId) {
+        let Some(driven) = self.driven.get_mut(&call) else {
+            return;
+        };
+        self.retry_count += 1;
+        let retry_id =
+            RequestId::String(format!("fontaine-mrtr-retry/{}", self.retry_count).into());
+        let mut request = driven.request.clone();
+        set_inputs(
+            &mut request,
+            std::mem::take(&mut driven.answers),
+            driven.state.clone(),
+        );
+        driven.sent += 1;
+        driven.retry = Some(retry_id.clone());
+        self.retries.insert(retry_id.clone(), call.clone());
+        let sending = self
+            .inner
+            .send(ClientJsonRpcMessage::request(request, retry_id));
+        let events = self.event_sender.clone();
+        let shown = self.shown.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sending.await {
+                let text = crate::error_chain::chain(&e);
+                tracing::warn!(server = %shown, error = %text, "could not send an MCP retry");
+                let _ = events.send(Event::RetryFailed(call));
+            }
+        });
+    }
+
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::RetryDue(call) => {
+                let ready = self
+                    .driven
+                    .get(&call)
+                    .is_some_and(|d| d.awaiting.is_empty() && d.retry.is_none());
+                if ready {
+                    self.retry(call);
+                }
+            }
+            Event::RetryFailed(call) => {
+                if self.driven.contains_key(&call) {
+                    self.fail(call, "the server's request for input could not be continued: sending the retry failed");
+                }
+            }
+        }
+    }
+
+    /// Takes an `input_required` result for `call` and starts its round.
+    fn input_required(&mut self, call: RequestId, mut driven: Driven, result: InputRequiredResult) {
+        if driven.sent >= MAX_REQUESTS {
+            self.fail(
+                call,
+                &format!("the server kept asking for input; gave up after {MAX_REQUESTS} requests"),
+            );
+            return;
+        }
+        let inputs = result.input_requests.unwrap_or_default();
+        if inputs.is_empty() && result.request_state.is_none() {
+            self.fail(call, "the server's input_required result asked for nothing");
+            return;
+        }
+        if inputs
+            .values()
+            .any(|input| !matches!(input, InputRequest::Elicitation(_)))
+        {
+            self.fail(
+                call,
+                "the server asked for sampling or roots, which this client does not offer",
+            );
+            return;
+        }
+        driven.state = result.request_state;
+        driven.answers.clear();
+        driven.retry = None;
+        driven.awaiting = inputs.keys().cloned().collect();
+        let round = driven.sent;
+        let delay = if inputs.is_empty() {
+            let millis = (50u64 << driven.state_only_rounds.min(3)).min(250);
+            driven.state_only_rounds += 1;
+            Some(Duration::from_millis(millis))
+        } else {
+            driven.state_only_rounds = 0;
+            None
+        };
+        self.driven.insert(call.clone(), driven);
+        if let Some(delay) = delay {
+            let events = self.event_sender.clone();
+            self.tasks.spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = events.send(Event::RetryDue(call));
+            });
+            return;
+        }
+        // Registered before any dialog starts: a gated one answers at once, and the retry must
+        // wait for the others.
+        let dialogs: Vec<(RequestId, InputRequest)> = inputs
+            .into_iter()
+            .map(|(key, input)| {
+                let id = RequestId::String(format!("fontaine-mrtr/{call}/{round}/{key}").into());
+                self.mrtr_inputs.insert(id.clone(), (call.clone(), key));
+                (id, input)
+            })
+            .collect();
+        for (id, input) in dialogs {
+            if !self.driven.contains_key(&call) {
+                return;
+            }
+            let InputRequest::Elicitation(elicit) = input else {
+                continue;
+            };
+            match elicit.params {
+                ElicitRequestParams::FormElicitationParams {
+                    message,
+                    requested_schema,
+                    ..
+                } => self.start(id, message, requested_schema),
+                ElicitRequestParams::UrlElicitationParams { message, url, .. } => {
+                    self.start_url(id, message, url);
+                }
+                _ => self.answer_with(id, ElicitationAction::Decline),
+            }
+        }
+    }
+
+    /// Handles a response or error from the server. `None` means it was taken; otherwise the
+    /// message, its id rewritten when it answers a retry, goes on to rmcp.
+    fn route(&mut self, mut message: ServerJsonRpcMessage) -> Option<ServerJsonRpcMessage> {
+        let id = match &message {
+            ServerJsonRpcMessage::Response(r) => r.id.clone(),
+            ServerJsonRpcMessage::Error(e) => match &e.id {
+                Some(id) => id.clone(),
+                // A parse or invalid-request error carries no id; rmcp decides what to do with it.
+                None => return Some(message),
+            },
+            _ => return Some(message),
+        };
+        if self.dropped_retries.remove(&id) {
+            return None;
+        }
+        let (call, driven) = if let Some(call) = self.retries.remove(&id) {
+            let mut driven = self
+                .driven
+                .remove(&call)
+                .expect("a retry id is only recorded for a driven call");
+            driven.retry = None;
+            (call, driven)
+        } else if let Some(request) = self.eligible.remove(&id) {
+            let driven = Driven {
+                request,
+                sent: 1,
+                answers: BTreeMap::new(),
+                awaiting: BTreeSet::new(),
+                state: None,
+                retry: None,
+                state_only_rounds: 0,
+            };
+            (id, driven)
+        } else {
+            return Some(message);
+        };
+        if let ServerJsonRpcMessage::Response(response) = &message
+            && let ServerResult::InputRequiredResult(result) = &response.result
+        {
+            self.input_required(call, driven, result.clone());
+            return None;
+        }
+        match &mut message {
+            ServerJsonRpcMessage::Response(r) => r.id = call,
+            ServerJsonRpcMessage::Error(e) => e.id = Some(call),
+            _ => {}
+        }
+        Some(message)
+    }
+
+    /// Notes what the client sends: the calls a server may answer with `input_required`, and the
+    /// cancellation of one being driven. Returns what to forward, if anything.
+    fn outgoing(&mut self, item: ClientJsonRpcMessage) -> Option<ClientJsonRpcMessage> {
+        match &item {
+            ClientJsonRpcMessage::Request(request) if is_eligible(&request.request) => {
+                self.eligible
+                    .insert(request.id.clone(), request.request.clone());
+            }
+            ClientJsonRpcMessage::Notification(notification) => {
+                if let ClientNotification::CancelledNotification(cancelled) =
+                    &notification.notification
+                    && let Some(call) = &cancelled.params.request_id
+                {
+                    self.eligible.remove(call);
+                    if let Some(driven) = self.drop_call(call) {
+                        // With no retry in flight the server holds no live request.
+                        let retry = driven.retry?;
+                        self.dropped_retries.insert(retry.clone());
+                        return Some(ClientJsonRpcMessage::notification(
+                            ClientNotification::CancelledNotification(CancelledNotification::new(
+                                CancelledNotificationParam::new(
+                                    Some(retry),
+                                    cancelled.params.reason.clone(),
+                                ),
+                            )),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Some(item)
     }
 
     /// Whether `message` was taken; a message not taken goes on to rmcp.
@@ -925,19 +1294,40 @@ impl<T: Transport<RoleClient>> Transport<RoleClient> for ElicitationTap<T> {
         &mut self,
         item: TxJsonRpcMessage<RoleClient>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
-        self.inner.send(item)
+        let sending = self.outgoing(item).map(|item| self.inner.send(item));
+        async move {
+            match sending {
+                Some(sending) => sending.await,
+                None => Ok(()),
+            }
+        }
     }
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         loop {
+            if let Some(message) = self.outbox.pop_front() {
+                return Some(message);
+            }
             tokio::select! {
                 message = self.inner.receive() => {
-                    let message = message?;
-                    if !self.take(&message) {
+                    let Some(message) = message else {
+                        let calls: Vec<RequestId> = self.driven.keys().cloned().collect();
+                        for call in calls {
+                            self.drop_call(&call);
+                        }
+                        // Only a late answer removes an entry, and none arrives once the
+                        // transport is closed.
+                        self.dropped_retries.clear();
+                        return None;
+                    };
+                    if let Some(message) = self.route(message)
+                        && !self.take(&message)
+                    {
                         return Some(message);
                     }
                 }
                 Some(answer) = self.answers.recv() => self.deliver(answer.id, answer.reply),
+                Some(event) = self.events.recv() => self.on_event(event),
                 changed = self.calls.changed(), if self.calls_open => {
                     if changed.is_ok() {
                         if self.calls.borrow_and_update().total() == 0 {
@@ -962,13 +1352,12 @@ impl<T: Transport<RoleClient>> Transport<RoleClient> for ElicitationTap<T> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::convert::Infallible;
     use std::sync::Mutex;
     use std::time::Duration;
 
     use rmcp::model::{
-        CancelledNotification, CancelledNotificationParam, ElicitRequest, EmptyResult,
-        JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion2_0, PingRequest,
+        ElicitRequest, EmptyResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+        JsonRpcVersion2_0, PingRequest,
     };
     use serde_json::json;
     use tokio::sync::Notify;
@@ -982,6 +1371,7 @@ mod tests {
         wake: Arc<Notify>,
         sent: Arc<Mutex<Vec<ClientJsonRpcMessage>>>,
         hung_up: Arc<Mutex<bool>>,
+        fail_sends: Arc<Mutex<bool>>,
     }
 
     impl Script {
@@ -1001,7 +1391,7 @@ mod tests {
     }
 
     impl Transport<RoleClient> for Script {
-        type Error = Infallible;
+        type Error = std::io::Error;
 
         // The trait's future must be 'static, which an `async fn` borrowing `self` is not.
         #[allow(clippy::manual_async_fn)]
@@ -1010,7 +1400,11 @@ mod tests {
             item: TxJsonRpcMessage<RoleClient>,
         ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
             let sent = self.sent.clone();
+            let fail = *self.fail_sends.lock().unwrap();
             async move {
+                if fail {
+                    return Err(std::io::Error::other("the pipe is broken"));
+                }
                 sent.lock().unwrap().push(item);
                 Ok(())
             }
@@ -1190,6 +1584,19 @@ mod tests {
             .find(|m| m["id"] == json!(id))
             .cloned()
             .unwrap_or_else(|| panic!("no response for {id} in {sent:?}"))
+    }
+
+    #[tokio::test]
+    async fn an_error_without_an_id_passes_through_to_rmcp() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let error: ServerJsonRpcMessage = serde_json::from_value(
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse"}}),
+        )
+        .unwrap();
+        rig.script.push(error);
+        let passed = drain(&mut rig.tap, Duration::from_millis(100)).await;
+        assert_eq!(passed.len(), 1, "{passed:?}");
+        assert_eq!(passed[0]["error"]["code"], json!(-32700));
     }
 
     #[tokio::test]
@@ -1539,6 +1946,440 @@ mod tests {
         assert_eq!(*rx.borrow(), InFlight { main: 0, sub: 1 });
         drop(c);
         assert_eq!(*rx.borrow(), InFlight::default());
+    }
+
+    fn tap_with(elicitor: Arc<dyn Elicitor>) -> (Script, CallTracker, ElicitationTap<Script>) {
+        let script = Script::default();
+        let tracker = CallTracker::new();
+        let tap = ElicitationTap::new(script.clone(), "srv", "srv", elicitor, &tracker);
+        (script, tracker, tap)
+    }
+
+    fn call_tool(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
+                rmcp::model::CallToolRequestParams::new("t"),
+            )),
+            RequestId::Number(id),
+        )
+    }
+
+    fn get_prompt(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::GetPromptRequest(rmcp::model::GetPromptRequest::new(
+                rmcp::model::GetPromptRequestParams::new("p"),
+            )),
+            RequestId::Number(id),
+        )
+    }
+
+    fn read_resource(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::ReadResourceRequest(rmcp::model::ReadResourceRequest::new(
+                rmcp::model::ReadResourceRequestParams::new("file:///x"),
+            )),
+            RequestId::Number(id),
+        )
+    }
+
+    fn cancel_call(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::notification(ClientNotification::CancelledNotification(
+            CancelledNotification::new(CancelledNotificationParam::new(
+                Some(RequestId::Number(id)),
+                Some("timed out".to_string()),
+            )),
+        ))
+    }
+
+    fn form_input(message: &str) -> Value {
+        serde_json::to_value(ElicitRequest::new(
+            ElicitRequestParams::FormElicitationParams {
+                meta: None,
+                message: message.to_string(),
+                requested_schema: name_schema(),
+            },
+        ))
+        .unwrap()
+    }
+
+    fn url_input(url: &str) -> Value {
+        serde_json::to_value(ElicitRequest::new(
+            ElicitRequestParams::UrlElicitationParams {
+                meta: None,
+                message: "Sign in".to_string(),
+                url: url.to_string(),
+                elicitation_id: "e".to_string(),
+            },
+        ))
+        .unwrap()
+    }
+
+    fn needs_input(id: Value, inputs: Value, state: Option<&str>) -> ServerJsonRpcMessage {
+        let mut result = json!({"resultType": "input_required", "inputRequests": inputs});
+        if let Some(state) = state {
+            result["requestState"] = json!(state);
+        }
+        serde_json::from_value(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            .expect("an input_required response")
+    }
+
+    fn done(id: Value, result: Value) -> ServerJsonRpcMessage {
+        serde_json::from_value(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            .expect("a final response")
+    }
+
+    fn tool_done(id: Value) -> ServerJsonRpcMessage {
+        done(id, json!({"content": [{"type": "text", "text": "done"}]}))
+    }
+
+    fn retries(sent: &[Value]) -> Vec<Value> {
+        sent.iter()
+            .filter(|m| {
+                m["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("fontaine-mrtr-retry/"))
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn answer_of(retry: &Value, key: &str) -> Value {
+        retry["params"]["inputResponses"][key].clone()
+    }
+
+    const SHORT: Duration = Duration::from_millis(100);
+
+    #[tokio::test]
+    async fn an_accepted_form_round_retries_with_the_answer_and_the_state() {
+        let answer = Map::from_iter([("name".to_string(), json!("Ada"))]);
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Accept(answer)]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script.push(needs_input(
+            json!(1),
+            json!({"a": form_input("Who?")}),
+            Some("st"),
+        ));
+        let passed = drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert!(passed.is_empty(), "{passed:?}");
+        let forms = rig.elicitor.forms.lock().unwrap().clone();
+        assert_eq!(forms.len(), 1);
+        assert_eq!(forms[0].id, "fontaine-mrtr/1/1/a");
+        assert_eq!(forms[0].message, "Who?");
+        let sent = rig.script.sent();
+        let retries = retries(&sent);
+        assert_eq!(retries.len(), 1, "{sent:?}");
+        assert_eq!(retries[0]["method"], json!("tools/call"));
+        assert_eq!(retries[0]["params"]["name"], json!("t"));
+        assert_eq!(retries[0]["params"]["requestState"], json!("st"));
+        assert_eq!(answer_of(&retries[0], "a")["action"], json!("accept"));
+        assert_eq!(
+            answer_of(&retries[0], "a")["content"],
+            json!({"name": "Ada"})
+        );
+        rig.script.push(tool_done(retries[0]["id"].clone()));
+        let passed = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(passed.len(), 1, "{passed:?}");
+        assert_eq!(passed[0]["id"], json!(1));
+        assert_eq!(passed[0]["result"]["content"][0]["text"], json!("done"));
+    }
+
+    /// Answers "slow" after 150 ms and everything else at once, by the form's message.
+    struct Staggered;
+
+    impl Elicitor for Staggered {
+        fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+            Box::pin(async move {
+                if form.message == "slow" {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+                ElicitReply::Accept(Map::from_iter([("name".to_string(), json!(form.message))]))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn two_keys_answered_out_of_order_produce_one_retry() {
+        let (script, _tracker, mut tap) = tap_with(Arc::new(Staggered));
+        tap.send(call_tool(1)).await.unwrap();
+        script.push(needs_input(
+            json!(1),
+            json!({"a": form_input("slow"), "b": form_input("quick")}),
+            None,
+        ));
+        drain(&mut tap, Duration::from_millis(80)).await;
+        assert!(retries(&script.sent()).is_empty(), "waits for both");
+        drain(&mut tap, Duration::from_millis(200)).await;
+        settle().await;
+        let sent = script.sent();
+        let retries = retries(&sent);
+        assert_eq!(retries.len(), 1, "{sent:?}");
+        assert_eq!(
+            answer_of(&retries[0], "a")["content"]["name"],
+            json!("slow")
+        );
+        assert_eq!(
+            answer_of(&retries[0], "b")["content"]["name"],
+            json!("quick")
+        );
+        assert!(retries[0]["params"].get("requestState").is_none());
+    }
+
+    #[tokio::test]
+    async fn decline_cancel_and_an_invalid_answer_all_reach_the_retry() {
+        let invalid = Map::from_iter([("age".to_string(), json!("old"))]);
+        let mut rig = rig(Scripted::new(vec![
+            ElicitReply::Decline,
+            ElicitReply::Cancel,
+            ElicitReply::Accept(invalid),
+        ]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script.push(needs_input(
+            json!(1),
+            json!({"a": form_input("x"), "b": form_input("y"), "c": form_input("z")}),
+            None,
+        ));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        let sent = rig.script.sent();
+        let retries = retries(&sent);
+        assert_eq!(retries.len(), 1, "{sent:?}");
+        assert_eq!(answer_of(&retries[0], "a")["action"], json!("decline"));
+        assert_eq!(answer_of(&retries[0], "b")["action"], json!("cancel"));
+        assert_eq!(answer_of(&retries[0], "c")["action"], json!("decline"));
+    }
+
+    #[tokio::test]
+    async fn a_url_input_is_confirmed_and_a_non_http_one_declined() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Accept(Map::default())]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script.push(needs_input(
+            json!(1),
+            json!({"ok": url_input("https://example.com/auth"), "bad": url_input("file:///etc/passwd")}),
+            None,
+        ));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert_eq!(rig.elicitor.urls.lock().unwrap().len(), 1);
+        let retries = retries(&rig.script.sent());
+        assert_eq!(retries.len(), 1);
+        assert_eq!(answer_of(&retries[0], "ok")["action"], json!("accept"));
+        assert_eq!(answer_of(&retries[0], "bad")["action"], json!("decline"));
+    }
+
+    #[tokio::test]
+    async fn a_subagents_call_and_a_headless_run_cancel_without_a_dialog() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let _call = rig.tracker.enter(false);
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert_eq!(rig.elicitor.asked(), 0);
+        let retries_sent = retries(&rig.script.sent());
+        assert_eq!(answer_of(&retries_sent[0], "a")["action"], json!("cancel"));
+
+        let (script, _tracker, mut tap) = tap_with(Arc::new(CancelAll));
+        tap.send(call_tool(1)).await.unwrap();
+        script.push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut tap, SHORT).await;
+        settle().await;
+        let retries_sent = retries(&script.sent());
+        assert_eq!(answer_of(&retries_sent[0], "a")["action"], json!("cancel"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_state_only_round_retries_after_the_back_off() {
+        let mut rig = rig(Scripted::new(vec![]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({}), Some("s1")));
+        drain(&mut rig.tap, Duration::from_millis(40)).await;
+        assert!(retries(&rig.script.sent()).is_empty());
+        drain(&mut rig.tap, Duration::from_millis(20)).await;
+        settle().await;
+        let first = retries(&rig.script.sent());
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["params"]["requestState"], json!("s1"));
+        assert!(first[0]["params"].get("inputResponses").is_none());
+        rig.script
+            .push(needs_input(first[0]["id"].clone(), json!({}), Some("s2")));
+        drain(&mut rig.tap, Duration::from_millis(90)).await;
+        assert_eq!(
+            retries(&rig.script.sent()).len(),
+            1,
+            "the second waits 100 ms"
+        );
+        drain(&mut rig.tap, Duration::from_millis(20)).await;
+        settle().await;
+        let all = retries(&rig.script.sent());
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1]["params"]["requestState"], json!("s2"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_tenth_input_required_result_fails_the_call() {
+        let mut rig = rig(Scripted::new(vec![]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        let mut id = json!(1);
+        let mut out = Vec::new();
+        for round in 1..=10 {
+            rig.script
+                .push(needs_input(id.clone(), json!({}), Some("s")));
+            out = drain(&mut rig.tap, Duration::from_secs(1)).await;
+            if round < 10 {
+                assert!(out.is_empty(), "{out:?}");
+                id = retries(&rig.script.sent()).last().unwrap()["id"].clone();
+            }
+        }
+        assert_eq!(retries(&rig.script.sent()).len(), 9);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn sampling_roots_and_an_empty_result_each_fail_the_call_once() {
+        let sampling = json!({
+            "method": "sampling/createMessage",
+            "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}], "maxTokens": 10}
+        });
+        let roots = json!({"method": "roots/list"});
+        for inputs in [json!({"s": sampling}), json!({"r": roots}), json!({})] {
+            let mut rig = rig(Scripted::new(vec![]));
+            rig.tap.send(call_tool(4)).await.unwrap();
+            rig.script.push(needs_input(json!(4), inputs.clone(), None));
+            let out = drain(&mut rig.tap, SHORT).await;
+            settle().await;
+            assert_eq!(out.len(), 1, "{inputs}: {out:?}");
+            assert_eq!(out[0]["id"], json!(4));
+            assert!(out[0].get("error").is_some(), "{out:?}");
+            assert!(retries(&rig.script.sent()).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_cannot_be_sent_fails_the_call_once() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        *rig.script.fail_sends.lock().unwrap() = true;
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn prompts_and_resources_are_driven_like_tool_calls() {
+        for (call, method, result) in [
+            (get_prompt(1), "prompts/get", json!({"messages": []})),
+            (read_resource(1), "resources/read", json!({"contents": []})),
+        ] {
+            let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+            rig.tap.send(call).await.unwrap();
+            rig.script.push(needs_input(
+                json!(1),
+                json!({"a": form_input("x")}),
+                Some("st"),
+            ));
+            drain(&mut rig.tap, SHORT).await;
+            settle().await;
+            let retries_sent = retries(&rig.script.sent());
+            assert_eq!(retries_sent.len(), 1, "{method}");
+            assert_eq!(retries_sent[0]["method"], json!(method));
+            assert_eq!(retries_sent[0]["params"]["requestState"], json!("st"));
+            assert_eq!(answer_of(&retries_sent[0], "a")["action"], json!("decline"));
+            rig.script.push(done(retries_sent[0]["id"].clone(), result));
+            let out = drain(&mut rig.tap, SHORT).await;
+            assert_eq!(out.len(), 1, "{method}");
+            assert_eq!(out[0]["id"], json!(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_input_required_result_for_an_unrecorded_id_passes_through() {
+        let mut rig = rig(Scripted::new(vec![]));
+        rig.script
+            .push(needs_input(json!(99), json!({"a": form_input("x")}), None));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(99));
+        assert_eq!(rig.elicitor.asked(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_call_with_a_dialog_open_aborts_it_and_sends_nothing() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        rig.tap.send(cancel_call(1)).await.unwrap();
+        settle().await;
+        let sent = rig.script.sent();
+        assert_eq!(sent.len(), 1, "only the call itself: {sent:?}");
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert!(out.is_empty());
+        assert_eq!(rig.script.sent().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_with_a_retry_in_flight_forwards_it_under_the_retry_id() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        let retry_id = retries(&rig.script.sent())[0]["id"].clone();
+        rig.tap.send(cancel_call(1)).await.unwrap();
+        settle().await;
+        let sent = rig.script.sent();
+        let forwarded = sent
+            .iter()
+            .find(|m| m["method"] == json!("notifications/cancelled"))
+            .expect("the cancellation is forwarded");
+        assert_eq!(forwarded["params"]["requestId"], retry_id);
+        assert_eq!(forwarded["params"]["reason"], json!("timed out"));
+        rig.script.push(tool_done(retry_id));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert!(out.is_empty(), "the late response is swallowed: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn the_last_call_ending_discards_a_driven_calls_dialogs() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        let call = rig.tracker.enter(true);
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        drop(call);
+        let out = drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(rig.script.sent().len(), 1, "no answer, no retry");
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_closed_transport_discards_a_driven_calls_dialogs() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        *rig.script.hung_up.lock().unwrap() = true;
+        rig.script.wake.notify_one();
+        assert!(rig.tap.receive().await.is_none());
+        settle().await;
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
     }
 
     fn form(schema: ElicitationSchema) -> ElicitForm {
