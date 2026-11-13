@@ -132,8 +132,8 @@ kind = "opencode-go"
 
 ## `databricks`
 
-`base_url` is the workspace origin, no path. `claude-` models use the Messages route, `gpt-` the
-Responses route, `gemini-` the Gemini route, the rest MLflow Chat Completions. Billed in DBUs.
+`base_url` is the workspace origin, no path. `claude-` models use the Messages route, `gpt-` (except `gpt-oss-`)
+the Responses route, `gemini-` the Gemini route, the rest MLflow Chat Completions. Billed in DBUs.
 `model_facts` maps a custom endpoint; it does not change routing. See
 [Configuration](configuration.md#worked-examples).
 
