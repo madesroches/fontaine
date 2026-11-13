@@ -151,6 +151,7 @@ rig-rmcp's `connect` cannot start the `server/discover` lifecycle, so a server t
 - 2026-11-13 (#542): At most 10 requests per call (initial + 9 retries), matching rmcp's `DEFAULT_MRTR_MAX_ROUNDS`.
 - 2026-11-13 (#542): Sampling and roots input requests fail the call, because Fontaine declares neither capability.
 - 2026-11-13 (#542): Supersedes the 2026-11-08 protocol-version-pin line in `tasks/fontaine_harness_plan.md` (`### MCP`, ~line 859) via a new line at the end of `### MCP`.
+- AFK: 2026-11-13 (#542): Ship the driver in `ElicitationTap` plus the pin lift as planned and file the `server/discover` lifecycle follow-up as an issue; whether a real 2026-07-28 server answers `initialize` with 2026-07-28 is unverified, and the driver is correct either way but reachable only if it does until that follow-up lands.
 
 ## Documentation
 
@@ -192,9 +193,3 @@ that answers `initialize` with 2026-07-28, lists one tool, and answers `tools/ca
 the server received the retry with the answer. This pins the wiring (`ElicitationTap` under
 `MetaTap`, rmcp's response matching with the rewritten id) that unit tests with a scripted
 transport cannot, and the failure would be silent (a hang or an unanswered dialog).
-
-## Open Questions
-
-- Does a real 2026-07-28 server answer `initialize` with 2026-07-28, or only support `server/discover`?
-  The driver and the pin lift are correct either way, but only the former is reachable until the
-  lifecycle follow-up lands.
