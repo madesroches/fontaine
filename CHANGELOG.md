@@ -185,6 +185,9 @@ All notable changes are recorded here. The format follows
 - Removed the redundant full-headless `a_guardian_that_cannot_be_read_fails_closed` test, which
   flaked on macOS; the fail-closed behavior stays covered by the guardian, `claude-subscription`
   protocol and headless auto-mode tests (#595).
+- The `windows_without_git_bash` tests no longer fail on a machine with scoop-installed Git: the
+  test sandbox now also points `SCOOP`, `SCOOP_GLOBAL`, `USERPROFILE` and `ProgramData` at an
+  empty directory, so Git Bash discovery cannot find the host's copy (#604).
 
 ### Changed
 
