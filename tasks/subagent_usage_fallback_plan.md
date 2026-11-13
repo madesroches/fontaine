@@ -46,30 +46,37 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
   with no `failed` exclusion (so it does not reuse `fall_through_order`/`Tried::order`, which start
   at `active`), skipping the accounts of every own-list entry that actually failed on quota in this
   request (collected during `fall_through_child`), entries that fail to resolve (with an
-  `Approver::warn`), and unpriced entries under an explicit `--max-budget-usd`. It passes
-  `settles = false`, so an agent type with `model = "fallback"` does not settle that chain either.
+  `Approver::warn`), and unpriced entries under an explicit `--max-budget-usd`. Its own walk
+  never settles the fallback chain (`settles = false`). A child already on the fallback chain (its
+  list chain is the fallback chain by `Arc::ptr_eq`, which includes `ModelSpec::Named("fallback")`)
+  does not fall back again: `fall_back_child` returns `Err` at once and the code goes straight to
+  the wait.
 - Does not settle any shared chain: the role's other subagents are unaffected and the spent
   role keeps its entry, so a later child still tries it and pauses/falls back for itself.
-- Rebuilds the agent on the new handle with the same type, tools and restrictions; mode, rules,
-  hooks and the guardian are untouched.
 - The child then serves from the fallback chain: its later quota fall-throughs walk the fallback
-  chain, not back onto the spent own list. A `serving` state on `RunShared` behind a `Mutex` (the
-  current chain, own list or fallback, plus its index) carries this; it is valid for list-less
-  children (`ModelSpec::Model`, `GuardianDefault`) too, which fall back the same way.
+  chain, not back onto the spent own list. On switching chains `fall_back_child` resets `tried`
+  (`*tried = Tried::default()`) and notes the chosen fallback index; the fallback walk keeps using
+  that `tried` for the fallback chain, so an exhausted fallback chain ends the walk and goes to the
+  pause. `RunShared.list` becomes the serving state that `fall_through_child` and `served_of` read:
+  a `Mutex<Option<Arc<ChildList>>>` that `fall_back_child` swaps to
+  `ChildList{chain: fallback, index, settles: false}`; `fall_through_child` clones the Arc out
+  before awaiting. It is valid for list-less children (`ModelSpec::Model`, `GuardianDefault`) too,
+  which fall back the same way.
 - Notice: one `Approver::warn` line `<id>: <from> usage window spent; continuing on <to>`, worded by a
   function beside `fall_through_notice`, and `record_model_fall_through` with the failure's own class
   (`failure.class.unwrap_or("quota")`) and the `fallback` role named in the record (session log and
   audit log, like any fall-through).
 - If every fallback entry is also spent on a window, the existing `wait_out_usage_limit` pause runs
   on the current account and, after the reset, the request goes through again with tried entries
-  forgotten.
+  forgotten. After the wait, and after later answers, the child stays on the fallback chain and
+  retries its current entry with tried entries forgotten.
 
 ## Implementation Steps
 
 1. `model_roles.rs`: add `FALLBACK_ROLE`; document it with the other reserved roles.
 2. `child_runner.rs`: fetch the chain at switch time with
-   `shared.context.chains.chain_of_role(&shared.context.roles, FALLBACK_ROLE)`; add the `serving`
-   state to `RunShared`; extract the shared entry-switch helper from `fall_through_child`;
+   `shared.context.chains.chain_of_role(&shared.context.roles, FALLBACK_ROLE)`; turn `RunShared.list` into the
+   serving state (`Mutex<Option<Arc<ChildList>>>`); extract the shared entry-switch helper from `fall_through_child`;
    add `fall_back_child`; call it before the `wait_out_usage_limit` block.
 3. Add the usage-window notice wording in `model_roles.rs`, beside `fall_through_notice`.
 4. Docs and CHANGELOG (below).
@@ -79,7 +86,9 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
 
 - `rust/fontaine-core/src/model_roles.rs`
 - `rust/fontaine-core/src/child_runner.rs`
-- `docs/configuration.md`, `docs/agents.md`, `docs/headless.md` (usage windows), `CHANGELOG.md`
+- `docs/configuration.md`, `docs/agents.md`, `docs/headless.md` (usage windows), `docs/tui.md`,
+  `docs/claude-subscription.md`, `docs/architecture.md`, `tasks/fontaine_harness_plan.md`,
+  `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -106,6 +115,9 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
   tries the `fallback` role first.
 - `docs/claude-subscription.md`: the usage-window paragraph (~166-168) and the "Plan limit with the
   usage window spent" table row (~178).
+- `docs/architecture.md`: ~220 describes `model_fell_through` as moving to the next entry of the
+  same list; add a clause for a subagent moving to the `fallback` role's list after its own list was
+  spent on a usage window, recorded with role `fallback`.
 - `CHANGELOG.md`: Added entry, noting a pre-existing user role named `fallback` now also serves as
   the usage-window fallback. On completion add a dated line at the end of the `### Agents`
   subsection of `tasks/fontaine_harness_plan.md` `## Decisions`.
