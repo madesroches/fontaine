@@ -233,12 +233,12 @@ pub struct Saved {
     pub warning: Option<String>,
 }
 
-/// Errors with `InvalidInput` when `path` exists and is a link: the store refuses to follow
-/// one, as `load` and `check` do.
+/// Errors with `InvalidData` when `path` exists and is a link: the store refuses to follow
+/// one, as `load` and `check` do. A link is a store-state problem, not a bad argument.
 fn refuse_link(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+            io::ErrorKind::InvalidData,
             format!(
                 "{} is a link, which the memory store refuses to follow",
                 path.display()
@@ -255,7 +255,7 @@ fn read_index_text(path: &Path) -> io::Result<Option<String>> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                io::ErrorKind::InvalidData,
                 format!(
                     "{} is a link, which the memory store refuses to follow",
                     path.display()
@@ -458,11 +458,17 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
     if !found {
         out.push_str(&format!("- [{topic}]({file})\n"));
     }
-    if !matches!(state, LineState::Unchanged) {
+    // The cap is judged on the bytes that persist: what was just written, or — when the
+    // line was already right — what is on disk, without the newline this reconstruction
+    // appends.
+    let persisted: &str = if matches!(state, LineState::Unchanged) {
+        &text
+    } else {
         refuse_link(&index_path)?;
         owner_only::write_atomic(&index_path, out.as_bytes())?;
-    }
-    let warning = (out.lines().count() > MAX_INDEX_LINES || out.len() > MAX_INDEX_BYTES).then(|| {
+        &out
+    };
+    let warning = (persisted.lines().count() > MAX_INDEX_LINES || persisted.len() > MAX_INDEX_BYTES).then(|| {
         format!(
             "{} is longer than {MAX_INDEX_LINES} lines or {MAX_INDEX_BYTES} bytes; only the start is loaded. Move detail into topic files",
             index_path.display()
@@ -1424,6 +1430,21 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_index_at_the_byte_cap_without_a_final_newline_does_not_warn() {
+        let (_tmp, dir) = store();
+        let mut text = String::from("- [Commands](commands.md)\n");
+        while text.len() < MAX_INDEX_BYTES {
+            text.push('x');
+        }
+        std::fs::write(dir.join(INDEX_FILE), &text).unwrap();
+        let saved = save(&dir, "Commands", "two\n").unwrap();
+        assert_eq!(saved.index, LineState::Unchanged);
+        assert!(saved.warning.is_none(), "{:?}", saved.warning);
+        // Nothing was written back, so the missing final newline stays missing.
+        assert_eq!(std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(), text);
+    }
+
+    #[test]
     fn an_over_cap_index_warns_but_the_save_succeeds() {
         let (_tmp, dir) = store();
         let text: String = (0..MAX_INDEX_LINES)
@@ -1453,7 +1474,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x\n");
 
         std::os::unix::fs::symlink(&outside, dir.join(INDEX_FILE)).unwrap();
-        assert!(save(&dir, "Other", "y\n").is_err());
+        let error = save(&dir, "Other", "y\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x\n");
     }
 
