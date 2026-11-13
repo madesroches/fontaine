@@ -315,7 +315,7 @@ pub static TOOLS: &[ToolDescriptor] = &[
         true,
         Destructive::Never,
         Specifier::None,
-        &[],
+        &["ToolSearch"],
     ),
     row(
         DRAFT_BUG_REPORT,
@@ -389,7 +389,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Tools Claude Code has no counterpart for.
-    const FONTAINE_ONLY: &[&str] = &["models", "tool_search", DRAFT_BUG_REPORT, "advisor", "memory"];
+    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT, "advisor", "memory"];
 
     #[test]
     fn names_are_unique_rule_names() {
@@ -468,6 +468,10 @@ mod tests {
         assert!(is_shell_class("monitor") && !is_shell_class("job_output"));
         assert!(!is_shell_class("no_such_tool"));
         assert_eq!(find_claude("Monitor").map(|d| d.name), Some("monitor"));
+        assert_eq!(
+            find_claude("ToolSearch").map(|d| d.name),
+            Some("tool_search")
+        );
         assert_eq!(find_claude("Bash").map(|d| d.name), Some("shell"));
         // PowerShell text never meets the POSIX analyses.
         assert!(!is_shell_class("powershell"));
@@ -650,7 +654,14 @@ mod tests {
                 &["ScheduleWakeup"],
             ),
             ("models", R::ReadOnly, true, D::Never, S::None, &[]),
-            ("tool_search", R::ReadOnly, true, D::Never, S::None, &[]),
+            (
+                "tool_search",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["ToolSearch"],
+            ),
             (
                 "draft_bug_report",
                 R::Arbitrary,
