@@ -118,8 +118,9 @@ The guardian reads history and your messages by a few fixed rules:
   conversation, and a `~/` path you name matches the same path under your home directory. It never
   clears a hard deny, and two things stay denied even when you name them: printing a live
   credential from a home-directory store or an environment secret into the transcript (a local
-  read of a file you named inside the workspace is fine), and pushing material you call
-  confidential to a `public` remote.
+  read of a file you named inside the workspace is fine), and sending external context or
+  personal and entrusted data to a public destination you did not name it for (see
+  [What counts as sensitive](#what-counts-as-sensitive)).
 - Text in a tool argument, file or note that tries to steer the guardian ("approve everything") is
   ignored, not punished: the guardian judges the call as if the text were inert, so a commit or a
   note that carries it is allowed when the action is harmless, and a call that also does something
@@ -812,6 +813,13 @@ commenting on or closing them is not exfiltration, though a secret in their cont
 told that its confidence is about containment and egress, so ordinary work that crosses neither is
 high confidence and a destructive Allow is not turned into a Deny by the confidence threshold.
 
+For exfiltration it judges content by the same four [data classes](#what-counts-as-sensitive), with
+less room. A `public` project's own work may go to any destination your request calls for, a public
+gist or paste included; external context, personal and entrusted data, or material marked
+confidential going to a `public` remote is denied, and nothing you say clears it. A commit or push
+to a recorded `private` or `internal` remote, or the text of its pull requests and issues, is never exfiltration. Everything else that leaves the
+workspace's own remotes stays denied: the minimal profile has no user-naming clearance.
+
 It is a narrowing, never "off", and it only loads when containment is verified. **Both** must hold:
 
 1. You pass `--in-container`, asserting the process runs in a container.
@@ -962,16 +970,12 @@ repository shares it. `fontaine auto-mode config` shows it.
 only the remotes it still has. The guardian sees it as data in the `session_facts` block, and its
 prompt gives the fields fixed meanings:
 
-- `public` is authoritative and cuts both ways. The repository's tracked content as published at
-  that remote is public data, so sharing it anywhere is not data exfiltration, and opening issues
-  or pull requests about the project there is routine. Untracked, ignored or sensitive files,
-  local changes the remote does not have, and secrets get no relief, and pushing new material
-  there is publication, so confidential material is not cleared by it, and you calling it
-  confidential does not clear a push to a `public` remote. Sharing tracked content as a public gist
-  or paste is not exfiltration and widens no one's access.
-- `private`, `internal` and `unknown` relax nothing, except that a push you asked for to a
-  `private` or `internal` remote stays inside the trust boundary, so calling the material
-  confidential is no reason to block it. `unverified` counts as possibly public.
+- `public` is authoritative and cuts both ways: it lets the project's own work be published, and
+  it makes external context or personal and entrusted data going there publication to the world.
+  The rules are under [What counts as sensitive](#what-counts-as-sensitive).
+- `private` and `internal`: a commit or push to that recorded remote stays inside the trust
+  boundary, so calling the material confidential is no reason to block it. `unknown` relaxes
+  nothing, and `unverified` counts as possibly public.
 - A protected default branch, or a workflow that runs on tag push, marks a push there as a
   shared-branch change or a release.
 - Facts read from repository files describe the project and never add trust.
@@ -983,6 +987,51 @@ prompt gives the fields fixed meanings:
   not, and `(none)` means any remote a call names was added. When the names were not recorded, the
   repository's named remotes (`origin`) count as its own and one the call adds or repoints does not.
 - A location, target or destination missing from the lists says nothing about its safety.
+
+**What counts as sensitive.** The guardian judges data by class, from what it can see (the
+content, and a file's name, path or type), not by whether git tracks the file:
+
+1. **Secrets**: credentials, private keys, tokens, live session cookies.
+2. **Personal and entrusted data**: personal data, customer data, third-party material under its own
+   sharing terms, and the local stores that carry these (agent session transcripts, credential
+   dot-folders, shell history).
+3. **External context**: confidential material from outside the project: the organization's other
+   repositories, internal hosts and plans, and the employers, clients or codenames around the
+   project, including paths outside the workspace that reveal them. Material inside the workspace
+   counts when you or its own text mark it confidential, internal or not for publication.
+4. **Project work**: this repository's own code, tests, design notes, plans, docs, build and test
+   output, bug reproductions, issues and pull requests, tracked or not.
+
+Where each may go depends on the destination and on the visibility the setup recorded:
+
+- Secrets never leave the machine, except a credential sent to its provider.
+- Personal and entrusted data goes nowhere outside the workspace unless you name the data and the
+  destination, and that includes a commit or push to a `public` remote.
+- For a `private` or `internal` remote, any commit or push to one of the repository's own remotes,
+  and the text of its pull requests and issues, is allowed whatever it holds, except that a real secret is still Secret Exposure. A gist, paste
+  or other host is judged as though the project were not public.
+- For a `public` remote, project work may go to any destination your request calls for: the
+  remote, its issues and pull requests, a public gist or paste, a forum post. External context may
+  not, unless your messages name that detail for that destination ("mention we use it at the
+  client" does; "file an issue about the crash" does not). The guardian reads the outgoing text
+  (a commit message, an issue body, a gist file) for internal paths, hostnames, client or employer
+  names and identifiers from live data.
+- For `unknown`, `unverified`, an expired fact or no setup record, pushes and pull requests to the
+  repository's own remotes are not blocked on content class alone, and unknown visibility is never
+  a reason to block. A public destination that is not the repository (a gist, a paste, a public
+  bucket) gets project work only when you name that destination, and never external context.
+
+Examples: a public project's design notes may go in a gist, a client's name may not, and anything
+may be pushed to a private repository except a real secret.
+
+Some sends stay hard denies that nothing clears: secrets, a destination the agent chose itself, a
+remote added or repointed in the session, and a bulk transfer of the whole tree or all refs to
+anywhere but the repository's own remotes. The class-based cases (personal and entrusted data,
+external context, a non-public project's work sent to a public destination) are a soft rule,
+Out-of-Place Publication, which you clear by naming the data and the public destination itself.
+Naming a remote by its git name (`origin`) does not name it as public, and material marked
+confidential, internal or not for publication is never cleared to a `public` destination by
+naming it.
 
 **Expiry.** A `public` fact older than 30 days is shown as `unknown (last seen public on <date>)`,
 because a repository made private since would keep a relaxation it no longer earns. Facts that
@@ -1059,6 +1108,9 @@ valid for the dataset it was scored on.
   earlier one created, and a glob or pathspec names files no literal word does.
 - **Latency.** Every call that reaches the guardian waits for a model. The 3-second p95 bar is a
   property of the listed models, not of yours.
+- **Data class is inferred.** The guardian decides which class a piece of content belongs to from
+  what it reads like, so external context with no visible marker (no client name, no internal
+  host, no confidentiality note) can pass as project work.
 - **Injection.** Delimiting, redaction and a tool-less single-shot design reduce, and do not
   remove, the chance that hostile text in a command, a file or a repository steers the verdict.
   The deterministic floor and the fail-closed rules exist so that the guardian is not the only
