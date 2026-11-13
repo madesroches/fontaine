@@ -577,6 +577,10 @@ pub const KEYS: &[KeyRow] = &[
             crate::config::OnUsageLimit::Exit => "exit".to_string(),
         }
     ),
+    row!("headless.require_trust", Scalar, |c, _| c
+        .headless
+        .require_trust
+        .to_string()),
     row!("afk.temperature_ceiling", Scalar, |c, _| c
         .afk
         .ceiling()

@@ -303,3 +303,117 @@ async fn an_mcp_tool_that_asks_for_input_in_a_headless_run_gets_cancel_and_the_r
         "{result}"
     );
 }
+
+fn require_trust(s: &Sandbox) {
+    let base = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    s.user_config(&format!("{base}\n[headless]\nrequire_trust = true\n"));
+}
+
+fn repo_server_settings() -> String {
+    format!(
+        "[mcp.servers.repo]\ncommand = '{}'\n",
+        example_bin("fontaine", "repo_mcp_server")
+            .to_string_lossy()
+            .into_owned()
+    )
+}
+
+fn tool_names(init: &Value) -> Vec<&str> {
+    init["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn require_trust_skips_project_servers_and_hooks_in_an_untrusted_workspace() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "shell", json!({"command": "cargo test"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    require_trust(&s);
+    let marker = s.work.join("hook-ran.json");
+    project_settings(
+        &s,
+        &format!(
+            "{}\n[[hooks.pre_tool_use]]\ncommand = '''\n'{}' '{}' '{{}}'\n'''\n",
+            repo_server_settings(),
+            example_bin("fontaine", "hook_marker")
+                .to_string_lossy()
+                .into_owned(),
+            marker.display(),
+        ),
+    );
+    let out = s.headless(&["--output-format", "stream-json", "go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let init = &lines[0];
+    assert!(
+        !tool_names(init)
+            .iter()
+            .any(|t| t.starts_with("mcp__repo__")),
+        "{init}"
+    );
+    assert_eq!(init["project_executables"], json!(false));
+    assert!(!marker.exists(), "the project hook ran");
+    assert!(
+        out.stderr.contains("workspace is not trusted")
+            && out.stderr.contains("[headless] require_trust = true"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn require_trust_loads_project_executables_in_a_trusted_workspace() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    require_trust(&s);
+    fontaine_core::trust::record(&s.data, &s.work).unwrap();
+    project_settings(&s, &repo_server_settings());
+    let out = s.headless(&["--output-format", "stream-json", "go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let init = &lines[0];
+    assert!(tool_names(init).contains(&"mcp__repo__echo"), "{init}");
+    assert_eq!(init["project_executables"], json!(true));
+    assert!(
+        !out.stderr.contains("workspace is not trusted"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_require_trust_an_untrusted_workspace_still_loads_project_executables() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    project_settings(&s, &repo_server_settings());
+    let out = s.headless(&["--output-format", "stream-json", "go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert!(tool_names(&lines[0]).contains(&"mcp__repo__echo"));
+    assert_eq!(lines[0]["project_executables"], json!(true));
+    assert!(
+        !out.stderr.contains("workspace is not trusted"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_file_cannot_set_require_trust() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    project_settings(&s, "[headless]\nrequire_trust = false\n");
+    let out = s.headless(&["go"]).await;
+    assert_ne!(out.code, Some(0));
+    assert!(out.stderr.contains("require_trust"), "{}", out.stderr);
+}

@@ -97,6 +97,7 @@ async fn build_report(
         sections.push(report::trust_section(&TrustFacts {
             workspace: &workspace,
             trusted,
+            headless_requires_trust: false,
             store_problem: trust::unreadable(&dirs.data),
             project: None,
         }));
@@ -141,6 +142,7 @@ async fn build_report(
     sections.push(report::trust_section(&TrustFacts {
         workspace: &workspace,
         trusted,
+        headless_requires_trust: config.headless.require_trust,
         store_problem: trust::unreadable(&dirs.data),
         project: Some({
             let summary = trust_summary(&config);
@@ -304,6 +306,7 @@ fn extensions_section(
         instruction_warnings: loaded.warnings,
         hooks: hook_counts(config),
         workspace_trusted: trusted,
+        headless_requires_trust: config.headless.require_trust,
         skills,
         plugin_error,
         warnings,

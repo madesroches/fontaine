@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `[headless] require_trust` (#228). Opt-in, user file or `--settings` only: a `fontaine -p` run
+  skips project hooks, repository MCP servers and project skill commands unless the workspace was
+  trusted in the terminal UI, and prints one line on stderr. The default is unchanged (headless
+  loads them without asking, as Claude Code's `-p` does). The headless `init` event gains
+  `project_executables`, and the ledger's `session_start` record gains `headless` and
+  `project_executables`, so headless runs that loaded project executables in an untrusted
+  workspace can be counted.
 - Usage-window pause (#115). A subscription account that has spent its usage window answers every
   request with a 429 until it resets; Fontaine now tells that apart from a transient rate limit
   (the provider's machine code, a `Retry-After` of more than five minutes, or a

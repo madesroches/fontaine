@@ -826,6 +826,8 @@ fn session_start_round_trips_with_and_without_env_keys() {
         workspace_trust: "trusted".into(),
         git_remotes: Vec::new(),
         env_keys,
+        headless: false,
+        project_executables: false,
         project_environment: None,
     };
     for keys in [vec![], vec!["HTTPS_PROXY".to_string(), "PATH".to_string()]] {
@@ -835,6 +837,30 @@ fn session_start_round_trips_with_and_without_env_keys() {
     }
     let old = r#"{"kind":"session_start","session_id":"s","permission_mode":"manual","workspace_roots":["/w"],"workspace_trust":"trusted","git_remotes":[]}"#;
     assert_eq!(serde_json::from_str::<Record>(old).unwrap(), record(vec![]));
+}
+
+#[test]
+fn session_start_round_trips_the_headless_and_project_executables_flags() {
+    let record = |headless: bool, project_executables: bool| Record::SessionStart {
+        session_id: "s".into(),
+        permission_mode: "manual".into(),
+        workspace_roots: vec!["/w".into()],
+        workspace_trust: "untrusted".into(),
+        git_remotes: Vec::new(),
+        env_keys: Vec::new(),
+        headless,
+        project_executables,
+        project_environment: None,
+    };
+    for (headless, loaded) in [(false, false), (true, false), (true, true), (false, true)] {
+        let text = serde_json::to_string(&record(headless, loaded)).unwrap();
+        assert_eq!(text.contains("\"headless\""), headless, "{text}");
+        assert_eq!(text.contains("project_executables"), loaded, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Record>(&text).unwrap(),
+            record(headless, loaded)
+        );
+    }
 }
 
 #[tokio::test]

@@ -40,6 +40,13 @@ pub enum Record {
         /// Names of the `[env]` overrides every subprocess gets; never their values.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
+        /// The session ran non-interactively (`-p`); absent in ledgers written before it was recorded.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        headless: bool,
+        /// Project hooks, MCP servers and skill commands were allowed to load; absent means they
+        /// were not, or the ledger predates the field.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        project_executables: bool,
         /// What `fontaine auto-mode setup` stored for the project, as this session loaded it:
         /// filtered to the current remotes, with an expired `public` already downgraded.
         #[serde(default, skip_serializing_if = "Option::is_none")]

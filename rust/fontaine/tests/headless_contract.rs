@@ -118,6 +118,7 @@ async fn stream_json_events_match_the_schema_and_init_reports_the_session() {
     assert_eq!(init["suspended_allow_rules"], json!([]));
     assert_eq!(init["permission_mode"], "manual");
     assert_eq!(init["workspace_trust"], "untrusted");
+    assert_eq!(init["project_executables"], json!(true));
     let roots = init["workspace_roots"].as_array().unwrap();
     assert_eq!(roots[0], s.work.display().to_string());
     assert_eq!(

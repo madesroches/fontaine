@@ -852,6 +852,8 @@ impl AgentRuntime {
                 .into_iter()
                 .map(|(name, _)| name.to_string_lossy().into_owned())
                 .collect(),
+            headless: self.setup.headless,
+            project_executables: self.setup.project_executables,
             project_environment,
         });
         if let Some(notice) = setup_notice {

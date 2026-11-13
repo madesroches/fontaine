@@ -254,6 +254,8 @@ pub fn settings_section(config: &Config, running: &Running, all: bool) -> Sectio
 pub struct TrustFacts<'a> {
     pub workspace: &'a Path,
     pub trusted: bool,
+    /// `[headless] require_trust`: an untrusted workspace's executables stay unloaded in `-p`.
+    pub headless_requires_trust: bool,
     /// Why `trust.toml` cannot be used, if it cannot.
     pub store_problem: Option<String>,
     /// Hooks and servers the repository defines; `None` when the configuration did not load.
@@ -305,10 +307,15 @@ pub fn trust_section(facts: &TrustFacts) -> Section {
             } else {
                 "do not load until the workspace is trusted"
             };
+            let headless = if facts.headless_requires_trust && !facts.trusted {
+                "not loaded (workspace not trusted; [headless] require_trust)"
+            } else {
+                "all load and every server starts"
+            };
             Finding::ok(
                 "project executables",
                 format!(
-                    "{}\nheadless: all load and every server starts\ninteractive: {interactive}",
+                    "{}\nheadless: {headless}\ninteractive: {interactive}",
                     parts.join(", ")
                 ),
             )
@@ -482,6 +489,8 @@ pub struct ExtensionFacts {
     pub instruction_warnings: Vec<String>,
     pub hooks: Vec<HookCount>,
     pub workspace_trusted: bool,
+    /// `[headless] require_trust`: an untrusted workspace's executables stay unloaded in `-p`.
+    pub headless_requires_trust: bool,
     /// The counts, or the load failure's chain.
     pub skills: Result<SkillCounts, String>,
     /// Plugin load failed: its chain. Plugin servers, hooks and skills are then missing.
@@ -504,10 +513,12 @@ pub fn extensions_section(facts: &ExtensionFacts) -> Section {
     for warning in &facts.instruction_warnings {
         findings.push(Finding::warn("instructions", warning.clone()));
     }
-    let project_state = if facts.workspace_trusted {
-        "headless: loaded; interactive: loaded"
-    } else {
-        "headless: loaded; interactive: not loaded (workspace not trusted)"
+    let project_state = match (facts.workspace_trusted, facts.headless_requires_trust) {
+        (true, _) => "headless: loaded; interactive: loaded",
+        (false, false) => "headless: loaded; interactive: not loaded (workspace not trusted)",
+        (false, true) => {
+            "headless: not loaded (workspace not trusted; [headless] require_trust); interactive: not loaded (workspace not trusted)"
+        }
     };
     if facts.hooks.is_empty() {
         findings.push(Finding::ok("hooks", "none"));
@@ -825,6 +836,7 @@ mod tests {
         let facts = TrustFacts {
             workspace: Path::new("/w"),
             trusted: false,
+            headless_requires_trust: false,
             store_problem: None,
             project: Some(ProjectExecutables {
                 hooks: 2,
@@ -836,6 +848,14 @@ mod tests {
         assert_eq!(levels(&s), [Level::Warn, Level::Ok, Level::Ok]);
         assert!(s.findings[2].detail.contains("headless: all load"));
         assert!(s.findings[2].detail.contains("do not load until"));
+        let gated = TrustFacts {
+            headless_requires_trust: true,
+            ..facts
+        };
+        let s = trust_section(&gated);
+        assert!(s.findings[2].detail.contains("headless: not loaded"));
+        assert!(s.findings[2].detail.contains("require_trust"));
+        let facts = gated;
         let facts = TrustFacts {
             trusted: true,
             store_problem: Some("trust.toml cannot be used".into()),
@@ -956,6 +976,7 @@ mod tests {
                 },
             ],
             workspace_trusted: false,
+            headless_requires_trust: false,
             skills: Err("/w/.fontaine/skills/x/SKILL.md: bad".into()),
             plugin_error: Some("collision".into()),
             warnings: vec!["w".into()],
@@ -977,6 +998,13 @@ mod tests {
                 .any(|f| f.subject == "plugins" && f.level == Level::Fail)
         );
         assert_eq!(s.findings.last().unwrap().level, Level::Warn);
+
+        let gated = ExtensionFacts {
+            headless_requires_trust: true,
+            ..facts
+        };
+        let s = extensions_section(&gated);
+        assert!(s.findings[1].detail.contains("headless: not loaded"));
     }
 
     #[test]

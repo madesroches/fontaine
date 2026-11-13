@@ -131,6 +131,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
 | `[headless] max_usage_wait_secs` | no | no | yes |
+| `[headless] require_trust` | no | no | yes |
 | `[headless] on_usage_limit` | `exit` only | `exit` only | yes |
 | `[afk] temperature_ceiling` | lower only, positive and finite | lower only, positive and finite | yes |
 | `[shell] max_timeout_secs` | no | no | yes |
@@ -1172,6 +1173,7 @@ temperature_ceiling = 8.0
 |---|---|---|
 | `max_usage_wait_secs` | The longest a run waits for an account's spent [usage window](headless.md#usage-windows) to reset, in seconds, at least 1. It bounds `fontaine -p`, and the terminal UI while AFK mode is on, because nobody can cancel a wait then. | `21600` (6 hours) |
 | `on_usage_limit` | `wait` holds the run until the window resets; `exit` ends a headless run at once with exit code 3. | `wait` |
+| `require_trust` | `true` makes a headless run skip a repository's hooks, MCP servers and skill commands unless the workspace was trusted in the terminal UI, and print one line on stderr. `false` loads them without asking, as Claude Code's `-p` does. User file or `--settings` only. | `false` |
 
 `--max-usage-wait` and `--on-usage-limit=wait|exit` override both for one run. A shared project
 file or a project-local file may set `on_usage_limit = "exit"`, which only ends a run sooner, and
@@ -1181,6 +1183,7 @@ nothing else here.
 [headless]
 max_usage_wait_secs = 7200
 on_usage_limit = "wait"
+require_trust = false
 ```
 
 ### `[shell]`
@@ -1414,7 +1417,8 @@ entry per root, server name and definition digest; a changed definition is asked
 
 Trust covers what a repository can *run*: hooks, MCP servers and skill commands. It never lets any
 of them approve a tool call. A headless run (`fontaine -p`) loads a repository's hooks and MCP
-servers without asking, as Claude Code's `-p` does, and holds them to the same rule. Prompt
+servers without asking, as Claude Code's `-p` does (unless `[headless] require_trust = true` and
+the workspace is not trusted), and holds them to the same rule. Prompt
 content (instruction files such as `FONTAINE.md`, `CLAUDE.md`, `AGENTS.md` and rules under `.claude/` or
 `.fontaine/`, skills, agent files, output styles) and the keys that only tighten load
 whatever the answer.

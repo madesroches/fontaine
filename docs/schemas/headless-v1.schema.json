@@ -113,6 +113,7 @@
               }
             },
             "workspace_trust": { "enum": ["trusted", "untrusted"] },
+            "project_executables": { "type": "boolean" },
             "suspended_allow_rules": {
               "type": "array",
               "items": { "type": "string" }

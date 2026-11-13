@@ -524,6 +524,7 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
             "workspace_roots": roots,
             "config_sources": sources,
             "workspace_trust": if trusted { "trusted" } else { "untrusted" },
+            "project_executables": runtime.project_executables(),
             "suspended_allow_rules": if runtime.start_mode().rules() == PermissionMode::Auto {
                 runtime.state.suspended_allow_rules()
             } else {
