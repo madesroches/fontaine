@@ -369,6 +369,119 @@ async fn a_later_window_failure_on_the_fallback_walks_its_list_and_never_back_to
     assert_eq!(fell[1]["to"], "ok/o1", "{fell:?}");
 }
 
+fn spawn_child(call: &str, id: &str, prompt: &str, model: &str) -> Vec<Turn> {
+    vec![
+        Turn::tool(
+            call,
+            "agent",
+            json!({"agent_type": "explore", "prompt": prompt, "model": model}),
+        ),
+        Turn::tool(&format!("{call}o"), "job_output", json!({"id": id})),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fallback_move_leaves_the_roles_other_subagents_on_their_own_entry() {
+    let quota = Endpoint::start(Wire::Chat, spent_window(5)).await;
+    let mid = Endpoint::start(Wire::Chat, vec![]).await;
+    let mut root = spawn_child("c1", "agent-1", "child-A: look", "coding");
+    root.extend(spawn_child("c3", "agent-2", "child-B: look", "coding"));
+    root.push(Turn::text("root finished"));
+    let ok = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new("root task", root),
+            Route::new("child-A", vec![Turn::text("A answered")]),
+            Route::new("child-B", vec![Turn::text("B answered")]),
+        ],
+    )
+    .await;
+    let s = Sandbox::new();
+    s.user_config(&format!(
+        "{}[models.roles]\nmain = [\"ok/o1\"]\ncoding = [\"quota/q1\"]\nfallback = [\"ok/o1\"]\n",
+        window_accounts(&quota, &mid, &ok)
+    ));
+    let out = run_with_child(&s, &["--max-usage-wait", "1s"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let text = tool_results(&out.lines());
+    assert!(
+        text.contains("A answered") && text.contains("B answered"),
+        "{text}"
+    );
+    assert_eq!(
+        quota.requests().await.len(),
+        2,
+        "the second child still started on the role's own entry"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagent_on_a_direct_model_falls_back_and_skips_its_own_spent_account() {
+    let quota = Endpoint::start(Wire::Chat, spent_window(5)).await;
+    let mid = Endpoint::start(Wire::Chat, vec![]).await;
+    let mut root = spawn_child("c1", "agent-1", "child-A: look", "quota/q1");
+    root.push(Turn::text("root finished"));
+    let ok = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new("root task", root),
+            Route::new("child-A", vec![Turn::text("A answered")]),
+        ],
+    )
+    .await;
+    let s = Sandbox::new();
+    s.user_config(&format!(
+        "{}[models.roles]\nmain = [\"ok/o1\"]\nfallback = [\"quota/q1\", \"ok/o1\"]\n",
+        window_accounts(&quota, &mid, &ok)
+    ));
+    let out = run_with_child(&s, &["--max-usage-wait", "1s"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert!(tool_results(&lines).contains("A answered"));
+    assert!(lines.iter().all(|l| l["type"] != "usage_paused"));
+    assert_eq!(quota.requests().await.len(), 1);
+    let session = lines[0]["session_id"].as_str().unwrap();
+    let fell: Vec<Value> = ledger(&s, session)
+        .into_iter()
+        .filter(|r| r["kind"] == "model_fell_through")
+        .collect();
+    assert_eq!(fell.len(), 1, "{fell:?}");
+    assert_eq!(fell[0]["to"], "ok/o1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unpriced_fallback_entry_is_skipped_under_a_cost_cap() {
+    let quota = Endpoint::start(Wire::Chat, spent_window(5)).await;
+    let mid = Endpoint::start(Wire::Chat, vec![]).await;
+    let mut root = spawn_child("c1", "agent-1", "child-A: look", "coding");
+    root.push(Turn::text("root finished"));
+    let paid = Endpoint::start_routed(
+        Wire::Responses,
+        vec![
+            Route::new("root task", root),
+            Route::new("child-A", vec![Turn::text("A answered")]),
+        ],
+    )
+    .await;
+    let mut s = Sandbox::new();
+    s.user_config(&format!(
+        "[accounts.quota]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"q1\"]\n\n[accounts.mid]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"m1\"]\n\n[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"PAID_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[models.roles]\nmain = [\"paid/gpt-4o-mini\"]\ncoding = [\"quota/q1\"]\nfallback = [\"mid/m1\", \"paid/gpt-4o-mini\"]\n",
+        quota.url(),
+        mid.url(),
+        paid.url()
+    ));
+    s.set_env("PAID_KEY", "sk-test-not-a-real-key");
+    let out = run_with_child(&s, &["--max-budget-usd", "1", "--max-usage-wait", "1s"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert!(tool_results(&lines).contains("A answered"));
+    assert_eq!(
+        mid.requests().await.len(),
+        0,
+        "the unpriced entry is passed over"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_type_naming_an_undefined_role_is_a_config_error() {
     let quota = Endpoint::start(Wire::Chat, vec![]).await;
