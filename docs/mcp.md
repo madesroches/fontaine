@@ -403,7 +403,7 @@ protocol 2026-07-28 and rejects `initialize` therefore connects. A legacy server
 probe with "method not found" falls back at once; one that never answers it delays the connection
 by up to 10 seconds before the fallback. The whole start, including the first tool list, shares
 the 30 second connection deadline. A server whose `tools/list` fails does not connect: the attempt
-ends at that deadline and is retried like any other timeout.
+ends at that 30 second deadline, the server is reported as failed, and `/mcp reconnect` restarts it.
 
 ## Requests for input
 

@@ -49,8 +49,8 @@ same three things with public API:
    false at connect). `start_service` then waits for that first commit (a `Notify` fired from
    `GuardedSink` when it records tools, including an empty list), inside the caller's
    `CONNECT_TIMEOUT`. `on_tool_list_changed` only logs a fetch failure, so a server whose
-   `tools/list` fails never signals and connect ends as a Timeout (Transient, retried) instead of
-   the underlying error; that is the one limitation of not forking rig-rmcp.
+   `tools/list` fails never signals and the attempt ends as a Timeout at the 30 second deadline, the
+   server is reported as failed and `/mcp reconnect` restarts it, instead of the underlying error; that is the one limitation of not forking rig-rmcp.
 3. `McpConnection::new(service)`.
 
 Everything wrapping the transport (`MetaTap`, `ElicitationTap`, `CallTracker`) is unchanged: the

@@ -130,7 +130,6 @@ impl<S> GuardedSink<S> {
             self.connection,
             wrapped.iter().map(DynamicTool::definition).collect(),
         );
-        self.listed.notify_one();
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {
@@ -221,7 +220,9 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
     fn add_managed_tools(&self, tools: Vec<DynamicTool>) -> HashMap<String, ManagedToolToken> {
         let wrapped = self.wrap_all(tools);
         self.record(&wrapped);
-        self.inner.add_managed_tools(wrapped)
+        let tokens = self.inner.add_managed_tools(wrapped);
+        self.listed.notify_one();
+        tokens
     }
 
     fn reconcile_managed_tools(
@@ -234,7 +235,9 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
         }
         let wrapped = self.wrap_all(tools);
         self.record(&wrapped);
-        self.inner.reconcile_managed_tools(expected, wrapped)
+        let tokens = self.inner.reconcile_managed_tools(expected, wrapped);
+        self.listed.notify_one();
+        tokens
     }
 }
 

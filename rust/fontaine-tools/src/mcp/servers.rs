@@ -546,9 +546,9 @@ impl CallScope {
 
 /// Elicitation in form and URL mode, and the tasks extension, over the newest protocol version
 /// rmcp offers. The lifecycle is `Auto`: `server/discover` first, then `initialize` for a server
-/// that does not know it. A server that answers `initialize` with an older version is served the request
-/// form; one that answers with the newest sends it as an `input_required` result, and may answer
-/// a tool call with a task handle. The elicitation tap drives both because rig-rmcp cannot
+/// that does not know it. A server that answers `initialize` with an older version is served the
+/// request form; one that answers with the newest sends it as an `input_required` result, and may
+/// answer a tool call with a task handle. The elicitation tap drives both because rig-rmcp cannot
 /// surface them.
 fn client_config() -> ClientConfig {
     let mut capabilities = ClientCapabilities::default();
@@ -782,8 +782,15 @@ where
         .serve_with_lifecycle(transport, lifecycle)
         .await
         .map_err(|e| Box::new(McpClientError::from(e)))?;
-    listed.notified().await;
-    Ok(McpConnection::new(service))
+    let connection = McpConnection::new(service);
+    // A server that dies after the handshake never lists, so waiting on `listed` alone would
+    // report a Timeout after the whole deadline.
+    tokio::select! {
+        () = listed.notified() => Ok(connection),
+        () = connection.closed() => Err(Box::new(McpClientError::Connection(
+            ClientInitializeError::ConnectionClosed("closed before the tool list".into()),
+        ))),
+    }
 }
 
 async fn serve<S, T, E, A>(
