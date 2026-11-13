@@ -5,8 +5,8 @@
 use fontaine_agents::registry::AgentTypes;
 use fontaine_guardian::{
     ACTIONS_TAKEN, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath,
-    task_intent,
+    RECENT_USER_MESSAGES, ScreenIntent, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary,
+    TouchedPath, task_intent,
 };
 use fontaine_tools::descriptor::{self, Destructive};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -19,7 +19,7 @@ use crate::audit::args_digest;
 use crate::destructive::{self, Facts, touched_paths};
 use crate::gate::SessionState;
 use crate::instructions::InstructionFile;
-use crate::ledger::{Existence, LedgerView};
+use crate::ledger::{Existence, LedgerView, MessageOrigin};
 use crate::permissions::summarize;
 use crate::trust;
 
@@ -280,9 +280,22 @@ pub fn build(
 ) -> AdjudicationRequest {
     let scope = state.scope();
     let view = state.ledger.view();
-    let intent = view.intent_for(&ancestry(state, caller));
+    let chain = ancestry(state, caller);
+    let tagged = view.intent_with_origin(&chain);
+    let intent: Vec<String> = tagged.iter().map(|(text, _)| text.clone()).collect();
     let from = intent.len().saturating_sub(RECENT_USER_MESSAGES);
     let recent = intent[from..].to_vec();
+    let screen_intent = tagged
+        .iter()
+        .any(|(_, origin)| *origin == MessageOrigin::Dialog)
+        .then(|| {
+            let kept: Vec<String> = tagged
+                .iter()
+                .filter(|(_, origin)| *origin != MessageOrigin::Dialog)
+                .map(|(text, _)| text.clone())
+                .collect();
+            ScreenIntent::from_kept(&kept)
+        });
     let destructive = destructive::derive(
         tool,
         args,
@@ -313,6 +326,8 @@ pub fn build(
     AdjudicationRequest {
         task_intent: task_intent(&intent, TASK_INTENT_CHARS),
         recent_user_messages: recent,
+        screen_intent,
+        agent_message_before_reply: view.reply_before_last(&chain).map(str::to_string),
         project_instructions: auto.project_instructions,
         environment: auto.environment,
         rules: auto.rules,

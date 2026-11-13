@@ -175,6 +175,8 @@ pub fn request(command: &str, destructive: bool) -> AdjudicationRequest {
     AdjudicationRequest {
         task_intent: "Run the project's tests".into(),
         recent_user_messages: vec!["Run the project's tests".into()],
+        screen_intent: None,
+        agent_message_before_reply: None,
         project_instructions: Some("Use cargo test".into()),
         environment: EnvironmentConfig::expand(&[]),
         rules: RuleConfig::expand(&[], &[], &[]),

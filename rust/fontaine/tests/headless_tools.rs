@@ -795,6 +795,14 @@ async fn the_conversation_continues_across_turns_through_the_session_store() {
     let session = out.lines()[0]["session_id"].as_str().unwrap().to_string();
     let log = s.data.join("sessions").join(&session).join("logs");
     assert!(log.is_dir(), "the context is persisted by rig-memory");
+    // A line can be written before the previous reply arrives, so none is a prompt.
+    let records = ledger(&s, &session);
+    let said: Vec<Option<&str>> = records
+        .iter()
+        .filter(|r| r["kind"] == "user_message")
+        .map(|r| r["origin"].as_str())
+        .collect();
+    assert_eq!(said, [None, None]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -830,9 +838,11 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
             "user_message",
             "action",
             "tool_outcome",
-            "denial"
+            "denial",
+            "agent_reply"
         ]
     );
+    assert_eq!(records[6]["text"], "done");
     assert_eq!(records[0]["permission_mode"], "manual");
     assert_eq!(records[0]["session_id"], session.as_str());
     assert_eq!(records[0]["workspace_trust"], "untrusted");
@@ -842,6 +852,7 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
         "{indexed}"
     );
     assert_eq!(records[2]["text"], "VERBATIM user words");
+    assert_eq!(records[2]["origin"], "prompt");
     assert_eq!(records[3]["tool"], "read");
     assert_eq!(records[4]["status"], "ok");
     assert_eq!(records[5]["tool"], "shell");

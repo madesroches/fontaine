@@ -1169,6 +1169,8 @@ fn guardian_request() -> AdjudicationRequest {
     AdjudicationRequest {
         task_intent: "Run the tests".into(),
         recent_user_messages: vec!["Run the tests".into()],
+        screen_intent: None,
+        agent_message_before_reply: None,
         project_instructions: None,
         environment: EnvironmentConfig::expand(&[]),
         rules: RuleConfig::expand(&[], &[], &[]),

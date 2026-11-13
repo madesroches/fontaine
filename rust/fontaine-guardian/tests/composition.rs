@@ -1261,13 +1261,13 @@ fn jev(server: &MockServer, params: &[(&'static str, Param)], shadow: bool) -> A
 }
 
 #[tokio::test]
-async fn the_hosted_preset_ships_defaults_that_allow_stop_and_pass() {
+async fn the_hosted_preset_ships_defaults_that_allow_and_pass() {
     let cases = [
         (0.95, "allow"),
-        (0.5, "stop"),
+        (0.5, "pass"),
         (0.7, "pass"),
         (0.79, "pass"),
-        (0.65, "stop"),
+        (0.65, "pass"),
     ];
     for (within, expected) in cases {
         let server = jev_server_saying(within).await;
@@ -1283,11 +1283,32 @@ async fn the_hosted_preset_ships_defaults_that_allow_stop_and_pass() {
                 assert_eq!(node, "screen.allow");
                 assert_eq!(*threshold, 0.20);
             }
-            ("stop", Decided::Escalate { node, .. }) => assert_eq!(node, "screen.stop"),
             ("pass", Decided::Guardian(_)) => {}
             (_, other) => panic!("within {within}: expected {expected}, got {other:?}"),
         }
     }
+}
+
+#[tokio::test]
+async fn a_hosted_screen_risk_of_0_35_goes_to_the_llm_guardian() {
+    let server = jev_server_saying(0.65).await;
+    let (endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let composed = run(&jev(&server, &[], false), &guardian).await;
+    assert!(matches!(composed.decided, Decided::Guardian(_)));
+    assert_eq!(endpoint.calls().await, 1);
+}
+
+#[tokio::test]
+async fn an_explicit_stop_threshold_still_escalates_on_a_hosted_model() {
+    let server = jev_server_saying(0.5).await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let extra = [("stop_threshold", number(0.34))];
+    let composed = run(&jev(&server, &extra, false), &guardian).await;
+    assert!(
+        matches!(&composed.decided, Decided::Escalate { node, .. } if node == "screen.stop"),
+        "{:?}",
+        composed.decided
+    );
 }
 
 #[tokio::test]
@@ -1344,6 +1365,15 @@ async fn allow_false_turns_the_allow_path_off_whatever_the_threshold() {
             "{extra:?}"
         );
     }
+    // With no default stop either, a high-risk call is left to the guardian too.
+    let risky = jev_server_saying(0.05).await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let composed = run(
+        &jev(&risky, &[("allow", Param::Bool(false))], false),
+        &guardian,
+    )
+    .await;
+    assert!(matches!(composed.decided, Decided::Guardian(_)));
 }
 
 #[tokio::test]

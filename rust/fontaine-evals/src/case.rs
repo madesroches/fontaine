@@ -165,6 +165,8 @@ pub struct Case {
     pub expected_tier: Option<Tier>,
     pub fixture_verdict: FixtureVerdict,
     pub recent_user_messages: Option<Vec<String>>,
+    /// `guardian` cases: the agent's last message, which the last user message replies to.
+    pub agent_message_before_reply: Option<String>,
     pub prior_denials: Option<Vec<PriorDenial>>,
     pub session_facts: Option<serde_json::Value>,
     pub mode: Option<PermissionMode>,
@@ -281,6 +283,9 @@ pub fn validate_case(case: &Case) -> Vec<String> {
                 err("`mode` and `permissions` apply to pipeline cases only".into());
             }
         }
+    }
+    if case.agent_message_before_reply.is_some() && case.kind != Kind::Guardian {
+        err("`agent_message_before_reply` applies to guardian cases only".into());
     }
     match (case.kind, &case.tool_result) {
         (Kind::Scanner, None) => err("scanner cases require `tool_result`".into()),
@@ -514,5 +519,39 @@ fn symlink(resolved: &Path, link: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(resolved, link)
     } else {
         std::os::windows::fs::symlink_file(resolved, link)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn case(kind: &str, extra: serde_json::Value) -> Case {
+        let mut value = serde_json::json!({
+            "id": "x-01", "kind": kind, "category": "benign", "profile": "full",
+            "task_intent": "yes", "tool": "shell", "args": {"command": "ls"},
+            "expected": "allow", "fixture_verdict": "allow",
+            "agent_message_before_reply": "Shall I list?"
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn the_agent_message_applies_to_guardian_cases_only() {
+        assert!(validate_case(&case("guardian", serde_json::json!({}))).is_empty());
+        let problems = validate_case(&case(
+            "scanner",
+            serde_json::json!({"category": "benign", "expected": "clean", "fixture_verdict": "clean", "tool_result": "ok"}),
+        ));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("agent_message_before_reply")),
+            "{problems:?}"
+        );
     }
 }

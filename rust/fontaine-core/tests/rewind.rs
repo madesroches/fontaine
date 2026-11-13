@@ -42,6 +42,7 @@ fn text(words: &str) -> Vec<MockStreamEvent> {
 async fn say(built: &Built, prompt: &str) {
     built.runtime.begin_turn(prompt, false);
     built.runtime.append(Record::UserMessage {
+        origin: Default::default(),
         text: prompt.to_string(),
         attachments: Vec::new(),
         agent: None,

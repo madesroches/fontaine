@@ -82,8 +82,8 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    `/add-dir` hint. `skill`, `ask_user_question`, `todo_write`, `models`, `board_show` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
-   from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
-   intent for the guardian; the options you pick do not.
+   from nobody (the model is told to use its best judgment). Your answers, both the options you pick and
+   the text you type, count as intent for the guardian, read with the question they answer.
    An `agent` call whose child can only read takes this step too: Fontaine computes the child's
    toolset, and when every tool in it is read-only (plus the coordination tools `send_message` and `board_update`; `board_show` is
    read-only), the spawn runs without
@@ -106,7 +106,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    and ask rules still match the path as written. In `manual` and `acceptEdits` an external
    write asks (that approval is itself the establishment that you asked for it, and the prompt
    shows the resolved target's diff); in `plan` it is plan-blocked like every edit; in `auto`
-   the guardian decides, allowing it only when your own typed messages asked for that write;
+   the guardian decides, allowing it only when your own messages, including what you picked in a question dialog, asked for that write;
    in `dontAsk` and in headless runs it is denied unless an allow rule or hook already covers
    it. An allow rule or a hook written for the resolved path runs
    it at the `allow_rule` or `hook` tier; it is never audited as `read_only_fast_path` or

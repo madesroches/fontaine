@@ -108,7 +108,7 @@ The write tools adjudicate the same way, and are allowed far less readily. A `wr
 `notebook_edit` naming a path outside every root also goes through the ordinary pipeline — it
 asks in `manual` and `acceptEdits`, is plan-blocked in `plan`, is denied in `dontAsk` and in
 headless runs unless an allow rule or hook already covers it, and is judged by the guardian in
-`auto`. In `auto` it is allowed only when your own typed messages asked for that write: the
+`auto`. In `auto` it is allowed only when your own messages (what you typed, and what you picked in a question dialog) asked for that write: the
 default guardian policy denies an un-asked write outside the workspace roots, wherever the
 target sits (see [Guardian](guardian.md)); persistence targets such as shell rc files or
 `~/.ssh/authorized_keys` are the existing persistence rules on top. An approval at the prompt is

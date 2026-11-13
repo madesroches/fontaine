@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::ledger::Record;
+use fontaine_core::ledger::{MessageOrigin, Record};
 use fontaine_core::schedule::{
     FALLBACK_SECONDS, Job, JobSpec, Kind, LoopStep, Origin, SELF_PACED_NOTE, ScheduleError,
     Scheduler, local_time,
@@ -207,6 +207,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         prompt: String,
     ) -> ControlFlow<()> {
         runtime.append(Record::UserMessage {
+            origin: Default::default(),
             text: typed.to_string(),
             attachments: Vec::new(),
             agent: None,
@@ -218,6 +219,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 text: typed.to_string(),
                 prompt,
             }]),
+            MessageOrigin::Other,
         )
         .await
     }

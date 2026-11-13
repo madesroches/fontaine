@@ -1,7 +1,9 @@
 //! The guardian profiles: `full`, and the container-mode `minimal` that narrows what the
 //! guardian is asked to judge. A profile never turns the guardian off.
 
-use crate::request::{AdjudicationRequest, SessionFacts, TouchedPath, trailing_chars};
+use crate::request::{
+    AdjudicationRequest, ScreenIntent, SessionFacts, TouchedPath, trailing_chars,
+};
 use crate::rules::RuleConfig;
 
 /// `task_intent` characters the minimal profile keeps.
@@ -49,6 +51,17 @@ impl Profile {
                     task_intent: trailing_chars(&request.task_intent, MINIMAL_INTENT_CHARS)
                         .to_string(),
                     recent_user_messages: recent[from..].to_vec(),
+                    screen_intent: request.screen_intent.as_ref().map(|screen| {
+                        let recent = &screen.recent_user_messages;
+                        let from = recent.len().saturating_sub(MINIMAL_RECENT_USER_MESSAGES);
+                        ScreenIntent {
+                            task_intent: trailing_chars(&screen.task_intent, MINIMAL_INTENT_CHARS)
+                                .to_string(),
+                            recent_user_messages: recent[from..].to_vec(),
+                        }
+                    }),
+                    // A reply is credit the minimal prompt does not give.
+                    agent_message_before_reply: None,
                     project_instructions: None,
                     environment: request.environment.clone(),
                     rules: RuleConfig::minimal(),
@@ -94,6 +107,8 @@ mod tests {
         let request = AdjudicationRequest {
             task_intent: String::new(),
             recent_user_messages: Vec::new(),
+            screen_intent: None,
+            agent_message_before_reply: None,
             project_instructions: None,
             environment: EnvironmentConfig::default(),
             rules: RuleConfig::default(),
@@ -119,10 +134,45 @@ mod tests {
     }
 
     #[test]
+    fn the_minimal_shape_trims_the_screen_intent_and_drops_the_agent_message() {
+        let mut request = AdjudicationRequest {
+            task_intent: String::new(),
+            recent_user_messages: Vec::new(),
+            screen_intent: Some(ScreenIntent {
+                task_intent: "x".repeat(MINIMAL_INTENT_CHARS + 10),
+                recent_user_messages: (0..6).map(|n| n.to_string()).collect(),
+            }),
+            agent_message_before_reply: Some("Shall I push?".into()),
+            project_instructions: None,
+            environment: EnvironmentConfig::default(),
+            rules: RuleConfig::default(),
+            tool_call: ToolCallSummary {
+                tool: "shell".into(),
+                args: serde_json::json!({}),
+                args_digest: String::new(),
+                destructive: false,
+                annotations: None,
+            },
+            session_facts: SessionFacts::default(),
+            hook_context: Vec::new(),
+            prior_denials: Vec::new(),
+        };
+        let shaped = Profile::Minimal.shape(&request);
+        let screen = shaped.screen_intent.expect("the screen intent is kept");
+        assert_eq!(screen.task_intent.chars().count(), MINIMAL_INTENT_CHARS);
+        assert_eq!(screen.recent_user_messages, vec!["3", "4", "5"]);
+        assert_eq!(shaped.agent_message_before_reply, None);
+        request.screen_intent = None;
+        assert_eq!(Profile::Minimal.shape(&request).screen_intent, None);
+    }
+
+    #[test]
     fn the_minimal_shape_drops_the_scratch_facts() {
         let mut request = AdjudicationRequest {
             task_intent: String::new(),
             recent_user_messages: Vec::new(),
+            screen_intent: None,
+            agent_message_before_reply: None,
             project_instructions: None,
             environment: EnvironmentConfig::default(),
             rules: RuleConfig::default(),

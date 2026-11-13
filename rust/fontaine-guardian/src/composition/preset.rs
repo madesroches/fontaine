@@ -12,9 +12,6 @@ pub const SCREEN: &str = "screen";
 /// The names `preset` accepts.
 pub const NAMES: &[&str] = &[SCREEN];
 
-/// The stop threshold of the screen preset on a hosted model: the 5% stop point of the synthetic
-/// corpus.
-pub const JEV_STOP_THRESHOLD: f64 = 0.34;
 /// The allow threshold of the screen preset on a hosted model: the synthetic corpus's zero-miss
 /// skip point (0.30) less a 0.10 margin for the model's nondeterminism.
 pub const JEV_ALLOW_THRESHOLD: f64 = 0.20;
@@ -212,10 +209,7 @@ pub(crate) fn resolve(
                     source: include_str!("screen_jev.rn"),
                     reads,
                     params: HashMap::from([
-                        (
-                            "stop_threshold".to_owned(),
-                            Param::Optional(stop.or(default(JEV_STOP_THRESHOLD))),
-                        ),
+                        ("stop_threshold".to_owned(), Param::Optional(stop)),
                         ("allow_threshold".to_owned(), Param::Optional(allow)),
                         ("concurrent".to_owned(), Param::Bool(concurrent)),
                     ]),
@@ -242,5 +236,30 @@ pub(crate) fn resolve(
             })
         }
         other => Err(CompositionError::new(format!("unknown preset `{other}`"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hosted_model_has_no_default_stop() {
+        let resolved = resolve(
+            SCREEN,
+            "acct/typesafe/jev-1.14",
+            Some(BackendKind::SystemOne),
+            &BTreeMap::new(),
+            false,
+        )
+        .expect("the hosted defaults resolve");
+        assert!(matches!(
+            resolved.params["stop_threshold"],
+            Param::Optional(None)
+        ));
+        assert!(matches!(
+            resolved.params["allow_threshold"],
+            Param::Optional(Some(t)) if t == JEV_ALLOW_THRESHOLD
+        ));
     }
 }

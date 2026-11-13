@@ -25,8 +25,31 @@ use fontaine_tools::lock::lock;
 pub const LEDGER_DIR: &str = "ledger";
 pub const LEDGER_FILE: &str = "ledger.jsonl";
 
+/// The trailing characters of a root turn's final answer the ledger keeps.
+pub const AGENT_REPLY_CHARS: usize = 2_000;
+
 /// Paths the pre-session file index holds before it records that it was cut short.
 pub const FILE_INDEX_CAP: usize = 50_000;
+
+/// Where a main-conversation message came from, which decides what the guardian may read into
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    /// Every writer but the two below, and records from ledgers that predate the field.
+    #[default]
+    Other,
+    /// The human's answers in an `ask_user_question` dialog, recorded by the harness.
+    Dialog,
+    /// Typed at the idle prompt after the previous turn's answer was shown.
+    Prompt,
+}
+
+impl MessageOrigin {
+    fn is_other(&self) -> bool {
+        *self == MessageOrigin::Other
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -69,6 +92,13 @@ pub enum Record {
         attachments: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        #[serde(default, skip_serializing_if = "MessageOrigin::is_other")]
+        origin: MessageOrigin,
+    },
+    /// The tail of a root turn's final answer, written by the harness. The user's next message
+    /// replies to it, which the guardian reads as untrusted data beside that message.
+    AgentReply {
+        text: String,
     },
     ModeChange {
         from: String,
@@ -370,6 +400,10 @@ pub struct LedgerView {
     pub index_truncated: bool,
     /// Every human message typed to the main conversation, verbatim, oldest first.
     pub user_messages: Vec<String>,
+    /// The origin of each entry of `user_messages`, kept in step with it.
+    user_origins: Vec<MessageOrigin>,
+    /// The final answers of root turns, oldest first.
+    agent_replies: Vec<AgentReply>,
     /// The messages typed to a subagent, oldest first.
     pub agent_messages: Vec<AgentMessage>,
     /// One entry per subagent the ledger has seen, in spawn order.
@@ -418,6 +452,8 @@ impl Default for LedgerView {
             index: HashSet::new(),
             index_truncated: false,
             user_messages: Vec::new(),
+            user_origins: Vec::new(),
+            agent_replies: Vec::new(),
             agent_messages: Vec::new(),
             agents: Vec::new(),
             // No spawned record yet: the first id is agent-1.
@@ -444,6 +480,14 @@ pub struct AgentMessage {
     pub text: String,
     /// How many main-conversation messages came before it, which places it for a rewind.
     pub after: usize,
+}
+
+/// The tail of a root turn's final answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentReply {
+    /// How many main-conversation messages came before it, as `AgentMessage::after`.
+    after: usize,
+    text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -477,6 +521,14 @@ impl LedgerView {
     /// and those typed to `caller` or one of its `ancestors`, in the order they were typed.
     /// The words of a sibling's or a descendant's view never count.
     pub fn intent_for(&self, ancestry: &[String]) -> Vec<String> {
+        self.intent_with_origin(ancestry)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// `intent_for`, each message with its origin. A message typed to a subagent is `Other`.
+    pub fn intent_with_origin(&self, ancestry: &[String]) -> Vec<(String, MessageOrigin)> {
         let mut merged = Vec::new();
         let mut agents = self
             .agent_messages
@@ -485,12 +537,40 @@ impl LedgerView {
             .peekable();
         for (at, text) in self.user_messages.iter().enumerate() {
             while let Some(message) = agents.next_if(|message| message.after <= at) {
-                merged.push(message.text.clone());
+                merged.push((message.text.clone(), MessageOrigin::Other));
             }
-            merged.push(text.clone());
+            let origin = self.user_origins.get(at).copied().unwrap_or_default();
+            merged.push((text.clone(), origin));
         }
-        merged.extend(agents.map(|message| message.text.clone()));
+        merged.extend(agents.map(|message| (message.text.clone(), MessageOrigin::Other)));
         merged
+    }
+
+    /// The agent's last message before the user's latest main-conversation message, when that
+    /// message was typed at the idle prompt in reply to it and is also the last entry of
+    /// `intent_for(ancestry)`.
+    ///
+    /// Several replies can share a position when harness-started turns record no user message;
+    /// the last is the one the user saw. A message of any other origin was not typed in reply to
+    /// the last answer, so it pairs with nothing.
+    pub fn reply_before_last(&self, ancestry: &[String]) -> Option<&str> {
+        let last = self.user_messages.len().checked_sub(1)?;
+        if self.user_origins.get(last) != Some(&MessageOrigin::Prompt) {
+            return None;
+        }
+        // Positional, not by text: a subagent message equal to the main one must not pair.
+        if self
+            .agent_messages
+            .iter()
+            .any(|message| ancestry.contains(&message.agent) && message.after == last + 1)
+        {
+            return None;
+        }
+        self.agent_replies
+            .iter()
+            .rev()
+            .find(|reply| reply.after == last)
+            .map(|reply| reply.text.as_str())
     }
 
     /// The figures `/recap` reports. Only the human's messages honor `/clear` and `/rewind`;
@@ -558,8 +638,14 @@ impl LedgerView {
                 self.index_truncated = *truncated;
             }
             Record::UserMessage {
-                text, agent: None, ..
-            } => self.user_messages.push(text.clone()),
+                text,
+                agent: None,
+                origin,
+                ..
+            } => {
+                self.user_messages.push(text.clone());
+                self.user_origins.push(*origin);
+            }
             Record::UserMessage {
                 text,
                 agent: Some(agent),
@@ -569,8 +655,14 @@ impl LedgerView {
                 text: text.clone(),
                 after: self.user_messages.len(),
             }),
+            Record::AgentReply { text } => self.agent_replies.push(AgentReply {
+                after: self.user_messages.len(),
+                text: text.clone(),
+            }),
             Record::ContextCleared {} => {
                 self.user_messages.clear();
+                self.user_origins.clear();
+                self.agent_replies.clear();
                 self.agent_messages.clear();
             }
             Record::Action {
@@ -618,6 +710,9 @@ impl LedgerView {
                     .len()
                     .saturating_sub(*dropped_user_messages);
                 self.user_messages.truncate(keep);
+                self.user_origins.truncate(keep);
+                // The answer to the last kept prompt sits before the rewound prompt and stays.
+                self.agent_replies.retain(|reply| reply.after <= keep);
                 // Typed after the first dropped message, a subagent's message goes with it: that
                 // is stricter, never looser.
                 self.agent_messages.retain(|message| message.after <= keep);
@@ -926,6 +1021,7 @@ mod tests {
         for text in ["one", "two"] {
             ledger
                 .append(Record::UserMessage {
+                    origin: Default::default(),
                     text: text.into(),
                     attachments: Vec::new(),
                     agent: None,
@@ -946,6 +1042,7 @@ mod tests {
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: "three".into(),
                 attachments: Vec::new(),
                 agent: None,
@@ -968,6 +1065,7 @@ mod tests {
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: "three".into(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1042,6 +1140,7 @@ mod tests {
             .unwrap();
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: "before".into(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1078,6 +1177,7 @@ mod tests {
         ledger.append(Record::ContextCleared {}).unwrap();
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: "after".into(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1099,6 +1199,7 @@ mod tests {
     fn say(ledger: &Ledger, text: &str) {
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: text.into(),
                 attachments: Vec::new(),
                 agent: None,
@@ -1273,6 +1374,7 @@ mod tests {
     fn said(ledger: &Ledger, text: &str, agent: Option<&str>) {
         ledger
             .append(Record::UserMessage {
+                origin: Default::default(),
                 text: text.into(),
                 attachments: Vec::new(),
                 agent: agent.map(str::to_string),
@@ -1326,6 +1428,7 @@ mod tests {
         assert_eq!(
             legacy,
             Record::UserMessage {
+                origin: Default::default(),
                 text: "legacy".into(),
                 attachments: Vec::new(),
                 agent: None
@@ -1366,6 +1469,157 @@ mod tests {
         said(&ledger, "to agent", Some("agent-1"));
         ledger.append(Record::ContextCleared {}).unwrap();
         assert!(ledger.view().agent_messages.is_empty());
+    }
+
+    fn said_as(ledger: &Ledger, text: &str, origin: MessageOrigin) {
+        ledger
+            .append(Record::UserMessage {
+                origin,
+                text: text.into(),
+                attachments: Vec::new(),
+                agent: None,
+            })
+            .unwrap();
+    }
+
+    fn replied(ledger: &Ledger, text: &str) {
+        ledger
+            .append(Record::AgentReply { text: text.into() })
+            .unwrap();
+    }
+
+    fn pair(ledger: &Ledger, ancestry: &[&str]) -> Option<String> {
+        let ancestry: Vec<String> = ancestry.iter().map(|s| s.to_string()).collect();
+        ledger
+            .view()
+            .reply_before_last(&ancestry)
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn the_reply_directly_before_the_latest_prompt_pairs_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "rebase it", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &[]), None, "no reply yet");
+        replied(&ledger, "Shall I force-push?");
+        assert_eq!(pair(&ledger, &[]), None, "the latest message came first");
+        said_as(&ledger, "yes", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &[]).as_deref(), Some("Shall I force-push?"));
+        replied(&ledger, "Pushed.");
+        said_as(&ledger, "thanks", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &[]).as_deref(), Some("Pushed."));
+    }
+
+    #[test]
+    fn another_user_message_in_between_leaves_nothing_to_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "Shall I?");
+        said_as(&ledger, "wait", MessageOrigin::Other);
+        said_as(&ledger, "yes", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &[]), None);
+    }
+
+    #[test]
+    fn a_message_typed_to_a_subagent_after_it_unpairs_even_when_the_text_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "Shall I?");
+        said_as(&ledger, "yes", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &["agent-1"]).as_deref(), Some("Shall I?"));
+        said(&ledger, "yes", Some("agent-1"));
+        assert_eq!(pair(&ledger, &["agent-1"]), None);
+        assert_eq!(pair(&ledger, &[]).as_deref(), Some("Shall I?"));
+        assert_eq!(pair(&ledger, &["agent-2"]).as_deref(), Some("Shall I?"));
+    }
+
+    #[test]
+    fn several_replies_at_one_position_pair_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "first answer");
+        replied(&ledger, "answer to a harness-started turn");
+        said_as(&ledger, "yes", MessageOrigin::Prompt);
+        assert_eq!(
+            pair(&ledger, &[]).as_deref(),
+            Some("answer to a harness-started turn")
+        );
+    }
+
+    #[test]
+    fn a_dialog_answer_or_steered_message_never_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "Shall I?");
+        // A harness-started turn asks a question, and the answer lands while the older reply is
+        // the last one recorded.
+        said_as(
+            &ledger,
+            "Answered the agent's question \"Q\": picked \"a\"",
+            MessageOrigin::Dialog,
+        );
+        assert_eq!(pair(&ledger, &[]), None);
+        said_as(&ledger, "yes, steered mid-turn", MessageOrigin::Other);
+        assert_eq!(pair(&ledger, &[]), None);
+    }
+
+    #[test]
+    fn a_message_from_a_ledger_without_origins_never_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "Shall I?");
+        let legacy: Record =
+            serde_json::from_str(r#"{"kind":"user_message","text":"yes"}"#).unwrap();
+        ledger.append(legacy).unwrap();
+        assert_eq!(pair(&ledger, &[]), None);
+    }
+
+    #[test]
+    fn a_clear_drops_the_replies_and_a_rewind_keeps_those_at_or_before_the_kept_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "one", MessageOrigin::Prompt);
+        replied(&ledger, "answer one");
+        said_as(&ledger, "two", MessageOrigin::Prompt);
+        replied(&ledger, "answer two");
+        said_as(&ledger, "three", MessageOrigin::Prompt);
+        replied(&ledger, "answer three");
+        ledger
+            .append(Record::Rewound {
+                turn: 2,
+                what: crate::checkpoint::RewindWhat::Conversation,
+                dropped_user_messages: 2,
+            })
+            .unwrap();
+        {
+            let view = ledger.view();
+            assert_eq!(view.user_messages, ["one"]);
+            let kept: Vec<&str> = view.agent_replies.iter().map(|r| r.text.as_str()).collect();
+            assert_eq!(kept, ["answer one"]);
+        }
+        said_as(&ledger, "retry", MessageOrigin::Prompt);
+        assert_eq!(pair(&ledger, &[]).as_deref(), Some("answer one"));
+        ledger.append(Record::ContextCleared {}).unwrap();
+        assert!(ledger.view().agent_replies.is_empty());
+        assert_eq!(pair(&ledger, &[]), None);
+    }
+
+    #[test]
+    fn replies_and_origins_replay_from_a_persisted_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said_as(&ledger, "task", MessageOrigin::Prompt);
+        replied(&ledger, "Shall I?");
+        said_as(&ledger, "yes", MessageOrigin::Prompt);
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        assert_eq!(pair(&reopened, &[]).as_deref(), Some("Shall I?"));
     }
 
     fn agent_event(event: &str, agent: &str, parent: Option<&str>, detail: Option<&str>) -> Record {

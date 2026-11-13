@@ -88,6 +88,8 @@ fn request() -> AdjudicationRequest {
     AdjudicationRequest {
         task_intent: "Fetch the page".into(),
         recent_user_messages: vec!["Fetch the page".into()],
+        screen_intent: None,
+        agent_message_before_reply: None,
         project_instructions: None,
         environment: EnvironmentConfig::expand(&[]),
         rules: RuleConfig::expand(&[], &[], &[]),

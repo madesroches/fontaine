@@ -564,6 +564,7 @@ impl RunShared {
 /// Records what the human said to a child and shows it in the child's view.
 fn record_human_prompt(shared: &RunShared, text: &str) {
     shared.state.append(Record::UserMessage {
+        origin: Default::default(),
         text: text.to_string(),
         attachments: Vec::new(),
         agent: Some(shared.id.clone()),

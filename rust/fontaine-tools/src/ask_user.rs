@@ -83,10 +83,16 @@ pub fn validate(args: &AskUserArgs) -> Result<(), String> {
             "`questions` takes 1 to {MAX_QUESTIONS} questions, got {count}"
         ));
     }
+    let mut seen_questions = HashSet::new();
     for (at, question) in args.questions.iter().enumerate() {
         let n = at + 1;
         if question.question.trim().is_empty() {
             return Err(format!("question {n} has an empty `question`"));
+        }
+        if !seen_questions.insert(question.question.as_str()) {
+            return Err(format!(
+                "question {n}: the `question` text is used twice; each question needs distinct text"
+            ));
         }
         let header_chars = question.header.chars().count();
         if question.header.trim().is_empty() || header_chars > MAX_HEADER_CHARS {
@@ -248,6 +254,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn duplicate_question_text_is_rejected() {
+        let err = validate(&args(vec![question(), question()])).unwrap_err();
+        assert!(
+            err.contains("question 2") && err.contains("used twice"),
+            "{err}"
+        );
+    }
+
     fn args(questions: Vec<Question>) -> AskUserArgs {
         AskUserArgs { questions }
     }
@@ -268,7 +283,13 @@ mod tests {
     #[test]
     fn a_well_formed_call_validates() {
         assert_eq!(validate(&args(vec![question()])), Ok(()));
-        assert_eq!(validate(&args(vec![question(); 4])), Ok(()));
+        let four = (0..4)
+            .map(|i| Question {
+                question: format!("Which one {i}?"),
+                ..question()
+            })
+            .collect();
+        assert_eq!(validate(&args(four)), Ok(()));
     }
 
     #[test]

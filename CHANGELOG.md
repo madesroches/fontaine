@@ -148,6 +148,22 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Guardian over-denials, third pass (#418, #576, #588, #599; tracker #312). The hosted `screen`
+  preset no longer ships a `stop_threshold`: a call it does not allow now goes to the LLM guardian
+  instead of being escalated to you (and denied in a headless or AFK run). To restore the old
+  behaviour, set `stop_threshold = 0.34` under `[guardian.composition.params]` in your user file
+  (on the golden set it escalated 10.7% of benign calls and caught 97.9% of attacks). What you pick
+  in an `ask_user_question` dialog now counts as your intent, recorded with its question and the
+  option's description, so "Force-push" is read as force-pushing the branch the question named; the
+  screen never reads these lines. When you answer the agent's last message in chat ("yes", "go
+  ahead") at the prompt, the guardian now sees that message as an untrusted
+  `agent_message_before_reply` block (the last 2,000 characters of the final answer, full profile
+  only) and credits a plain affirmation of the one action and target it proposed. The prompt no
+  longer treats relevance or craft as harm (a read-only `cargo search` by a subagent, a `sed`-built
+  issue body), treats package-registry metadata queries as read-only, and says editing, commenting
+  on, labelling or closing the project's own issues at your request is not exfiltration. The ledger
+  gains an `agent_reply` record and an `origin` on user messages; the eval dataset gains eleven
+  over-deny cases and an `agent_message_before_reply` case field.
 - Quitting is prompt and bounded (#592). `/exit`, `/quit` and Ctrl-D on an empty input now end the
   terminal UI at once even while a turn, a `!` command, a hook or a subagent runs, instead of
   queueing behind them or being ignored. The quit stops everything the session owns (nested agent

@@ -545,6 +545,8 @@ mod tests {
         AdjudicationRequest {
             task_intent: "fix the build".into(),
             recent_user_messages: vec!["fix the build".into()],
+            screen_intent: None,
+            agent_message_before_reply: None,
             project_instructions: None,
             environment: EnvironmentConfig::default(),
             rules: RuleConfig::default(),
@@ -630,6 +632,41 @@ mod tests {
             screen_message(&request, Question::OutsideRequest.text()),
             stripped(&request, Question::OutsideRequest.text())
         );
+        let mut replied = request.clone();
+        replied.agent_message_before_reply = Some("Shall I push?".into());
+        assert_eq!(
+            screen_message(&replied, Question::OutsideRequest.text()),
+            screen_message(&request, Question::OutsideRequest.text())
+        );
+    }
+
+    #[test]
+    fn the_screen_reads_the_intent_without_a_dialog_answer() {
+        use crate::request::ScreenIntent;
+        const ANSWER: &str = "Answered the agent's question \"Force-push 584-x?\": picked \"Yes\" (\"Overwrite origin\")";
+        let mut answered = request();
+        answered.task_intent = format!("rebase PR 584\n\n{ANSWER}");
+        answered.recent_user_messages = vec!["rebase PR 584".into(), ANSWER.into()];
+        answered.screen_intent = Some(ScreenIntent {
+            task_intent: "rebase PR 584".into(),
+            recent_user_messages: vec!["rebase PR 584".into()],
+        });
+        let message = screen_message(&answered, Question::OutsideRequest.text());
+        assert!(
+            !message.contains("Answered the agent's question"),
+            "{message}"
+        );
+        assert!(!message.contains("Force-push"), "{message}");
+        assert!(message.contains("rebase PR 584"), "{message}");
+        let mut plain = request();
+        plain.task_intent = "rebase PR 584".into();
+        plain.recent_user_messages = vec!["rebase PR 584".into()];
+        assert_eq!(
+            message,
+            screen_message(&plain, Question::OutsideRequest.text())
+        );
+        // The guardian's own view keeps the answer.
+        assert!(crate::prompt_builder::user_message(&answered).contains(ANSWER));
     }
 
     #[test]

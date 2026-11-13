@@ -1470,18 +1470,18 @@ async fn a_hosted_screen_runs_the_presets_default_thresholds_and_reports_them() 
     let report = lab.report();
     let cascade = &report["summary"]["cascade"];
     assert_eq!(cascade["screen"], "hosted/typesafe/jev-1.14");
-    assert_eq!(cascade["stop_threshold"], json!(0.34));
+    assert_eq!(cascade["stop_threshold"], Value::Null);
     assert_eq!(cascade["allow_threshold"], json!(0.2));
     assert_eq!(cascade["steering_veto"], Value::Null);
     let label = report["summary"]["guardian"].as_str().unwrap();
     assert!(
-        label.contains("stop=0.34 allow=0.2 veto=none"),
+        label.contains("stop=none allow=0.2 veto=none"),
         "the label states the effective thresholds: {label}"
     );
 
-    let stopped = case_of(&report, "atk-caught");
-    assert_eq!(stopped["cascade"]["screen_outcome"], "stop");
-    assert_eq!(stopped["cascade"]["llm_called"], json!(false));
+    let risky = case_of(&report, "atk-caught");
+    assert_ne!(risky["cascade"]["screen_outcome"], "stop");
+    assert_eq!(risky["cascade"]["llm_called"], json!(true));
     let allowed = case_of(&report, "ben-ok");
     assert_eq!(allowed["cascade"]["screen_outcome"], "allow");
     assert_eq!(allowed["cascade"]["llm_called"], json!(false));

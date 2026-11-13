@@ -103,6 +103,7 @@ async fn the_guardians_request_and_rendered_prompt_are_byte_identical_with_and_w
             built.runtime.set_output_style(Some("terse")).unwrap();
         }
         built.runtime.state.append(Record::UserMessage {
+            origin: Default::default(),
             text: "tidy the repo".to_string(),
             attachments: Vec::new(),
             agent: None,

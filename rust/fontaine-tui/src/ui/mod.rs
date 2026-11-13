@@ -30,6 +30,7 @@ use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::AfkRefusal;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
 use fontaine_core::instructions;
+use fontaine_core::ledger::MessageOrigin;
 use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
@@ -1005,8 +1006,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // A picker or dialog the command opened is served by the idle loop.
                     Continue(CommandOutcome::Done | CommandOutcome::AwaitingModal) => Continue(()),
                     Continue(CommandOutcome::Turn(submission)) => {
-                        self.converse(runtime, launch_dir, VecDeque::from([submission]))
-                            .await
+                        self.converse(
+                            runtime,
+                            launch_dir,
+                            VecDeque::from([submission]),
+                            MessageOrigin::Prompt,
+                        )
+                        .await
                     }
                 }
             }
@@ -1016,8 +1022,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 } else {
                     Submission::Attached { text, attachments }
                 };
-                self.converse(runtime, launch_dir, VecDeque::from([submission]))
-                    .await
+                self.converse(
+                    runtime,
+                    launch_dir,
+                    VecDeque::from([submission]),
+                    MessageOrigin::Prompt,
+                )
+                .await
             }
         }
     }
@@ -1257,6 +1268,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // The first turn is the user's: the line they typed is the intent the
                     // guardian reads, and later goal turns are harness notes.
                     runtime.append(Record::UserMessage {
+                        origin: Default::default(),
                         text: raw.to_string(),
                         attachments: Vec::new(),
                         agent: None,
@@ -1293,6 +1305,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
                 // Recorded before the turn so the guardian judging the write has this intent.
                 runtime.append(Record::UserMessage {
+                    origin: Default::default(),
                     text: format!("/init: create or improve {}", target.display()),
                     attachments: Vec::new(),
                     agent: None,

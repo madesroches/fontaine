@@ -920,7 +920,7 @@ async fn a_hosted_screen_allow_sends_one_request_and_records_the_pinned_model_an
 }
 
 #[tokio::test]
-async fn a_hosted_screen_stops_on_the_default_stop_threshold() {
+async fn a_hosted_screen_without_a_stop_threshold_leaves_a_risky_call_to_the_guardian() {
     let server = hosted(level_answer(0.5), "/api/v1").await;
     let slow = delayed_guardian(allow_verdict(), SLOW).await;
     let rig = rig(
@@ -929,10 +929,10 @@ async fn a_hosted_screen_stops_on_the_default_stop_threshold() {
         hosted_stage(&server, Some("/api/v1")),
     );
     let decision = rig.check("shell", shell("python a.py")).await;
-    assert!(!allowed(&decision));
+    assert!(allowed(&decision));
     let record = &rig.audit()[0];
-    assert_eq!(record.tier, Tier::Screen);
-    assert_eq!(record.rule.as_deref(), Some("screen.stop"));
+    assert_ne!(record.tier, Tier::Screen);
+    assert_ne!(record.rule.as_deref(), Some("screen.stop"));
 }
 
 #[tokio::test]

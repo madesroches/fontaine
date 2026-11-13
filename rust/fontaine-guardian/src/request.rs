@@ -177,6 +177,26 @@ pub struct ScanFindings {
     pub trusted_destinations: Vec<String>,
 }
 
+/// What the hosted screen reads as the user's words: the intent with every recorded dialog
+/// answer left out, because the screen's allow skips the guardian and never sees the prompt
+/// text that marks a question and its options as agent-written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ScreenIntent {
+    pub task_intent: String,
+    pub recent_user_messages: Vec<String>,
+}
+
+impl ScreenIntent {
+    /// From the user messages left after dropping dialog answers.
+    pub fn from_kept(kept: &[String]) -> Self {
+        let from = kept.len().saturating_sub(RECENT_USER_MESSAGES);
+        Self {
+            task_intent: task_intent(kept, TASK_INTENT_CHARS),
+            recent_user_messages: kept[from..].to_vec(),
+        }
+    }
+}
+
 /// A denial earlier in the session, reason-coded, for loop detection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DenialRecord {
@@ -190,6 +210,12 @@ pub struct AdjudicationRequest {
     /// The user's latest messages, verbatim, oldest dropped first to fit the budget.
     pub task_intent: String,
     pub recent_user_messages: Vec<String>,
+    /// Set only when the intent holds a recorded dialog answer; the screen reads it in place of
+    /// the two fields above.
+    pub screen_intent: Option<ScreenIntent>,
+    /// The agent's last message, which the user read just before typing their latest message.
+    /// Agent-written, so the guardian treats it as untrusted data.
+    pub agent_message_before_reply: Option<String>,
     pub project_instructions: Option<String>,
     pub environment: EnvironmentConfig,
     pub rules: RuleConfig,

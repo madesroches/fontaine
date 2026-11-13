@@ -275,6 +275,7 @@ impl SteeringHook {
         let mut text = fontaine_tools::result_pipeline::text_view(result.output());
         for message in &messages {
             self.state.append(Record::UserMessage {
+                origin: Default::default(),
                 text: message.clone(),
                 attachments: Vec::new(),
                 agent: target.clone(),

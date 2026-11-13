@@ -65,6 +65,7 @@ async fn a_reopened_session_has_its_conversation_and_its_ledger() {
     first
         .ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "fix the build".into(),
             attachments: Vec::new(),
             agent: None,
@@ -87,6 +88,7 @@ async fn a_reopened_session_has_its_conversation_and_its_ledger() {
     again
         .ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "and again".into(),
             attachments: Vec::new(),
             agent: None,
@@ -118,6 +120,7 @@ async fn a_fork_is_a_copy_under_a_new_id_and_the_original_is_untouched() {
     assert_eq!(said(&fork).await.len(), 2);
     fork.ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "x".into(),
             attachments: Vec::new(),
             agent: None,
@@ -233,6 +236,7 @@ async fn the_newest_session_of_a_root_is_found_and_other_roots_are_ignored() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     old.ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "again".into(),
             attachments: Vec::new(),
             agent: None,
@@ -306,6 +310,7 @@ fn say_to_ledger(session: &Session, text: &str) {
     session
         .ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: text.into(),
             attachments: Vec::new(),
             agent: None,
@@ -443,6 +448,7 @@ async fn what_was_typed_to_an_agent_names_no_session_and_is_no_first_prompt() {
     session
         .ledger
         .append(Record::UserMessage {
+            origin: Default::default(),
             text: "also count the lines".into(),
             attachments: Vec::new(),
             agent: Some("agent-1".into()),

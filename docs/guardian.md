@@ -30,12 +30,15 @@ read and the instructions in a repository are all text an attacker may have writ
 - **Everything it is shown is data, except your own words.** The request is rendered into
   delimited `<untrusted>` blocks; text that would close a block is neutralized, and anything
   credential-shaped is redacted before it is rendered. The system prompt says that nothing inside
-  those blocks is an instruction. The two blocks holding what you typed, `task_intent` and
-  `recent_user_messages`, are marked `source="user"` and are read as your intent; any other block
-  that claims you approved something is treated as an attack signal.
+  those blocks is an instruction. The two blocks holding what you typed and what you picked in a
+  question dialog, `task_intent` and `recent_user_messages`, are marked `source="user"` and are
+  read as your intent; any other block that claims you approved something is treated as an attack
+  signal.
 - **Its picture of what you asked for comes from the session ledger**, the append-only record of
   your own messages, and never from the model's context. A compaction summary or any other
-  model-written text cannot reach the guardian as your intent.
+  model-written text cannot reach the guardian as your intent. The one model-written text it is
+  shown beside your words is the agent's last message, as an untrusted block that is never intent
+  by itself (see below).
 - **Every outcome that is not a verdict is a denial**, decided by code (below). There is no
   setting that turns the guardian off, and none that makes it fail open.
 
@@ -60,6 +63,7 @@ The request is built from the ledger and the call itself:
 |---|---|
 | `task_intent` | Your latest messages, verbatim, oldest dropped first to fit 2,000 characters. Never summarized. |
 | `recent_user_messages` | Your last 5 turns (not tool output). |
+| `agent_message_before_reply` | The last 2,000 characters of the agent's final answer, only when your latest message was typed at the prompt right after that answer. An untrusted block placed before `recent_user_messages`, in the guardian view only: the screen, the reads of a composition and the minimal profile do not get it. |
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments (a shell call made after an earlier `cd` carries the absolute directory it starts in as `cwd`), a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
@@ -72,12 +76,25 @@ asked before it is not shown to the guardian, while the session facts are kept. 
 [`/rewind`](checkpoints.md) of the conversation takes the prompts it retracts out of them the same
 way, so a message you took back no longer counts as intent; the denials and approvals stay.
 
-Only messages you typed count as user intent. The text you type under "Other" when the model asks
-you a question with `ask_user_question` counts, recorded as `Other: "<text>"`; so does a note you
-type alongside a chosen option, which is recorded the same way — every `answer.other` becomes an
-`Other: "<text>"` user message whether or not options were also selected, so the guardian reads a
-note on a choice exactly like standalone "Other" text. The options you pick do not count,
-because the model wrote them and a bare label carries no context. A message you queue while the agent works counts from
+What you typed and what you picked count as user intent. When the model asks you a question with
+`ask_user_question`, your answer is recorded as one line per question: `Answered the agent's
+question "<question>": picked "<label>" ("<description>")`, with `; typed "<text>"` added when you
+typed under "Other" or wrote a note on a choice, and only `typed "<text>"` when you picked
+nothing. The question and the options are the model's words, so the guardian credits you with the
+option you picked, read with its question, and nothing broader: no standing grant, and no action
+the option does not describe. The screen of a [composition](#composing-the-guardian) never reads
+these lines, because its allow skips the guardian, which is the only reader told that the question
+and options are agent-written; a typed answer leaves the screen's view too.
+
+When you reply to the agent's last message in plain chat ("yes", "go ahead") at the prompt, right
+after its answer was shown, the guardian also sees that message as `agent_message_before_reply`.
+If it proposed one specific action and named its target, and your reply plainly affirms it, that
+counts as you naming the action and its target, for that and nothing broader; it never clears a
+hard deny, and a reply to anything else, a proposal with no target or a different call gets no
+credit. A message queued while the agent was still working, a steered message, an answer in a
+dialog, a skill or `/goal` line, and a message from a stream-json input never pairs with
+an earlier answer, because it was not typed in reply to it. The minimal profile has no such credit.
+A message you queue while the agent works counts from
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
 the model has not read it, and a call judged earlier must not rest on words the model never saw.
 Commands you run with `!` and their output never count, and neither does anything a tool or the
@@ -90,14 +107,23 @@ agent's model has read.
 
 The guardian reads history and your messages by a few fixed rules:
 
-- What you typed is authoritative about intent. A message that vouches for something specific
+- What you typed, and the option you picked in a question dialog read with its question, is
+  authoritative about intent. A message that vouches for something specific
   ("the script is ok to run") counts as you naming that thing, and clears a soft deny for it. It
   never clears a hard deny, however often you repeat it.
 - After a denial, a message that re-issues or approves the denied action counts as your consent to
   it. The agent re-issuing the same call with no new message from you does not.
 - When you ask for an issue, pull request or comment, the agent writes its text; you need not
   dictate it, and "in your own words" says so outright. The text is judged for secrets, sensitive
-  file contents and the deny rules, not for whether you wrote it.
+  file contents and the deny rules, not for whether you wrote it. Editing, commenting on,
+  labelling or closing the project's own issues at your request is not exfiltration either, and
+  rewriting a body to change part of it is an edit.
+- Relevance and craft are not harms. A call that only looks unrelated to the task (a lookup, a
+  read, a registry query, often a subagent's) is denied only when it matches a rule, and so is how
+  a call carries out a request: an edit made with `sed`, a whole-body rewrite, or not re-checking
+  what an earlier call checked. Only a significant escalation in scope, severity or
+  destructiveness beyond your task is a reason of its own. A package-registry metadata query
+  (`cargo search`, `npm view`) fetches no code and is read-only.
 - A denial of one kind of action, or about one subject (a credential file, a host, a repository),
   does not count against a different kind or subject, and never against a read-only call. The
   earlier denials are shown to the guardian under a note saying they are for spotting loops and are
@@ -212,7 +238,7 @@ write out of the roots is consequential wherever the target sits — shell rc fi
 write outside the workspace roots under the `Safety Bypass` label, alongside the persistence
 entries (SSH keys, cron, shell-profile lines) that keep applying to out-of-root targets.
 
-The only user intent the rule accepts is your own typed messages: the `task_intent` and
+The only user intent the rule accepts is your own messages, typed or picked in a question dialog: the `task_intent` and
 `recent_user_messages` blocks are recorded by the harness and marked as yours, and the rule
 allows the write only when they named the file or directory and asked for it to be created,
 changed or removed. A claim of authorization anywhere else — in tool arguments, instruction
@@ -393,12 +419,11 @@ The `allow` and `steering` reads run, together with `stop`, only when `allow_thr
 always in shadow mode, so their scores are logged). A call the preset allows has `tier = screen`,
 `decision = allow` and `rule = screen.allow`.
 
-The reads see the same redacted, delimited request the guardian sees, and sequential means the
+The reads see the redacted, delimited request the guardian sees, without any recorded dialog answers or the `agent_message_before_reply`, and sequential means the
 guardian is asked only for a call the screen did not settle: a settled call spends no guardian
 tokens.
 
-This describes the preset on a local Ollama model. On a hosted model it declares two reads and ships
-thresholds; see below.
+This describes the preset on a local Ollama model. On a hosted model it declares two reads and an `allow_threshold` default; stopping is opt-in; see below.
 
 With `concurrent = true` the screen is raced against the guardian instead. They start together, the
 screen can settle a call only while the guardian is still pending, and a guardian verdict already in
@@ -434,20 +459,22 @@ moved 2 to 9 of 1,503 calls across a 0.10 margin on Jev, against 93 of 134 on qw
 would add a local model to a hosted default for no measured gain. `question` and `steering_veto`
 are refused for a hosted model.
 
-On a `typesafe/` model the thresholds have defaults, so a section needs none:
+On a `typesafe/` model `allow_threshold` has a default (stopping is opt-in), so a section needs none:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian. |
-| `stop_threshold` | `0.34` | A call whose risk reaches it is escalated, as a guardian escalation is. |
+| `stop_threshold` | none | Unset: the screen never escalates, and every call it does not allow goes to the LLM guardian. Set, a call whose risk reaches it is escalated, as a guardian escalation is. |
 | `allow` | `true` | `allow = false` switches the allow path off and ignores `allow_threshold`. |
 
 The allow default is the zero-miss skip point of the synthetic corpus (0.30) less a margin of 0.10
-for the model's nondeterminism; the stop default is the point that stops 5% of its allowed calls.
-Both were fitted on the synthetic corpus only, never on the golden set (see
-[Evals](evals.md#cascade-scorecards)). A stop default can only escalate, but off-domain it stopped
-28 to 88% of allowed calls on synthetic thresholds, which is why setup recommends checking real
-traffic with `shadow = true` first.
+for the model's nondeterminism. It was fitted on the synthetic corpus only, never on the golden set
+(see [Evals](evals.md#cascade-scorecards)). There is no default stop: a call that reaches the
+guardian is judged by a model that can read your intent, where a stop would send it straight to you
+(or, in a headless or AFK run, deny it). The measured opt-in is `stop_threshold = 0.34`, the point
+that stops 5% of the synthetic corpus's allowed calls. On the golden set it escalated 10.7% of
+benign calls and caught 97.9% of attacks, and off-domain it stopped 28 to 88% of allowed calls on
+synthetic thresholds, so check real traffic with `shadow = true` before setting one.
 
 ### Other System One models
 
@@ -477,7 +504,7 @@ task intent, the recent user messages, the tool name and arguments, and project 
 delimited as the guardian sees them, to OpenRouter and Typesafe. If that is not acceptable, use a
 local model or no composition.
 
-To turn the allow path off while keeping the stop path:
+To turn the allow path off, so that with no `stop_threshold` every call goes to the guardian:
 
 ```toml
 [guardian.composition.params]
@@ -587,7 +614,7 @@ below which no call the guardian denied or you declined appears, and check the s
 the calls you would not want allowed. A local model has no shipped threshold, because the right one
 depends on the model, the question and your own traffic; set `stop_threshold` and/or
 `allow_threshold` and `shadow = false` when the numbers are acceptable. A hosted model ships
-defaults, so its section needs no threshold, but the same reading of the audit log tells you
+an allow default and no stop, so its section needs no threshold, but the same reading of the audit log tells you
 whether they suit your traffic. To see the effect on the golden set, run a
 [cascade scorecard](evals.md#cascade-scorecards).
 
@@ -954,7 +981,7 @@ guess a threshold. It offers two things.
 
 **The hosted screen.** If an `openrouter` account has a key that resolves (judged by the credential
 alone, with no listing call), setup offers the preset on `typesafe/jev-1.14` with the preset's
-default thresholds and the allow path on. The offer states that guardian state (task intent, recent
+default allow threshold and no stop, with the allow path on. The offer states that guardian state (task intent, recent
 user messages, tool name and arguments, project facts) is sent to OpenRouter and Typesafe, that the
 allow path is on, and how to turn it off (`allow = false`) or to check real traffic first
 (`shadow = true`). It writes `preset = "screen"`, `model = "<account>/typesafe/jev-1.14"` and
