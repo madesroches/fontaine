@@ -18,8 +18,7 @@ driver in `ElicitationTap`, without waiting for a rig-rmcp release (0.46.0 is th
   `ElicitationTap<MetaTap<transport>>` and calls `handler.connect(tapped)`, which does
   `ServiceExt::serve` (legacy), then `begin_refresh` → `fetch_tools` → `commit_initial`, then
   `McpConnection::new(service)` (`rig-rmcp-0.46.0/src/handler.rs:213`).
-- `McpClientHandler` is a public `ClientHandler`; its `on_tool_list_changed` (public trait method,
-  taking a `NotificationContext` whose fields `meta`, `extensions`, `peer` are public) fetches the
+- `McpClientHandler` is a public `ClientHandler`; its `on_tool_list_changed` fetches the
   tool list and commits it with `commit_refresh`, which calls
   `ManagedToolSink::reconcile_managed_tools(expected = {}, tools)` on the first run.
   `GuardedSink::reconcile_managed_tools` (`mcp/register.rs:221`) wraps, records and forwards it; it
@@ -40,15 +39,18 @@ same three things with public API:
 1. `handler.serve_with_lifecycle(tapped, ClientLifecycleMode::Auto { preferred_versions:
    vec![ProtocolVersion::LATEST], legacy_version: None })` (`ClientServiceExt`). `legacy_version:
    None` keeps the `initialize` offer at `client_config()`'s version (rmcp's newest), as today.
-2. Initial tool list: `service.service().on_tool_list_changed(NotificationContext { meta:
-   default, extensions: default, peer: service.peer().clone() })`, which fetches and commits
-   exactly as a later `tools/list_changed` does. It only logs a failure, so first probe the list
-   with `peer.list_all_tools()` (bounded by `CONNECT_TIMEOUT` through the caller's timeout) and
-   turn its error into `McpError::from_client` as `connect` did: a server whose tool list fails
-   still fails to connect rather than connecting with no tools. The probe's result is discarded;
-   one extra `tools/list` at connect is the price of not forking rig-rmcp. Unlike `connect`
-   (`add_managed_tools`), the commit goes through `reconcile_managed_tools(expected = {})`, which
-   skips already-registered names.
+2. Initial tool list: `NotificationContext` is `#[non_exhaustive]` with no public constructor, and
+   `fetch_tools`/`commit_initial` are `pub(crate)`, so the handler's tool refresh cannot be called
+   directly. Instead the tap stack injects one synthetic `notifications/tools/list_changed` into
+   the inbound stream right after the first successful `server/discover` or `initialize` response;
+   rmcp dispatches it to `on_tool_list_changed` with a real context, which fetches and commits
+   exactly as a later notification does (through `reconcile_managed_tools(expected = {})`, which
+   is equivalent to `add_managed_tools` here: the connection's registry is empty and `muted` is
+   false at connect). `start_service` then waits for that first commit (a `Notify` fired from
+   `GuardedSink` when it records tools, including an empty list), inside the caller's
+   `CONNECT_TIMEOUT`. `on_tool_list_changed` only logs a fetch failure, so a server whose
+   `tools/list` fails never signals and connect ends as a Timeout (Transient, retried) instead of
+   the underlying error; that is the one limitation of not forking rig-rmcp.
 3. `McpConnection::new(service)`.
 
 Everything wrapping the transport (`MetaTap`, `ElicitationTap`, `CallTracker`) is unchanged: the
@@ -65,11 +67,10 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 
 ## Implementation Steps
 
-1. `rust/fontaine-tools/src/mcp/servers.rs`: add `start_service` (above) and call it from `serve()`
-   in place of `handler.connect`; map errors through `McpError::from_client` (the
-   existing `McpClientError` conversions from `ServiceError` and `ClientInitializeError` cover the
-   probe and `serve_with_lifecycle`; convert explicitly with `McpClientError::from`/`.into()` before
-   `McpError::from_client`).
+1. `rust/fontaine-tools/src/mcp/servers.rs` (and `meta.rs` for the injection): add
+   `start_service` (above) and call it from `serve()` in place of `handler.connect`; map errors through `McpError::from_client` (the
+   existing `McpClientError` conversion from `ClientInitializeError` covers `serve_with_lifecycle`;
+   convert explicitly with `McpClientError::from`/`.into()` before `McpError::from_client`).
    Also make `classify_init` (`servers.rs:317-324`) unwrap
    `ClientInitializeError::LegacyFallbackFailed` and classify its `fallback` error, so a transient
    fallback failure stays Transient instead of falling to Permanent.
@@ -86,7 +87,7 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/mcp/servers.rs`
+- `rust/fontaine-tools/src/mcp/servers.rs`, `rust/fontaine-tools/src/mcp/meta.rs`, `rust/fontaine-tools/src/mcp/register.rs`
 - `rust/fontaine-tools/tests/mcp_mrtr.rs` (or new `mcp_discover.rs`)
 - `docs/mcp.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 
@@ -96,13 +97,20 @@ The shim is deliberately small and isolated so it can be replaced by a call to a
   the shim covers the need now and is replaceable. Filing/offering the upstream change is the
   maintainer's call and is not part of this plan.
 - **Vendor or `[patch]` rig-rmcp**: heavier supply-chain surface than a ~30-line shim.
-- **Synthetic `tools/list_changed` injected from the tap**: hides the initial fetch inside the
-  transport; calling the public `on_tool_list_changed` directly is explicit.
+- **Synthetic `tools/list_changed` injected from the tap** (chosen): hides the initial fetch inside
+  the transport, but is the only way to reuse the handler's own refresh state with public API.
+  Rejected: building the context directly (`NotificationContext` is non-exhaustive); fetching with
+  `list_all_tools` and registering via `add_managed_tools` (the handler's registrations and
+  `committed_refresh` would not know those tools, so a later refresh never retires them, and
+  `McpTool::new` holds a `McpConnection` clone that forms a cycle through the sink's registry);
+  wrapping the handler (still no way to run its initial fetch).
 - **`Discover` only**: would drop every legacy server; `Auto` keeps them.
 
 ## Decisions
 
 - 2026-11-13: `classify_init` unwraps `LegacyFallbackFailed` and classifies the fallback error, so retry behavior is unchanged under `Auto`.
+- AFK: The initial tool list comes from a tap-injected synthetic `tools/list_changed` handled by rig-rmcp's own `on_tool_list_changed` (the only public-API route, since `NotificationContext` is non-exhaustive and `fetch_tools`/`commit_initial` are `pub(crate)`); connect waits for the first commit, and a failing `tools/list` surfaces as a connect Timeout rather than the underlying error.
+- AFK: The initial commit going through `reconcile_managed_tools(expected = {})` instead of `add_managed_tools` is accepted: the per-connection registry is empty and `muted` is false at connect, so the two are equivalent.
 
 ## Documentation
 
@@ -123,7 +131,8 @@ Automated, driven through an in-process scripted server (as `mcp_mrtr.rs`):
   round trip passes through `MetaTap` and `ElicitationTap`.
 - A legacy server that answers `server/discover` with method-not-found falls back to `initialize`
   and registers its tools exactly once (no duplicate registration from the probe).
-- A server whose `tools/list` fails fails to connect (the probe's guard), classified as before.
+- A server whose `tools/list` fails does not connect: attempt ends as a Timeout (Transient) with no tools registered.
+- A server with an empty tool list connects (the commit signal fires for an empty list).
 - A later `tools/list_changed` (sent by the scripted server) still reconciles tools after a
   discover-lifecycle connect.
 - Unit test of `classify_init` (beside the existing ones in `servers.rs`):
