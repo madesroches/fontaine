@@ -74,9 +74,17 @@ row("memory", RiskClass::WorkspaceWrite, true, Destructive::Always, Specifier::N
 - `claude: &[]` — Fontaine-only, a deliberate deviation from Claude Code (see Decisions). The
   `FONTAINE_ONLY` list in the descriptor tests gains `"memory"`.
 
-No other pipeline change: the name is deliberately **not** added to the protected-path floor
-match or `is_external_write` — the mode fall-through already routes the call exactly where the
-floor would (guardian in `auto`, prompt otherwise), so the extra name would only duplicate.
+One pipeline change is required: the out-of-scope containment deny in
+`permissions.rs::evaluate` (~1225-1256) must gain a path-free exemption (`&& !names_no_path(tool)`
+in the guard). `memory` is the first path-free `WorkspaceWrite` tool, so `scope.locate` errs for
+it ("`memory` names no path this check can read") and the containment branch — which denies
+every non-`Arbitrary` call with no external route whose locate erred — would `Deny` (tier Mode)
+the call in every mode instead of reaching the mode dispatch. A path-free tool names no path for
+containment to check, so the exemption creates no fast path: the call reaches the mode
+fall-through exactly as the row intends (guardian in `auto`, prompt in asking modes, deny
+headless). The name is deliberately **not** added to the protected-path floor match or
+`is_external_write` — the mode fall-through already routes the call exactly where the floor
+would, so the extra name would only duplicate.
 
 ### Store logic: `memory::save`
 
@@ -159,35 +167,40 @@ permissions either way.
 
 1. `rust/fontaine-tools/src/descriptor.rs`: add the `memory` row; update `rows_are_pinned`
    (count 31 → 32) and the `FONTAINE_ONLY` test list.
-2. `rust/fontaine-core/src/memory.rs`: add `save` (+ `Saved`/`LineState`), unit tests for slug
+2. `rust/fontaine-core/src/permissions.rs`: in `evaluate`, add the path-free exemption
+   (`&& !names_no_path(tool)`) to the out-of-scope containment-deny guard, so the path-free
+   `memory` call falls through to the mode dispatch (guardian in `auto`, prompt otherwise)
+   instead of hitting a containment Deny; pin with a test that `memory` in `auto` reaches the
+   guardian, never the Mode deny.
+3. `rust/fontaine-core/src/memory.rs`: add `save` (+ `Saved`/`LineState`), unit tests for slug
    normalization, atomic write, index add/update/position-preservation, cap warning, link
    refusal; update `SAVING_GUIDE`.
-3. `rust/fontaine-core/src/memory_tool.rs`: `MemoryTool` + `MemoryArgs`, tests for arg
+4. `rust/fontaine-core/src/memory_tool.rs`: `MemoryTool` + `MemoryArgs`, tests for arg
    validation and the save path against a temp store; declare the module with
    `pub mod memory_tool;` in `rust/fontaine-core/src/lib.rs`.
-4. `rust/fontaine-core/src/agent/build.rs`: register `ExtensionTool::new(MemoryTool { root })`
+5. `rust/fontaine-core/src/agent/build.rs`: register `ExtensionTool::new(MemoryTool { root })`
    when `p.state.memory_root` is `Some`.
-5. `rust/fontaine-core/src/destructive.rs`: add the `memory_dir: Option<&Path>` parameter to
+6. `rust/fontaine-core/src/destructive.rs`: add the `memory_dir: Option<&Path>` parameter to
    `touched_paths` and the `memory` arm (topic file + index resolved against the memory root);
    update the call sites — `adjudication.rs::facts()` passes its `memory_dir` argument, the two
    `permissions.rs` call sites pass `self.state.memory_root`, and
    `instructions/on_demand.rs::note_for` passes `None` (it resolves workspace paths only); the
    direct test callers (`rust/fontaine-core/tests/destructive.rs`,
    `rust/fontaine-core/tests/permissions.rs:1712`) take the new argument too.
-6. Tests: `rust/fontaine-tools/tests/choke_point.rs` (row/risk pins) and
+7. Tests: `rust/fontaine-tools/tests/choke_point.rs` (row/risk pins) and
    `rust/fontaine-core/tests/choke_point.rs` (registered-set pins, extension list gains
    `memory`, conditional-offering test like `websearch`'s add-exactly-one);
    `rust/fontaine-core/tests/docs.rs` gains coverage automatically once `docs/tools.md` has
    the row.
-7. Permission pipeline tests per mode for the `memory` call: `auto` → guardian (never a fast
+8. Permission pipeline tests per mode for the `memory` call: `auto` → guardian (never a fast
    path), `plan` → deny, `manual` → prompt, `dontAsk`/headless → deny, `allow memory` /
    `deny memory` rules respected.
-8. `docs/tools.md`: inventory row + a short prose section mirroring `docs/memory.md`'s gating
+9. `docs/tools.md`: inventory row + a short prose section mirroring `docs/memory.md`'s gating
    table. `docs/memory.md`: new "The memory tool" section.
-9. `tasks/fontaine_harness_plan.md`: dated Decisions line under `### Tools` — deviation from
-   Claude Code (#329).
-10. `evals/dataset/memory.jsonl`: new cases (below).
-11. `CHANGELOG.md`: append a `## [Unreleased]` entry describing the new `memory` tool, its
+10. `tasks/fontaine_harness_plan.md`: dated Decisions line under `### Tools` — deviation from
+    Claude Code (#329).
+11. `evals/dataset/memory.jsonl`: new cases (below).
+12. `CHANGELOG.md`: append a `## [Unreleased]` entry describing the new `memory` tool, its
     per-mode gating, and the #329 deviation from Claude Code.
 
 ## Files to Modify
@@ -199,7 +212,8 @@ permissions either way.
 - `rust/fontaine-core/src/agent/build.rs`
 - `rust/fontaine-core/src/destructive.rs`
 - `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine-core/tests/choke_point.rs`
-- permission pipeline test module in `rust/fontaine-core/src/permissions.rs`
+- `rust/fontaine-core/src/permissions.rs` (the out-of-scope containment-deny path-free
+  exemption in `evaluate` and the permission pipeline test module)
 - `docs/tools.md`, `docs/memory.md`
 - `tasks/fontaine_harness_plan.md`
 - `evals/dataset/memory.jsonl`
@@ -237,6 +251,16 @@ permissions either way.
   read-only tools on the store root, per the issue's scope decisions (#329).
 - 2026-11-03: index caps after a save warn in the tool result instead of failing the save —
   parity with `load`'s cut-and-warn posture; a failed save would lose the note (#329).
+- AFK: 2026-11-03: the "no other pipeline change" decision above is corrected — the
+  out-of-scope containment deny in `permissions.rs::evaluate` gains a path-free exemption
+  (`&& !names_no_path(tool)`), because `memory` is the first path-free `WorkspaceWrite` tool
+  and without the exemption the locate error would Mode-deny the call before the mode
+  dispatch; with it the call routes unchanged (guardian in `auto`, prompt otherwise) and no
+  fast path is created (#329).
+- AFK: 2026-11-03: `MemoryArgs` caps fixed at content ≤ 100_000 bytes and topic ≤ 64 chars —
+  sized for durable notes, not file dumps (#329).
+- AFK: 2026-11-03: the index line's link text is the topic verbatim; the file name already
+  carries the normalization and the line is model-facing (#329).
 
 ## Documentation
 
@@ -266,9 +290,3 @@ permissions either way.
   stays green; the live nightly run is where the soft-deny class is actually probed, which no
   fixture can catch.
 
-## Open Questions
-
-- The exact content cap (proposal: 100_000 bytes) and topic cap (64 chars) — sized for
-  "durable notes", not file dumps; reviewer may tune against the write tool's practical limits.
-- Whether the index line's link text should be the topic verbatim or normalized — proposal:
-  verbatim, since the line is model-facing and the file name already carries the normalization.
