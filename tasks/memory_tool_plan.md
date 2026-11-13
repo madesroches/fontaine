@@ -133,9 +133,12 @@ pub struct MemoryArgs {
 - `Tool` impl with `Output = String`, `Error = ToolExecutionError`; validation failures map to
   `invalid_args`, I/O failures to `other(chain(&e))`, following `todo.rs`.
 - `footprint` reports the topic file and `MEMORY.md` under the memory root, and
-  `touched_paths` (`rust/fontaine-core/src/destructive.rs:275-315`) gains a `memory` arm so the
-  guardian request lists both files with their existence status — the guardian sees exactly
-  what persists.
+  `touched_paths` (`rust/fontaine-core/src/destructive.rs:275-315`) takes a new
+  `memory_dir: Option<&Path>` parameter and gains a `memory` arm that resolves the topic file
+  (`<root>/<slug>.md`) and `MEMORY.md` against the memory root, so the guardian request lists
+  both files with their existence status — the guardian sees exactly what persists. The
+  parameter is in hand at every call site: `adjudication.rs::facts()` receives `memory_dir`
+  already (208), and the `permissions.rs` call sites pass `self.state.memory_root`.
 - The description states what the tool is for (durable notes a later session would otherwise
   rediscover), the caps, that the call is guardian-gated, and that raw `write`/`edit` remain
   for repairing the store. Reads need no subcommand: the store is a scope root, so `read`,
@@ -158,11 +161,14 @@ permissions either way.
    normalization, atomic write, index add/update/position-preservation, cap warning, link
    refusal; update `SAVING_GUIDE`.
 3. `rust/fontaine-core/src/memory_tool.rs`: `MemoryTool` + `MemoryArgs`, tests for arg
-   validation and the save path against a temp store.
+   validation and the save path against a temp store; declare the module with
+   `pub mod memory_tool;` in `rust/fontaine-core/src/lib.rs`.
 4. `rust/fontaine-core/src/agent/build.rs`: register `ExtensionTool::new(MemoryTool { root })`
    when `p.state.memory_root` is `Some`.
-5. `rust/fontaine-core/src/destructive.rs`: `memory` arm in `touched_paths` (topic file +
-   index, with existence status from the store dir).
+5. `rust/fontaine-core/src/destructive.rs`: add the `memory_dir: Option<&Path>` parameter to
+   `touched_paths` and the `memory` arm (topic file + index resolved against the memory root);
+   update the call sites — `adjudication.rs::facts()` passes its `memory_dir` argument, the two
+   `permissions.rs` call sites pass `self.state.memory_root`.
 6. Tests: `rust/fontaine-tools/tests/choke_point.rs` (row/risk pins) and
    `rust/fontaine-core/tests/choke_point.rs` (registered-set pins, extension list gains
    `memory`, conditional-offering test like `websearch`'s add-exactly-one);
@@ -182,6 +188,7 @@ permissions either way.
 - `rust/fontaine-tools/src/descriptor.rs`
 - `rust/fontaine-core/src/memory.rs`
 - `rust/fontaine-core/src/memory_tool.rs` (new)
+- `rust/fontaine-core/src/lib.rs` (declare `memory_tool` module)
 - `rust/fontaine-core/src/agent/build.rs`
 - `rust/fontaine-core/src/destructive.rs`
 - `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine-core/tests/choke_point.rs`
