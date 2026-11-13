@@ -396,24 +396,28 @@ fn extension_tools(
         }));
     }
     if scheduling(p) {
-        let store: Arc<dyn ScheduleStore> = Arc::new(ReportedSchedule {
-            scheduler: p.session.scheduler().clone(),
-            approver: p.approver.clone(),
-        });
-        tools.extend([
-            ExtensionTool::new(CronCreateTool {
-                store: store.clone(),
-            }),
-            ExtensionTool::new(CronJobsTool {
-                store: store.clone(),
-            }),
-            ExtensionTool::new(CronDeleteTool {
-                store: store.clone(),
-            }),
-            ExtensionTool::new(ScheduleWakeupTool { store }),
-        ]);
+        tools.extend(schedule_tools(p));
     }
     tools
+}
+
+fn schedule_tools(p: &Parts<'_>) -> [ExtensionTool; 4] {
+    let store: Arc<dyn ScheduleStore> = Arc::new(ReportedSchedule {
+        scheduler: p.session.scheduler().clone(),
+        approver: p.approver.clone(),
+    });
+    [
+        ExtensionTool::new(CronCreateTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(CronJobsTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(CronDeleteTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(ScheduleWakeupTool { store }),
+    ]
 }
 
 /// The agent, and whether it carries the provider's search tool.
