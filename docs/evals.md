@@ -275,7 +275,7 @@ entry earned on the other.
 With the [`screen` preset](guardian.md#the-screen-preset) in front of the guardian, `--screen
 live:<account>/<model>` (an Ollama account) and `--stop-threshold <risk>`, `--allow-threshold
 <risk>` or both score the composition from one run (an `openrouter` account scores the hosted
-screen with the preset's default thresholds when none is given, and the summary records the ones in
+screen with the preset's default `allow_threshold` when none is given (stopping is opt-in), and the summary records the ones in
 force; `--steering-veto` is a usage error there, since the hosted screen has no steering read): each guardian case meets the screen first and
 the guardian only if the screen does not settle it. A case the screen stops counts as an `escalate`,
 and one it allows counts as an `allow`, with no guardian call; any other case takes the guardian's

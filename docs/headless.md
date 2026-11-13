@@ -33,7 +33,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--model <account>/<model>` | Overrides `[model] model`. A [role](configuration.md#modelsroles) name or a comma-separated list is accepted too, and becomes the run's preference list. See [Configuration](configuration.md#accountsname). |
 | `--effort <level>` | The main agent's reasoning effort, `off`, `low`, `medium`, `high` or `max`, overriding `[model] effort`. See [Configuration](configuration.md#model). |
 | `--output-format text\|json\|stream-json` | `text` prints the final answer, `json` one `result` object, `stream-json` one JSON object per line. |
-| `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. |
+| `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. A `text` prompt can pair with the session's previous answer (for example on `--continue` or `--resume`) for the guardian's `agent_message_before_reply`; `stream-json` lines and `/goal` lines never do. |
 | `--include-partial-messages` | With `stream-json` output, also emits `assistant_delta` events. |
 | `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn has no call limit. |
 | `--max-budget-usd <x>` | Stops the run once the session's spend, the main model plus the guardian and subagents, exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). |

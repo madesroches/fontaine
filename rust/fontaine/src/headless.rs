@@ -1232,7 +1232,7 @@ async fn handle_message(
                 .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
-                origin,
+                origin: MessageOrigin::Other,
                 text,
                 attachments: Vec::new(),
                 agent: None,

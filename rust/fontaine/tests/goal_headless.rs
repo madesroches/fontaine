@@ -150,6 +150,8 @@ async fn only_the_typed_goal_line_is_a_user_message() {
         .collect();
     assert_eq!(said.len(), 1, "{ledger}");
     assert!(said[0].contains("/goal the build is green"));
+    // A goal line is never a reply to the previous answer.
+    assert!(!said[0].contains("\"origin\":\"prompt\""), "{}", said[0]);
     assert!(!dir.join("goal.json").exists(), "a met goal leaves no file");
 }
 

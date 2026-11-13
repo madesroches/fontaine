@@ -92,7 +92,7 @@ If it proposed one specific action and named its target, and your reply plainly 
 counts as you naming the action and its target, for that and nothing broader; it never clears a
 hard deny, and a reply to anything else, a proposal with no target or a different call gets no
 credit. A message queued while the agent was still working, a steered message, an answer in a
-dialog, a skill, command or `/goal` line, and a message from a stream-json input never pairs with
+dialog, a skill or `/goal` line, and a message from a stream-json input never pairs with
 an earlier answer, because it was not typed in reply to it. The minimal profile has no such credit.
 A message you queue while the agent works counts from
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
@@ -419,12 +419,11 @@ The `allow` and `steering` reads run, together with `stop`, only when `allow_thr
 always in shadow mode, so their scores are logged). A call the preset allows has `tier = screen`,
 `decision = allow` and `rule = screen.allow`.
 
-The reads see the same redacted, delimited request the guardian sees, and sequential means the
+The reads see the redacted, delimited request the guardian sees, without any recorded dialog answers or the `agent_message_before_reply`, and sequential means the
 guardian is asked only for a call the screen did not settle: a settled call spends no guardian
 tokens.
 
-This describes the preset on a local Ollama model. On a hosted model it declares two reads and ships
-thresholds; see below.
+This describes the preset on a local Ollama model. On a hosted model it declares two reads and an `allow_threshold` default; stopping is opt-in; see below.
 
 With `concurrent = true` the screen is raced against the guardian instead. They start together, the
 screen can settle a call only while the guardian is still pending, and a guardian verdict already in
@@ -460,7 +459,7 @@ moved 2 to 9 of 1,503 calls across a 0.10 margin on Jev, against 93 of 134 on qw
 would add a local model to a hosted default for no measured gain. `question` and `steering_veto`
 are refused for a hosted model.
 
-On a `typesafe/` model the thresholds have defaults, so a section needs none:
+On a `typesafe/` model `allow_threshold` has a default (stopping is opt-in), so a section needs none:
 
 | Key | Default | Meaning |
 |---|---|---|
