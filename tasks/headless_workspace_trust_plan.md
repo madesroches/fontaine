@@ -28,7 +28,7 @@ measure-first step the issue asks for.
   (`rust/fontaine-core/src/agent/setup.rs:788-796`).
 - The trust record is `<data dir>/trust.toml` (`rust/fontaine-core/src/trust.rs`).
 - Measurement signals that already exist: the ledger `SessionStart` record carries
-  `workspace_trust` (`rust/fontaine-core/src/ledger.rs:358`, written at
+  `workspace_trust` (`rust/fontaine-core/src/ledger.rs:38-48`, written at
   `rust/fontaine-core/src/agent.rs:838-851`), and the headless `init` stream-json event carries
   `workspace_trust` (`rust/fontaine/src/headless.rs:485-535`). Neither records whether the run was
   headless nor whether project executables actually loaded — so the exposure the issue asks to
@@ -75,8 +75,10 @@ measure-first step the issue asks for.
 
 ## Implementation Steps
 
-1. `rust/fontaine-core/src/config.rs`: add `require_trust: bool` (default `false`) to the headless
-   settings struct; include it in defaults.
+1. `rust/fontaine-core/src/config.rs`: add `require_trust: Option<bool>` to the parsed
+   `HeadlessSection` (~line 1208), add `require_trust: bool` (default `false`) to the merged
+   `Headless` struct (~line 2667) and its defaults construction (~line 2908), and wire it in the
+   `[headless]` merge arm (~line 3191), defaulting to `false`.
 2. `rust/fontaine-core/src/config_scope.rs`: add the `Rule::user_or_cli` row + TOML snippet to the
    `RULES` table and its tests.
 3. `rust/fontaine-core/src/config_catalog.rs`: add the `KeyRow` (`Applies::NextLaunch`).
@@ -99,7 +101,8 @@ measure-first step the issue asks for.
 - `rust/fontaine-core/src/ledger.rs`
 - `rust/fontaine-core/src/agent.rs`
 - `docs/schemas/headless-v1.schema.json`
-- `docs/headless.md`, `docs/hooks.md`, `docs/mcp.md`, `docs/configuration.md`
+- `docs/headless.md`, `docs/hooks.md`, `docs/mcp.md`, `docs/configuration.md`,
+  `docs/extensions.md`, `docs/doctor.md`, `docs/tui.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 - `CHANGELOG.md`
 
@@ -134,6 +137,10 @@ measure-first step the issue asks for.
 - `docs/hooks.md` (~lines 319-334) and `docs/mcp.md` (~lines 225-234): the "A headless run loads
   them without asking" sentences gain "unless `[headless] require_trust = true` and the workspace
   is not trusted".
+- `docs/extensions.md` (~line 149), `docs/doctor.md` (~lines 64-65) and `docs/tui.md` (~line 109):
+  the "a headless run (`fontaine -p`) runs them without asking", "A headless run loads all of it and
+  starts every server" and "A headless run does not ask and loads them" sentences gain the same
+  "unless `[headless] require_trust = true` and the workspace is not trusted".
 - `docs/configuration.md`: the `[headless]` key/scope table row and, where workspace trust is
   described, the new setting.
 - `tasks/fontaine_harness_plan.md` `### Config`: one dated line amending the 2026-10-21
