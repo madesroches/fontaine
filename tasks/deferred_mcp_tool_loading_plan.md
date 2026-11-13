@@ -75,7 +75,11 @@ calling a deferred tool is unchanged.
 2. **Advertisement side**: deferred tools are registered normally (always-exposed side). Each agent gets a
    rig `CompletionCall` hook returning `CompletionCallAction::Patch(RequestPatch::active_tools(..))` listing
    the non-deferred tool names followed by that agent's loaded names in load order, so a request carries the
-   always-exposed set plus the loaded deferred tools. rig-agent 0.46 has no per-run dynamic-id injection
+   always-exposed set plus the loaded deferred tools. The list is built as (loaded names ∩ currently registered
+   names) plus the non-deferred registered names, so a `list_changed` refresh that drops a loaded tool cannot make
+   rig's `prepare_request` fail with "active_tools requested tool X, which is not available". When deferral is
+   inactive (auto below threshold, off, claude-subscription forced off) the hook omits `tool_search` from the
+   list. rig-agent 0.46 has no per-run dynamic-id injection
    (`snapshot_with_dynamic` ids come only from retrieval indexes), so this is the route.
 3. **`tool_search` tool** (`fontaine-tools`, new `tool_search.rs`): one instance per agent, holding the
    connection-scoped `Deferral` handle (read-only registry) and that agent's own loaded-set object, which its
@@ -106,7 +110,8 @@ Provider-specific backends (#439) are separate.
 4. `tool_search.rs` + descriptor entry (`descriptor.rs`) with `RiskClass::ReadOnly`; register in the built-in
    table; add to the default toolsets that include MCP tools (and not to children whose toolset has no MCP).
 5. Advertisement: the per-agent `CompletionCall` hook with `RequestPatch::active_tools` (Mechanism 2) so
-   request definitions = always-exposed + loaded.
+   request definitions = always-exposed + loaded; the allow-list is the intersection described there, and
+   `tool_search` is left out when deferral is inactive.
 6. Refusal for unloaded deferred calls: a per-agent `on_invalid_tool_call` hook (root builder in
    `agent/build.rs`, child builder in `child_runner.rs`) returning
    `InvalidToolCallAction::Skip { reason: "search first with tool_search" }` for names that are
@@ -158,6 +163,10 @@ Provider-specific backends (#439) are separate.
   loaded or not, passes through the same gate (extend `choke_point.rs` so deferred MCP tools stay covered; a
   silent bypass here would be a security regression, hence automated); an unloaded call is refused by the
   `on_invalid_tool_call` hook with the search-first message and no gate decision is recorded; a `list_changed` refresh updates names and loaded set.
+- Unit: the completion hook omits `tool_search` from `active_tools` when deferral is inactive (auto below
+  threshold, off, claude-subscription forced off) and includes it when active.
+- Unit: a loaded tool that vanishes between turns (`list_changed` refresh) is dropped from the hook's
+  `active_tools`, so the request does not fail with "active_tools requested tool X, which is not available".
 - Headless `fontaine -p` scripted-model test: deferred names in the prompt, search, then call.
 - `/context` rendering test for deferred/loaded split.
 
