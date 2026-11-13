@@ -64,7 +64,7 @@ transient transport errors, so nothing is added to it. Guardian denials never pa
 **drive loop**: replace the constants with `params.state.retry_policy()`; track `started =
 tokio::time::Instant::now()` across the loop; on a retryable failure compute `next_delay`; `None` or no attempts
 left settles `TurnOutcome::Failed` exactly as today (full chain via `failure_text`). Before sleeping,
-call `state.approver().warn(...)` with the agent id, attempt `n of N`, the delay, and the error's
+call `state.warn(...)` with the agent id, attempt `n of N`, the delay, and the error's
 one-line status/class (no body: a provider's message can echo the request). The sleep must stay
 cancellable the way the surrounding turn is (the future is dropped on interrupt, as today).
 
@@ -92,8 +92,8 @@ conversation; no tool call is replayed. No change to the permission pipeline, gu
 5. `turn.rs`: use the policy in `drive`, emit the warn line, drop `MAX_RETRIES`/`BACKOFF`.
 6. Update tests broken by the new defaults: `tests/turn_recovery.rs::retries_run_out_and_the_failure_is_reported_once`
    (3 scripted turns, `request_count() == 3` becomes 5 with `max_retries = 4`) and
-   `tests/usage_pause_turn.rs` (`a_throttle_is_still_retried...`,
-   `a_retryable_failure_is_retried_and_the_task_continues`); test helpers use a zero-delay/small policy
+   `tests/usage_pause_turn.rs::a_throttle_is_still_retried_and_is_not_a_usage_limit` (5 scripted turns,
+   `request_count() == 5`); test helpers use a zero-delay/small policy
    and the 3 -> 5 request-count change is explicit.
 7. Docs and CHANGELOG (below).
 
@@ -129,10 +129,8 @@ config_scope.rs, gate.rs, agent/setup.rs}`, `tests/{turn_recovery,usage_pause_tu
 ## Testing Strategy
 
 Unit tests (`retry.rs`): the delay grows exponentially, is capped by `max_delay`, jitter stays within
-bounds, `Retry-After` raises but is capped, and the total-delay cap returns `None`.
+bounds, a `Retry-After` above `max_delay` returns `None`, and the total-delay cap returns `None`.
 Config tests (`tests/config.rs`): defaults, user override, out-of-range refused, project scope refused.
-Classification: extend the `turn.rs` unit test `throttling_and_server_errors_are_retried_client_errors_are_not`
-with 502/503/504/529 (retry) and 401/403/404 (no retry).
 Integration tests extend the `error_turn` deterministic-model tests in `turn_recovery.rs` with tokio
 paused time (`start_paused`; the elapsed clock is `tokio::time::Instant`, so the total-delay cap is
 exercisable) and a zero-jitter policy: a 429 with a short
