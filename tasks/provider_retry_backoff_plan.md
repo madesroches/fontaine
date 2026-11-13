@@ -48,13 +48,18 @@ exponential `base * 2^attempt` capped at `max_delay`, multiplied by full-ish jit
 order: `delay = max(jittered exponential, Retry-After)`; returns `None` (ends the retries) when
 `delay > max_delay` or `elapsed + delay > max_total_delay`. A `Retry-After` above `max_delay` therefore
 settles the failure now: the server asked for longer than we will wait. The jitter source is injected (a `fn() -> f64` or a parameter) so unit tests are
-deterministic; production uses `rand` (check it is already a dependency; else a tiny
-`fastrand`/time-seeded source already in the tree).
+deterministic; production derives the fraction from the first bytes of a `uuid` v4 (already a direct
+dependency of `fontaine-core`), so no dependency is added.
 
 **Retry-After**: make `usage_limit::retry_after` `pub(crate)` and reuse it (DRY) on the provider
 response (`ProviderError::provider_response()` / `ErrorReport.provider_response`). The 300 s
 usage-window exit in `usage_limit.rs` applies only to status 402/429, so a 503 with `Retry-After: 600`
 does reach the policy (and, exceeding `max_delay`, settles as failed).
+
+**Quota-class statuses**: 402/429/529 (the statuses `turn.rs::quota_reply` treats as quota) get a
+shorter budget than other retryable failures: at most 2 retries and a total delay of at most
+`min(max_total_delay, 10s)`, so a model-list fall-through is delayed by seconds, not up to 120 s. Other
+retryable failures (5xx, transport, truncated replies) use the full policy.
 
 **Classification**: keep `retryable()` (rig's `is_retryable`) as the single decision; rig-core 0.46
 already retries 408/425/429, every 5xx (including 502/504/529), truncated and stalled replies, and
@@ -85,10 +90,12 @@ conversation; no tool call is replayed. No change to the permission pipeline, gu
    `Retry-After` from a `PromptError` (provider response or report).
 3. `config.rs`: `RetrySection`, validation, merge, `Config.retry`; `config_catalog.rs`;
    `config_scope.rs` (user/CLI only); regenerate any schema fixture the repo checks in.
-4. `gate.rs`: carry `RetryPolicy` in `SessionState` (new `StateParams` field with a `Default`, so the
-   test/eval helper sites need no edits) with `retry_policy()` and a `SessionState::warn` method (the
-   `approver` field is private with no accessor). Thread `Config.retry` from the one production
-   construction site, `rust/fontaine-core/src/agent/setup.rs:~499`.
+4. `gate.rs`: carry `RetryPolicy` in `SessionState` (new `StateParams` field, which has no `Default`, so it
+   is added explicitly at every construction site: `agent/setup.rs:~499` takes `Config.retry`; the
+   others pass `RetryPolicy::default()`; test sites that need no delay pass a zero-delay policy) with `retry_policy()` and a `SessionState::warn` method (the
+   `approver` field is private with no accessor). Update all seven sites: `agent/setup.rs:~499`, `gate.rs:~1796`,
+   `permissions.rs:~2927`, `questions.rs:~96`, `steering.rs:~333`, `tests/common/pipeline.rs:~269`,
+   `fontaine-evals/src/none.rs:~135`.
 5. `turn.rs`: use the policy in `drive`, emit the warn line, drop `MAX_RETRIES`/`BACKOFF`.
 6. Update tests broken by the new defaults: `tests/turn_recovery.rs::retries_run_out_and_the_failure_is_reported_once`
    (3 scripted turns, `request_count() == 3` becomes 5 with `max_retries = 4`) and
@@ -100,7 +107,9 @@ conversation; no tool call is replayed. No change to the permission pipeline, gu
 ## Files to Modify
 
 `fontaine-core/src/{retry.rs (new), lib.rs, turn.rs, usage_limit.rs, config.rs, config_catalog.rs,
-config_scope.rs, gate.rs, agent/setup.rs}`, `tests/{turn_recovery,usage_pause_turn}.rs`,
+config_scope.rs, gate.rs, agent/setup.rs, permissions.rs, questions.rs, steering.rs}`,
+`fontaine-core/tests/common/pipeline.rs`, `fontaine-evals/src/none.rs`,
+`tests/{turn_recovery,usage_pause_turn}.rs`,
 `docs/architecture.md`, `docs/configuration.md`, `docs/claude-subscription.md`, `docs/headless.md`,
 `docs/agents.md` (one sentence), `CHANGELOG.md`.
 
@@ -117,6 +126,9 @@ config_scope.rs, gate.rs, agent/setup.rs}`, `tests/{turn_recovery,usage_pause_tu
 
 - 2026-11-13: No project-scope `[retry]` keys; retrying is spend and a repository must not raise it.
 - 2026-11-13: Retries run first inside `drive`; model-list fall-through happens only once attempts are exhausted.
+- AFK: Jitter fraction comes from uuid v4 bytes (uuid is already a direct dependency of fontaine-core); no rand/fastrand dependency is added.
+- AFK: `SessionState`'s policy is a new explicit `StateParams` field set at all seven construction sites (StateParams has no Default), not a defaulted setter.
+- AFK: Quota-class statuses (402/429/529) get at most 2 retries and a total delay of `min(max_total_delay, 10s)`, keeping model-list fall-through near today's latency; other retryable failures use the full policy.
 
 ## Documentation
 
