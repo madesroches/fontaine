@@ -2945,6 +2945,7 @@ mod tests {
             reveal_mcp_names: true,
             auto_edits: Default::default(),
             effort: None,
+            retry: crate::retry::RetryPolicy::default(),
         }))
     }
 

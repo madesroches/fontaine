@@ -156,6 +156,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         reveal_mcp_names: false,
         auto_edits: fontaine_core::gate::AutoEdits::default(),
         effort: None,
+        retry: fontaine_core::retry::RetryPolicy::default(),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),

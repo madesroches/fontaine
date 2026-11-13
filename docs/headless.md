@@ -72,7 +72,7 @@ guardian model also backs the scanner, the goal evaluator and prompt hooks in ev
 A missing or old CLI, a login that is not a Max or Ultra
 subscription, or a conflicting environment variable exits 1 before any turn, and a credit-billed model at
 startup exits 2, with the corrective text on stderr; a plan limit is reported without a retry (unless the account sits in a [model list](configuration.md#falling-through-to-the-next-entry) with a next entry, which the run continues on), and a stream cut
-short or a CLI silent for 180 seconds is retried twice. Ending the run stops the CLI and its
+short or a CLI silent for 180 seconds is retried with backoff (see [`[retry]`](configuration.md#retry)). Ending the run stops the CLI and its
 descendants. Usage lines carry token counts and no cost, and `--max-budget-usd` is a usage error
 (exit code 2). See [Claude subscription](claude-subscription.md).
 

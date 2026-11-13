@@ -32,6 +32,9 @@ fn error_turn(status: u16) -> Vec<MockStreamEvent> {
     ))]
 }
 
+/// A user file that keeps the retry waits short without turning the policy off.
+const FAST_RETRY: &str = "[retry]\nbase_delay_ms = 1\nmax_delay_secs = 1\n";
+
 fn answer_turn(text: &str) -> Vec<MockStreamEvent> {
     vec![
         MockStreamEvent::text(text),
@@ -392,6 +395,7 @@ async fn a_failed_turn_keeps_its_prompt_in_the_conversation() {
 #[tokio::test]
 async fn a_retryable_failure_is_retried_and_the_task_continues() {
     let w = World::new();
+    w.user_file(FAST_RETRY);
     let built = build(&w, Manual, vec![error_turn(429), answer_turn("done")], true);
     let outcome = run(&built, "hi").await;
     assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
@@ -428,18 +432,122 @@ async fn a_non_retryable_failure_is_not_retried() {
 #[tokio::test]
 async fn retries_run_out_and_the_failure_is_reported_once() {
     let w = World::new();
-    let turns = vec![error_turn(429), error_turn(429), error_turn(429)];
+    w.user_file(FAST_RETRY);
+    let turns = vec![error_turn(503); 5];
     let built = build(&w, Manual, turns, true);
     let outcome = run(&built, "hi").await;
     let TurnOutcome::Failed(failure) = outcome else {
         panic!("expected a failure, got {outcome:?}");
     };
     assert!(failure.message.contains("boom"), "{failure}");
+    assert_eq!(
+        built.main.request_count(),
+        5,
+        "the first attempt and four retries"
+    );
+}
+
+#[tokio::test]
+async fn a_quota_failure_gets_fewer_retries_and_still_falls_through() {
+    let w = World::new();
+    w.user_file(FAST_RETRY);
+    let built = build(&w, Manual, vec![error_turn(429); 5], true);
+    let outcome = run(&built, "hi").await;
+    let TurnOutcome::Failed(failure) = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
     assert!(
         failure.falls_through,
         "a 429 that outlasted the retries is a quota failure"
     );
+    assert_eq!(
+        built.main.request_count(),
+        3,
+        "the first attempt and two retries"
+    );
+}
+
+fn throttle_with_retry_after(secs: &str) -> Vec<MockStreamEvent> {
+    let mut response = ProviderResponseError::new(http::StatusCode::SERVICE_UNAVAILABLE, "boom");
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::RETRY_AFTER, secs.parse().unwrap());
+    response.headers = Some(headers);
+    vec![MockStreamEvent::Error(MockError::ProviderResponse(
+        response,
+    ))]
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_is_waited_out_and_each_retry_is_announced() {
+    let w = World::new();
+    let warnings = Arc::new(Warnings::default());
+    let built = build_warning(
+        &w,
+        vec![
+            throttle_with_retry_after("7"),
+            error_turn(503),
+            answer_turn("done"),
+        ],
+        warnings.clone(),
+    );
+    let started = tokio::time::Instant::now();
+    let outcome = run(&built, "hi").await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
     assert_eq!(built.main.request_count(), 3);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(7));
+    let lines: Vec<String> = warnings
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("model call failed"))
+        .cloned()
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains("retry 1 of 4") && lines[0].contains("503"),
+        "{lines:?}"
+    );
+    assert!(!lines[0].contains("boom"), "the body stays out: {lines:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_beyond_the_cap_settles_the_failure_at_once() {
+    let w = World::new();
+    let built = build(&w, Manual, vec![throttle_with_retry_after("600")], true);
+    let outcome = run(&built, "hi").await;
+    assert!(matches!(outcome, TurnOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(built.main.request_count(), 1);
+}
+
+#[tokio::test]
+async fn a_retry_never_replays_a_tool_call() {
+    let w = World::new();
+    w.user_file(&format!("{FAST_RETRY}[permissions]\nallow = [\"shell\"]\n"));
+    let built = build(
+        &w,
+        Manual,
+        vec![shell_turn("echo x"), error_turn(503), answer_turn("done")],
+        true,
+    );
+    let outcome = run(&built, "hi").await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    assert_eq!(built.main.request_count(), 3);
+    // The tool's result is in the retry's history exactly once: the retry re-asked the model
+    // and never ran the call again.
+    let requests = built.main.requests();
+    let retry_history = format!("{:?}", requests[2].chat_history);
+    assert_eq!(
+        retry_history.matches("call-1").count(),
+        2,
+        "{retry_history}"
+    );
+    let stored = stored(&built).await;
+    assert_eq!(
+        stored.matches("ToolResult(ToolResult").count(),
+        1,
+        "{stored}"
+    );
 }
 
 #[tokio::test]
@@ -497,6 +605,22 @@ impl fontaine_core::permissions::Approver for Warnings {
     fn warn(&self, message: &str) {
         self.0.lock().unwrap().push(message.to_string());
     }
+}
+
+/// A runtime over `turns` whose approver collects the session's warnings.
+fn build_warning(w: &World, turns: Vec<Vec<MockStreamEvent>>, warnings: Arc<Warnings>) -> Built {
+    let (models, main, _) = holding(turns, usize::MAX);
+    let runtime = runtime::build_with_approver(
+        w,
+        Manual,
+        models,
+        None,
+        true,
+        Default::default(),
+        None,
+        warnings,
+    );
+    Built { runtime, main }
 }
 
 /// The preflight's record write succeeds and the post-compaction rewrite fails: the turn

@@ -13,6 +13,13 @@ All notable changes are recorded here. The format follows
   tool calls, prompt fetches and resource reads: the request is answered through the usual
   elicitation dialogs and the call is retried with your answer, up to 10 requests per call.
   Requests for a model sample or the roots list fail the call.
+- Configurable model-call retry with backoff (#600). A transient provider failure (a 5xx, a cut
+  connection, throttling) is now retried up to four times with exponential backoff and jitter,
+  honoring `Retry-After` under a cap on the total wait, on the main agent and on every subagent, so a
+  subagent no longer dies on a single 503. Each retry prints one warning line. 402, 429 and 529 keep
+  a short budget (2 retries, 10 seconds) so a model list still moves on quickly. The new `[retry]`
+  section (`max_retries`, `base_delay_ms`, `max_delay_secs`, `max_total_delay_secs`) is user file and
+  `--settings` only.
 - `fallback` model role (#601). A subagent whose own model list is spent on a usage window moves to
   the first usable entry of the user-scope `fallback` role, says so, and continues instead of
   pausing the whole session; the run pauses only when `fallback` is spent too. With no `fallback`

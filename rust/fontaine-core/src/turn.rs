@@ -26,13 +26,6 @@ use crate::preview::DiffPreview;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
 
-/// The retries a transient transport failure earns, on top of the first attempt.
-const MAX_RETRIES: usize = 2;
-
-/// The pause before the first retry; it doubles each time. A reset connection needs a
-/// moment, not a hammer.
-const BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// A retry's prompt. The failed attempt's committed messages are already saved by the
 /// recovery hook, so the run only needs to be told to go on. Model context, never a ledger
 /// user message.
@@ -485,6 +478,39 @@ fn retryable(error: &PromptError) -> bool {
     }
 }
 
+/// The wait a failed call's `Retry-After` header asks for, when it has one.
+fn error_retry_after(
+    error: &PromptError,
+    now: std::time::SystemTime,
+) -> Option<std::time::Duration> {
+    let response = match error {
+        PromptError::Provider(e) => e.provider_response(),
+        PromptError::Report(report) => report.provider_response.as_ref(),
+        _ => None,
+    }?;
+    crate::usage_limit::retry_after(response, now)
+}
+
+/// A one-line account of a failed call for the retry notice: its status and class, never the
+/// body, which a provider may fill with an echo of the request.
+fn retry_summary(error: &PromptError) -> String {
+    let status = match error {
+        PromptError::Report(report) => report.http_status.map(|s| s.to_string()),
+        _ => None,
+    }
+    .or_else(|| {
+        error
+            .provider_response_status()
+            .map(|s| s.as_u16().to_string())
+    });
+    match (status, error_class(error)) {
+        (Some(status), Some(class)) => format!("HTTP {status}, {class}"),
+        (Some(status), None) => format!("HTTP {status}"),
+        (None, Some(class)) => class.to_string(),
+        (None, None) => "model call failed".to_string(),
+    }
+}
+
 /// Names a provider's rate-limit, quota and overload replies that carry only a machine code,
 /// because rig delivers mid-stream errors without a status. The numeric envelope codes are
 /// decimal strings.
@@ -607,7 +633,10 @@ pub async fn drive(
     mut feed: Option<&mut DecisionFeed>,
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
 ) -> TurnOutcome {
-    for attempt in 0..=MAX_RETRIES {
+    let started = tokio::time::Instant::now();
+    let policy = params.state.retry_policy();
+    let mut attempt: u32 = 0;
+    loop {
         // A retry continues on a note: the failed attempt's message, attachments included,
         // is already saved by the recovery hook, so the retry sends the note alone.
         let attachments = if attempt == 0 {
@@ -644,7 +673,29 @@ pub async fn drive(
         // A spent window is not retried with a backoff however retryable its status says it is,
         // and a provider that never retries still reaches here: the list's owner decides.
         let usage_limit = prompt_usage_limit(&error, std::time::SystemTime::now());
-        if usage_limit.is_some() || attempt == MAX_RETRIES || !retryable(&error) {
+        // A quota-class failure is a model list's cue to move on, so it is not worth a long
+        // wait here.
+        let active = if falls_through(&error) {
+            policy.for_quota()
+        } else {
+            policy
+        };
+        let wait = if usage_limit.is_some() || !retryable(&error) {
+            None
+        } else {
+            let policy = active;
+            if attempt >= policy.max_retries {
+                None
+            } else {
+                policy.next_delay(
+                    attempt,
+                    error_retry_after(&error, std::time::SystemTime::now()),
+                    started.elapsed(),
+                    crate::retry::jitter(),
+                )
+            }
+        };
+        let Some(wait) = wait else {
             let message = failure_text(&error, params.native_search);
             if let Some(class) = error_class(&error) {
                 params.state.append(Record::RequestFailed {
@@ -660,11 +711,19 @@ pub async fn drive(
                 kind: failure_kind(&error),
                 usage_limit,
             });
-        }
-        tokio::time::sleep(BACKOFF * (1 << attempt)).await;
+        };
+        params.state.warn(&format!(
+            "{}: model call failed ({}); retry {} of {} in {:.1}s",
+            params.agent_id,
+            retry_summary(&error),
+            attempt + 1,
+            active.max_retries,
+            wait.as_secs_f64(),
+        ));
+        tokio::time::sleep(wait).await;
         params.prompt = RETRY_NOTE.to_string();
+        attempt += 1;
     }
-    unreachable!("the last attempt always returns")
 }
 
 /// One attempt of `drive`, with the model failure kept typed for the retry decision.

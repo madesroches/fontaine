@@ -126,6 +126,7 @@ const PLUGINS: &str =
     "plugin auto-update changes code the user approved at install, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
+const RETRY: &str = "retrying a failed model call is spend, so only the user file or --settings sets how far it goes";
 const AFK_CEILING: &str =
     "a repository can only lower the AFK temperature ceiling, and only to a positive, finite value";
 const HEADLESS_WAIT: &str = "how long an unattended run waits for a usage window is set only in the user file or --settings";
@@ -170,6 +171,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("schedule.enabled", SCHEDULE),
     Rule::user_or_cli("memory", MEMORY),
     Rule::user_or_cli("goal", GOAL),
+    Rule::user_or_cli("retry", RETRY),
     Rule::if_project_local("afk.temperature_ceiling", is_positive_finite, AFK_CEILING),
     Rule::user_or_cli("headless.max_usage_wait_secs", HEADLESS_WAIT),
     Rule::if_project_local("headless.on_usage_limit", is_exit, HEADLESS_EXIT),
@@ -664,6 +666,7 @@ mod tests {
         ("schedule.enabled", "[schedule]\nenabled = false\n", None),
         ("memory", "[memory]\nauto = true\n", None),
         ("goal", "[goal]\nmax_turns = 10\n", None),
+        ("retry", "[retry]\nmax_retries = 6\n", None),
         (
             "afk.temperature_ceiling",
             "[afk]\ntemperature_ceiling = 5.0\n",

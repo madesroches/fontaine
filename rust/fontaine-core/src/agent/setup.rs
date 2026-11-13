@@ -534,6 +534,7 @@ pub(super) fn session_state(
         agent_types: agent_types.clone(),
         reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
         effort: setup.config.effort,
+        retry: setup.config.retry.policy(),
         auto_edits: AutoEdits {
             tracked: permissions.auto_tracked_edits,
             scratch: permissions.auto_scratch_writes,

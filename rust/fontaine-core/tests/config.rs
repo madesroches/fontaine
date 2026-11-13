@@ -2880,3 +2880,64 @@ mod headless_usage_wait {
         assert!(error.contains("on_usage_limit"), "{error}");
     }
 }
+
+mod retry {
+    use super::common::World;
+    use fontaine_core::config::ConfigError;
+    use std::time::Duration;
+
+    #[test]
+    fn the_defaults_retry_four_times_within_two_minutes() {
+        let w = World::new();
+        let policy = w.load().unwrap().retry.policy();
+        assert_eq!(policy.max_retries, 4);
+        assert_eq!(policy.base_delay, Duration::from_millis(500));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.max_total_delay, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_user_file_overrides_every_key() {
+        let w = World::new();
+        w.user_file(
+            "[retry]\nmax_retries = 7\nbase_delay_ms = 100\nmax_delay_secs = 10\nmax_total_delay_secs = 60\n",
+        );
+        let policy = w.load().unwrap().retry.policy();
+        assert_eq!(policy.max_retries, 7);
+        assert_eq!(policy.base_delay, Duration::from_millis(100));
+        assert_eq!(policy.max_delay, Duration::from_secs(10));
+        assert_eq!(policy.max_total_delay, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn out_of_range_values_are_refused() {
+        for text in [
+            "[retry]\nmax_retries = 11\n",
+            "[retry]\nbase_delay_ms = 0\n",
+            "[retry]\nmax_delay_secs = 0\n",
+            "[retry]\nmax_total_delay_secs = 0\n",
+            "[retry]\nbase_delay_ms = 5000\nmax_delay_secs = 1\n",
+        ] {
+            let w = World::new();
+            w.user_file(text);
+            assert!(
+                matches!(w.load(), Err(ConfigError::Invalid { .. })),
+                "{text}: {:?}",
+                w.load().map(|_| ())
+            );
+        }
+    }
+
+    #[test]
+    fn project_scopes_may_not_set_it() {
+        let text = "[retry]\nmax_retries = 9\n";
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file(text);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        let w = World::new();
+        w.trusted_repo();
+        w.local_file(text);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+    }
+}

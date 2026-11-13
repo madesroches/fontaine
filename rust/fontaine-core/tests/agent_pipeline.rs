@@ -868,6 +868,39 @@ mod persistence {
     }
 
     #[tokio::test]
+    async fn a_child_survives_a_transient_provider_failure() {
+        let w = World::new();
+        w.user_file(
+            "[permissions]\nallow = [\"agent\"]\n[retry]\nbase_delay_ms = 1\nmax_delay_secs = 1\n",
+        );
+        let built = build(
+            &w,
+            Manual,
+            vec![
+                spawn_turn("worker", "dig into it"),
+                error_turn(503),
+                // The root's follow-up request lands while the child waits to retry.
+                text_turn("root done"),
+                text_turn("child answer"),
+            ],
+            false,
+        );
+        root_turn(&built, "start it").await;
+        for _ in 0..200 {
+            if built.runtime.state.agents().status_of("agent-1") != Some(ChildStatus::Running) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            built.runtime.state.agents().status_of("agent-1"),
+            Some(ChildStatus::Done)
+        );
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("child answer"), "{log}");
+    }
+
+    #[tokio::test]
     async fn a_forked_childs_seeded_context_lands_in_its_own_log() {
         let w = World::new();
         w.user_file("[permissions]\nallow = [\"agent\"]\n");
