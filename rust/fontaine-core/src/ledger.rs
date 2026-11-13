@@ -943,10 +943,11 @@ impl FileIndex {
 }
 
 /// The fetch URLs of the repository around `root`, read from its own config without following
-/// `include` or `includeIf`. None when there is no repository or gix cannot read it; Fontaine
+/// `include` or `includeIf`. Empty when there is no repository or gix cannot read it; Fontaine
 /// never spawns `git`.
 pub fn git_remotes(root: &Path) -> Vec<String> {
     let mut urls: Vec<String> = named_remotes(root)
+        .unwrap_or_default()
         .into_iter()
         .map(|(_, url)| url)
         .collect();
@@ -957,20 +958,21 @@ pub fn git_remotes(root: &Path) -> Vec<String> {
 
 /// The fetch URL of the repository's `origin` remote, read as `git_remotes` reads.
 pub fn git_origin(root: &Path) -> Option<String> {
-    named_remotes(root)
+    named_remotes(root)?
         .into_iter()
         .find_map(|(name, url)| (name == "origin").then_some(url))
 }
 
-fn named_remotes(root: &Path) -> Vec<(String, String)> {
+/// None when the remotes cannot be read completely: no repository around `root`, a config gix
+/// rejects, or a remote without a fetch URL. An empty list means a readable repository with no
+/// remotes.
+fn named_remotes(root: &Path) -> Option<Vec<(String, String)>> {
     let options = gix::open::Options::isolated().strict_config(true);
-    let Ok(repo) = gix::discover_opts(root, gix::discover::upwards::Options::default(), options)
-    else {
-        return Vec::new();
-    };
+    let repo =
+        gix::discover_opts(root, gix::discover::upwards::Options::default(), options).ok()?;
     repo.remote_names()
         .iter()
-        .filter_map(|name| {
+        .map(|name| {
             let remote = repo.try_find_remote(name.as_bstr())?.ok()?;
             let url = remote.url(gix::remote::Direction::Fetch)?;
             Some((
@@ -990,16 +992,19 @@ pub fn git_remotes_of(roots: &[PathBuf]) -> Vec<String> {
 }
 
 /// The remotes of every root as `<git name> <fetch url>`, sorted and deduplicated: what a session
-/// shows the guardian, which judges a call by the git name it uses.
-pub fn git_remote_names_of(roots: &[PathBuf]) -> Vec<String> {
-    let mut remotes: Vec<String> = roots
-        .iter()
-        .flat_map(|root| named_remotes(root))
-        .map(|(name, url)| format!("{name} {url}"))
-        .collect();
+/// shows the guardian, which judges a call by the git name it uses. None when any root's remotes
+/// cannot be read completely, so the guardian is not told a gap in what Fontaine knows is "no
+/// remotes".
+pub fn git_remote_names_of(roots: &[PathBuf]) -> Option<Vec<String>> {
+    let mut remotes = Vec::new();
+    for root in roots {
+        for (name, url) in named_remotes(root)? {
+            remotes.push(format!("{name} {url}"));
+        }
+    }
     remotes.sort();
     remotes.dedup();
-    remotes
+    Some(remotes)
 }
 
 /// `https://user:token@host/x` without its `user:token@`; an scp-style `git@host:x` keeps its
@@ -1035,6 +1040,12 @@ mod tests {
             "git@github.com:org/repo.git"
         );
         assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+
+    #[test]
+    fn a_root_outside_any_repository_records_no_remote_names() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(git_remote_names_of(&[dir.path().to_path_buf()]), None);
     }
 
     fn ledger_with_two_messages(dir: &Path) -> PathBuf {

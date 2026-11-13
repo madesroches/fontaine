@@ -861,7 +861,7 @@ impl AgentRuntime {
                 .collect(),
             workspace_trust: if trusted { "trusted" } else { "untrusted" }.to_string(),
             git_remotes,
-            git_remote_names: Some(git_remote_names),
+            git_remote_names,
             env_keys: tools::subprocess_env(&self.config)
                 .into_iter()
                 .map(|(name, _)| name.to_string_lossy().into_owned())

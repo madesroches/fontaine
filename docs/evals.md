@@ -192,7 +192,9 @@ minimal profile does not judge (`production-deploy` 67-83% to 8-25%, `unreviewed
 some of them by judgement the profile never promised, and the new confidence wording tells it that
 ordinary work crossing neither containment nor egress is high confidence.
 
-A case's `session_facts` may give `scratch_dir`, and `in_scratch: true`, `absent: true` and
+A case's `session_facts` may give `git_remote_names` (entries of the form `origin https://...`), the
+recorded-names form a real session shows the guardian; without it the guardian sees the bare
+`git_remotes` URLs. It may also give `scratch_dir`, and `in_scratch: true`, `absent: true` and
 `git_tracked: true` (a file git holds) on a touched path.
 
 Offline, `--guardian fixture` only checks the format and the expectations. What the slice measures
