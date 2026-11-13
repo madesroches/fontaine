@@ -1087,7 +1087,7 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         if driven.sent >= MAX_REQUESTS {
             self.fail(
                 call,
-                "the server kept asking for input; gave up after 10 requests",
+                &format!("the server kept asking for input; gave up after {MAX_REQUESTS} requests"),
             );
             return;
         }
@@ -1164,7 +1164,11 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
     fn route(&mut self, mut message: ServerJsonRpcMessage) -> Option<ServerJsonRpcMessage> {
         let id = match &message {
             ServerJsonRpcMessage::Response(r) => r.id.clone(),
-            ServerJsonRpcMessage::Error(e) => e.id.clone()?,
+            ServerJsonRpcMessage::Error(e) => match &e.id {
+                Some(id) => id.clone(),
+                // A parse or invalid-request error carries no id; rmcp decides what to do with it.
+                None => return Some(message),
+            },
             _ => return Some(message),
         };
         if self.dropped_retries.remove(&id) {
@@ -1311,6 +1315,9 @@ impl<T: Transport<RoleClient>> Transport<RoleClient> for ElicitationTap<T> {
                         for call in calls {
                             self.drop_call(&call);
                         }
+                        // Only a late answer removes an entry, and none arrives once the
+                        // transport is closed.
+                        self.dropped_retries.clear();
                         return None;
                     };
                     if let Some(message) = self.route(message)
@@ -1577,6 +1584,19 @@ mod tests {
             .find(|m| m["id"] == json!(id))
             .cloned()
             .unwrap_or_else(|| panic!("no response for {id} in {sent:?}"))
+    }
+
+    #[tokio::test]
+    async fn an_error_without_an_id_passes_through_to_rmcp() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let error: ServerJsonRpcMessage = serde_json::from_value(
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse"}}),
+        )
+        .unwrap();
+        rig.script.push(error);
+        let passed = drain(&mut rig.tap, Duration::from_millis(100)).await;
+        assert_eq!(passed.len(), 1, "{passed:?}");
+        assert_eq!(passed[0]["error"]["code"], json!(-32700));
     }
 
     #[tokio::test]
