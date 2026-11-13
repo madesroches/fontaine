@@ -221,6 +221,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::any("hooks.pre_compact"),
     Rule::any("hooks.post_compact"),
     Rule::any("hooks.notification"),
+    Rule::any("hooks.elicitation"),
     Rule::any("mcp.servers"),
     Rule::user_trust("auto_mode.environment", TIGHTEN),
     Rule::user_trust("auto_mode.allow", TIGHTEN),
@@ -626,6 +627,11 @@ mod tests {
         (
             "hooks.notification",
             "[[hooks.notification]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.elicitation",
+            "[[hooks.elicitation]]\ncommand = \"true\"\n",
             None,
         ),
         ("mcp.servers", "[mcp.servers.s]\ncommand = \"srv\"\n", None),

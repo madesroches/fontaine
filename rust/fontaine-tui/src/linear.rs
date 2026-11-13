@@ -1254,6 +1254,7 @@ mod tests {
         rig.app.begin_elicitation(
             ElicitRequest::Url(ElicitUrl {
                 server: "github".into(),
+                id: String::new(),
                 message: "Sign in".into(),
                 url: "https://example.com/auth".into(),
             }),

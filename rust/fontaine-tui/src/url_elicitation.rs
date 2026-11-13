@@ -229,6 +229,7 @@ mod tests {
     fn request(url: &str) -> ElicitUrl {
         ElicitUrl {
             server: "srv".into(),
+            id: String::new(),
             message: "Sign in\nplease".into(),
             url: url.into(),
         }

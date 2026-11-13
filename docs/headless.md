@@ -199,7 +199,8 @@ project file may set `on_usage_limit = "exit"` but nothing that makes a run wait
 returns "User input is unavailable in this session; proceed with your best judgment and state your
 assumptions." and the run continues.
 
-An MCP server's request for input (elicitation) is answered `cancel` in a headless run, so the call
+An MCP server's request for input (elicitation) is answered `cancel` in a headless run unless an
+[`elicitation` hook](hooks.md#elicitation) answers it, so the call
 carries on without it; see [MCP servers](mcp.md#requests-for-input). A stdio MCP server that exits
 stays failed for the rest of the run and is not started again; a remote one that drops is
 reconnected as in the terminal UI.

@@ -379,7 +379,9 @@ server's say-so, and there is no "always allow": every request is confirmed. The
 
 - **Only the terminal UI shows a dialog.** A [headless run](headless.md#questions), [AFK mode](afk.md),
   the [doctor](doctor.md) probe and a call made by a subagent answer `cancel` without showing
-  anything. The dialog closes, and is answered `cancel`, when the call that caused it ends.
+  anything, unless an [`elicitation` hook](hooks.md#elicitation) answers first (not for the
+  doctor probe or a subagent's call). A hook never accepts a link: that is always confirmed in the
+  terminal UI. The dialog closes, and is answered `cancel`, when the call that caused it ends.
 - **Your answer goes to the server and nowhere else.** It never reaches the model, the transcript,
   the audit log or telemetry, and the dialog says so. Don't enter secrets you wouldn't give that
   server. The server's message is cleaned of control characters before it is shown.

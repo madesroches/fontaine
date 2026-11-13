@@ -11,7 +11,7 @@ person would have been asked: nobody is asked.
   reduce the request to a useful allowed subset, or stop and report. It never says to ask, and
   never to find another way to the same effect.
 - `ask_user_question` takes its usual no-answer path, and an MCP server's request for input
-  (elicitation) is answered `cancel`.
+  (elicitation) is answered `cancel` unless an [`elicitation` hook](hooks.md#elicitation) answers it.
 - A tripped [denial breaker](guardian.md#denial-limits) ends the run as *blocked* instead of waiting
   for you.
 

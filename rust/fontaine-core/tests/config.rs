@@ -2506,6 +2506,16 @@ mod hook_validation {
         user_ok("[[hooks.session_start]]\nmatcher = \"*\"\ncommand = \"true\"\n");
         user_ok("[[hooks.subagent_stop]]\nmatcher = \"my-agent|worker\"\ncommand = \"true\"\n");
         user_ok("[[hooks.notification]]\nmatcher = \"permission_prompt\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.elicitation]]\nmatcher = \"github|my-server\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.elicitation]]\nmatcher = \"*\"\ncommand = \"true\"\n");
+        rejected(
+            "[[hooks.elicitation]]\nmatcher = \"a|*\"\ncommand = \"true\"\n",
+            "only work as the whole matcher",
+        );
+        rejected(
+            "[[hooks.elicitation]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
+            "not `prompt`",
+        );
         user_ok(
             "[[hooks.stop_failure]]\nmatcher = \"rate_limit|server_error\"\ncommand = \"true\"\n",
         );

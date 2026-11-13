@@ -211,6 +211,58 @@ async fn the_same_hook_in_the_users_own_settings_does_allow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_user_elicitation_hook_answers_an_mcp_request_for_input_in_a_headless_run() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "mcp__repo__elicit", json!({})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    project_settings(
+        &s,
+        &format!(
+            "[mcp.servers.repo]\ncommand = '{}'\n",
+            example_bin("fontaine", "repo_mcp_server")
+                .to_string_lossy()
+                .into_owned()
+        ),
+    );
+    let marker = s.work.join("elicitation-hook-ran.json");
+    let accept = json!({"hookSpecificOutput": {
+        "hookEventName": "Elicitation", "action": "accept", "content": {"name": "Ada"}}})
+    .to_string();
+    let config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    s.user_config(&format!(
+        "{config}\n[[hooks.elicitation]]\nmatcher = \"repo\"\ncommand = \'\'\'\n'{}' '{}' '{}'\n\'\'\'\n",
+        example_bin("fontaine", "hook_marker").to_string_lossy().into_owned(),
+        marker.display(),
+        accept
+    ));
+    let out = s
+        .headless(&[
+            "--output-format",
+            "stream-json",
+            "--allowed-tools",
+            "mcp__repo__elicit",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let result = of_type(&lines, "tool_result")[0];
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains(r#""action":"accept""#), "{result}");
+    assert!(text.contains("Ada"), "{result}");
+    let event: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+    assert_eq!(event["hook_event_name"], "Elicitation");
+    assert_eq!(event["mcp_server_name"], "repo");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_mcp_tool_that_asks_for_input_in_a_headless_run_gets_cancel_and_the_run_completes() {
     let endpoint = Endpoint::start(
         Wire::Chat,

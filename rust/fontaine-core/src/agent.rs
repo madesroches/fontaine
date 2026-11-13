@@ -82,8 +82,8 @@ pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use mcp::{
-    McpOutcome, McpResourceSummary, McpServerPlan, headers_helper_refusal, mcp_plan, probe_server,
-    resolved_server, server_digest, server_spec,
+    HookElicitor, McpOutcome, McpResourceSummary, McpServerPlan, headers_helper_refusal, mcp_plan,
+    probe_server, resolved_server, server_digest, server_spec,
 };
 use mcp_supervisor::McpServers;
 pub use mcp_supervisor::{
@@ -307,6 +307,8 @@ pub(crate) struct Setup {
     pub(crate) hook_deps: user_hooks::HookDeps,
     /// The hooks plugins bring, which a reload swaps.
     pub(crate) plugin_hooks: user_hooks::LivePlugins,
+    /// The frozen `elicitation` hooks, consulted before any dialog.
+    pub(crate) elicitation_hooks: Vec<Arc<dyn crate::permissions::ElicitationHook>>,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no

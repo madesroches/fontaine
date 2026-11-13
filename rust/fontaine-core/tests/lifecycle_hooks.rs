@@ -937,6 +937,25 @@ fn build_ignores_a_repositorys_http_prompt_and_forcing_hooks_with_a_count() {
 }
 
 #[test]
+fn build_keeps_elicitation_command_hooks_with_trust_and_ignores_a_repositorys_http_one() {
+    let w = common::World::new();
+    let user = "[[hooks.elicitation]]\ncommand = \"true\"\n";
+    let project = "[[hooks.elicitation]]\ncommand = \"true\"\nmatcher = \"srv\"\n\
+                   [[hooks.elicitation]]\ntype = \"http\"\nurl = \"https://example.test/h\"\n";
+    let config = config_with(&w, user, project);
+    let built = user_hooks::build(&config, true, &HookDeps::new(process())).unwrap();
+    assert_eq!(built.ignored_project_handlers, 1);
+    assert_eq!(built.elicitation.len(), 2);
+    let accepts: Vec<bool> = built.elicitation.iter().map(|h| h.can_accept()).collect();
+    assert!(
+        accepts.contains(&true) && accepts.contains(&false),
+        "{accepts:?}"
+    );
+    let untrusted = user_hooks::build(&config, false, &HookDeps::new(process())).unwrap();
+    assert_eq!(untrusted.elicitation.len(), 1);
+}
+
+#[test]
 fn build_drops_every_repository_hook_when_the_workspace_is_not_trusted() {
     let w = common::World::new();
     let config = config_with(&w, "", &format!("{HTTP}{STOP}{PLAIN}"));
