@@ -29,8 +29,10 @@ Auto memory is on. Save what a later session would otherwise have to rediscover:
 commands, the project's layout and conventions, corrections the user gave you, and preferences the \
 user stated. Do not save secrets, credentials, instructions to your future self, or text copied from \
 tool results and web pages. Keep detail in topic files (for example `debugging.md`) and keep \
-`MEMORY.md` a short index with one line per topic file linking to it. Write memory with the `write` \
-and `edit` tools at the path above; each write goes through the normal permission checks.";
+`MEMORY.md` a short index with one line per topic file linking to it. Save notes with the `memory` \
+tool; it writes the topic file and keeps `MEMORY.md`'s line for it in one call. Use `write` and \
+`edit` at the path above only to repair the store by hand; each way goes through the normal \
+permission checks.";
 
 /// The directory name for a project: a readable slug of its path and a short digest of it.
 /// The path is the owning git checkout of `primary_root` when there is one, so every worktree
@@ -169,6 +171,226 @@ pub fn load(dir: &Path) -> Loaded {
         out.index = Some(kept);
     }
     out
+}
+
+/// The file name a topic saves to: the topic lowercased, runs of non-alphanumerics
+/// become `-`, cut to the slug length, suffixed `.md`. Topic identity is the file:
+/// `Foo Bar` and `foo-bar` are one topic. `None` when nothing of the topic remains.
+pub fn slug(topic: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for c in topic.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_dash {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() {
+            pending_dash = true;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    let slug = slug[..slug.len().min(SLUG_CHARS)].trim_end_matches('-');
+    if slug.is_empty() {
+        return None;
+    }
+    Some(format!("{slug}.md"))
+}
+
+/// What a [`save`] did to the index line of the topic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineState {
+    /// The index had no line linking the file; one was appended.
+    Added,
+    /// The line linking the file had its link text replaced with the topic; the 1-based
+    /// line kept its position.
+    Updated(usize),
+    /// The index already linked the file under this topic; nothing changed.
+    Unchanged,
+}
+
+/// The outcome of a [`save`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved {
+    /// The topic file the note was written to, within the store.
+    pub file: String,
+    pub index: LineState,
+    /// A post-save condition the model should know about, such as the index cap.
+    pub warning: Option<String>,
+}
+
+/// Errors with `InvalidInput` when `path` exists and is a link: the store refuses to follow
+/// one, as `load` and `check` do.
+fn refuse_link(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} is a link, which the memory store refuses to follow",
+                path.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The index text as it is on disk, so a save can rewrite it whole. A missing index is
+/// `Ok(None)`; a link, a non-regular file, unreadable content or non-UTF-8 is an error,
+/// matching `load`'s refusal posture.
+fn read_index_text(path: &Path) -> io::Result<Option<String>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is a link, which the memory store refuses to follow",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(SCAN_LIMIT + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > SCAN_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is larger than the memory tool can rewrite",
+                path.display()
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map(Some).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not valid UTF-8", path.display()),
+        )
+    })
+}
+
+/// The byte span of the link text inside the first `[text](target)` on `line` whose
+/// destination, read the way `check` reads it, is `wanted` (ignoring case). A save
+/// rewrites only the text, keeping the target and the line's place in the index.
+fn link_text_span(line: &str, wanted: &str) -> Option<std::ops::Range<usize>> {
+    let bytes = line.as_bytes();
+    let mut open: Option<usize> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                open = Some(i + 1);
+                i += 1;
+            }
+            b']' if open.is_some() => {
+                let text_start = open.take().expect("checked by the guard");
+                if bytes.get(i + 1) == Some(&b'(') {
+                    let inner_start = i + 2;
+                    if let Some(rel) = bytes[inner_start..].iter().position(|b| *b == b')') {
+                        let inner_end = inner_start + rel;
+                        let raw = line[inner_start..inner_end].trim();
+                        let raw = match raw.strip_prefix('<') {
+                            Some(angled) => angled.split('>').next().unwrap_or_default(),
+                            None => raw.split_whitespace().next().unwrap_or_default(),
+                        };
+                        let target = raw.split('#').next().unwrap_or_default();
+                        if !target.is_empty() && target.eq_ignore_ascii_case(wanted) {
+                            return Some(text_start..i);
+                        }
+                        i = inner_end + 1;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Saves `content` as the note on `topic` in the store at `dir`: writes the topic file
+/// atomically, then keeps `MEMORY.md`'s line for it — the line whose link target is the
+/// file gets the topic as its new link text in place, anything else appends one. Two
+/// sessions saving at once are last-writer-wins on the index, as with raw edits; the
+/// atomic renames keep individual files whole. The index caps are a warning, not a
+/// failure: the note is saved and `Saved.warning` says the index no longer loads whole.
+pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
+    let file = slug(topic).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("topic {topic:?} has no letters or digits to name a file with"),
+        )
+    })?;
+    let target = dir.join(&file);
+    refuse_link(&target)?;
+    owner_only::write_atomic(&target, content.as_bytes())?;
+
+    let index_path = dir.join(INDEX_FILE);
+    let text = read_index_text(&index_path)?.unwrap_or_default();
+    let mut out = String::new();
+    let mut fence = None;
+    let mut line_no = 0;
+    let mut state = LineState::Added;
+    let mut found = false;
+    for line in text.lines() {
+        line_no += 1;
+        let mut skippable = fence.is_some();
+        if let Some(open) = fence {
+            if crate::instructions::markdown::closes_fence(line, open) {
+                fence = None;
+            }
+        } else if let Some(open) = crate::instructions::markdown::opening_fence(line) {
+            fence = Some(open);
+            skippable = true;
+        }
+        if !found
+            && !skippable
+            && let Some(span) = link_text_span(line, &file)
+        {
+            found = true;
+            let updated = format!("{}{}{}", &line[..span.start], topic, &line[span.end..]);
+            if updated == line {
+                state = LineState::Unchanged;
+                out.push_str(line);
+            } else {
+                state = LineState::Updated(line_no);
+                out.push_str(&updated);
+            }
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !found {
+        out.push_str(&format!("- [{topic}]({file})\n"));
+    }
+    if !matches!(state, LineState::Unchanged) {
+        refuse_link(&index_path)?;
+        owner_only::write_atomic(&index_path, out.as_bytes())?;
+    }
+    let warning = (out.lines().count() > MAX_INDEX_LINES || out.len() > MAX_INDEX_BYTES).then(|| {
+        format!(
+            "{} is longer than {MAX_INDEX_LINES} lines or {MAX_INDEX_BYTES} bytes; only the start is loaded. Move detail into topic files",
+            index_path.display()
+        )
+    });
+    Ok(Saved {
+        file,
+        index: state,
+        warning,
+    })
 }
 
 /// The prompt layer: the notes framing, the store's path, the capped index, then what to save.
@@ -865,5 +1087,188 @@ mod tests {
             ["a.md", "b c.md"]
         );
         assert!(link_targets("no links (here)").is_empty());
+    }
+
+    #[test]
+    fn a_slug_normalizes_case_separators_and_length() {
+        assert_eq!(slug("Commands").as_deref(), Some("commands.md"));
+        assert_eq!(slug("Foo Bar"), slug("foo-bar"));
+        assert_eq!(slug("Foo Bar").as_deref(), Some("foo-bar.md"));
+        assert_eq!(slug("  --A  b__c-- ").as_deref(), Some("a-b-c.md"));
+        assert_eq!(slug("a"), slug("A"));
+        let long = slug(&"x".repeat(100)).unwrap();
+        assert_eq!(long, format!("{}.md", "x".repeat(SLUG_CHARS)));
+        // A cut that would end on a separator drops it.
+        let tail = slug(&format!("{}-tail", "x".repeat(SLUG_CHARS))).unwrap();
+        assert_eq!(tail, format!("{}.md", "x".repeat(SLUG_CHARS)));
+    }
+
+    #[test]
+    fn a_slug_refuses_topics_with_nothing_to_name_a_file() {
+        for topic in ["", "   ", "...", "!!!", "-", ".", ".."] {
+            assert_eq!(slug(topic), None, "{topic:?}");
+        }
+    }
+
+    #[test]
+    fn a_save_writes_the_topic_and_appends_one_index_line() {
+        let (_tmp, dir) = store();
+        let saved = save(&dir, "Commands", "# Commands\n\n- `cargo test`\n").unwrap();
+        assert_eq!(saved.file, "commands.md");
+        assert_eq!(saved.index, LineState::Added);
+        assert!(saved.warning.is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("commands.md")).unwrap(),
+            "# Commands\n\n- `cargo test`\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](commands.md)\n"
+        );
+    }
+
+    #[test]
+    fn saving_one_topic_twice_is_unchanged() {
+        let (_tmp, dir) = store();
+        save(&dir, "Commands", "one\n").unwrap();
+        let saved = save(&dir, "Commands", "two\n").unwrap();
+        assert_eq!(saved.index, LineState::Unchanged);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("commands.md")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](commands.md)\n"
+        );
+    }
+
+    #[test]
+    fn a_topic_is_its_slug_wherever_the_spelling_differs() {
+        let (_tmp, dir) = store();
+        save(&dir, "Foo Bar", "one\n").unwrap();
+        // The same file, and the line's text follows the new spelling in place.
+        let saved = save(&dir, "foo-bar", "two\n").unwrap();
+        assert_eq!(saved.file, "foo-bar.md");
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [foo-bar](foo-bar.md)\n"
+        );
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                std::ffi::OsString::from(INDEX_FILE),
+                std::ffi::OsString::from("foo-bar.md")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_update_replaces_the_link_text_in_place() {
+        let (_tmp, dir) = store();
+        std::fs::write(
+            dir.join(INDEX_FILE),
+            "- [Alpha](alpha.md)\n- [cmds](commands.md): build and test\n- [Zeta](zeta.md)\n",
+        )
+        .unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(2));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Alpha](alpha.md)\n- [Commands](commands.md): build and test\n- [Zeta](zeta.md)\n"
+        );
+    }
+
+    #[test]
+    fn a_respelled_topic_keeps_the_line_and_its_position() {
+        let (_tmp, dir) = store();
+        save(&dir, "project cmds", "x\n").unwrap();
+        let saved = save(&dir, "Project Cmds", "x\n").unwrap();
+        assert_eq!(saved.file, "project-cmds.md");
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Project Cmds](project-cmds.md)\n"
+        );
+    }
+
+    #[test]
+    fn a_hand_index_with_cased_targets_still_matches() {
+        let (_tmp, dir) = store();
+        std::fs::write(dir.join(INDEX_FILE), "- [c](Commands.md)\n").unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Updated(1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [Commands](Commands.md)\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_final_newline_is_normalized_and_lines_inside_fences_are_not_links() {
+        let (_tmp, dir) = store();
+        std::fs::write(
+            dir.join(INDEX_FILE),
+            "```md\n[shadow](commands.md)\n```\n- [a](alpha.md)",
+        )
+        .unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Added);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "```md\n[shadow](commands.md)\n```\n- [a](alpha.md)\n- [Commands](commands.md)\n"
+        );
+    }
+
+    #[test]
+    fn an_over_cap_index_warns_but_the_save_succeeds() {
+        let (_tmp, dir) = store();
+        let text: String = (0..MAX_INDEX_LINES)
+            .map(|i| format!("- [t{i}](t{i}.md)\n"))
+            .collect();
+        std::fs::write(dir.join(INDEX_FILE), text).unwrap();
+        let saved = save(&dir, "One More", "x\n").unwrap();
+        assert_eq!(saved.index, LineState::Added);
+        let warning = saved.warning.expect("the cap warning");
+        assert!(
+            warning.contains("Move detail into topic files"),
+            "{warning}"
+        );
+        let kept = load(&dir);
+        assert_eq!(kept.index.unwrap().lines().count(), MAX_INDEX_LINES);
+        assert_eq!(kept.warnings.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_topic_file_or_index_is_refused() {
+        let (tmp, dir) = store();
+        let outside = tmp.path().join("outside.md");
+        std::fs::write(&outside, "x\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("linked.md")).unwrap();
+        assert!(save(&dir, "Linked", "y\n").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x\n");
+
+        std::os::unix::fs::symlink(&outside, dir.join(INDEX_FILE)).unwrap();
+        assert!(save(&dir, "Other", "y\n").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x\n");
+    }
+
+    #[test]
+    fn a_non_utf8_index_is_refused_and_the_topic_file_is_still_written() {
+        let (_tmp, dir) = store();
+        std::fs::write(dir.join(INDEX_FILE), [0xff, 0xfe, b'a']).unwrap();
+        let error = save(&dir, "Commands", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("commands.md")).unwrap(),
+            "x\n"
+        );
     }
 }

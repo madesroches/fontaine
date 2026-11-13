@@ -1667,6 +1667,117 @@ async fn a_shell_write_to_the_memory_store_takes_the_ordinary_shell_path() {
     assert_eq!(decision, Decision::Prompt);
 }
 
+fn memory_args() -> Value {
+    json!({"topic": "Commands", "content": "# Commands\n\n- `cargo test`\n"})
+}
+
+#[tokio::test]
+async fn the_memory_tool_routes_by_mode_and_never_takes_a_fast_path() {
+    use Decision::{Allow, Deny, Prompt};
+    let args = memory_args();
+
+    // In `auto` the call reaches the guardian — never a fast-path tier, never the
+    // containment deny (the tool is path-free, so its locate error denies nothing).
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(PermissionMode::Auto)
+            .guardian(fake.guardian.clone())
+            .memory(),
+    );
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Allow, Tier::Guardian)
+    );
+    assert!(
+        !rig.audit()
+            .iter()
+            .any(|r| r.tier == Tier::ReadOnlyFastPath || r.tier == Tier::Tier05),
+        "no fast-path tier"
+    );
+    // AFK routes exactly like `auto`.
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(PermissionMode::Afk)
+            .guardian(fake.guardian.clone())
+            .memory(),
+    );
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Allow, Tier::Guardian)
+    );
+
+    // The WorkspaceWrite class plan-blocks it, exactly like a file-tool write.
+    let rig = Rig::with(Options::new(Plan).memory());
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Deny, Tier::PlanBlock)
+    );
+
+    // The asking modes prompt; headless and dontAsk deny.
+    for mode in [Manual, AcceptEdits] {
+        let rig = Rig::with(Options::new(mode).memory());
+        assert_eq!(
+            first(&rig, "memory", args.clone()).await,
+            (Prompt, Tier::Mode),
+            "{mode:?}"
+        );
+    }
+    let rig = Rig::with(Options::new(Manual).memory().headless());
+    let d = rig.check("memory", args.clone()).await;
+    assert!(!allowed(&d));
+    assert!(denied_message(&d).contains("headless"));
+    assert_eq!(rig.audit()[0].tier, Tier::Mode);
+    let rig = Rig::with(Options::new(DontAsk).memory());
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Deny, Tier::DontAsk)
+    );
+}
+
+#[tokio::test]
+async fn memory_tool_allow_and_deny_rules_are_respected() {
+    use Decision::{Allow, Deny};
+    let args = memory_args();
+
+    // A whole-tool allow rule runs the call without the guardian, in every mode.
+    let rig = Rig::with(
+        Options::new(DontAsk)
+            .memory()
+            .settings("[permissions]\nallow = [\"memory\"]\n"),
+    );
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Allow, Tier::AllowRule)
+    );
+
+    // A whole-tool deny rule wins over the guardian in `auto`.
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(PermissionMode::Auto)
+            .guardian(fake.guardian.clone())
+            .memory()
+            .settings("[permissions]\ndeny = [\"memory\"]\n"),
+    );
+    assert_eq!(
+        first(&rig, "memory", args.clone()).await,
+        (Deny, Tier::DenyRule)
+    );
+    assert_eq!(fake.calls(), 0, "the guardian is never asked");
+
+    // An ask rule forces the human even in `auto`.
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(PermissionMode::Auto)
+            .guardian(fake.guardian.clone())
+            .memory()
+            .settings("[permissions]\nask = [\"memory\"]\n"),
+    );
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(&rig.check("memory", args.clone()).await));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
+}
+
 #[tokio::test]
 async fn the_out_of_scope_error_points_at_the_memory_directory() {
     let rig = Rig::with(Options::new(Manual).memory());
@@ -1709,7 +1820,7 @@ async fn every_path_naming_write_tool_is_handled_by_each_path_site() {
         };
         assert!(matches(&rule, &call, Posture::Deny), "{}: rules", d.name);
         assert!(
-            !touched_paths(d.name, &args, &scope).is_empty(),
+            !touched_paths(d.name, &args, &scope, None).is_empty(),
             "{}: touched paths",
             d.name
         );

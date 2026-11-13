@@ -342,6 +342,16 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &["ReadMcpResource"],
     ),
+    // Writes the session's persistent memory store, outside any git checkout; the
+    // WorkspaceWrite class keeps it out of every fast path, and auto routes it to the guardian.
+    row(
+        "memory",
+        RiskClass::WorkspaceWrite,
+        true,
+        Destructive::Always,
+        Specifier::None,
+        &[],
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static ToolDescriptor> {
@@ -369,7 +379,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Tools Claude Code has no counterpart for.
-    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT, "advisor"];
+    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT, "advisor", "memory"];
 
     #[test]
     fn names_are_unique_rule_names() {
@@ -463,7 +473,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 31] = [
+        let expected: [Pinned; 32] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -655,6 +665,7 @@ mod tests {
                 S::None,
                 &["ReadMcpResource"],
             ),
+            ("memory", R::WorkspaceWrite, true, D::Always, S::None, &[]),
         ];
         let actual: Vec<_> = TOOLS
             .iter()

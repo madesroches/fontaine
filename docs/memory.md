@@ -2,8 +2,8 @@
 
 Auto memory lets the agent save what it learns about a project (build and test commands, layout,
 conventions, corrections, preferences you state) so that a later session starts with it. The
-agent saves notes with the ordinary `write` and `edit` tools; the index of those notes loads into
-the system prompt of each new session.
+agent saves notes with the `memory` tool, one structured call per topic; the index of those
+notes loads into the system prompt of each new session.
 
 Auto memory is a persistence vector. Text an injection gets the model to write is read by every
 later session, so Fontaine never approves a memory write by label: each one goes through the
@@ -61,6 +61,22 @@ The memory directory is a workspace root, so `read`, `write` and `edit` reach it
 It is labelled `memory` in the system prompt's root list and `auto memory` in `/status`, it is left
 out of the file index that completion and the ledger use, and the out-of-roots denial points at it.
 
+## The memory tool
+
+The `memory` tool is how a note is saved: one call with `topic` (one line, at most 64
+characters) and `content` (markdown, at most 100,000 bytes) writes the topic file and keeps
+the `MEMORY.md` index line for it — replacing the line's link text in place when the topic
+already has a line, appending one when it does not. The file name is derived from `topic`,
+so the model never names a path and never edits the index by hand; that mechanical index
+bookkeeping is where fuzzy guardian soft-denies used to concentrate. Reads need no
+subcommand: the store is a workspace root, so `read`, `ls` and `glob` reach it at read-only
+fast-path cost.
+
+Raw `write` and `edit` on the store's files remain, for repairing the store by hand — fixing
+a dangling index line, removing a note — at the same gating as the tool. The tool is
+registered only while auto memory is on, and it is offered to subagents too: each call a
+child makes is gated on its own, as with any other write.
+
 ## How writes are gated
 
 The store sits under Fontaine's own data directory, so every `write` and `edit` into it meets the
@@ -75,6 +91,20 @@ The store sits under Fontaine's own data directory, so every `write` and `edit` 
 There is no fast path: `acceptEdits` does not cover it, and neither does a read-only label. A `deny`
 or `ask` rule on `write` or `edit` for the memory path works as for any path. Subagents share the
 scope, so one can also propose a memory write, and each is gated on its own.
+
+A `memory` tool call is gated exactly like the raw writes it replaces — the workspace-write
+class plan-blocks it and keeps it out of every fast path, and its locate error denies nothing
+in containment because the call names no path:
+
+| Mode | A `memory` call |
+|---|---|
+| `manual`, `acceptEdits` | Asks you. |
+| `auto` | Goes to the guardian, which sees the topic file and the index as the touched paths. |
+| `plan` | Denied: plan mode never writes. |
+| `dontAsk`, headless | Denied. |
+
+`allow = ["memory"]` and `deny = ["memory"]` name the tool whole; it takes no specifier. See
+[the tool's entry](tools.md#memory) in the tools reference.
 
 A shell command that writes there (`echo ... >> MEMORY.md`) is not covered by the protected-path
 floor, which gates only `write` and `edit`: it takes the ordinary shell gate, a prompt outside
@@ -100,8 +130,9 @@ attacker-influenced. See [The guardian](guardian.md#memory-writes).
 with when each was modified. Its first line says whether auto memory is on and where the
 directory is. `/memory <n>` opens a file in your editor. `/memory` has no delete action: delete
 files in your editor or the file system, or remove the whole `<data dir>/memory/<project key>/`
-directory. `/context` shows a `memory` row when the layer is loaded. Memory writes are ordinary
-`write` and `edit` records in the audit log, with their tier and reason.
+directory. `/context` shows a `memory` row when the layer is loaded. Memory saves are ordinary
+records in the audit log — `memory` tool calls, or `write` and `edit` records — with their tier
+and reason.
 
 ## Integrity checks
 
@@ -123,6 +154,8 @@ blocks and `http(s)` links.
 ## Differences from Claude Code
 
 - The store is in Fontaine's data directory, not under `~/.claude/projects/`.
+- Saving goes through a first-party `memory` tool, one structured call per topic; Claude Code
+  has no such tool — its agent writes memory files with the raw file tools.
 - Every write is gated by the floor and, in `auto`, the guardian; no memory write skips both.
 - The loaded text is framed as unverified notes, and kept out of the guardian's context.
 - The index is capped at 200 lines or 25,000 bytes.

@@ -40,6 +40,7 @@ use crate::fork_context::ParentContextHook;
 use crate::gate::{AFK_STOPPED_MESSAGE, SessionState};
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::memory;
+use crate::memory_tool::MemoryTool;
 use crate::model_roles::ADVISOR_ROLE;
 use crate::models::{ModelRef, Models};
 use crate::native_search;
@@ -364,6 +365,9 @@ fn extension_tools(
             }),
         }),
     ];
+    if let Some(root) = p.state.memory_root.clone() {
+        tools.push(ExtensionTool::new(MemoryTool { root }));
+    }
     if drafts_offered(p) {
         tools.push(draft_tool(p));
     }

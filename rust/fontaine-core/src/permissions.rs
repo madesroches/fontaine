@@ -1335,11 +1335,15 @@ impl PermissionPipeline {
             // Model-facing text; the scope error has no source. The containment hard deny
             // survives only for tools with no external route (`lsp`); an out-of-root write
             // follows the mode like an out-of-root read, and `shell`/`powershell` are
-            // `Arbitrary` and never reach this branch.
+            // `Arbitrary` and never reach this branch. A path-free tool (`memory`) names
+            // nothing for containment to check either, so its locate error denies nothing
+            // here: the call falls through to the mode dispatch exactly as its descriptor
+            // row intends — the guardian in `auto`, a prompt in the asking modes.
             Err(e)
                 if call.risk != RiskClass::Arbitrary
                     && !is_external_read(tool)
-                    && !is_external_write(tool) =>
+                    && !is_external_write(tool)
+                    && !names_no_path(tool) =>
             {
                 let mut why = match &self.state.scratch {
                     Some(scratch) => format!(
@@ -1655,7 +1659,12 @@ impl PermissionPipeline {
         let paths = if matches!(tier, Tier::ReadOnlyFastPath | Tier::Tier05) {
             Vec::new()
         } else {
-            touched_paths(cx.call.tool, &cx.args, &self.state.scope())
+            touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            )
         };
         // Checked before the tool runs. A shell command only names paths, so its words prove
         // nothing was created; only `write` creates a file (`edit` reads its target first).
@@ -1696,7 +1705,12 @@ impl PermissionPipeline {
             tier: Some(tier),
             tool_use_id: cx.tool_use_id.clone(),
             digest: Some(cx.digest.clone()),
-            paths: touched_paths(cx.call.tool, &cx.args, &self.state.scope()),
+            paths: touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            ),
             converted: refusal.converted,
             fail_closed: refusal.fail_closed.map(str::to_string),
             explanation: Some(explanation_of(&refusal.why)),

@@ -111,6 +111,21 @@ All notable changes are recorded here. The format follows
   checked against the server's schema. Headless and AFK runs now `cancel` only when no hook
   answers (#537).
 
+- The `memory` tool (#329). Saving an auto-memory note is now one structured call instead
+  of a topic-file write plus a hand-maintained `MEMORY.md` edit: `memory` takes `topic` (one
+  line, at most 64 characters) and `content` (markdown, at most 100,000 bytes), writes the
+  topic file atomically, and keeps the index line for that topic — replacing its link text in
+  place or appending an index line that links the topic file — with the file name derived
+  from the topic, never from a model-named path. The store is not checkpointed and the index caps stay a warning,
+  not a failure. The call is a workspace-write-class tool and stays behind the deterministic
+  floor in every mode with no fast path: it asks in `manual` and `acceptEdits`, is
+  plan-blocked in `plan`, is denied in `dontAsk` and headless runs, and goes to the guardian
+  in `auto` — which sees the topic file and the index as the touched paths — exactly like the
+  raw `write`/`edit` store writes it replaces; `allow = ["memory"]` / `deny = ["memory"]` name
+  it whole. Registered only while auto memory is on; subagents get it, each call gated on its
+  own. Reads still use `read`/`ls`/`glob` on the store root. Deviates from Claude Code, which
+  has no such tool and saves memory with raw file writes (#329).
+
 ### Fixed
 
 - Quitting is prompt and bounded (#592). `/exit`, `/quit` and Ctrl-D on an empty input now end the

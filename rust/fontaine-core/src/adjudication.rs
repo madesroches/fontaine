@@ -205,7 +205,7 @@ fn facts(
     .collect();
     let scratch =
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
-    let paths = touched_paths(tool, args, scope);
+    let paths = touched_paths(tool, args, scope, memory_dir);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
     let certain = marks_apply(tool, args);
     let tracked = if certain {
