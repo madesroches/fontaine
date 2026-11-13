@@ -137,8 +137,10 @@ pub struct MemoryArgs {
   `memory_dir: Option<&Path>` parameter and gains a `memory` arm that resolves the topic file
   (`<root>/<slug>.md`) and `MEMORY.md` against the memory root, so the guardian request lists
   both files with their existence status — the guardian sees exactly what persists. The
-  parameter is in hand at every call site: `adjudication.rs::facts()` receives `memory_dir`
-  already (208), and the `permissions.rs` call sites pass `self.state.memory_root`.
+  parameter is in hand at the runtime call sites: `adjudication.rs::facts()` receives
+  `memory_dir` already (208), and the `permissions.rs` call sites pass
+  `self.state.memory_root`; `instructions/on_demand.rs::note_for` (128) has no memory root and
+  passes `None` — on-demand instruction loading resolves workspace paths only.
 - The description states what the tool is for (durable notes a later session would otherwise
   rediscover), the caps, that the call is guardian-gated, and that raw `write`/`edit` remain
   for repairing the store. Reads need no subcommand: the store is a scope root, so `read`,
@@ -168,7 +170,10 @@ permissions either way.
 5. `rust/fontaine-core/src/destructive.rs`: add the `memory_dir: Option<&Path>` parameter to
    `touched_paths` and the `memory` arm (topic file + index resolved against the memory root);
    update the call sites — `adjudication.rs::facts()` passes its `memory_dir` argument, the two
-   `permissions.rs` call sites pass `self.state.memory_root`.
+   `permissions.rs` call sites pass `self.state.memory_root`, and
+   `instructions/on_demand.rs::note_for` passes `None` (it resolves workspace paths only); the
+   direct test callers (`rust/fontaine-core/tests/destructive.rs`,
+   `rust/fontaine-core/tests/permissions.rs:1712`) take the new argument too.
 6. Tests: `rust/fontaine-tools/tests/choke_point.rs` (row/risk pins) and
    `rust/fontaine-core/tests/choke_point.rs` (registered-set pins, extension list gains
    `memory`, conditional-offering test like `websearch`'s add-exactly-one);
@@ -182,6 +187,8 @@ permissions either way.
 9. `tasks/fontaine_harness_plan.md`: dated Decisions line under `### Tools` — deviation from
    Claude Code (#329).
 10. `evals/dataset/memory.jsonl`: new cases (below).
+11. `CHANGELOG.md`: append a `## [Unreleased]` entry describing the new `memory` tool, its
+    per-mode gating, and the #329 deviation from Claude Code.
 
 ## Files to Modify
 
@@ -196,6 +203,10 @@ permissions either way.
 - `docs/tools.md`, `docs/memory.md`
 - `tasks/fontaine_harness_plan.md`
 - `evals/dataset/memory.jsonl`
+- `rust/fontaine-core/src/instructions/on_demand.rs` (pass `None` at the `touched_paths` call)
+- `rust/fontaine-core/tests/destructive.rs`, `rust/fontaine-core/tests/permissions.rs`
+  (direct `touched_paths` callers)
+- `CHANGELOG.md`
 
 ## Trade-offs
 
