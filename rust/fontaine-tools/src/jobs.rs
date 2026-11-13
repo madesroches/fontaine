@@ -10,7 +10,7 @@ pub use tools::WAKE_POLL;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use futures::future::BoxFuture;
 use rig_core::tool::ContextValue;
 use rig_tools::clip;
-use rig_tools::process::{OutputLine, Process, STOP_GRACE};
+use rig_tools::process::{Group, OutputLine, Process, STOP_GRACE};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -383,6 +383,11 @@ impl Chunk {
 
 struct Control {
     kill: AtomicU8,
+    /// Set by a final exit: the thread kills the group at once instead of asking it to stop.
+    forced: AtomicBool,
+    /// The process group, which a final exit kills from outside the thread that may be in the
+    /// middle of waiting out an ordinary stop's grace.
+    group: Option<Group>,
     /// A monitor's end.
     deadline: Option<Instant>,
 }
@@ -810,6 +815,8 @@ impl Jobs {
         let background = spec.background || monitor;
         let control = Arc::new(Control {
             kill: AtomicU8::new(0),
+            forced: AtomicBool::new(false),
+            group: Some(process.group()),
             deadline: spec
                 .monitor
                 .as_ref()
@@ -1111,6 +1118,33 @@ impl Jobs {
         }
     }
 
+    /// The final exit's stop: every running job's group is killed at once, with no stop grace
+    /// and no notification, and returns without waiting. [`Jobs::wait_stopped`] waits for the
+    /// threads to confirm.
+    pub fn force_stop_all(&self) {
+        let inner = lock(&self.shared.inner, "job registry");
+        for job in inner.jobs.iter().filter(|job| job.running()) {
+            job.control.forced.store(true, Ordering::SeqCst);
+            job.control.request(Kill::Shutdown);
+            if let Some(group) = &job.control.group {
+                group.kill();
+            }
+        }
+    }
+
+    /// Waits until no job runs, or `deadline`.
+    pub async fn wait_stopped(&self, deadline: Instant) {
+        let mut changes = self.shared.changed.subscribe();
+        while lock(&self.shared.inner, "job registry")
+            .jobs
+            .iter()
+            .any(Job::running)
+            && Instant::now() < deadline
+        {
+            let _ = tokio::time::timeout(POLL * 10, changes.changed()).await;
+        }
+    }
+
     fn request_all(&self) {
         let inner = lock(&self.shared.inner, "job registry");
         for job in inner.jobs.iter().filter(|job| job.running()) {
@@ -1281,6 +1315,10 @@ fn run(shared: &Shared, id: &str, mut process: Process, control: &Control, monit
                     &OutputLine::Err("[some output lines may be missing]\n".to_owned()),
                 );
             }
+        }
+        _ if control.forced.load(Ordering::SeqCst) => {
+            forced = true;
+            process.kill().ok();
         }
         _ => {
             // rig no longer reports whether the stop had to kill; stdin is null for these

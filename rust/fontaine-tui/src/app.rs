@@ -1570,11 +1570,7 @@ impl App {
         // reserved, so `mapped` is its binding too). With text, Ctrl+D alone falls through
         // to the input's delete-char; any other quit key does nothing.
         if mapped == Some(TuiAction::Quit) && self.input.is_empty() {
-            return if self.running {
-                Action::None
-            } else {
-                Action::Quit
-            };
+            return Action::Quit;
         }
         let action = self.message_key(key);
         self.refresh_completion();
@@ -1954,6 +1950,9 @@ impl App {
             return self.enter_in_view(id, &text);
         }
         if self.shell_running {
+            if let Some(exit) = self.exit_now(text.trim()) {
+                return exit;
+            }
             self.transcript
                 .notice("a shell command is running; wait for it or press Esc to interrupt");
             return Action::None;
@@ -2021,6 +2020,9 @@ impl App {
                     return self.queue_during_turn(text);
                 }
                 if self.shell_running {
+                    if let Some(exit) = self.exit_now(text) {
+                        return exit;
+                    }
                     self.shown_mut().notice(
                         "a shell command is running; wait for it or press Esc to interrupt",
                     );
@@ -2032,12 +2034,25 @@ impl App {
         }
     }
 
+    /// `/exit` and `/quit` typed while work runs leave at once, even where everything else typed
+    /// is refused.
+    fn exit_now(&mut self, text: &str) -> Option<Action> {
+        (parse_command(text) == Some(Command::Exit)).then(|| {
+            self.input.take();
+            Action::Command {
+                command: Command::Exit,
+                raw: text.to_string(),
+            }
+        })
+    }
+
     /// What Enter does on input typed while a turn runs: a known skill or any built-in but
-    /// `/loop` queues as typed; the synchronous UI commands run at once; unknown slash names
+    /// `/loop` queues as typed; the synchronous UI commands and `/exit` run at once; unknown slash names
     /// and every `/loop` form keep the existing refusal.
     fn queue_during_turn(&mut self, text: &str) -> Action {
         match parse_command(text) {
-            Some(command) if command.runs_mid_turn() => {
+            // Leaving does not wait behind the turn or whatever was queued before it.
+            Some(command) if command.runs_mid_turn() || command == Command::Exit => {
                 self.input.take();
                 Action::Command {
                     command,
@@ -3070,6 +3085,33 @@ mod tests {
     }
 
     #[test]
+    fn both_exit_aliases_run_at_once_during_a_turn_and_a_shell_run() {
+        for (shell, text) in [(false, "/exit"), (false, "/quit"), (true, "/exit")] {
+            let mut app = app();
+            app.running = true;
+            app.shell_running = shell;
+            app.queued = vec!["older".into()];
+            type_text(&mut app, text);
+            assert!(
+                matches!(
+                    press(&mut app, KeyCode::Enter),
+                    Action::Command {
+                        command: Command::Exit,
+                        ..
+                    }
+                ),
+                "{text}"
+            );
+            assert!(app.input.is_empty());
+        }
+    }
+
+    #[test]
+    fn exit_stays_out_of_the_commands_that_only_touch_the_screen() {
+        assert!(!Command::Exit.runs_mid_turn());
+    }
+
+    #[test]
     fn nothing_is_sent_or_queued_during_a_shell_run() {
         let mut app = app();
         app.running = true;
@@ -3151,7 +3193,11 @@ mod tests {
         app.input.take();
         assert_eq!(ctrl(&mut app, 'd'), Action::Quit);
         app.running = true;
+        assert_eq!(ctrl(&mut app, 'd'), Action::Quit);
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Left);
         assert_eq!(ctrl(&mut app, 'd'), Action::None);
+        assert_eq!(app.input.text(), "ab");
     }
 
     #[test]
@@ -3169,7 +3215,10 @@ mod tests {
         app.input.take();
         assert_eq!(press(&mut app, KeyCode::F(2)), Action::Quit);
         app.running = true;
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::Quit);
+        type_text(&mut app, "abc");
         assert_eq!(press(&mut app, KeyCode::F(2)), Action::None);
+        assert_eq!(app.input.text(), "abc");
     }
 
     #[test]

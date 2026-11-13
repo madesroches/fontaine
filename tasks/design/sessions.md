@@ -63,4 +63,15 @@ opens the target with a derived `Cli` (`resume` set; `continue`, `fork_session`,
 the configuration and the trust decision are kept; each iteration enters a new `fontaine.session`
 span with `start_type` `resume`, resolves models again and restarts MCP servers and the scanner.
 
+Quitting the TUI for good (`/exit`, `/quit`, empty-prompt Ctrl-D, or the input closing) is not a
+switch. The quit latches in the interface, cancels the session's work through the runtime's final
+shutdown (nested agent tasks aborted rather than killed gracefully, jobs killed, MCP reconnects
+retired) and shares one two-second budget among the root turn's recovery (`Unsettled::SessionEnded`,
+folding what the partial turn had committed), the `session_end` hook, process cleanup, the
+terminal restore and the telemetry flush. A child that never reached a hook boundary leaves only
+what it journaled to its own log; no report is made up. If the budget runs out the watchdog
+ends the process: the root turn's run record was written before the run started, so the next
+`--resume` folds the turn from the journal, as after any forced exit. `DriveOutcome::Switch` keeps
+the graceful teardown, including `KILL_SETTLE`.
+
 `/export` renders the rig-memory conversation (not the ledger) as Markdown; see `export.rs`.

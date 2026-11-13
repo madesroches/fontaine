@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::error_chain::chain;
 use crate::lock::lock_recovering;
-use crate::procgroup::{detached_settle, stop, terminate};
+use crate::procgroup::{detached_settle, settle, stop, terminate};
 
 pub const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 
@@ -290,6 +290,32 @@ pub struct SearxngChild {
 }
 
 impl SearxngChild {
+    /// Stops the instance this session started, for the final exit: SIGTERM now, then a kill
+    /// once `grace` has passed, awaited here rather than scheduled for a later task that the
+    /// exiting runtime would never poll. An instance the session does not own is left running.
+    pub async fn terminate_owned(&self, grace: Duration) {
+        let running = {
+            let mut slot = self.slot.lock().await;
+            match slot.take() {
+                Some((Slot::Owned(running), _)) => Some(running),
+                Some((Slot::Shared, url)) => {
+                    *slot = Some((Slot::Shared, url));
+                    None
+                }
+                None => None,
+            }
+        };
+        let Some(mut running) = running else {
+            return;
+        };
+        let Some(mut child) = running.child.take() else {
+            return;
+        };
+        let pid = running.pid;
+        terminate(pid);
+        settle(&mut child, pid, grace).await;
+    }
+
     /// Whether the instance is up now: an owned process is alive, a shared one answers.
     pub async fn is_running(&self) -> bool {
         let mut slot = self.slot.lock().await;

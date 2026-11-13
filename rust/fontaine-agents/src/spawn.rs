@@ -496,7 +496,9 @@ pub fn watch_report(
     type_name: String,
     handle: Arc<dyn ChildHandle>,
 ) {
-    tokio::spawn(async move {
+    let watched = id.clone();
+    let tree_for_watcher = tree.clone();
+    let task = tokio::spawn(async move {
         let report = handle.report().await;
         let finished_turn = report.status == ChildStatus::Done && !tree.was_killed(&id);
         // Decided before the node is finished and before the report is queued, so a surface that
@@ -527,6 +529,7 @@ pub fn watch_report(
         resume_missed(&tree, &ledger, &id, &handle);
         after_end(&tree, &ledger, &parent, &id);
     });
+    tree_for_watcher.set_watcher(&watched, task.abort_handle());
 }
 
 /// Retries the wakes an end may have left pending, then hands its slot on.
@@ -1003,6 +1006,7 @@ pub fn describe(refusal: &Refusal) -> String {
         Refusal::Killed => "it was killed".to_string(),
         Refusal::Held => "wakes are held while the session settles; try again shortly".to_string(),
         Refusal::Retired(why) => format!("it was retired ({why})"),
+        Refusal::ShuttingDown => "the session is ending".to_string(),
         Refusal::NoConversation => "it has no conversation to resume".to_string(),
         Refusal::Name(why) => why.clone(),
     }
@@ -1158,6 +1162,9 @@ impl Tool for AgentTool {
                 | Refusal::NoConversation => {
                     ToolExecutionError::other("the subagent slot is already taken")
                 }
+                Refusal::ShuttingDown => ToolExecutionError::refused(
+                    "the session is ending, so no more subagents can start. Do not retry this call.",
+                ),
             })?;
 
         let name = self.tree.name_of(&id);

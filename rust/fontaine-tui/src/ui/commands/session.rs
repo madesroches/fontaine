@@ -15,6 +15,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     pub(crate) fn switch_from(&mut self, current: &str, text: &str) -> ControlFlow<()> {
+        // A quit that landed first wins over a switch still waiting to be carried out.
+        if self.quitting() {
+            return Break(());
+        }
         match session::resolve(&self.data_dir, &self.app.primary_root, text) {
             Ok(id) if id == current => {
                 self.app

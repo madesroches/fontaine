@@ -34,6 +34,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
     ) -> Option<ControlFlow<()>> {
+        if self.quitting() {
+            return Some(Break(()));
+        }
         let pending = runtime.next_goal_step()?;
         self.app.set_running(true);
         let mut evaluation = Box::pin(runtime.evaluate_goal(&pending));

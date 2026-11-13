@@ -526,4 +526,22 @@ impl LspServers {
         futures::future::join_all(stops).await;
         self.store.reset();
     }
+
+    /// Ends every server's process group at once, concurrently, for the final exit: where
+    /// [`shutdown_all`](Self::shutdown_all) honors each server's own `shutdown_timeout`, this
+    /// spends only the time the caller bounds it with.
+    pub async fn terminate_all(&self) {
+        let stops = self.slots.iter().map(|slot| async move {
+            let mut state = slot.state.lock().await;
+            let running = match std::mem::replace(&mut state.phase, Phase::Idle) {
+                Phase::Running(client) => Some(client),
+                Phase::Idle | Phase::Failed(_) => None,
+            };
+            drop(state);
+            if let Some(client) = running {
+                client.terminate().await;
+            }
+        });
+        futures::future::join_all(stops).await;
+    }
 }

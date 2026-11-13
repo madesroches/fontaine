@@ -295,6 +295,8 @@ pub enum Refusal {
     Held,
     /// The agent was retired; the text says why.
     Retired(String),
+    /// The session is ending: nothing new starts or wakes.
+    ShuttingDown,
     /// A node a resumed session rebuilt has no saved conversation to build a handle from.
     NoConversation,
     /// The requested name is malformed, reserved or taken; the text says why.
@@ -610,6 +612,10 @@ pub struct AgentTree {
     facts_noticed: Mutex<HashSet<String>>,
     /// Set when the session starts ending, after which no agent is woken.
     shutdown: AtomicBool,
+    /// Set by [`abort_all`](Self::abort_all): a handle attaching late is aborted, not just killed.
+    aborted: AtomicBool,
+    /// The report-watch task of each agent's current run, so a final exit can end it.
+    watchers: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     teams: RwLock<Option<Arc<Teams>>>,
     lifecycle: RwLock<Arc<dyn LifecycleGate>>,
     warn: RwLock<Option<WarnSink>>,
@@ -674,6 +680,8 @@ impl AgentTree {
             unpriced_noticed: AtomicBool::new(false),
             facts_noticed: Mutex::new(HashSet::new()),
             shutdown: AtomicBool::new(false),
+            aborted: AtomicBool::new(false),
+            watchers: Mutex::new(HashMap::new()),
             teams: RwLock::new(None),
             lifecycle: RwLock::new(Arc::new(NoLifecycle)),
             warn: RwLock::new(None),
@@ -758,6 +766,11 @@ impl AgentTree {
 
     pub fn shutting_down(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Whether [`abort_all`](Self::abort_all) has run: nothing may start after it.
+    pub fn aborted(&self) -> bool {
+        self.aborted.load(Ordering::SeqCst)
     }
 
     /// Holds every resume, wake and reminder until [`resume_wakes`](Self::resume_wakes);
@@ -955,6 +968,11 @@ impl AgentTree {
         name: Option<&str>,
     ) -> Result<String, Refusal> {
         let mut inner = self.lock();
+        // Under the lock `kill_all` and `abort_all` set it in, so no reservation lands between
+        // the latch and the sweep.
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(Refusal::ShuttingDown);
+        }
         let depth = inner.nodes.get(parent).map_or(0, |n| n.info.depth);
         if depth >= self.limits.max_depth {
             return Err(Refusal::Depth(self.limits.max_depth));
@@ -1050,7 +1068,11 @@ impl AgentTree {
             }
         };
         if outcome != Attach::Attached {
-            handle.kill();
+            if self.aborted.load(Ordering::SeqCst) {
+                handle.abort();
+            } else {
+                handle.kill();
+            }
         }
         self.changed.notify_waiters();
         outcome
@@ -1311,6 +1333,9 @@ impl AgentTree {
     /// (killed, spent budget) is the caller's to decide.
     pub fn resume(&self, id: &str) -> Result<(), Refusal> {
         let mut inner = self.lock();
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(Refusal::ShuttingDown);
+        }
         let Some(node) = inner.nodes.get(id).filter(|n| n.info.parent.is_some()) else {
             return Err(Refusal::AlreadyRunning);
         };
@@ -1459,8 +1484,12 @@ impl AgentTree {
 
     /// Kills every running child below the root.
     pub fn kill_all(&self) {
-        // Called only as the session ends; from here on nothing may be woken.
-        self.shutdown.store(true, Ordering::SeqCst);
+        // Called only as the session ends; from here on nothing may be woken. Set under the
+        // lock the reservation and resume checks read it under.
+        {
+            let _inner = self.lock();
+            self.shutdown.store(true, Ordering::SeqCst);
+        }
         let ids: Vec<String> = {
             let inner = self.lock();
             inner
@@ -1478,6 +1507,56 @@ impl AgentTree {
         for id in ids {
             self.kill(&id);
         }
+    }
+
+    /// The final exit's counterpart of [`kill_all`](Self::kill_all): latches shutdown, then
+    /// aborts every running child's tasks and its report watcher at once. No rig hook boundary
+    /// is awaited, no report is produced and nothing is recorded as the child's end; what its
+    /// conversation journaled so far is all that survives. A child still being started is
+    /// marked killed, so its handle is aborted when it attaches.
+    pub fn abort_all(&self) {
+        let (ids, handles) = {
+            let inner = self.lock();
+            self.shutdown.store(true, Ordering::SeqCst);
+            self.aborted.store(true, Ordering::SeqCst);
+            let running: Vec<&String> = inner
+                .order
+                .iter()
+                .filter(|id| {
+                    inner
+                        .nodes
+                        .get(*id)
+                        .is_some_and(|n| n.info.parent.is_some() && n.status.is_running())
+                })
+                .collect();
+            let handles: Vec<Arc<dyn ChildHandle>> = running
+                .iter()
+                .filter_map(|id| inner.nodes.get(*id).and_then(|n| n.handle.clone()))
+                .collect();
+            (running.into_iter().cloned().collect::<Vec<_>>(), handles)
+        };
+        // Watchers first: a child that ends while the kill flags go out must not have its end
+        // recorded.
+        for (_, watcher) in lock(&self.watchers, "agent watchers").drain() {
+            watcher.abort();
+        }
+        for handle in handles {
+            handle.abort();
+        }
+        for id in ids {
+            self.kill(&id);
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// Remembers the task that watches `id`'s current run, replacing the previous run's.
+    pub(crate) fn set_watcher(&self, id: &str, watcher: tokio::task::AbortHandle) {
+        let mut watchers = lock(&self.watchers, "agent watchers");
+        if self.aborted.load(Ordering::SeqCst) {
+            watcher.abort();
+            return;
+        }
+        watchers.insert(id.to_string(), watcher);
     }
 
     /// Drops every ended subagent node, such as when the conversation is cleared: the session
@@ -3396,5 +3475,111 @@ mod tests {
             "never more than the parent has"
         );
         assert!(!tools.contains(&"agent".to_string()));
+    }
+
+    /// A handle that only counts what it was told to do.
+    #[derive(Default)]
+    struct Counting {
+        killed: AtomicU64,
+        aborted: AtomicU64,
+    }
+
+    impl ChildHandle for Counting {
+        fn status(&self) -> ChildStatus {
+            ChildStatus::Running
+        }
+
+        fn spend(&self) -> Spend {
+            Spend::default()
+        }
+
+        fn kill(&self) {
+            self.killed.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn abort(&self) {
+            self.aborted.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn report(&self) -> BoxFuture<'_, ChildReport> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[test]
+    fn abort_all_aborts_every_running_handle_once_per_call_and_makes_no_report() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let b = reserve(&tree, &a).unwrap();
+        let (ha, hb) = (Arc::new(Counting::default()), Arc::new(Counting::default()));
+        tree.attach(&a, ha.clone());
+        tree.attach(&b, hb.clone());
+        tree.abort_all();
+        assert_eq!(ha.aborted.load(Ordering::SeqCst), 1);
+        assert_eq!(hb.aborted.load(Ordering::SeqCst), 1);
+        assert!(tree.shutting_down());
+        assert!(tree.report_of(&a).is_none());
+        assert!(tree.report_of(&b).is_none());
+        // Idempotent: nothing is running any more, so nothing is aborted again.
+        tree.abort_all();
+        assert_eq!(ha.aborted.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn nothing_reserves_or_resumes_once_shutdown_is_latched() {
+        for abort in [false, true] {
+            let tree = tree(4);
+            let a = reserve(&tree, ROOT_AGENT).unwrap();
+            tree.finish(
+                &a,
+                ChildReport {
+                    status: ChildStatus::Done,
+                    text: String::new(),
+                    reason: None,
+                },
+            );
+            if abort {
+                tree.abort_all();
+            } else {
+                tree.kill_all();
+            }
+            assert_eq!(reserve(&tree, ROOT_AGENT), Err(Refusal::ShuttingDown));
+            assert_eq!(tree.resume(&a), Err(Refusal::ShuttingDown));
+        }
+    }
+
+    #[test]
+    fn a_reservation_in_flight_is_aborted_when_its_handle_attaches() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.abort_all();
+        let late = Arc::new(Counting::default());
+        assert_eq!(tree.attach(&a, late.clone()), Attach::Killed);
+        assert_eq!(late.aborted.load(Ordering::SeqCst), 1);
+        assert_eq!(late.killed.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_ordinary_kill_all_still_replays_a_plain_kill_on_a_late_attach() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.kill_all();
+        let late = Arc::new(Counting::default());
+        assert_eq!(tree.attach(&a, late.clone()), Attach::Killed);
+        assert_eq!(late.killed.load(Ordering::SeqCst), 1);
+        assert_eq!(late.aborted.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn abort_all_ends_the_report_watchers_it_was_given() {
+        let tree = tree(4);
+        let task = tokio::spawn(std::future::pending::<()>());
+        tree.set_watcher("agent-1", task.abort_handle());
+        tree.abort_all();
+        assert!(task.await.unwrap_err().is_cancelled());
+        // A watcher registered after the abort is ended at once.
+        let late = tokio::spawn(std::future::pending::<()>());
+        tree.set_watcher("agent-2", late.abort_handle());
+        assert!(late.await.unwrap_err().is_cancelled());
     }
 }

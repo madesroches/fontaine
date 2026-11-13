@@ -38,6 +38,7 @@ pub mod screen;
 pub mod server_prompt;
 pub mod setup;
 pub mod setup_prompt;
+pub mod shutdown;
 pub mod skill_trust_prompt;
 pub mod spinner;
 pub mod statusbar;
@@ -81,6 +82,7 @@ use tokio::sync::oneshot;
 pub use app::{Action, App, Input};
 pub use commands::{Command, MenuEntry, builtin_menu, parse_command};
 pub use denials::UnavailableAnswer;
+pub use shutdown::{DriveOptions, ExitWatchdog, FINAL_SHUTDOWN_BUDGET};
 
 use model_picker::PickerPurpose;
 use provider_dialog::DialogKey;
@@ -96,6 +98,13 @@ pub struct SessionTarget {
     pub source: String,
     /// Whether opening it appends a `Resumed` record. A copy made by `/branch` has its own.
     pub record_resume: bool,
+}
+
+/// What [`run`] hands the binary: how the session ended, and the watchdog still armed when it
+/// ended for good, which the caller keeps alive past its own teardown and disarms last.
+pub struct RunOutcome {
+    pub outcome: DriveOutcome,
+    pub watchdog: Option<ExitWatchdog>,
 }
 
 /// How [`drive`] ended.
@@ -370,6 +379,16 @@ struct Ui<R> {
     /// Accounts whose quota failure was already reported, so a poller re-pointed by a credential
     /// rebuild does not repeat it.
     quota_warned: std::collections::HashSet<String>,
+    /// How long the final exit may take, from the first quit request.
+    quit_budget: Duration,
+    /// Called once with the deadline when the final exit starts.
+    on_quit: Option<Box<dyn FnMut(Instant)>>,
+    /// When the first quit request came. Latched: it never clears, and it decides every
+    /// "does anything else start" question after it.
+    quit_started: Option<Instant>,
+    /// The task running the status-line command, which a quit ends instead of leaving to the
+    /// runtime's teardown.
+    statusline_task: Option<tokio::task::JoinHandle<()>>,
     /// Sends a request to run the configured status-line command. Drained in the run loop.
     statusline_tx: Option<tokio::sync::mpsc::UnboundedSender<StatuslineTrigger>>,
     statusline_rx: Option<tokio::sync::mpsc::UnboundedReceiver<StatuslineTrigger>>,
@@ -401,6 +420,7 @@ pub enum StatuslineTrigger {
 /// called once more with `App::flush` set so whatever is still held back reaches the terminal.
 /// `notices.startup` is shown before every other notice; whatever arrives on `notices.feed`
 /// while the session runs is shown as it comes.
+#[allow(clippy::too_many_arguments)] // each is an independent input of the session
 pub async fn drive(
     mut setup: AgentSetup,
     launch_dir: PathBuf,
@@ -409,8 +429,10 @@ pub async fn drive(
     render: impl FnMut(&mut App),
     clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
     suspend: Suspend,
+    options: DriveOptions,
 ) -> Result<DriveOutcome, String> {
     let Notices { startup, feed } = notices;
+    let DriveOptions { budget, on_quit } = options;
     let (tx, prompts) = unbounded_channel();
     let feed_tx = tx.clone();
     let warn_tx = tx.clone();
@@ -510,6 +532,10 @@ pub async fn drive(
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
+        quit_budget: budget,
+        on_quit,
+        quit_started: None,
+        statusline_task: None,
         statusline_tx: statusline_script.is_some().then_some(statusline_tx),
         statusline_rx: statusline_script.is_some().then_some(statusline_rx),
         statusline_result_tx,
@@ -589,25 +615,28 @@ pub async fn drive(
     if ui.start_mcp(&mut runtime).await {
         ui.run(&mut runtime, &launch_dir).await;
     }
-    // The hooks hear of the end before what runs for the session is stopped.
-    runtime
-        .fire_session_end(if ui.switch.is_some() {
-            "resume"
-        } else {
-            "prompt_input_exit"
-        })
-        .await;
-    // Whatever is still running is stopped with the session.
-    runtime.state.agents().kill_all();
-    runtime.state.agents().settled(KILL_SETTLE).await;
-    runtime.jobs().terminate_all().await;
-    runtime.lsp().shutdown_all().await;
+    // Stopped with the session; what it had not yet taken stays in the feed for the next one.
+    if let Some(forwarder) = &forwarder {
+        forwarder.abort();
+    }
+    if ui.switch.is_some() {
+        // The hooks hear of the end before what runs for the session is stopped.
+        runtime.fire_session_end("resume").await;
+        // Whatever is still running is stopped with the session.
+        runtime.state.agents().kill_all();
+        runtime.state.agents().settled(KILL_SETTLE).await;
+        runtime.jobs().terminate_all().await;
+        runtime.lsp().shutdown_all().await;
+    } else {
+        // An input that closed with no quit request still starts the clock here.
+        ui.request_quit(&runtime);
+        runtime
+            .finish_final_shutdown(ui.quit_deadline().expect("the quit was just latched"))
+            .await;
+    }
     // What stays in the terminal is the main conversation, not an agent's view.
     if ui.app.viewing.is_some() {
         ui.app.view(None);
-    }
-    if let Some(forwarder) = forwarder {
-        forwarder.abort();
     }
     ui.app.flush = true;
     (ui.render)(&mut ui.app);
@@ -716,7 +745,7 @@ pub async fn run(
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
     notices: Notices,
-) -> Result<DriveOutcome, String> {
+) -> Result<RunOutcome, String> {
     enable_raw_mode().map_err(|e| {
         format!(
             "could not start the terminal UI: {}",
@@ -796,6 +825,17 @@ pub async fn run(
     let on_error = stop.clone();
     let mut linear = linear::Linear::new(std::io::stdout());
     let hyperlinks = hyperlink::supported(|k| std::env::var(k).ok(), cfg!(windows));
+    // Armed from inside the session at the first quit request, and kept out of it so it outlives
+    // everything the caller tears down after this returns.
+    let armed: Arc<Mutex<Option<ExitWatchdog>>> = Arc::default();
+    let on_quit = {
+        let armed = armed.clone();
+        move |deadline: Instant| {
+            let watchdog = ExitWatchdog::arm(deadline, restore_terminal, || std::process::exit(0));
+            // Display-only slot for the watchdog handle; a poisoned lock still holds it.
+            *fontaine_tools::lock::lock_recovering(&armed) = Some(watchdog);
+        }
+    };
     let result = drive(
         setup,
         launch_dir,
@@ -826,11 +866,28 @@ pub async fn run(
         },
         clipboard::copy,
         suspend,
+        DriveOptions {
+            budget: FINAL_SHUTDOWN_BUDGET,
+            on_quit: Some(Box::new(on_quit)),
+        },
     )
     .await;
     stop.store(true, Ordering::Relaxed);
-    let _ = reader.await;
-    result
+    // The slot only holds the watchdog handle; a poisoned lock still holds it.
+    let watchdog = fontaine_tools::lock::lock_recovering(&armed).take();
+    // A reader stuck in a read must not hold the exit past its deadline.
+    let _ = match watchdog.as_ref() {
+        Some(watchdog) => tokio::time::timeout(
+            watchdog
+                .deadline()
+                .saturating_duration_since(Instant::now()),
+            reader,
+        )
+        .await
+        .ok(),
+        None => Some(reader.await),
+    };
+    result.map(|outcome| RunOutcome { outcome, watchdog })
 }
 
 #[cfg(test)]

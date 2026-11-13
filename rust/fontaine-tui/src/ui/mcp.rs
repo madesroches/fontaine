@@ -87,7 +87,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let Some(input) = self.input.recv().await else {
                     return false;
                 };
-                match self.app.handle_input(input) {
+                match self.act_on(runtime, input) {
                     Action::Server(answer) => break answer,
                     Action::Quit => return false,
                     _ => {}

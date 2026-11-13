@@ -108,6 +108,10 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
         switch: None,
+        quit_budget: crate::FINAL_SHUTDOWN_BUDGET,
+        on_quit: None,
+        quit_started: None,
+        statusline_task: None,
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
@@ -963,4 +967,105 @@ async fn a_failed_pause_does_not_outlive_the_turn_that_met_it() {
     ui.finish_turn(&runtime, &TurnEnd::Interrupted).await;
     assert!(pause.failure().is_none(), "idle requests are not failed");
     assert!(ui.pending_usage_switch.is_none());
+}
+
+#[tokio::test]
+async fn a_quit_latches_once_drops_what_was_pending_and_arms_the_exit_clock() {
+    let (mut runtime, _tmp) = runtime();
+    let (input_tx, input_rx) = unbounded_channel();
+    let mut ui = ui(unbounded_channel().1);
+    ui.input = input_rx;
+    let armed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = armed.clone();
+    ui.on_quit = Some(Box::new(move |deadline| {
+        seen.lock().unwrap().push(deadline)
+    }));
+    ui.quit_budget = std::time::Duration::from_millis(1500);
+    ui.pending_resume = Some("other-session".into());
+    ui.pending_pick = Some((crate::model_picker::PickerPurpose::Main, "a/b".into()));
+    ui.pending_afk_review.push(3);
+    ui.switch = Some(crate::SessionTarget {
+        source: "x".into(),
+        record_resume: true,
+    });
+    input_tx.send(Input::Paste("typed after".into())).unwrap();
+
+    ui.request_quit(&runtime);
+    let started = ui.quit_started.expect("latched");
+    ui.request_quit(&runtime);
+
+    assert_eq!(ui.quit_started, Some(started), "the first request counts");
+    assert_eq!(
+        *armed.lock().unwrap(),
+        [started + std::time::Duration::from_millis(1500)],
+        "the clock is armed once, from the first request"
+    );
+    assert!(ui.pending_resume.is_none() && ui.pending_pick.is_none());
+    assert!(ui.pending_afk_review.is_empty() && ui.switch.is_none());
+    assert!(
+        ui.input.recv().await.is_none(),
+        "buffered input is dropped and the input closed"
+    );
+    assert!(runtime.state.agents().shutting_down());
+    assert!(
+        ui.drain_deferred(&mut runtime).await.is_break(),
+        "nothing deferred runs after the latch"
+    );
+}
+
+#[tokio::test]
+async fn a_quit_key_while_work_serves_input_ends_it_as_input_closed_not_as_an_interrupt() {
+    let (runtime, _tmp) = runtime();
+    let (input_tx, input_rx) = unbounded_channel();
+    let mut ui = ui(unbounded_channel().1);
+    ui.input = input_rx;
+    ui.app.set_running(true);
+    // Both are already waiting, and the work future is ready too.
+    input_tx
+        .send(Input::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+    let mut ready = Box::pin(std::future::ready(()));
+    let end = ui
+        .serve_while(&runtime, &mut ready, Serve::Prompts)
+        .await
+        .expect_err("the quit wins the race against a ready future");
+    assert!(matches!(end, TurnEnd::InputClosed));
+    assert!(ui.quitting());
+}
+
+#[tokio::test]
+async fn an_exit_command_typed_during_work_latches_the_quit() {
+    let (runtime, _tmp) = runtime();
+    let (input_tx, input_rx) = unbounded_channel();
+    let mut ui = ui(unbounded_channel().1);
+    ui.input = input_rx;
+    ui.app.set_running(true);
+    for c in "/exit".chars() {
+        input_tx
+            .send(Input::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )))
+            .unwrap();
+    }
+    input_tx
+        .send(Input::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+    let mut pending = Box::pin(std::future::pending::<()>());
+    let end = ui
+        .serve_while(&runtime, &mut pending, Serve::Queueing)
+        .await
+        .expect_err("the command ends the serve");
+    assert!(matches!(end, TurnEnd::InputClosed));
+    assert!(ui.quitting());
+    assert!(
+        runtime.steering.queued().is_empty(),
+        "the quit was not queued behind the work"
+    );
 }

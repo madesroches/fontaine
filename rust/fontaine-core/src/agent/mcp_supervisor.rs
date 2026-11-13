@@ -245,6 +245,44 @@ impl McpServers {
         }
     }
 
+    /// The first half of the final exit, synchronous: every slot is retired, so no watcher
+    /// reconnects a server and none mistakes the close that follows for a loss.
+    pub(crate) fn retire_all(&self) {
+        for slot in read(&self.slots, "MCP server slots").values() {
+            retire(slot);
+        }
+    }
+
+    /// The second half of the final exit: takes every connection and closes them concurrently,
+    /// with no drain of calls in flight and no wait for a slot's tools to leave the registry.
+    /// A server gets `graceful` to leave when its stdin closes; then, whether or not it did,
+    /// each stdio server's whole process group is signalled synchronously, so a descendant a
+    /// wrapper started cannot outlive the session. Dropping this future, as the caller's
+    /// deadline does, signals the groups too.
+    pub(crate) async fn close_all_final(&self, graceful: Duration) {
+        let connections: Vec<Connected> = read(&self.slots, "MCP server slots")
+            .values()
+            .filter_map(|slot| {
+                let connected = lock(&slot.connection, "MCP connection").take();
+                if let Some(connected) = &connected {
+                    connected.mute();
+                }
+                connected
+            })
+            .collect();
+        let mut groups = GroupKill {
+            groups: connections.iter().map(Connected::group_id).collect(),
+            termed: false,
+        };
+        let closes = connections.iter().map(|connected| async move {
+            let _ = tokio::time::timeout(graceful, connected.connection.close()).await;
+        });
+        futures::future::join_all(closes).await;
+        groups.term();
+        // A descendant that ignores SIGTERM gets this long before the drop's SIGKILL.
+        tokio::time::sleep(GROUP_TERM_GRACE).await;
+    }
+
     /// Unloads the server `name`: its slot is retired, its `list_changed` sink muted (a refresh
     /// during the drain would register the tools again), its tools removed from `tools` so no new
     /// call starts, the calls in flight given up to `bound` to finish, and the connection closed.
@@ -268,6 +306,35 @@ impl McpServers {
         let drained = connected.drain(bound).await;
         connected.connection.close().await;
         Some(drained)
+    }
+}
+
+const GROUP_TERM_GRACE: Duration = Duration::from_millis(150);
+
+/// Ends the process groups it holds when it drops, whether the close finished or was cut short:
+/// SIGKILL, after a SIGTERM unless [`GroupKill::term`] already sent one.
+struct GroupKill {
+    groups: Vec<Option<u32>>,
+    termed: bool,
+}
+
+impl GroupKill {
+    fn term(&mut self) {
+        for group in &self.groups {
+            fontaine_tools::procgroup::terminate(*group);
+        }
+        self.termed = true;
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        if !self.termed {
+            self.term();
+        }
+        for group in &self.groups {
+            fontaine_tools::procgroup::kill_group(*group);
+        }
     }
 }
 
@@ -1215,6 +1282,27 @@ mod tests {
         settle().await;
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(rig.script.attempts(), 1, "unloading is not a loss");
+        assert!(rig.said.warnings.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_final_close_retires_the_slot_and_closes_its_connection_without_a_reconnect() {
+        let live = live("srv", "http").await;
+        let connection = live.connected.connection.clone();
+        let rig = rig(vec![Ok(live)]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        let servers = McpServers::default();
+        servers.insert(slot.clone());
+
+        servers.retire_all();
+        assert!(slot.closing.load(Ordering::SeqCst));
+        servers.close_all_final(Duration::from_millis(250)).await;
+
+        assert!(connection.is_closed());
+        assert!(lock(&slot.connection, "test").is_none());
+        settle().await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(rig.script.attempts(), 1, "closing for good is not a loss");
         assert!(rig.said.warnings.lock().unwrap().is_empty());
     }
 

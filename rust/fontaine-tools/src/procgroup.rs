@@ -19,6 +19,14 @@ pub fn terminate(pid: Option<u32>) {
     let _ = pid;
 }
 
+/// SIGKILL to the process group, for a caller that has no [`Child`] left to hand [`force_kill`].
+pub fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    signal_group(pid, "KILL");
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 /// Kills the group, even when the leader already exited (a wrapper may have left the server
 /// running). On Windows it kills the leader's whole tree, then the leader itself.
 pub fn force_kill(child: &mut Child, pid: Option<u32>) {

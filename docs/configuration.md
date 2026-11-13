@@ -992,7 +992,7 @@ An invalid entry is a configuration error that names it.
 | `initialization_options` | Sent in `initialize`. | unset |
 | `settings` | Sent by `workspace/didChangeConfiguration` and answered to `workspace/configuration`. | unset |
 | `startup_timeout_ms` | How long the handshake may take. | `30000` |
-| `shutdown_timeout_ms` | How long `shutdown` and `exit` may take before the server is killed. | `2000` |
+| `shutdown_timeout_ms` | How long `shutdown` and `exit` may take before the server is killed. Quitting the terminal UI does not honor it: the servers are ended at once, inside the shared two-second exit budget. | `2000` |
 | `request_timeout_ms` | How long one request may take. | `60000` |
 | `restart_on_crash` | Restart a server that crashed after it was running. | `true` |
 | `max_restarts` | Restarts allowed for the session. | `3` |

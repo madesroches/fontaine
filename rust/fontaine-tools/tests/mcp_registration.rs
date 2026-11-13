@@ -372,6 +372,72 @@ async fn configured_env_reaches_a_stdio_server_and_overrides_a_copied_value() {
     connected.connection.close().await;
 }
 
+/// A wrapper that backgrounds a descendant before it becomes the server: the final exit's group
+/// signal must take the descendant down too, not only the server rmcp holds.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stdio_servers_whole_group_ends_with_one_group_signal() {
+    let binary = double_binary();
+    assert!(binary.exists(), "{} is not built", binary.display());
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("sleeper");
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let spec = ServerSpec {
+        name: "wrapped".to_string(),
+        transport: Transport::Stdio {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "sleep 300 & echo $! > '{}'; exec '{}'",
+                    pid_file.display(),
+                    binary.display()
+                ),
+            ],
+            env_vars: vec!["PATH".to_string()],
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+        },
+    };
+    let env = |name: &str| match name {
+        "PATH" => std::env::var_os("PATH"),
+        _ => None,
+    };
+    let connected = connect(&spec, handle, &options(gate), &Default::default(), &env)
+        .await
+        .expect("the wrapped server starts");
+    let group = connected
+        .group_id()
+        .expect("a stdio server leads its own group");
+    let sleeper: u32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = |pid: u32| {
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+        state.is_some_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+        })
+    };
+    if !std::path::Path::new("/proc/self/stat").exists() {
+        eprintln!("skipped: no /proc to read process states from");
+        return;
+    }
+    assert!(alive(sleeper) && alive(group), "both run before the signal");
+    fontaine_tools::procgroup::terminate(Some(group));
+    for _ in 0..100 {
+        if !alive(sleeper) && !alive(group) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive(group), "the server outlived the group signal");
+    assert!(!alive(sleeper), "the wrapper's descendant outlived it");
+}
+
 #[tokio::test]
 async fn a_server_that_cannot_start_is_an_error_naming_it() {
     let gate = Gate::new(true);

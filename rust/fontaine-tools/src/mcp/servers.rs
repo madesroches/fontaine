@@ -420,9 +420,20 @@ pub struct Connected {
     listings_changed: Arc<Notify>,
     muted: Arc<AtomicBool>,
     tracker: CallTracker,
+    /// A stdio server's process group (its leader's pid), recorded before `serve` hands the
+    /// child to rmcp, whose own cleanup reaches only the direct child.
+    group: Option<u32>,
 }
 
 impl Connected {
+    /// The stdio server's process group, for a guard that signals it with
+    /// [`procgroup::terminate`](crate::procgroup::terminate) so descendants a wrapper started
+    /// die with it. `None` for a remote server, and off Unix, where rmcp's direct-child kill is
+    /// all there is.
+    pub fn group_id(&self) -> Option<u32> {
+        self.group
+    }
+
     /// The registered names of the tools the server has now.
     pub fn tool_names(&self) -> Vec<String> {
         // Only read to remove the tools; a poisoned list still holds the last names written.
@@ -720,6 +731,7 @@ async fn serve<S, T, E, A>(
     transport: T,
     sink: S,
     options: &McpOptions,
+    group: Option<u32>,
 ) -> Result<Connected, McpError>
 where
     S: ManagedToolSink + Send + Sync + 'static,
@@ -757,6 +769,7 @@ where
         listings_changed: wiring.listings_changed,
         muted: wiring.shared.muted,
         tracker: wiring.shared.tracker,
+        group,
     })
 }
 
@@ -773,7 +786,7 @@ where
     T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
     E: StdError + Send + Sync + 'static,
 {
-    serve(name, "pipe", transport, sink, options).await
+    serve(name, "pipe", transport, sink, options, None).await
 }
 
 async fn start<S>(
@@ -802,11 +815,15 @@ where
                 .current_dir(cwd)
                 .env_clear()
                 .kill_on_drop(true);
+            // Its own group, so the final exit's group kill reaches what a wrapper started.
+            #[cfg(unix)]
+            process.process_group(0);
             process.envs(crate::child_env::server_env(env, env_vars, set_env));
             let (transport, stderr) = TokioChildProcess::builder(process)
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| fail(spec, format!("cannot start `{command}`"), e))?;
+            let group = transport.id();
             if let Some(stderr) = stderr {
                 let name = spec.name.clone();
                 tokio::spawn(async move {
@@ -817,7 +834,7 @@ where
                     }
                 });
             }
-            serve(&spec.name, spec.kind(), transport, sink, options).await
+            serve(&spec.name, spec.kind(), transport, sink, options, group).await
         }
         Transport::Http {
             url,
@@ -865,7 +882,7 @@ where
                 config = config.custom_headers(headers);
             }
             let transport = StreamableHttpClientTransport::with_client(auth_client, config);
-            serve(&spec.name, spec.kind(), transport, sink, options).await
+            serve(&spec.name, spec.kind(), transport, sink, options, None).await
         }
     }
 }

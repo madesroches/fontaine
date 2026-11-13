@@ -3,7 +3,7 @@
 //! OTel `Meter` driven by the span bridge.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram, MeterProvider};
@@ -45,12 +45,14 @@ pub struct Providers {
 }
 
 impl Providers {
-    pub fn shutdown(self, timeout: Duration) {
+    /// Shuts each provider down in turn, each with what is left until `deadline`.
+    pub fn shutdown(self, deadline: Instant) {
+        let left = || deadline.saturating_duration_since(Instant::now());
         if let Some(tracer) = &self.tracer {
-            let _ = tracer.shutdown_with_timeout(timeout);
+            let _ = tracer.shutdown_with_timeout(left());
         }
-        let _ = self.meter.shutdown_with_timeout(timeout);
-        let _ = self.logger.shutdown_with_timeout(timeout);
+        let _ = self.meter.shutdown_with_timeout(left());
+        let _ = self.logger.shutdown_with_timeout(left());
     }
 }
 

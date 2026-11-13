@@ -27,7 +27,7 @@ machine. The full key list is in [Configuration](configuration.md#telemetry).
 
 If the exporter cannot start, Fontaine prints one line (`telemetry export is off: ...`) and the run
 continues with export off. Telemetry never changes what a run does, and a collector that never
-answers cannot delay the exit by more than two seconds: the final flush is given up after that.
+answers cannot delay the exit by more than two seconds: the final flush is given up after that. When you quit the terminal UI the flush spends only what is left of that quit's own two-second budget, which the rest of the cleanup shares, rather than starting a fresh two seconds.
 
 ## Backends
 

@@ -5,7 +5,7 @@ use crate::provider_dialog::{
     DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
     stored_key_summary,
 };
-use crate::{Action, App, Ui};
+use crate::{Action, App, Command, Ui};
 use fontaine_core::accounts::{self, AccountsError, ExternalCheckError, NewAccount};
 use fontaine_core::agent::AgentRuntime;
 use tokio::sync::mpsc::unbounded_channel;
@@ -74,6 +74,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         mut request: DialogKey,
     ) {
         loop {
+            if self.quitting() {
+                return;
+            }
             let next = match request {
                 DialogKey::None | DialogKey::Close | DialogKey::CancelSignIn => return,
                 DialogKey::Add(new) => self.add_account(runtime, &new),
@@ -225,10 +228,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Some(step) = steps.recv() => self.sign_in_step(step),
                     input = self.input.recv() => match input {
                         None => break None,
-                        Some(input) => match self.app.handle_input(input) {
-                            Action::Providers(DialogKey::CancelSignIn)
-                            | Action::Interrupt
-                            | Action::Quit => break None,
+                        Some(input) => match self.act_on(runtime, input) {
+                            Action::Providers(DialogKey::CancelSignIn) | Action::Interrupt => {
+                                break None;
+                            }
+                            // Leaving is not a cancelled sign-in: the session is over, and the
+                            // idle loop that called this sees the latch.
+                            Action::Quit => break None,
+                            Action::Command { command: Command::Exit, .. } => {
+                                self.request_quit(runtime);
+                                break None;
+                            }
                             Action::CycleMode => {
                                 self.cycle_mode(runtime, false);
                                 self.review_afk_exits(runtime).await;
@@ -290,7 +300,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if let Some(dialog) = self.app.providers.as_mut() {
                     dialog.cancel_sign_in();
                 }
-                self.app.transcript.notice("sign-in cancelled");
+                if !self.quitting() {
+                    self.app.transcript.notice("sign-in cancelled");
+                }
                 DialogKey::None
             }
         }
