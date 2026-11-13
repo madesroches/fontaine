@@ -39,8 +39,11 @@ is set after `fall_through_child` returns `Err`). The main conversation is uncha
 list already expresses its fallbacks. Other quota-class failures keep their existing handling.
 
 **Behavior.** New `fall_back_child` beside `fall_through_child`, sharing its entry loop (extract the
-resolve / budget-cap-skip / rebuild-agent / notify body into one helper taking the chain, the start
-order, the `Tried`, the index sink, the from-ref and `settles`, rather than copying it):
+resolve / budget-cap-skip / rebuild-agent / notify body into one helper rather than copying it). The
+helper takes a `&ChildList` (built beforehand for the fallback case; it carries the chain, the index
+sink and `settles`), the start order (already filtered for spent accounts), `&mut Tried` and the
+from-ref. `fall_back_child` swaps the result into `RunShared.list` after the helper returns `Ok`,
+and each caller builds its own `Err` text ("every model in X failed" vs nothing to fall back to):
 
 - Walks the `fallback` chain over `0..entries.len()` in order, ignoring the chain's `active` and
   with no `failed` exclusion (so it does not reuse `fall_through_order`/`Tried::order`, which start
@@ -72,7 +75,10 @@ order, the `Tried`, the index sink, the from-ref and `settles`, rather than copy
 - If every fallback entry is also spent on a window, the existing `wait_out_usage_limit` pause runs
   on the current account and, after the reset, the request goes through again with tried entries
   forgotten. After the wait, and after later answers, the child stays on the fallback chain and
-  retries its current entry with tried entries forgotten.
+  retries its current entry with `tried` reset. The set of spent accounts and the fallback chain's
+  skipped entries survive the resets after an answer and are cleared only after a successful wait;
+  while serving from the fallback chain, `fall_through_child` also skips entries on accounts in that
+  set, so a later window failure on fallback entry k never walks back onto a spent account.
 
 ## Implementation Steps
 
@@ -133,7 +139,10 @@ Unit/integration with `rig_core::test_utils` deterministic models (no live APIs)
 use `rust/fontaine/tests/model_roles.rs` (e.g. `subagents_on_a_role_share_the_entry_that_worked`
 drives a child through a quota fall-through with mock endpoints and asserts the `model_fell_through`
 ledger record) and `rust/fontaine/tests/usage_limit_headless.rs` (`refusal(WINDOW, n)` helper,
-`--max-usage-wait` bound) as seams; `rust/fontaine-core/tests/usage_pause_turn.rs` and
+`--max-usage-wait` bound) as seams. The subagent usage-window cases combine the agent spawn from
+`model_roles.rs` with the `refusal(WINDOW, n)` and `--max-usage-wait` seam from
+`usage_limit_headless.rs` (no test drives a subagent into the usage-window pause today, so the
+no-`fallback` regression pin needs that new setup); `rust/fontaine-core/tests/usage_pause_turn.rs` and
 `model_roles_runtime.rs` stay for the wait itself:
 
 - Spent-window subagent with a defined `fallback`: moves to its first usable entry, continues, no
@@ -144,6 +153,8 @@ ledger record) and `rust/fontaine/tests/usage_limit_headless.rs` (`refusal(WINDO
 - Switch does not change the child's mode, rules or guardian; other children of the role keep their
   entry.
 - Later quota failure on the fallback entry walks the fallback chain, never back to the spent entry.
+- A fallback entry fails on its window after an answer: the walk skips the spent account and the
+  pause waits on the fallback entry's window.
 
 ## Open Questions
 
