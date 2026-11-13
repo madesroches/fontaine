@@ -23,8 +23,8 @@ headless and AFK — so a configured hook can answer where today everything canc
   answered `Cancel` (`gate`, :781), a non-`http`/`https` URL is declined before asking
   (`start_url`, :820), and `deliver` (:746) schema-validates an `Accept`'s content,
   downgrading a violating answer to `Decline` with a warning.
-- `rust/fontaine-core/src/agent/mcp.rs:576` — `ApproverElicitor` adapts the session
-  `Approver` to `Elicitor`; `AgentRuntime::mcp_supervisor()` (:437) installs it as
+- `rust/fontaine-core/src/agent/mcp.rs:499` — `ApproverElicitor` adapts the session
+  `Approver` to `Elicitor`; `AgentRuntime::mcp_supervisor()` (:611) installs it as
   `options.elicitor` for every session, headless included.
 - `rust/fontaine-core/src/permissions.rs` — `Approver::elicit`/`elicit_url` (:137-145)
   default to `Cancel`; `AfkApprover` (:219-269) cancels while AFK is on and is wrapped around
@@ -34,11 +34,11 @@ headless and AFK — so a configured hook can answer where today everything canc
   `project_scope`, `default_timeout`, `check_matcher`). Deciding gates are traits in
   `permissions.rs` — `PreToolUseHook` (:402) with `can_allow()` (a project hook's `allow`
   never counts) and `PermissionDeniedHook` (:456) with `can_retry()`. `UserHook`
-  (`rust/fontaine-core/src/user_hooks.rs`) implements them; `build_layer` (:1812-1878)
+  (`rust/fontaine-core/src/user_hooks.rs`) implements them; `build_layer` (:1808)
   applies the trust rules (project hooks dropped when the workspace is untrusted, project
   non-command handlers dropped, project `Stop`/`SubagentStop`/`TeammateIdle` ignored with a
-  warning). `BuiltHooks` (:1711+) is assembled in `hook_stages`
-  (`rust/fontaine-core/src/agent/setup.rs:762-850`).
+  warning). `BuiltHooks` (:1748) is assembled in `permission_pipeline`
+  (`rust/fontaine-core/src/agent/setup.rs:779`) and returned in `HookStages` (:714).
 - `docs/hooks.md:359` lists `Elicitation` (and `ElicitationResult`) under "What is not built";
   a plugin naming one loads with a warning (`plugins.rs:1286-1296`).
 - Claude Code semantics (observed from the published hooks reference): `Elicitation` fires
@@ -109,8 +109,8 @@ pub trait ElicitationHook: Send + Sync {
 The decision reuses `ElicitReply` from `fontaine_tools::mcp` (already `Accept(Map)` /
 `Decline` / `Cancel`), avoiding a parallel decision type.
 
-Add a runner `run_elicitation_hooks` in `permissions.rs` (or `user_hooks.rs`, beside
-`run_hooks`) that takes the frozen hooks, the plugin layer and the event, and applies:
+Add a runner `run_elicitation_hooks` in `permissions.rs`, beside the
+`PermissionPipeline::run_hooks` method (:807), that takes the frozen hooks, the plugin layer and the event, and applies:
 
 1. Match each hook's matcher against `server`; run matched hooks (user layer first, then
    plugin layer).
@@ -125,7 +125,7 @@ Add a runner `run_elicitation_hooks` in `permissions.rs` (or `user_hooks.rs`, be
    declines and the `hookSpecificOutput` is then ignored).
 
 `impl ElicitationHook for UserHook` in `user_hooks.rs` mirrors `impl PreToolUseHook for
-UserHook` (:1044-1117): it builds the wire event (base event fields plus
+UserHook` (`user_hooks.rs:783`): it builds the wire event (base event fields plus
 `mcp_server_name`, `message`, `mode`, `url`, `elicitation_id`, `requested_schema`), requires
 JSON (`require_json`), reads `hookSpecificOutput.action` (accept/decline/cancel, else
 `HookError::malformed`) and `hookSpecificOutput.content` (object; required for accept, must
@@ -147,7 +147,7 @@ Thread the request id so the hook input can carry `elicitation_id`: add `pub id:
 JSON-RPC request id in the tap's `start`/`start_url` (empty in hand-built test fixtures).
 
 In `rust/fontaine-core/src/agent/mcp.rs`, add a `HookElicitor` and install it in
-`mcp_supervisor` (it sets `options.elicitor` at :437):
+`mcp_supervisor` (it sets `options.elicitor` at :638):
 
 ```rust
 pub(crate) struct HookElicitor {
@@ -161,7 +161,7 @@ pub(crate) struct HookElicitor {
 - `elicit(form)`: build the `ElicitationEvent` (mode `"form"`, `requested_schema` from
   `form.schema`), run the hooks. A counted verdict short-circuits — no dialog, no approver
   call. No verdict (or an ignored accept) falls through to `inner.elicit(form)`.
-- `elicitation_url(request)`: same, mode `"url"`. A hook `Accept` is **never** honored for
+- `elicit_url(request)`: same, mode `"url"`. A hook `Accept` is **never** honored for
   URL mode: it is ignored with a warning and the flow falls through to the confirmation
   dialog. `Decline`/`Cancel` are honored. (Deviation from Claude Code, where a hook accept
   opens the link; recorded in the master plan. Fontaine's outward-action rule — a link opens
@@ -195,8 +195,9 @@ to `Decline`, so a hook cannot send the server a malformed answer.
 1. **Event.** Add the `Elicitation` variant and its arms in `config.rs`; extend
    `config_scope.rs` (allowlist + sample) and `config_catalog.rs`; add the wire-name round
    trip so plugin `hooks.json` names load.
-2. **Gate types.** Add `ElicitationEvent` and `ElicitationHook` in `permissions.rs`; add
-   `ElicitationReply` reuse of `ElicitReply`; write `run_elicitation_hooks` with the
+2. **Gate types.** Add `ElicitationEvent` and `ElicitationHook` in `permissions.rs`; the
+   runner returns `ElicitReply` directly (reused from `fontaine_tools::mcp`; no new decision
+   type); write `run_elicitation_hooks` with the
    precedence, trust and no-verdict rules.
 3. **UserHook.** Implement `ElicitationHook for UserHook` in `user_hooks.rs` (wire event
    build, `require_json`, action/content parsing, exit-2 → `Decline`, `can_accept` from
@@ -204,7 +205,7 @@ to `Decline`, so a hook cannot send the server a malformed answer.
 4. **Types.** Add `id: String` to `ElicitForm`/`ElicitUrl`; fill it in the tap; fix all
    construction sites (tests, fixtures, the TUI payload pass-throughs are unaffected).
 5. **Wiring.** Add `HookElicitor` in `agent/mcp.rs`; give `AgentRuntime` the frozen
-   `elicitation` hook list and `LivePlugins` from `hook_stages` (`setup.rs`); install the
+   `elicitation` hook list and `LivePlugins` from `HookStages` (`setup.rs`, built in `permission_pipeline`); install the
    wrapper in `mcp_supervisor`.
 6. **Tests.** See Testing Strategy.
 7. **Docs.** Update `docs/hooks.md` (event table, matcher table, decision control, config
