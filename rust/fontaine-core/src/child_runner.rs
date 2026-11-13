@@ -2,6 +2,7 @@
 //! this is what starts a child there: its own model, its own context, a tool set cut from the
 //! parent's, and every call it makes through the same permission pipeline as everyone's.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -40,7 +41,9 @@ use crate::agent::apply_common;
 use crate::fork_context::{FORK_NOTE, ParentContext};
 use crate::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
-use crate::model_roles::{ModelChain, RoleChains, Roles, Tried, fall_through_notice};
+use crate::model_roles::{
+    FALLBACK_ROLE, ModelChain, RoleChains, Roles, Tried, fall_back_notice, fall_through_notice,
+};
 use crate::models::{Listing, ModelHandle, ModelRef, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
@@ -528,7 +531,9 @@ struct RunShared {
     context: Arc<ChildContext>,
     tools: ToolServerHandle,
     budget: fontaine_agents::budget::Budget,
-    list: Option<ChildList>,
+    /// The list the child is served from now: its own until a spent usage window moves it to the
+    /// `fallback` role's, and it stays there.
+    list: Mutex<Option<Arc<ChildList>>>,
     kill: watch::Sender<bool>,
     /// The current run's task, which only a final exit aborts: a kill waits for the run to
     /// reach a hook boundary and save its transcript.
@@ -539,6 +544,10 @@ struct RunShared {
 }
 
 impl RunShared {
+    fn list(&self) -> Option<Arc<ChildList>> {
+        lock(&self.list, "child model list").clone()
+    }
+
     fn model(&self) -> ChildModel {
         lock(&self.model, "child model").clone()
     }
@@ -842,7 +851,7 @@ impl CoreChildRunner {
             context: context.clone(),
             tools,
             budget,
-            list,
+            list: Mutex::new(list.map(Arc::new)),
             kill,
             task: Mutex::new(None),
             status: Mutex::new(ChildStatus::Running),
@@ -1032,6 +1041,9 @@ async fn run_child(
     let mut prompt = prompt;
     // The entries of its list the child's current request has failed on.
     let mut tried = Tried::default();
+    // The accounts whose usage window the child has hit since it last waited one out; kept apart
+    // from `tried` because a list-less child has no list to note them on.
+    let mut spent = BTreeSet::new();
     let outcome = loop {
         let seen = last_text.clone();
         let view_state = state.clone();
@@ -1095,7 +1107,10 @@ async fn run_child(
             && !*kill.borrow()
         {
             let mut failure = failure.clone();
-            match fall_through_child(shared, &failure, &mut tried).await {
+            if failure.usage_limit.is_some() {
+                spent.insert(shared.model().served.account().to_string());
+            }
+            match fall_through_child(shared, &failure, &mut tried, &spent).await {
                 Ok(()) => {
                     prompt = RETRY_NOTE.to_string();
                     continue;
@@ -1108,6 +1123,13 @@ async fn run_child(
             // Nothing left to try on a spent usage window: the whole run waits for it, the
             // child included, and a kill ends the wait.
             if failure.usage_limit.is_some() {
+                if fall_back_child(shared, &failure, &mut tried, &spent)
+                    .await
+                    .is_ok()
+                {
+                    prompt = RETRY_NOTE.to_string();
+                    continue;
+                }
                 let model = shared.model();
                 let account = model.served.account().to_string();
                 let waited = tokio::select! {
@@ -1124,6 +1146,7 @@ async fn run_child(
                 match waited {
                     Some(true) => {
                         tried = Tried::default();
+                        spent.clear();
                         prompt = RETRY_NOTE.to_string();
                         continue;
                     }
@@ -1160,19 +1183,117 @@ async fn run_child(
 /// rebuilds its agent on it and says so. On a role's or an inline list's chain the entry is
 /// settled for every other child on it; a child on `$main` moves for itself. `Err` is what to
 /// add to the failure when nothing could serve, empty when the child has no list to move on.
+/// On the `fallback` role's list, entries on `spent` accounts are skipped too.
 async fn fall_through_child(
     shared: &RunShared,
     failure: &TurnFailure,
     tried: &mut Tried,
+    spent: &BTreeSet<String>,
 ) -> Result<(), String> {
-    let Some(list) = &shared.list else {
+    let Some(list) = shared.list() else {
         return Err(String::new());
     };
-    let context = &shared.context;
     let failed = list.index.load(Ordering::Acquire);
     let from = list.chain.entries[failed].clone();
-    for index in tried.order(&list.chain, failed) {
+    let order = tried.order(&list.chain, failed);
+    let none = BTreeSet::new();
+    let skip = if on_fallback(&list) { spent } else { &none };
+    let moved = switch_child(
+        shared,
+        &list,
+        order,
+        tried,
+        skip,
+        &from.to_string(),
+        failure.class.unwrap_or("quota"),
+        |to| fall_through_notice(&shared.id, &from, to, failure.class.unwrap_or("quota")),
+    )
+    .await;
+    if moved {
+        return Ok(());
+    }
+    Err(if list.chain.entries.len() > 1 {
+        format!("every model in {} failed", list.chain.label())
+    } else {
+        String::new()
+    })
+}
+
+/// Moves a subagent whose own list is spent on a usage window to the first usable entry of the
+/// `fallback` role, rebuilds its agent on it and says so; it serves from that list from then on.
+/// No shared chain is settled, so the role's other subagents keep their entry. `Err` when no
+/// fallback is defined, the child is already on it, or none of its entries can serve.
+async fn fall_back_child(
+    shared: &RunShared,
+    failure: &TurnFailure,
+    tried: &mut Tried,
+    spent: &BTreeSet<String>,
+) -> Result<(), String> {
+    let context = &shared.context;
+    let Some(chain) = context.chains.chain_of_role(&context.roles, FALLBACK_ROLE) else {
+        return Err(String::new());
+    };
+    let current = shared.list();
+    if current.as_deref().is_some_and(on_fallback) {
+        return Err(String::new());
+    }
+    let from = match &current {
+        Some(list) => list.chain.entries[list.index.load(Ordering::Acquire)].to_string(),
+        None => shared.model().served.model,
+    };
+    // Every skipped entry is noted below, since the unsettled chain stays on entry 0 and a later
+    // fall-through would otherwise walk back onto a spent account.
+    *tried = Tried::default();
+    let list = Arc::new(ChildList {
+        index: AtomicUsize::new(0),
+        settles: false,
+        chain,
+    });
+    let order = 0..list.chain.entries.len();
+    let moved = switch_child(
+        shared,
+        &list,
+        order,
+        tried,
+        spent,
+        &from,
+        failure.class.unwrap_or("quota"),
+        |to| fall_back_notice(&shared.id, &from, to),
+    )
+    .await;
+    if !moved {
+        return Err(String::new());
+    }
+    *lock(&shared.list, "child model list") = Some(list);
+    Ok(())
+}
+
+fn on_fallback(list: &ChildList) -> bool {
+    // Roles share one chain per name, so the role names the fallback chain exactly.
+    list.chain.role.as_deref() == Some(FALLBACK_ROLE)
+}
+
+/// Rebuilds the child on the first entry of `order` that resolves, fits an explicit budget cap and
+/// is not on a `spent` account, noting every entry it passes over. `from` is what the child leaves,
+/// for the record. False when no entry could serve.
+#[allow(clippy::too_many_arguments)]
+async fn switch_child(
+    shared: &RunShared,
+    list: &ChildList,
+    order: impl IntoIterator<Item = usize>,
+    tried: &mut Tried,
+    spent: &BTreeSet<String>,
+    from: &str,
+    class: &str,
+    notice: impl FnOnce(&ModelRef) -> String,
+) -> bool {
+    let context = &shared.context;
+    for index in order {
         let reference = &list.chain.entries[index];
+        if spent.contains(&reference.account) {
+            tried.note(index);
+            continue;
+        }
         let handle = match context.entry_for(reference, &shared.id).await {
             Ok(handle) => handle,
             Err(why) => {
@@ -1211,24 +1332,17 @@ async fn fall_through_child(
         );
         *lock(&shared.agent, "child agent") = Arc::new(agent);
         *lock(&shared.model, "child model") = model;
-        let class = failure.class.unwrap_or("quota");
         context.state.record_model_fall_through(
             &shared.id,
             list.chain.role.as_deref(),
-            &from.to_string(),
+            from,
             &reference.to_string(),
             class,
         );
-        context
-            .approver
-            .warn(&fall_through_notice(&shared.id, &from, reference, class));
-        return Ok(());
+        context.approver.warn(&notice(reference));
+        return true;
     }
-    Err(if list.chain.entries.len() > 1 {
-        format!("every model in {} failed", list.chain.label())
-    } else {
-        String::new()
-    })
+    false
 }
 
 /// How a child's run reads once it has settled. A kill that fired first settles the report as
