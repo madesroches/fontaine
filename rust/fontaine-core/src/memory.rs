@@ -248,20 +248,60 @@ fn refuse_link(path: &Path) -> io::Result<()> {
     }
 }
 
+/// A failed read of one store file, carried as the cause of the `io::Error` the save reports:
+/// the chain names the file and keeps the original read error as its source.
+#[derive(Debug)]
+struct ReadContext {
+    path: PathBuf,
+    source: io::Error,
+}
+
+impl std::fmt::Display for ReadContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "could not read {}", self.path.display())
+    }
+}
+
+impl std::error::Error for ReadContext {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// The topic file's current bytes, read before a save replaces them so a failed index write
 /// can roll the file back. A missing topic is `Ok(None)`; a link is refused, as the index's
-/// is, and any other read error refuses the save before it mutates anything.
+/// is, and any other read error refuses the save before it mutates anything. The read is
+/// capped like the index's: a file over the scan limit was never written by this tool, so it
+/// refuses the save instead of loading it whole into memory.
 fn read_topic_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
     refuse_link(path)?;
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(SCAN_LIMIT + 1).read_to_end(&mut bytes));
+    match read {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         // A read error names no path of its own; the save's report must say which file.
-        Err(e) => Err(io::Error::new(
-            e.kind(),
-            format!("could not read {}: {e}", path.display()),
-        )),
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                ReadContext {
+                    path: path.to_path_buf(),
+                    source: e,
+                },
+            ));
+        }
     }
+    if bytes.len() as u64 > SCAN_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is larger than the memory tool can rewrite",
+                path.display()
+            ),
+        ));
+    }
+    Ok(Some(bytes))
 }
 
 /// The index text as it is on disk, so a save can rewrite it whole. A missing index is
@@ -1543,6 +1583,43 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("commands.md")).unwrap(),
             "the old note\n"
+        );
+    }
+
+    #[test]
+    fn an_over_sized_topic_refuses_the_save_and_the_note_is_untouched() {
+        let (_tmp, dir) = store();
+        let target = dir.join("commands.md");
+        // One byte over the scan limit: the tool itself never writes a file this
+        // large, so the save refuses rather than loading it whole into memory.
+        std::fs::write(&target, vec![b'x'; (SCAN_LIMIT + 1) as usize]).unwrap();
+        let error = save(&dir, "Commands", "new note\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            format!("{error}").contains("larger than the memory tool can rewrite"),
+            "{error}"
+        );
+        assert_eq!(std::fs::metadata(&target).unwrap().len(), SCAN_LIMIT + 1);
+
+        // Exactly at the limit is fine.
+        std::fs::write(&target, vec![b'x'; SCAN_LIMIT as usize]).unwrap();
+        assert!(save(&dir, "Commands", "new note\n").is_ok());
+    }
+
+    #[test]
+    fn a_topic_read_error_names_the_file_and_keeps_the_source() {
+        let (_tmp, dir) = store();
+        // A directory where the topic file belongs fails the read (opening it or
+        // reading it, depending on the platform), refusing the save untouched.
+        std::fs::create_dir(dir.join("commands.md")).unwrap();
+        let error = save(&dir, "Commands", "x\n").unwrap_err();
+        assert!(!dir.join("commands.md").is_file());
+        let chain = fontaine_tools::error_chain::chain(&error);
+        assert!(chain.contains("could not read"), "{chain}");
+        assert!(chain.contains("commands.md"), "{chain}");
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the original read error is the chain's source"
         );
     }
 
