@@ -1,5 +1,8 @@
-//! The change an `edit`, `write` or `notebook_edit` call would make, as the approval prompt shows it. Display
-//! only: nothing here reaches a decision, the guardian, a hook or the ledger.
+//! The change an `edit`, `write`, `notebook_edit` or `memory` call would make, as the approval
+//! prompt shows it. Display only: nothing here reaches a decision, the guardian, a hook or the
+//! ledger.
+
+use std::path::Path;
 
 use fontaine_tools::scope::Scope;
 use rig_core::redact;
@@ -8,6 +11,9 @@ use rig_tools::Replacement;
 use rig_tools::edit::apply;
 use rig_tools::fs::file_change;
 use serde_json::Value;
+
+use crate::memory;
+use crate::memory_tool;
 
 /// Files larger than this get no preview, far below what the tools themselves read.
 pub const PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
@@ -47,13 +53,22 @@ pub struct DiffPreview {
 
 /// The diff `tool` would make with `args`, or `None` when there is nothing to show: another
 /// tool, a file that cannot be read as UTF-8 within the limit, or edits the tool itself
-/// would refuse. A path outside every root resolves the way the tool opens it, so an
-/// approved external write keeps its review surface.
-pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
-    let path = args.get("path")?.as_str()?;
+/// would refuse. `memory_root` locates the note a `memory` call would write; a path outside
+/// every root resolves the way the tool opens it, so an approved external write keeps its
+/// review surface.
+pub fn preview(
+    tool: &str,
+    args: &Value,
+    scope: &Scope,
+    memory_root: Option<&Path>,
+) -> Option<DiffPreview> {
+    if tool == "memory" {
+        return memory_preview(args, memory_root);
+    }
     if !matches!(tool, "edit" | "write" | "notebook_edit") {
         return None;
     }
+    let path = args.get("path")?.as_str()?;
     let (_, resolved) = match scope.find(path) {
         Ok(found) => found,
         Err(_) => (0, scope.resolved(path)),
@@ -83,6 +98,33 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
         }
     };
     from_change(path, &change)
+}
+
+/// The diff a `memory` call makes to its note's topic file, or `None` when there is nothing
+/// to show: no memory root, a missing argument, or arguments the save itself would refuse.
+/// The topic file already on disk is the `before`; a first save has no file, so the whole
+/// note renders as added lines, `args.content` standing in for the file the call will write.
+fn memory_preview(args: &Value, memory_root: Option<&Path>) -> Option<DiffPreview> {
+    let root = memory_root?;
+    let topic = args.get("topic")?.as_str()?;
+    let content = args.get("content")?.as_str()?;
+    if content.len() as u64 > PREVIEW_MAX_BYTES {
+        return None;
+    }
+    // The checks the save itself runs first, so a call execution would refuse shows no
+    // preview: the tool's argument validation (blank, multiline or overlong topic,
+    // oversized content) and the store's topic validation in `memory::validate_topic`
+    // (unsluggable, reserved names, Markdown link delimiters).
+    memory_tool::validate(&memory_tool::MemoryArgs {
+        topic: topic.to_string(),
+        content: content.to_string(),
+    })
+    .ok()?;
+    memory::validate_topic(topic).ok()?;
+    let file = memory::slug(topic)?;
+    let before = read_text(&root.join(&file)).ok()?;
+    let change = file_change(&file, before.as_deref(), Some(content));
+    from_change(&file, &change)
 }
 
 /// `Ok(None)` for a file that does not exist; `Err` for one that cannot be shown.
@@ -221,6 +263,10 @@ mod tests {
         std::fs::write(dir.path().join(name), content).unwrap();
     }
 
+    fn prev(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
+        preview(tool, args, scope, None)
+    }
+
     fn kinds(p: &DiffPreview, kind: DiffKind) -> Vec<(Option<usize>, Option<usize>, &str)> {
         p.lines
             .iter()
@@ -241,7 +287,7 @@ mod tests {
     fn single_edit_has_numbers_and_counts() {
         let (dir, scope) = setup();
         put(&dir, "a.txt", b"one\ntwo\nthree\nfour\n");
-        let p = preview("edit", &edit("a.txt", &[("two", "2")]), &scope).unwrap();
+        let p = prev("edit", &edit("a.txt", &[("two", "2")]), &scope).unwrap();
         assert_eq!((p.added, p.removed, p.hidden), (1, 1, 0));
         assert_eq!(kinds(&p, DiffKind::Removed), [(Some(2), None, "two")]);
         assert_eq!(kinds(&p, DiffKind::Added), [(None, Some(2), "2")]);
@@ -255,7 +301,7 @@ mod tests {
         let text: String = (1..=30).map(|n| format!("l{n}\n")).collect();
         put(&dir, "a.txt", text.as_bytes());
         let args = edit("a.txt", &[("l2\n", "L2\n"), ("l28\n", "L28\n")]);
-        let p = preview("edit", &args, &scope).unwrap();
+        let p = prev("edit", &args, &scope).unwrap();
         assert_eq!((p.added, p.removed), (2, 2));
         assert_eq!(
             p.lines.iter().filter(|l| l.kind == DiffKind::Gap).count(),
@@ -270,7 +316,7 @@ mod tests {
         put(&dir, "a.txt", b"x\nfoo\ny\nfoo\n");
         let args = json!({"path": "a.txt", "edits": [
             {"old_text": "foo", "new_text": "bar", "replace_all": true}]});
-        let p = preview("edit", &args, &scope).unwrap();
+        let p = prev("edit", &args, &scope).unwrap();
         assert_eq!((p.added, p.removed), (2, 2));
     }
 
@@ -279,7 +325,7 @@ mod tests {
         let (dir, scope) = setup();
         put(&dir, "a.txt", b"a\nb\n");
         let args = json!({"path": "a.txt", "content": "a\nc\n"});
-        let p = preview("write", &args, &scope).unwrap();
+        let p = prev("write", &args, &scope).unwrap();
         assert_eq!(kinds(&p, DiffKind::Removed), [(Some(2), None, "b")]);
         assert_eq!(kinds(&p, DiffKind::Added), [(None, Some(2), "c")]);
     }
@@ -288,7 +334,7 @@ mod tests {
     fn write_creating_a_file_is_all_added() {
         let (_dir, scope) = setup();
         let args = json!({"path": "new.txt", "content": "a\nb\n"});
-        let p = preview("write", &args, &scope).unwrap();
+        let p = prev("write", &args, &scope).unwrap();
         assert_eq!((p.added, p.removed), (2, 0));
         assert!(p.lines.iter().all(|l| l.kind == DiffKind::Added));
     }
@@ -302,25 +348,25 @@ mod tests {
         big.push(b'Z');
         put(&dir, "big.txt", &big);
         let ok = edit("a.txt", &[("one", "1")]);
-        assert!(preview("read", &ok, &scope).is_none());
-        assert!(preview("edit", &edit("missing.txt", &[("a", "b")]), &scope).is_none());
+        assert!(prev("read", &ok, &scope).is_none());
+        assert!(prev("edit", &edit("missing.txt", &[("a", "b")]), &scope).is_none());
         assert!(
-            preview(
+            prev(
                 "edit",
                 &edit("/nonexistent-fontaine-eval/hostname", &[("a", "b")]),
                 &scope
             )
             .is_none()
         );
-        assert!(preview("edit", &edit("bin.dat", &[("a", "b")]), &scope).is_none());
-        assert!(preview("edit", &edit("big.txt", &[("Z", "Y")]), &scope).is_none());
-        assert!(preview("edit", &edit("a.txt", &[("absent", "b")]), &scope).is_none());
-        assert!(preview("edit", &edit("a.txt", &[("one", "one")]), &scope).is_none());
-        assert!(preview("edit", &json!({"path": "a.txt"}), &scope).is_none());
+        assert!(prev("edit", &edit("bin.dat", &[("a", "b")]), &scope).is_none());
+        assert!(prev("edit", &edit("big.txt", &[("Z", "Y")]), &scope).is_none());
+        assert!(prev("edit", &edit("a.txt", &[("absent", "b")]), &scope).is_none());
+        assert!(prev("edit", &edit("a.txt", &[("one", "one")]), &scope).is_none());
+        assert!(prev("edit", &json!({"path": "a.txt"}), &scope).is_none());
         let outside = json!({"path": "/nonexistent-fontaine-eval/hostname", "content": ""});
-        assert!(preview("write", &outside, &scope).is_none());
+        assert!(prev("write", &outside, &scope).is_none());
         let huge = "x".repeat(PREVIEW_MAX_BYTES as usize + 1);
-        assert!(preview("write", &json!({"path": "a.txt", "content": huge}), &scope).is_none());
+        assert!(prev("write", &json!({"path": "a.txt", "content": huge}), &scope).is_none());
     }
 
     #[test]
@@ -332,7 +378,7 @@ mod tests {
             "a.txt",
             format!("\x1b[31mred\x07\nkey {key}\n\tx\n").as_bytes(),
         );
-        let p = preview("edit", &edit("a.txt", &[("\tx", "\ty")]), &scope).unwrap();
+        let p = prev("edit", &edit("a.txt", &[("\tx", "\ty")]), &scope).unwrap();
         for line in &p.lines {
             assert!(!line.text.chars().any(char::is_control), "{:?}", line.text);
             assert!(!line.text.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
@@ -359,11 +405,11 @@ mod tests {
     fn crlf_cr_and_bom_files_preview() {
         let (dir, scope) = setup();
         put(&dir, "a.txt", b"\xef\xbb\xbfone\r\ntwo\r\nthree\r\n");
-        let p = preview("edit", &edit("a.txt", &[("two", "2")]), &scope).unwrap();
+        let p = prev("edit", &edit("a.txt", &[("two", "2")]), &scope).unwrap();
         assert_eq!(kinds(&p, DiffKind::Added), [(None, Some(2), "2")]);
         put(&dir, "b.txt", b"x\ry\n");
         let args = json!({"path": "b.txt", "content": "x\rz\n"});
-        let p = preview("write", &args, &scope).unwrap();
+        let p = prev("write", &args, &scope).unwrap();
         assert!(p.lines.iter().all(|l| !l.text.contains('\r')));
     }
 
@@ -372,7 +418,7 @@ mod tests {
         let (_dir, scope) = setup();
         let content: String = (0..300).map(|n| format!("line {n}\n")).collect();
         let args = json!({"path": "new.txt", "content": content});
-        let p = preview("write", &args, &scope).unwrap();
+        let p = prev("write", &args, &scope).unwrap();
         assert_eq!(p.lines.len(), PREVIEW_MAX_LINES);
         assert_eq!(p.added, 300);
         assert_eq!(p.hidden, 100);
@@ -384,7 +430,7 @@ mod tests {
         let ext = tempfile::tempdir().unwrap();
         let outside = ext.path().canonicalize().unwrap().join("x.txt");
         std::fs::write(&outside, "one\ntwo\n").unwrap();
-        let p = preview(
+        let p = prev(
             "edit",
             &edit(outside.to_str().unwrap(), &[("two", "2")]),
             &scope,
@@ -404,11 +450,106 @@ mod tests {
         let nb = r#"{"cells":[{"cell_type":"code","id":"a","metadata":{},"outputs":[],"execution_count":null,"source":["x = 1\n","y = 2"]}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
         put(&dir, "n.ipynb", nb.as_bytes());
         let args = json!({"path": "n.ipynb", "cell_id": "a", "new_source": "x = 1\ny = 3"});
-        let p = preview("notebook_edit", &args, &scope).unwrap();
+        let p = prev("notebook_edit", &args, &scope).unwrap();
         assert_eq!(kinds(&p, DiffKind::Removed), [(Some(2), None, "y = 2")]);
         assert_eq!(kinds(&p, DiffKind::Added), [(None, Some(2), "y = 3")]);
         let missing = json!({"path": "n.ipynb", "cell_id": "ghost", "new_source": "x"});
-        assert!(preview("notebook_edit", &missing, &scope).is_none());
-        assert!(preview("notebook_edit", &json!({"path": "a.txt"}), &scope).is_none());
+        assert!(prev("notebook_edit", &missing, &scope).is_none());
+        assert!(prev("notebook_edit", &json!({"path": "a.txt"}), &scope).is_none());
+    }
+
+    fn memory(dir: &tempfile::TempDir, args: Value) -> Option<DiffPreview> {
+        let scope = Scope::new(dir.path().to_path_buf(), []);
+        preview("memory", &args, &scope, Some(dir.path()))
+    }
+
+    #[test]
+    fn a_first_memory_save_is_all_added_from_the_args_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = json!({"topic": "Commands", "content": "# Commands\n\n- `cargo test`\n"});
+        let p = memory(&dir, args).unwrap();
+        assert_eq!(p.path, "commands.md");
+        assert_eq!((p.added, p.removed, p.hidden), (3, 0, 0));
+        assert!(p.lines.iter().all(|l| l.kind == DiffKind::Added));
+        // The store is untouched: the preview only reads.
+        assert!(!dir.path().join("commands.md").exists());
+    }
+
+    #[test]
+    fn a_memory_save_over_an_existing_note_previews_the_files_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("commands.md"),
+            "# Commands\n\n- `cargo test`\n",
+        )
+        .unwrap();
+        let args = json!({"topic": "Commands", "content": "# Commands\n\n- `cargo clippy`\n"});
+        let p = memory(&dir, args).unwrap();
+        assert_eq!((p.added, p.removed), (1, 1));
+        assert_eq!(
+            kinds(&p, DiffKind::Removed),
+            [(Some(3), None, "- `cargo test`")]
+        );
+        assert_eq!(
+            kinds(&p, DiffKind::Added),
+            [(None, Some(3), "- `cargo clippy`")]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("commands.md")).unwrap(),
+            "# Commands\n\n- `cargo test`\n"
+        );
+    }
+
+    #[test]
+    fn a_long_memory_note_is_capped_and_the_rest_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let content: String = (0..300).map(|n| format!("note {n}\n")).collect();
+        let p = memory(&dir, json!({"topic": "Log", "content": content})).unwrap();
+        assert_eq!(p.lines.len(), PREVIEW_MAX_LINES);
+        assert_eq!(p.added, 300);
+        assert_eq!(p.hidden, 100);
+    }
+
+    #[test]
+    fn memory_previews_sanitize_and_refuse_like_the_other_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let args = json!({"topic": "Keys", "content": format!("\x1b[31mred\nkey {key}\n")});
+        let p = memory(&dir, args).unwrap();
+        for line in &p.lines {
+            assert!(!line.text.chars().any(char::is_control), "{:?}", line.text);
+            assert!(!line.text.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
+        }
+        assert_eq!(p.lines[0].text, " [31mred");
+        // Nothing to show: no memory root, missing arguments, a topic the save refuses.
+        let args = json!({"topic": "Commands", "content": "x"});
+        let scope = Scope::new(dir.path().to_path_buf(), []);
+        assert!(preview("memory", &args, &scope, None).is_none());
+        assert!(memory(&dir, json!({"topic": "Commands"})).is_none());
+        assert!(memory(&dir, json!({"content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "!!!", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "MEMORY", "content": "x"})).is_none());
+    }
+
+    #[test]
+    fn a_memory_call_the_save_would_refuse_gets_no_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        // The tool's argument validation: blank, multiline or overlong topic, oversized
+        // content (still below the preview's own byte cap).
+        assert!(memory(&dir, json!({"topic": "  ", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "two\nlines", "content": "x"})).is_none());
+        assert!(
+            memory(&dir, json!({"topic": "x".repeat(crate::memory_tool::MAX_TOPIC_CHARS + 1), "content": "x"}))
+                .is_none()
+        );
+        assert!(
+            memory(&dir, json!({"topic": "x", "content": "x".repeat(crate::memory_tool::MAX_CONTENT_BYTES + 1)}))
+                .is_none()
+        );
+        // The store's topic validation: reserved device names, a trailing backslash, a
+        // Markdown link delimiter.
+        assert!(memory(&dir, json!({"topic": "CON", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "Commands\\", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "a]b", "content": "x"})).is_none());
     }
 }

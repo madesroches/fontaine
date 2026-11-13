@@ -19,6 +19,7 @@ use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tools::{BoardShowTool, BoardUpdateTool};
 use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_core::config::PermissionMode::{self, Manual};
+use fontaine_core::memory_tool::MemoryTool;
 use fontaine_core::questions::HumanQuestions;
 use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTool, ExtensionTools, RegistryParams, registry};
@@ -142,8 +143,12 @@ fn extension() -> ExtensionTools {
 }
 
 fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
+    extension_memory(ask_user, true)
+}
+
+fn extension_memory(ask_user: AskUserTool, with_memory: bool) -> ExtensionTools {
     let tree = Arc::new(AgentTree::new(Limits::default(), 1));
-    ExtensionTools(vec![
+    let mut tools = vec![
         ExtensionTool::new(AgentTool {
             tree: tree.clone(),
             types: Arc::new(fontaine_tools::live::Live::new(AgentTypes::builtin())),
@@ -188,7 +193,13 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
         ExtensionTool::new(ScheduleWakeupTool {
             store: Arc::new(NoSchedule),
         }),
-    ])
+    ];
+    if with_memory {
+        tools.push(ExtensionTool::new(MemoryTool {
+            root: std::env::temp_dir().join("fontaine-memory-choke-point"),
+        }));
+    }
+    ExtensionTools(tools)
 }
 
 fn params(rig: &Rig) -> RegistryParams {
@@ -257,6 +268,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "models",
         "draft_bug_report",
         "advisor",
+        "memory",
     ]
     .into_iter()
     .collect();
@@ -319,6 +331,29 @@ fn a_configured_backend_adds_exactly_websearch_with_its_descriptor_class() {
     let tool = tools.iter().find(|t| t.name == "websearch").unwrap();
     assert_eq!(Some(tool.risk), registered_risk("websearch"));
     assert_eq!(tool.risk, fontaine_tools::risk::RiskClass::Arbitrary);
+}
+
+#[test]
+fn a_memory_root_adds_exactly_memory_with_its_descriptor_class() {
+    let rig = Rig::new(Manual);
+    let ask = AskUserTool {
+        source: Arc::new(NoQuestions),
+    };
+    let mut p = params(&rig);
+    p.extension = Some(extension_memory(ask, false));
+    let plain: BTreeSet<&str> = registry(p).unwrap().iter().map(|t| t.name).collect();
+    assert!(!plain.contains("memory"));
+
+    // With the store the session would have, exactly `memory` joins, at its descriptor class.
+    let mut p = params(&rig);
+    p.extension = Some(extension());
+    let tools = registry(p).unwrap();
+    let offered: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    assert_eq!(&offered - &plain, BTreeSet::from(["memory"]));
+    assert!(plain.is_subset(&offered));
+    let tool = tools.iter().find(|t| t.name == "memory").unwrap();
+    assert_eq!(Some(tool.risk), registered_risk("memory"));
+    assert_eq!(tool.risk, RiskClass::WorkspaceWrite);
 }
 
 struct RigWorkspace(Arc<fontaine_tools::scope::Scope>);

@@ -319,7 +319,7 @@ fn shell_redirect_targets_are_touched_paths() {
     let (_dir, scope, _view) = world();
     let root = scope.primary().to_path_buf();
     let keys = |args: serde_json::Value| -> Vec<String> {
-        touched_paths("shell", &args, &scope)
+        touched_paths("shell", &args, &scope, None)
             .iter()
             .map(|p| path_key(p))
             .collect()
@@ -344,7 +344,7 @@ fn a_redirect_to_dev_null_is_not_a_touched_path_or_a_write() {
     let (_dir, scope, _view) = world();
     let command = "RIG_DIR=$(find ~/.cargo/registry/src -maxdepth 2 -type d -name \"rig-core-0.45.0\" | head -1); echo \"$RIG_DIR\"; rg -n \"enum ContentPart\" -A 40 \"$RIG_DIR/src\" 2>/dev/null | head -80";
     assert!(shell_is(command));
-    let paths = touched_paths("shell", &json!({ "command": command }), &scope);
+    let paths = touched_paths("shell", &json!({ "command": command }), &scope, None);
     assert!(paths.iter().all(|p| !p.contains("/dev/null")), "{paths:?}");
 
     assert!(!shell_is("rg -n x src 2>/dev/null | head -80"));
@@ -356,7 +356,7 @@ fn touched_paths_are_resolved_by_the_scope() {
     let (_dir, scope, _view) = world();
     let root = scope.primary().to_path_buf();
     std::fs::write(root.join("a.txt"), "x").unwrap();
-    let paths = touched_paths("write", &json!({"path": "a.txt"}), &scope);
+    let paths = touched_paths("write", &json!({"path": "a.txt"}), &scope, None);
     // A Windows path may or may not carry the verbatim prefix; the ledger compares without it.
     let keys: Vec<String> = paths.iter().map(|p| path_key(p)).collect();
     assert_eq!(keys, [path_key(&root.join("a.txt").to_string_lossy())]);
@@ -364,12 +364,45 @@ fn touched_paths_are_resolved_by_the_scope() {
         "shell",
         &json!({"command": "rm -rf a.txt ./sub echo nothing"}),
         &scope,
+        None,
     );
     let shell_keys: Vec<String> = shell.iter().map(|p| path_key(p)).collect();
     assert!(shell_keys.contains(&path_key(&root.join("a.txt").to_string_lossy())));
     assert!(shell.iter().any(|p| p.ends_with("sub")));
     assert!(!shell.iter().any(|p| p.ends_with("nothing")));
-    assert!(touched_paths("webfetch", &json!({"url": "https://a.example"}), &scope).is_empty());
+    assert!(
+        touched_paths(
+            "webfetch",
+            &json!({"url": "https://a.example"}),
+            &scope,
+            None
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_memory_call_names_its_topic_file_and_the_index_under_the_memory_root() {
+    let (_dir, scope, _view) = world();
+    let root = std::path::Path::new("/data/memory/project-1");
+    let args = json!({"topic": "Commands", "content": "x"});
+    let paths = touched_paths("memory", &args, &scope, Some(root));
+    assert_eq!(
+        paths,
+        vec![
+            root.join("commands.md").to_string_lossy().into_owned(),
+            root.join(fontaine_core::memory::INDEX_FILE)
+                .to_string_lossy()
+                .into_owned(),
+        ]
+    );
+    // Without a memory root (and for other tools) the call names nothing.
+    assert!(touched_paths("memory", &args, &scope, None).is_empty());
+    assert!(
+        touched_paths("write", &json!({"path": "a.txt"}), &scope, Some(root))
+            .iter()
+            .all(|p| !p.contains("memory"))
+    );
 }
 
 #[test]
@@ -484,5 +517,5 @@ fn a_powershell_call_is_always_destructive_and_touches_no_path() {
         view: &view,
     };
     assert!(derive("powershell", &args, &facts));
-    assert!(touched_paths("powershell", &args, &scope).is_empty());
+    assert!(touched_paths("powershell", &args, &scope, None).is_empty());
 }

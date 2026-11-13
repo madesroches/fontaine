@@ -102,6 +102,7 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "ask_user_question",
         "todo_write",
         "models",
+        "memory",
         "board_show",
         "board_update",
     ];

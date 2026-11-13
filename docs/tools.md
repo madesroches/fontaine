@@ -39,6 +39,7 @@ result passes one post-call step before the model sees it.
 | `draft_bug_report` | arbitrary | Queues a Fontaine bug report for you to review: `title`, `area` and `details`, redacted and written to a local draft file under the data directory. It does no network I/O and never submits; only you can file a report, with `/bug`. Runs at the `bug_draft` tier in every mode, after your deny and ask rules, with no guardian verdict and no prompt. At most 3 pending drafts per session. Main conversation only: subagents and headless runs do not get it. Omitted when `[feedback] drafts = "off"`. |
 | `board_show` | read-only | Lists the caller's own [task board](agents.md#the-task-board) and its parent's, or shows one task by `id`: status, owner, blockers and text. Task text is agent-written data, shown fenced and labelled with its author. Registered unless `[agents] teams = false`. |
 | `board_update` | arbitrary | Changes a task board: `create` (`title`, `description`, `blocked_by`) adds to the caller's own board, or its parent's when the caller cannot start agents; `claim`, `complete` and `release` (`id`) look up the task on the caller's own board first, then its parent's. Runs at the `coordination` tier like `send_message`, in every mode with no guardian verdict and no prompt. Registered unless `[agents] teams = false`. |
+| `memory` | workspace write | Saves a durable note to the session's [auto memory](memory.md) store in one structured call: it writes (or replaces) the topic file and keeps the `MEMORY.md` index line for it, so the model never does the index bookkeeping with raw `write`/`edit` calls. Arguments: `topic` (one line, at most 64 characters) and `content` (the note, markdown, at most 100,000 bytes); the file name derives from `topic`, so re-saving a topic updates it in place. Registered only while auto memory is on. Gated like any write to the store — see [Memory](#memory). |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
 rather than modified. `ls`, `glob` and `grep` are Fontaine's own front ends over rig's directory
@@ -577,6 +578,39 @@ A repository cannot define it.
   [Permissions](permissions.md#the-advisor). Allow it without prompts with
   `allow = ["advisor"]` in your user settings.
 - **Root only.** Subagents, `fork` included, never have it.
+
+## Memory
+
+The `memory` tool saves a durable note to the session's persistent [auto memory](memory.md)
+store — the per-project directory outside any git checkout whose `MEMORY.md` index loads into
+the next session's prompt. One call replaces what otherwise takes two raw file calls and
+fragile index bookkeeping: it writes the topic file atomically and keeps the index's line for
+that topic, replacing the line's link text in place when the topic already has one or
+appending an index line that links the topic file when it does not. The file name is derived
+from `topic`
+(lowercased, separators become `-`), never from a model-named path: `Foo Bar` and `foo-bar`
+are one topic. `topic` is one line of at most 64 characters; `content` is the note, markdown,
+at most 100,000 bytes. When the index grows past its 200-line / 25,000-byte cap the save
+still succeeds and the result carries a warning saying detail belongs in topic files.
+
+The call names no workspace path, but it is a workspace-write-class call and is gated like
+the raw store writes it replaces:
+
+| Mode | A `memory` call |
+|---|---|
+| `manual`, `acceptEdits` | Asks you. |
+| `auto` | Goes to the guardian, which sees the topic file and the index as the touched paths. |
+| `plan` | Denied: plan mode never writes. |
+| `dontAsk`, headless | Denied. |
+
+There is no fast path, and an `allow` rule does not approve the call: the store is
+protected like a raw write to it, so the floor decides before any allow rule. (`allow =
+["memory"]` names the tool whole; it takes no specifier.) The note's content is model-typed
+text that reaches future sessions' prompts, so in `auto` the guardian judges the call exactly
+as it judges a raw write into the store. The store is a workspace root, so reads need no
+subcommand: `read`, `ls` and `glob` reach it at read-only fast-path cost. Raw `write` and
+`edit` on the store's files remain available for repairing the store by hand, at the same
+gating. See [Auto memory](memory.md).
 
 ## Permissions
 

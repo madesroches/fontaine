@@ -72,6 +72,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "send_message",
         "ask_user_question",
         "todo_write",
+        "memory",
         "powershell",
     ] {
         parse_rule(good).unwrap_or_else(|e| panic!("{good}: {e}"));

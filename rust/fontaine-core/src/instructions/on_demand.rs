@@ -125,7 +125,9 @@ impl InstructionStage {
             let mut guard = self.state();
             let state = &mut *guard;
             let scope = state.sources.scope.clone();
-            let target = PathBuf::from(touched_paths(tool, args, &scope).into_iter().next()?);
+            // On-demand instruction loading resolves workspace paths only; the memory
+            // store, which the `memory` tool writes, has no root here.
+            let target = PathBuf::from(touched_paths(tool, args, &scope, None).into_iter().next()?);
             let relative = under(&target, scope.primary())?;
             let mut dir = scope.primary().to_path_buf();
             let mut dirs = Vec::new();

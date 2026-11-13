@@ -1187,6 +1187,25 @@ impl PermissionPipeline {
                 },
             );
         }
+        // The memory tool writes the session's store without naming a path, so the floor
+        // above cannot see it; it takes the store's protected-path outcome here instead,
+        // before any allow rule or hook allow — a raw write to the store cannot be
+        // allow-ruled past the floor either. `auto` (and AFK, which routes like it) reaches
+        // the guardian; the asking modes keep the protected prompt.
+        if tool == "memory" && self.state.memory_root.is_some() {
+            if matches!(mode, PermissionMode::Auto | PermissionMode::Afk) {
+                return Verdict::Guardian;
+            }
+            return self.would_prompt(
+                mode,
+                Prompt {
+                    tier: Tier::ProtectedPath,
+                    reason: "it writes a protected location (the memory store)".to_string(),
+                    rule: None,
+                    forced: true,
+                },
+            );
+        }
 
         // Unusable out-of-root file arguments end here, after the floor: they are never
         // put to a human or the guardian.
@@ -1335,11 +1354,15 @@ impl PermissionPipeline {
             // Model-facing text; the scope error has no source. The containment hard deny
             // survives only for tools with no external route (`lsp`); an out-of-root write
             // follows the mode like an out-of-root read, and `shell`/`powershell` are
-            // `Arbitrary` and never reach this branch.
+            // `Arbitrary` and never reach this branch. A path-free tool (`memory`) names
+            // nothing for containment to check either, so its locate error denies nothing
+            // here: the call falls through to the mode dispatch exactly as its descriptor
+            // row intends — the guardian in `auto`, a prompt in the asking modes.
             Err(e)
                 if call.risk != RiskClass::Arbitrary
                     && !is_external_read(tool)
-                    && !is_external_write(tool) =>
+                    && !is_external_write(tool)
+                    && !names_no_path(tool) =>
             {
                 let mut why = match &self.state.scratch {
                     Some(scratch) => format!(
@@ -1655,11 +1678,18 @@ impl PermissionPipeline {
         let paths = if matches!(tier, Tier::ReadOnlyFastPath | Tier::Tier05) {
             Vec::new()
         } else {
-            touched_paths(cx.call.tool, &cx.args, &self.state.scope())
+            touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            )
         };
         // Checked before the tool runs. A shell command only names paths, so its words prove
-        // nothing was created; only `write` creates a file (`edit` reads its target first).
-        let created = if cx.call.tool == "write" {
+        // nothing was created; only `write` and `memory` create files (`edit` reads its target
+        // first) — without `memory` here a follow-up save of its own topic would read back as
+        // possibly pre-existing.
+        let created = if matches!(cx.call.tool, "write" | "memory") {
             paths
                 .iter()
                 .filter(|p| !Path::new(p).exists())
@@ -1696,7 +1726,12 @@ impl PermissionPipeline {
             tier: Some(tier),
             tool_use_id: cx.tool_use_id.clone(),
             digest: Some(cx.digest.clone()),
-            paths: touched_paths(cx.call.tool, &cx.args, &self.state.scope()),
+            paths: touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            ),
             converted: refusal.converted,
             fail_closed: refusal.fail_closed.map(str::to_string),
             explanation: Some(explanation_of(&refusal.why)),
@@ -2542,10 +2577,13 @@ impl PermissionPipeline {
         };
         let preview = {
             let (tool, args, scope) = (call.tool.to_string(), args.clone(), scope.clone());
-            tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
-                .await
-                .ok()
-                .flatten()
+            let memory_root = self.state.memory_root.clone();
+            tokio::task::spawn_blocking(move || {
+                preview::preview(&tool, &args, &scope, memory_root.as_deref())
+            })
+            .await
+            .ok()
+            .flatten()
         };
         if let Some(preview) = &preview {
             lock(&self.prompted, "prompted previews")
@@ -2684,15 +2722,15 @@ impl PermissionPipeline {
         }
     }
 
-    /// Shows the human the diff of an allowed `edit` or `write` after the fact, whether or not
-    /// they were asked. Display only: it feeds no decision, and failing to compute it just leaves
-    /// the call without a diff.
+    /// Shows the human the diff of an allowed `edit`, `write` or `memory` after the fact,
+    /// whether or not they were asked. Display only: it feeds no decision, and failing to
+    /// compute it just leaves the call without a diff.
     async fn publish_preview(&self, tool: &str, agent: &str, decision: &GateDecision) {
         let prompted = lock(&self.prompted, "prompted previews").remove(agent);
         let GateDecision::Allow { args } = decision else {
             return;
         };
-        if !matches!(tool, "edit" | "write" | "notebook_edit") {
+        if !matches!(tool, "edit" | "write" | "notebook_edit" | "memory") {
             return;
         }
         let Some(id) = self.state.current_call(agent) else {
@@ -2702,10 +2740,13 @@ impl PermissionPipeline {
             Some(preview) => Some(preview),
             None => {
                 let (tool, args, scope) = (tool.to_string(), args.clone(), self.state.scope());
-                tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
-                    .await
-                    .ok()
-                    .flatten()
+                let memory_root = self.state.memory_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    preview::preview(&tool, &args, &scope, memory_root.as_deref())
+                })
+                .await
+                .ok()
+                .flatten()
             }
         };
         if let Some(preview) = preview {
@@ -2793,6 +2834,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         }),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),
+        "memory" => text("topic").map(|topic| format!("memory note: {topic}")),
         "glob" => text("pattern").map(|pattern| match text("path") {
             Some(path) => format!("{pattern} in {path}"),
             None => pattern.to_string(),

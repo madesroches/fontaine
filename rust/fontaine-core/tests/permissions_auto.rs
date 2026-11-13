@@ -1295,6 +1295,55 @@ async fn a_shell_write_to_the_memory_store_reaches_the_guardian_by_the_ordinary_
 }
 
 #[tokio::test]
+async fn a_second_memory_save_reports_its_topic_as_created_this_session() {
+    use fontaine_guardian::PreExistence;
+
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));
+    let args = json!({"topic": "Commands", "content": "# Commands\n"});
+    assert!(allowed(&rig.check("memory", args.clone()).await));
+
+    let memory = rig.memory.as_ref().unwrap().clone();
+    let status = |tool: &str, args: &Value, path: &std::path::Path| {
+        let request = fontaine_core::adjudication::build(
+            &rig.state,
+            fontaine_tools::gate::ROOT_AGENT,
+            tool,
+            args,
+            Vec::new(),
+            None,
+        );
+        request
+            .session_facts
+            .touched_paths
+            .into_iter()
+            .find(|touched| touched.path == path.to_string_lossy())
+            .unwrap_or_else(|| panic!("no touched path for {}", path.display()))
+            .status
+    };
+    // A consecutive save reads its own topic and index back as created this session, not
+    // as possibly pre-existing.
+    assert_eq!(
+        status("memory", &args, &memory.join("commands.md")),
+        PreExistence::CreatedThisSession
+    );
+    assert_eq!(
+        status(
+            "memory",
+            &args,
+            &memory.join(fontaine_core::memory::INDEX_FILE)
+        ),
+        PreExistence::CreatedThisSession
+    );
+    // So does a raw rewrite of the topic.
+    let rewrite = write_args(&memory.join("commands.md").display().to_string());
+    assert_eq!(
+        status("write", &rewrite, &memory.join("commands.md")),
+        PreExistence::CreatedThisSession
+    );
+}
+
+#[tokio::test]
 async fn the_guardian_is_told_the_memory_directory_only_when_auto_memory_is_on() {
     let fake = fake_guardian(allow_verdict());
     let on = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));

@@ -271,8 +271,15 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
 
 /// The absolute paths a call touches, as the scope validator resolves them. A file tool names
 /// its path; a shell command's redirect targets and literal words that look like paths are
-/// resolved against the call's working directory.
-pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
+/// resolved against the call's working directory. The `memory` tool names no workspace path:
+/// its topic file and the store's index resolve against the session's memory root, so the
+/// guardian sees exactly what persists.
+pub fn touched_paths(
+    tool: &str,
+    args: &Value,
+    scope: &Scope,
+    memory_dir: Option<&Path>,
+) -> Vec<String> {
     const LIMIT: usize = 16;
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let resolve = |path: &str| {
@@ -286,6 +293,18 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     match tool {
         "read" | "write" | "edit" | "notebook_edit" | "lsp" => {
             out.extend(text("path").map(resolve))
+        }
+        "memory" => {
+            if let Some(root) = memory_dir {
+                if let Some(file) = text("topic").and_then(crate::memory::slug) {
+                    out.push(root.join(file).to_string_lossy().into_owned());
+                }
+                out.push(
+                    root.join(crate::memory::INDEX_FILE)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
         }
         "ls" | "grep" => out.push(
             text("path").map_or_else(|| scope.primary().to_string_lossy().into_owned(), resolve),

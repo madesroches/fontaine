@@ -39,6 +39,7 @@ pub mod mcp_auth;
 pub mod mcp_config;
 pub mod mcp_json;
 pub mod memory;
+pub mod memory_tool;
 pub mod model_report;
 pub mod model_roles;
 pub mod models;
