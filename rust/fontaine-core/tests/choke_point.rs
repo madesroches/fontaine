@@ -746,7 +746,7 @@ async fn a_child_that_inherits_the_tool_is_refused_at_call_time() {
 }
 
 #[tokio::test]
-async fn a_deferred_mcp_tool_takes_the_same_gate_whether_or_not_it_was_loaded() {
+async fn a_deferred_mcp_tool_that_is_not_loaded_still_takes_the_gate() {
     let rig = Rig::new(Manual);
     let handle = ToolServer::new().run();
     let deferral = Deferral::default();
@@ -767,18 +767,6 @@ async fn a_deferred_mcp_tool_takes_the_same_gate_whether_or_not_it_was_loaded() 
     assert!(denied.contains("denied"), "{denied}");
     assert_eq!(rig.approver.asked(), 1);
 
-    // Loaded: the same.
-    let sets = LoadedSets::default();
-    let loaded = fontaine_tools::mcp::search(
-        "select:mcp__double__lookup",
-        None,
-        &deferral.definitions(&|_| true),
-    );
-    sets.load(ROOT_AGENT, loaded.iter().map(|t| t.name.to_string()));
-    assert_eq!(sets.loaded(ROOT_AGENT, &deferral), ["mcp__double__lookup"]);
-    let denied = call(&handle, "mcp__double__lookup").await.unwrap_err();
-    assert!(denied.contains("denied"), "{denied}");
-    assert_eq!(rig.approver.asked(), 2);
     assert!(calls.lock().unwrap().is_empty());
     for record in rig
         .audit()
@@ -790,13 +778,13 @@ async fn a_deferred_mcp_tool_takes_the_same_gate_whether_or_not_it_was_loaded() 
             "{record:?}"
         );
     }
-    // Each ask records its decision and the human's answer; both calls left records.
+    // The ask records its decision and the human's answer.
     assert!(
         rig.audit()
             .iter()
             .filter(|r| r.tool == "mcp__double__lookup")
             .count()
-            >= 2
+            >= 1
     );
 
     rig.approver

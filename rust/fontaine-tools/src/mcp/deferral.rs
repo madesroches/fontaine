@@ -21,7 +21,7 @@ pub const TOOL_SEARCH: &str = "tool_search";
 const AUTO_WINDOW_PERCENT: u64 = 10;
 
 /// What `auto` compares against when the model's window is unknown.
-pub const AUTO_UNKNOWN_WINDOW_TOKENS: u64 = 10_000;
+const AUTO_UNKNOWN_WINDOW_TOKENS: u64 = 10_000;
 
 /// `[mcp] tool_search`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum DeferMode {
 
 /// Whether the definitions of `tokens` estimated tokens are deferred under `mode`, given the
 /// model's context window when it is known. Nothing is deferred when there is nothing to defer.
-pub fn should_defer(mode: DeferMode, tokens: u64, window: Option<u64>) -> bool {
+fn should_defer(mode: DeferMode, tokens: u64, window: Option<u64>) -> bool {
     if tokens == 0 {
         return false;
     }
@@ -127,15 +127,6 @@ impl Deferral {
         state.window = window;
     }
 
-    /// The estimated tokens of every registered MCP definition.
-    pub fn tokens(&self) -> u64 {
-        read_recovering(&self.0.state)
-            .servers
-            .values()
-            .map(|served| served.tokens)
-            .sum()
-    }
-
     /// Whether MCP definitions are deferred right now.
     pub fn is_active(&self) -> bool {
         let state = read_recovering(&self.0.state);
@@ -153,12 +144,16 @@ impl Deferral {
 
     /// Every registered MCP definition that `visible` accepts, in server then name order.
     pub fn definitions(&self, visible: &dyn Fn(&str) -> bool) -> Vec<Arc<ToolDefinition>> {
-        read_recovering(&self.0.state)
+        // `visible` may take the LoadedSets lock, so the registry guard is gone before it runs:
+        // LoadedSets never calls into the registry under its lock either, so neither lock is
+        // ever held while taking the other.
+        let all: Vec<Arc<ToolDefinition>> = read_recovering(&self.0.state)
             .servers
             .values()
-            .flat_map(|served| served.tools.iter())
+            .flat_map(|served| served.tools.iter().cloned())
+            .collect();
+        all.into_iter()
             .filter(|tool| visible(tool.name.as_str()))
-            .cloned()
             .collect()
     }
 
@@ -293,12 +288,19 @@ impl LoadedSets {
     /// What `agent` has loaded and `deferral` still registers, in load order. A name that
     /// vanished in a `list_changed` refresh is dropped for good.
     pub fn loaded(&self, agent: &str, deferral: &Deferral) -> Vec<String> {
-        let mut sets = lock_recovering(&self.0);
-        let Some(entry) = sets.get_mut(agent) else {
-            return Vec::new();
+        // The registry is consulted outside the lock: see `Deferral::definitions`.
+        let snapshot = match lock_recovering(&self.0).get(agent) {
+            Some(entry) => entry.loaded.clone(),
+            None => return Vec::new(),
         };
-        entry.loaded.retain(|name| deferral.is_registered(name));
-        entry.loaded.clone()
+        let kept: Vec<String> = snapshot
+            .into_iter()
+            .filter(|name| deferral.is_registered(name))
+            .collect();
+        if let Some(entry) = lock_recovering(&self.0).get_mut(agent) {
+            entry.loaded.retain(|name| kept.contains(name));
+        }
+        kept
     }
 
     /// Forgets what `agent` loaded, keeping what it may see.
