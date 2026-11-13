@@ -15,12 +15,12 @@ validation, URL confirmation, telemetry), and lifts the pin.
 
 ## Current State
 
-- `rust/fontaine-tools/src/mcp/servers.rs:545` `client_config()` calls
-  `.with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)`; the test at `:1325` asserts it.
-- `serve()` (`servers.rs:755`) wraps the transport as `ElicitationTap<MetaTap<transport>>` and hands
+- `rust/fontaine-tools/src/mcp/servers.rs:548` `client_config()` calls
+  `.with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)` (`:559`); the test at `:1324` asserts it.
+- `serve()` (`servers.rs:753`) wraps the transport as `ElicitationTap<MetaTap<transport>>` and hands
   it to `McpClientHandler::connect`, which uses the legacy `initialize` lifecycle only
   (`rig-rmcp-0.46.0/src/handler.rs:213`; its refresh helpers are `pub(crate)`).
-- `ElicitationTap` (`mcp/elicitation.rs:675`) sees every message. In `receive()` it takes
+- `ElicitationTap` (`mcp/elicitation.rs:676`) sees every message. In `receive()` it takes
   `ServerRequest::ElicitRequest` off the wire, gates it (`gate`: a subagent's call in flight
   answers `cancel`), spawns the `Elicitor` (`start`/`start_url`), validates the answer
   (`deliver`) and writes a client response with `respond()`. `end_calls()` cancels pending dialogs
@@ -29,7 +29,7 @@ validation, URL confirmation, telemetry), and lifts the pin.
 - rig-rmcp's tool call (`native.rs:210`) sends one `tools/call` and fails with
   `ServerResult::InputRequiredResult` as `UnexpectedResponse`. rmcp's own `call_tool` /
   `get_prompt` / `read_resource` drive MRTR through the handler, whose `create_elicitation` declines
-  (the tap never sees those), and `mcp_supervisor.rs:517` uses the `_once` resource read and turns
+  (the tap never sees those), and `fontaine-core/src/agent/mcp_supervisor.rs:523` uses the `_once` resource read and turns
   `InputRequired` into a tool error.
 - rmcp 3.9: `CallToolRequestParams`, `GetPromptRequestParams` and `ReadResourceRequestParams` carry
   `input_responses: Option<BTreeMap<String, Value>>` and `request_state: Option<String>`;
@@ -63,7 +63,9 @@ For each `(key, InputRequest::Elicitation(request))` the tap runs the existing `
 to `(call id, key)`. `respond()` checks that map first: an MRTR id stores
 `serde_json::to_value(ElicitResult)` under its key instead of sending a client response, and emits
 the same `mcp_elicitation` telemetry event. Everything before it (gate, hooks via the `Elicitor`,
-`ElicitForm::validate`, URL confirmation, `openable_url`) is reused unchanged, so a subagent's
+`ElicitForm::validate`, URL confirmation, `openable_url`) is reused unchanged. The synthetic id
+surfaces as `ElicitForm.id` and the hook's `elicitation_id`, which is accepted: `docs/hooks.md` calls it
+only "the request id" and no consumer treats it as a wire id. So a subagent's
 call, a headless run and the doctor probe still answer `cancel` / decline exactly as on the wire
 path.
 
@@ -75,7 +77,9 @@ before retrying. A result with neither field is a protocol error.
 
 The retry's response, matched by id and rewritten to the original id, is either the final answer
 (returned from `receive`, so rmcp and `MetaTap` see an ordinary response) or another
-`InputRequiredResult`, which starts the next round. The 11th round fails the call.
+`InputRequiredResult`, which starts the next round. The initial request is round one and at most 10
+requests are sent in total (rmcp's `DEFAULT_MRTR_MAX_ROUNDS`); the 10th `InputRequiredResult` fails
+the call.
 
 ### Failing a call
 
@@ -92,7 +96,9 @@ rmcp sends `notifications/cancelled` for the original id when a call times out o
 record; if a retry is in flight it forwards the notification with the retry's id, otherwise it
 swallows it (the server holds no live request). A late response for a dropped round's retry id is
 swallowed. `end_calls()` (no call in flight) discards the pending dialogs of a driven call instead
-of answering them.
+of answering them, and so does `receive()` when it would return `None` (transport closed). A call
+dropped by rmcp always sends `notifications/cancelled`, so the cancel path covers it; `end_calls()`
+is the backstop.
 
 ### Protocol version
 
@@ -111,7 +117,7 @@ rig-rmcp's `connect` cannot start the `server/discover` lifecycle, so a server t
    rewrite; split the answer destination in `respond()`; make `end_calls()` and `receive()`
    (outbox drain) aware of driven calls. Keep `take()` returning "taken or not" for the wire path.
 3. `mcp/servers.rs`: drop `with_protocol_version` and the version import, rewrite the doc comment
-   of `client_config()`, update the test at `:1325` to assert the default (`LATEST`).
+   of `client_config()`, update the test at `:1324` to assert the default (`LATEST`).
 4. Tests (see Testing Strategy).
 5. Docs, CHANGELOG, plan Decisions (see below).
 6. File follow-up issues: rig-rmcp lifecycle option (`server/discover`) so 2026-07-28-only servers
@@ -140,14 +146,18 @@ rig-rmcp's `connect` cannot start the `server/discover` lifecycle, so a server t
 
 ## Decisions
 
-(none yet)
+- 2026-11-13 (#542): The MRTR driver lives in `ElicitationTap`, not a replaced rig-rmcp tool wrapper; reason: the tap already owns the dialogs and sees every call, prompt and resource read.
+- 2026-11-13 (#542): MRTR input requests use synthetic ids (`fontaine-mrtr/...`) so the existing `RequestId`-keyed dialog machinery is reused; they surface as the hook's `elicitation_id`.
+- 2026-11-13 (#542): At most 10 requests per call (initial + 9 retries), matching rmcp's `DEFAULT_MRTR_MAX_ROUNDS`.
+- 2026-11-13 (#542): Sampling and roots input requests fail the call, because Fontaine declares neither capability.
+- 2026-11-13 (#542): Supersedes the 2026-11-08 protocol-version-pin line in `tasks/fontaine_harness_plan.md` (`### MCP`, ~line 859) via a new line at the end of `### MCP`.
 
 ## Documentation
 
 - `docs/mcp.md`: replace the closing "Fontaine offers the MCP protocol version 2025-11-25" paragraph
   with the current behaviour (requests for input are served at both the request form and the
   2026-07-28 result form; same dialogs, same limits; a call is retried with your answer, up to 10
-  rounds).
+  requests in total).
 - `docs/headless.md`, `docs/hooks.md`: check their elicitation text; nothing to change expected.
 - `CHANGELOG.md` Added entry (#542); a plan `## Decisions` line at the end of `### MCP`, in the
   "supersedes the 2026-11-08 …" form for the protocol-version pin line.
@@ -163,7 +173,7 @@ Unit tests in `elicitation.rs` over the existing scripted `Script` transport (no
 - URL mode: confirmed, and a non-http(s) link declined;
 - a subagent's call in flight answers `cancel` with no dialog; a headless / null elicitor cancels;
 - a `requestState`-only round retries after the back-off (`tokio::time::pause`);
-- a second `InputRequiredResult` starts round two; the 11th fails with an error response to the
+- a second `InputRequiredResult` starts round two; the 10th `InputRequiredResult` fails with an error response to the
   original id;
 - a sampling or roots input request, an empty result, and a retry send failure each produce one
   error response;
