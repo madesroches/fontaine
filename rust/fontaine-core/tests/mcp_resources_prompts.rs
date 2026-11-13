@@ -28,6 +28,11 @@ impl Respond for JsonRpc {
                 .set_body_json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
         };
         match body["method"].as_str() {
+            Some("server/discover") => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "Method not found"},
+            })),
             Some("initialize") => reply(json!({
                 "protocolVersion": body["params"]["protocolVersion"],
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
@@ -412,6 +417,11 @@ async fn a_tools_only_server_keeps_the_counts_zero_and_every_surface_empty() {
                     .set_body_json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
             };
             match body["method"].as_str() {
+                Some("server/discover") => ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32601, "message": "Method not found"},
+                })),
                 Some("initialize") => reply(json!({
                     "protocolVersion": body["params"]["protocolVersion"],
                     "capabilities": {"tools": {}},
