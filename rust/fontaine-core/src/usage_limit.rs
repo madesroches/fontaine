@@ -125,7 +125,7 @@ fn classify(
 
 /// The wait the reply's `Retry-After` header asks for: seconds or an HTTP date. Never the body's
 /// prose, which rig's own reader also scans.
-fn retry_after(response: &ProviderResponseError, now: SystemTime) -> Option<Duration> {
+pub(crate) fn retry_after(response: &ProviderResponseError, now: SystemTime) -> Option<Duration> {
     let value = response
         .headers
         .as_ref()?

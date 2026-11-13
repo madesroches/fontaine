@@ -130,6 +130,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[schedule] enabled` | no | no | yes |
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
+| `[retry]` keys | no | no | yes |
 | `[headless] max_usage_wait_secs` | no | no | yes |
 | `[headless] require_trust` | no | no | yes |
 | `[headless] on_usage_limit` | `exit` only | `exit` only | yes |
@@ -1168,6 +1169,33 @@ no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
 [goal]
 max_turns = 50
 max_cost_usd = 5.0
+```
+
+### `[retry]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `max_retries` | Retries of a failed model call on top of the first attempt, 0 to 10. 0 turns retrying off. | `4` |
+| `base_delay_ms` | The wait before the first retry, in milliseconds, at least 1. It doubles with each retry and is then multiplied by a random factor between 0.5 and 1. | `500` |
+| `max_delay_secs` | The longest single wait, in seconds, at least 1 and not below `base_delay_ms`. A `Retry-After` longer than this ends the retries at once: the server asked for more than a run will wait. | `30` |
+| `max_total_delay_secs` | The longest the retries of one turn wait in total, in seconds, at least 1. | `120` |
+
+These govern a transient model failure (a cut connection, a 5xx, throttling) on the main agent and
+on every subagent. A wait is the larger of the backoff and the reply's `Retry-After` header, and
+each retry is announced with one warning line that names the agent, the attempt, the wait and the
+status, never the reply's body. A 402, 429 or 529 gets at most 2 retries and at most 10 seconds of
+waiting in total, so a [model list](#falling-through-to-the-next-entry) moves on to its next entry
+quickly; a spent usage window is not retried at all. Only the model request is sent again: a tool
+call that already ran is never repeated.
+
+Retrying more is spend, so only the user file and `--settings` can set these.
+
+```toml
+[retry]
+max_retries = 4
+base_delay_ms = 500
+max_delay_secs = 30
+max_total_delay_secs = 120
 ```
 
 ### `[feedback]`

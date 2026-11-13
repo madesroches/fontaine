@@ -1220,6 +1220,20 @@ pub struct GoalSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RetrySection {
+    /// Retries of a failed model call on top of the first attempt, 0 to 10.
+    pub max_retries: Option<u32>,
+    /// The wait before the first retry in milliseconds; it doubles each time. At least 1.
+    pub base_delay_ms: Option<u64>,
+    /// The longest single wait in seconds, `Retry-After` included. At least 1 and not below
+    /// `base_delay_ms`.
+    pub max_delay_secs: Option<u64>,
+    /// The longest the retries of one turn wait in total, in seconds. At least 1.
+    pub max_total_delay_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AfkSection {
     /// The session temperature at which an AFK stretch is stopped; a positive, finite number.
     pub temperature_ceiling: Option<f64>,
@@ -1535,6 +1549,7 @@ pub struct Settings {
     pub checkpoints: Option<CheckpointsSection>,
     pub plugins: Option<PluginsSection>,
     pub goal: Option<GoalSection>,
+    pub retry: Option<RetrySection>,
     pub afk: Option<AfkSection>,
     pub headless: Option<HeadlessSection>,
     pub shell: Option<ShellSection>,
@@ -2036,6 +2051,30 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             && !(v.is_finite() && v >= 0.0)
         {
             return bad("goal.max_cost_usd", "must be a finite number, zero or more");
+        }
+    }
+    if let Some(r) = &s.retry {
+        if let Some(v) = r.max_retries
+            && v > MAX_RETRY_COUNT
+        {
+            return bad(
+                "retry.max_retries",
+                &format!("must be between 0 and {MAX_RETRY_COUNT}"),
+            );
+        }
+        for (key, value) in [
+            ("retry.base_delay_ms", r.base_delay_ms),
+            ("retry.max_delay_secs", r.max_delay_secs),
+            ("retry.max_total_delay_secs", r.max_total_delay_secs),
+        ] {
+            if value == Some(0) {
+                return bad(key, "must be at least 1");
+            }
+        }
+        if let (Some(base), Some(max)) = (r.base_delay_ms, r.max_delay_secs)
+            && max.saturating_mul(1000) < base
+        {
+            return bad("retry.max_delay_secs", "must not be below base_delay_ms");
         }
     }
     if let Some(afk) = &s.afk
@@ -2611,6 +2650,7 @@ pub struct Context {
 
 pub const DEFAULT_GOAL_MAX_TURNS: u32 = 50;
 const MAX_GOAL_TURNS: u32 = 1000;
+const MAX_RETRY_COUNT: u32 = 10;
 /// A full day; keeps `Instant + Duration` far from overflow.
 const MAX_SHELL_TIMEOUT_SECS: u64 = 86_400;
 const DEFAULT_SHELL_MAX_TIMEOUT_SECS: u64 = 600;
@@ -2675,6 +2715,41 @@ pub struct Goal {
     pub max_turns: u32,
     /// Spend of one unattended stretch; unset is no cost bound.
     pub max_cost_usd: Option<f64>,
+}
+
+/// The merged `[retry]` section: how a failed model call is tried again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Retry {
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_secs: u64,
+    pub max_total_delay_secs: u64,
+}
+
+impl Default for Retry {
+    fn default() -> Self {
+        let d = crate::retry::RetryPolicy::default();
+        Retry {
+            max_retries: d.max_retries,
+            base_delay_ms: d.base_delay.as_millis() as u64,
+            max_delay_secs: d.max_delay.as_secs(),
+            max_total_delay_secs: d.max_total_delay.as_secs(),
+        }
+    }
+}
+
+impl Retry {
+    pub fn policy(&self) -> crate::retry::RetryPolicy {
+        let base_delay = std::time::Duration::from_millis(self.base_delay_ms);
+        crate::retry::RetryPolicy {
+            max_retries: self.max_retries,
+            base_delay,
+            // Two files may each be valid alone and cross once merged; the cap never undercuts
+            // the base.
+            max_delay: std::time::Duration::from_secs(self.max_delay_secs).max(base_delay),
+            max_total_delay: std::time::Duration::from_secs(self.max_total_delay_secs),
+        }
+    }
 }
 
 /// The merged `[afk]` section.
@@ -2813,6 +2888,7 @@ pub struct Config {
     pub checkpoints: Checkpoints,
     pub plugins: Plugins,
     pub goal: Goal,
+    pub retry: Retry,
     pub afk: Afk,
     pub headless: Headless,
     pub shell: Shell,
@@ -2945,6 +3021,7 @@ impl Config {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
             },
+            retry: Retry::default(),
             afk: Afk {
                 temperature_ceiling: fontaine_guardian::temperature::DEFAULT_CEILING,
                 ceiling_project_cap: None,
@@ -3224,6 +3301,20 @@ impl Config {
             }
             if let Some(v) = g.max_cost_usd {
                 self.goal.max_cost_usd = Some(v);
+            }
+        }
+        if let Some(r) = &s.retry {
+            if let Some(v) = r.max_retries {
+                self.retry.max_retries = v;
+            }
+            if let Some(v) = r.base_delay_ms {
+                self.retry.base_delay_ms = v;
+            }
+            if let Some(v) = r.max_delay_secs {
+                self.retry.max_delay_secs = v;
+            }
+            if let Some(v) = r.max_total_delay_secs {
+                self.retry.max_total_delay_secs = v;
             }
         }
         if let Some(v) = s.afk.as_ref().and_then(|afk| afk.temperature_ceiling) {

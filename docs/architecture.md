@@ -193,9 +193,12 @@ terminal UI renders them and answers approval prompts concurrently with the run.
 
 A run that fails — a provider error, the turn limit, a cancel — still saves what it committed to
 the conversation, so the next turn (or typing `retry`) continues the task instead of starting
-over. A retryable transport failure (a cut connection, throttling, a 5xx) is retried twice with a
-short backoff before the turn fails, on the main agent and on subagents alike; a retry re-drives
-the run on a harness continuation note, and only a failure that outlives the retries reaches you.
+over. A retryable transport failure (a cut connection, throttling, a 5xx) is retried up to four times
+with exponential backoff and jitter, honoring `Retry-After` under a cap on the total wait, before the
+turn fails ([`[retry]`](configuration.md#retry) sets the policy). It does so on the main agent and
+on subagents alike and says so with one warning line per retry. A retry re-drives the run on a
+harness continuation note, so only the model request is sent again and no tool call is repeated,
+and only a failure that outlives the retries reaches you.
 
 ## The session ledger
 

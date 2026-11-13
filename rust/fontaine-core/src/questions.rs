@@ -157,6 +157,7 @@ mod tests {
             reveal_mcp_names: false,
             auto_edits: crate::gate::AutoEdits::default(),
             effort: None,
+            retry: crate::retry::RetryPolicy::default(),
         }));
         (HumanQuestions::new(approver, state), ledger, dir)
     }

@@ -294,6 +294,7 @@ impl Rig {
             )),
             reveal_mcp_names: false,
             effort: None,
+            retry: fontaine_core::retry::RetryPolicy::default(),
             auto_edits: fontaine_core::gate::AutoEdits {
                 tracked: config.permissions.auto_tracked_edits,
                 scratch: config.permissions.auto_scratch_writes,

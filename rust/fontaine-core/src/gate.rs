@@ -217,6 +217,8 @@ pub struct StateParams {
     pub auto_edits: AutoEdits,
     /// The reasoning effort the main agent starts at: `[model] effort` or `--effort`.
     pub effort: Option<Effort>,
+    /// How a failed model call is retried, for every agent of the session.
+    pub retry: crate::retry::RetryPolicy,
 }
 
 /// The guardian's standing inputs, fixed for the session: the expanded rule lists, the
@@ -409,6 +411,7 @@ pub struct SessionState {
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
     approver: Arc<dyn Approver>,
+    retry: crate::retry::RetryPolicy,
     sink_warned: [AtomicBool; 2],
     pub home: Option<PathBuf>,
     pub protected_dirs: Vec<PathBuf>,
@@ -480,6 +483,7 @@ impl SessionState {
             ledger: params.ledger,
             audit: params.audit,
             approver: params.approver,
+            retry: params.retry,
             sink_warned: Default::default(),
             home: params.home,
             protected_dirs: params.protected_dirs,
@@ -665,6 +669,15 @@ impl SessionState {
     /// guardian. The interactive TUI is the only place that sets this.
     pub fn guardian_off(&self) -> bool {
         *read(&self.guardian_off, "guardian off")
+    }
+
+    pub fn retry_policy(&self) -> crate::retry::RetryPolicy {
+        self.retry
+    }
+
+    /// Reports a line to the human through the session's approver.
+    pub fn warn(&self, message: &str) {
+        self.approver.warn(message);
     }
 
     /// The session's reasoning effort, which the next turn sends; `None` sends nothing.
@@ -1814,6 +1827,7 @@ mod tests {
             reveal_mcp_names: false,
             auto_edits: AutoEdits::default(),
             effort: None,
+            retry: crate::retry::RetryPolicy::default(),
         }))
     }
 

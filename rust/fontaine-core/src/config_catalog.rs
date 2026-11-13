@@ -570,6 +570,22 @@ pub const KEYS: &[KeyRow] = &[
         .max_turns
         .to_string()),
     row!("goal.max_cost_usd", Scalar, |c, _| opt(c.goal.max_cost_usd)),
+    row!("retry.max_retries", Scalar, |c, _| c
+        .retry
+        .max_retries
+        .to_string()),
+    row!("retry.base_delay_ms", Scalar, |c, _| c
+        .retry
+        .base_delay_ms
+        .to_string()),
+    row!("retry.max_delay_secs", Scalar, |c, _| c
+        .retry
+        .max_delay_secs
+        .to_string()),
+    row!("retry.max_total_delay_secs", Scalar, |c, _| c
+        .retry
+        .max_total_delay_secs
+        .to_string()),
     row!("headless.max_usage_wait_secs", Scalar, |c, _| c
         .headless
         .max_usage_wait_secs

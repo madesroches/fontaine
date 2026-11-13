@@ -57,6 +57,7 @@ pub mod providers;
 pub mod questions;
 pub mod quota;
 pub mod redact;
+pub mod retry;
 pub mod runtime_error;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;

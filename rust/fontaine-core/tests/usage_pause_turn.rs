@@ -115,20 +115,16 @@ async fn a_spent_window_settles_the_turn_at_once_without_a_backoff_retry() {
     assert!(failure.falls_through, "a model list still moves on first");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_throttle_is_still_retried_and_is_not_a_usage_limit() {
-    let built = build(vec![
-        refusal(429, THROTTLE),
-        refusal(429, THROTTLE),
-        refusal(429, THROTTLE),
-    ]);
+    let built = build(vec![refusal(429, THROTTLE); 3]);
     let TurnOutcome::Failed(TurnFailure { usage_limit, .. }) = turn(&built).await else {
         panic!("expected a failure");
     };
     assert_eq!(
         built.main.request_count(),
         3,
-        "the normal retry with a backoff"
+        "the quota-class budget: the first attempt and two retries"
     );
     assert_eq!(usage_limit, None);
 }

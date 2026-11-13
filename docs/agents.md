@@ -27,7 +27,9 @@ A subagent that gives its final answer while its own subagents still run does no
 waits for their reports (or for a message, or for words you type to it) and takes a further turn
 on each batch, as a headless run's main conversation does, and only then ends. Its report is the
 answer of its last turn. A subagent that is killed, fails or runs out of budget cannot do this:
-the subagents it started are stopped with it, and their reports are not delivered.
+the subagents it started are stopped with it, and their reports are not delivered. A transient
+model failure does not fail a subagent: its model call is [retried with backoff](configuration.md#retry)
+first, so a failed subagent means the retries ran out or the failure was not transient.
 
 The model used is the call's `model`, else the agent type's `model`, else the session model. An
 invalid value is an error result, and so is a `model` on a type defined by a project file (see

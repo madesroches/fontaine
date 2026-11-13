@@ -425,7 +425,7 @@ async fn a_cost_budget_on_the_subscription_is_a_usage_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plan_limit_is_not_retried_and_a_silent_process_is_retried_twice() {
+async fn a_plan_limit_is_not_retried_and_a_silent_process_is_retried_with_backoff() {
     let claude = Claude::new(json!({"responses": [{"events": [
         {"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "tools": [],
          "mcp_servers": [{"name": "fontaine", "status": "connected"}], "plugins": [], "skills": []},
@@ -443,8 +443,8 @@ async fn a_plan_limit_is_not_retried_and_a_silent_process_is_retried_twice() {
     assert_eq!(out.code, Some(1), "{}", out.stderr);
     assert_eq!(
         claude.model_runs().len(),
-        3,
-        "the first attempt and two retries"
+        5,
+        "the first attempt and four retries"
     );
 }
 

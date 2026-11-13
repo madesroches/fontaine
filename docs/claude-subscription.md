@@ -179,7 +179,7 @@ reports without a rejected window, and a billing failure, are not waited for.
 | CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried. A protocol failure names the rejected event, such as `(event: system/notification)` |
 | Billing error, or a rate limit with no spent window, from the CLI | the same, after the run began; it also moves a [model list](configuration.md#falling-through-to-the-next-entry) on to its next entry |
 | Plan limit with the usage window spent | not retried; a model list moves on to its next entry, a subagent whose list is spent tries the `fallback` role, and a spent list pauses the run until the reset (see [usage windows](headless.md#usage-windows)) |
-| Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
+| Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried with backoff, like any provider (see [`[retry]`](configuration.md#retry)) |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
 
 A protocol failure names what the CLI did wrong: the MCP servers and statuses it reported when the
