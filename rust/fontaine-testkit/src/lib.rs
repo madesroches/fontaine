@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 type Key = (String, String);
@@ -54,13 +54,18 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
         .entry(key)
         .or_default()
         .clone();
+    fill_slot(&entry, || build_and_copy(package, name))
+}
+
+/// Fills the slot with `build()` once; later callers get the stored path.
+fn fill_slot(entry: &Slot, build: impl FnOnce() -> PathBuf) -> PathBuf {
     // A build that panics poisons only this entry, which is still `None`, so the next caller
     // retries the build instead of failing on the poison.
-    let mut slot = entry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut slot = entry.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(path) = slot.as_ref() {
         return path.clone();
     }
-    let path = build_and_copy(package, name);
+    let path = build();
     *slot = Some(path.clone());
     path
 }
@@ -121,13 +126,7 @@ fn build_and_copy(package: &str, name: &str) -> PathBuf {
             .join("examples")
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     });
-    let copy = copy_private(&path, &layout.profile_dir, package, name);
-    assert!(
-        copy.is_file(),
-        "{} was not produced by the build",
-        copy.display()
-    );
-    copy
+    copy_private(&path, &layout.profile_dir, package, name)
 }
 
 /// Copies the built executable to a path only this process uses. The copy sits under the
@@ -143,10 +142,22 @@ fn copy_private(src: &Path, profile_dir: &Path, package: &str, name: &str) -> Pa
     ));
     // The source can be missing for an instant while a sibling build re-links it, and
     // `NotFound` does not say whether the source or the destination directory was missing.
+    // The destination is removed first so the copy lands on a fresh inode: reusing a pid would
+    // otherwise truncate and rewrite a file a previous run executed, which macOS kills
+    // (code-signing cache) and Linux can refuse with ETXTBSY.
     retry_not_found(50, Duration::from_millis(100), || {
+        match std::fs::remove_file(&dest) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         std::fs::copy(src, &dest).map(|_| ())
     })
-    .unwrap_or_else(|e| panic!("cannot copy {} to {}: {e}", src.display(), dest.display()));
+    .unwrap_or_else(|e| {
+        if !src.is_file() {
+            panic!("{} was not produced by the build", src.display());
+        }
+        panic!("cannot copy {} to {}: {e}", src.display(), dest.display())
+    });
     dest
 }
 
@@ -906,17 +917,17 @@ mod tests {
 
     #[test]
     fn a_panicking_build_leaves_the_key_retryable() {
-        let entry: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+        let entry: Slot = Arc::default();
         let e2 = entry.clone();
-        let r = std::thread::spawn(move || {
-            let _slot = e2.lock().unwrap();
-            panic!("build failed");
-        })
-        .join();
+        let r = std::thread::spawn(move || fill_slot(&e2, || panic!("build failed"))).join();
         assert!(r.is_err());
-        let mut slot = entry.lock().unwrap_or_else(|e| e.into_inner());
-        assert!(slot.is_none());
-        *slot = Some(PathBuf::from("/built"));
-        assert_eq!(slot.as_deref(), Some(Path::new("/built")));
+        assert_eq!(
+            fill_slot(&entry, || PathBuf::from("/built")),
+            Path::new("/built")
+        );
+        assert_eq!(
+            fill_slot(&entry, || panic!("built twice")),
+            Path::new("/built")
+        );
     }
 }
