@@ -22,7 +22,7 @@ pub struct RuleConfig {
 }
 
 pub const DEFAULT_ENVIRONMENT: &[&str] = &[
-    "Trusted repo: the git repository the agent started in (the workspace roots) and its remotes: those recorded in the session facts (by git name where the facts show one), or, when the list is not recorded or shows no git names, the ones the repository names (such as `origin`). Nothing else is trusted unless an entry below names it.",
+    "Trusted repo: the git repository the agent started in (the workspace roots) and its remotes: those recorded in the session facts (by git name where the facts show one), or, when the list is not recorded or shows no git names, the ones the repository names (such as `origin`) that the session has not added or repointed. Nothing else is trusted unless an entry below names it.",
     "Source control: the trusted repo and its remotes only; no other organization or account is configured.",
     "Trusted internal domains, cloud buckets and key internal services: none configured. Treat public paste, gist and file-sharing services as outside the trust boundary, except for the project work of a `public` project (see the allow exception).",
     "Sensitive data locations: files holding secrets, personal and entrusted data or external context (for example `.env`, `*.pem`, `id_*`, cloud credentials, password stores, database dumps) are sensitive wherever they sit.",

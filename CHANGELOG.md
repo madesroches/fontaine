@@ -177,7 +177,7 @@ All notable changes are recorded here. The format follows
   is never data exfiltration whatever it holds (a real secret is still secret exposure). The class-based cases are a new soft
   Out-of-Place Publication rule that naming the data and the public destination clears. The minimal
   profile gets the same remote, injection, `~/` and data-class wording, the project's own issues
-  and pull requests, and confidence guidance. Eighteen regression cases were added to the
+  and pull requests, and confidence guidance. Nineteen regression cases were added to the
   over-deny slice.
 - Guardian over-denials, third pass (#418, #576, #588, #599; tracker #312). The hosted `screen`
   preset no longer ships a `stop_threshold`: a call it does not allow now goes to the LLM guardian
