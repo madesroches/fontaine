@@ -197,9 +197,12 @@ pub(crate) fn read_idle_error(idle: std::time::Duration) -> ProviderError {
 
 pub struct ClaudeSubscription;
 
+/// The provider's account `kind`.
+pub const PROVIDER_NAME: &str = "claude-subscription";
+
 impl Provider for ClaudeSubscription {
     fn name(&self) -> &'static str {
-        "claude-subscription"
+        PROVIDER_NAME
     }
 
     fn credential(&self) -> CredentialPolicy {

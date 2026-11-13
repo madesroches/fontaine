@@ -29,7 +29,7 @@ use fontaine_tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
-use fontaine_tools::mcp::{McpOptions, connect_transport};
+use fontaine_tools::mcp::{DeferMode, Deferral, LoadedSets, McpOptions, connect_transport};
 use fontaine_tools::models_tool::{ModelSource, ModelsTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, registered_risk};
@@ -39,6 +39,7 @@ use fontaine_tools::schedule::{
 };
 use fontaine_tools::skill::{SkillSource, SkillTool};
 use fontaine_tools::todo::{TodoError, TodoItem, TodoStore, TodoTool};
+use fontaine_tools::tool_search::ToolSearchTool;
 use futures::future::BoxFuture;
 use rig_agent::tool::server::ToolServer;
 use rig_core::tool::ToolContext;
@@ -172,6 +173,11 @@ fn extension_memory(ask_user: AskUserTool, with_memory: bool) -> ExtensionTools 
         ExtensionTool::new(ModelsTool {
             source: Arc::new(NoModels),
         }),
+        ExtensionTool::new(ToolSearchTool {
+            deferral: Default::default(),
+            loaded: Default::default(),
+            reveal_names: false,
+        }),
         ExtensionTool::new(DraftBugReportTool {
             sink: Arc::new(NoDrafts),
         }),
@@ -266,6 +272,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "cron_delete",
         "schedule_wakeup",
         "models",
+        "tool_search",
         "draft_bug_report",
         "advisor",
         "memory",
@@ -466,6 +473,17 @@ async fn serve(
     rig: &Rig,
     handle: &rig_agent::tool::server::ToolServerHandle,
 ) -> fontaine_tools::mcp::McpConnectionHandle {
+    serve_deferred(double, rig, handle, Deferral::default())
+        .await
+        .connection
+}
+
+async fn serve_deferred(
+    double: Double,
+    rig: &Rig,
+    handle: &rig_agent::tool::server::ToolServerHandle,
+    deferral: Deferral,
+) -> fontaine_tools::mcp::Connected {
     let (c2s, sfc) = tokio::io::duplex(8192);
     let (s2c, cfs) = tokio::io::duplex(8192);
     tokio::spawn(async move {
@@ -479,15 +497,11 @@ async fn serve(
         pre_images: None,
         kills: None,
     };
-    connect_transport(
-        "double",
-        (cfs, c2s),
-        handle.clone(),
-        &McpOptions::new(guard, false),
-    )
-    .await
-    .expect("connect")
-    .connection
+    let mut options = McpOptions::new(guard, false);
+    options.deferral = deferral;
+    connect_transport("double", (cfs, c2s), handle.clone(), &options)
+        .await
+        .expect("connect")
 }
 
 async fn call(
@@ -729,4 +743,105 @@ async fn a_child_that_inherits_the_tool_is_refused_at_call_time() {
         Ok(fontaine_tools::ask_user::UNAVAILABLE_TEXT)
     );
     assert!(rig.approver.questions.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_deferred_mcp_tool_that_is_not_loaded_still_takes_the_gate() {
+    let rig = Rig::new(Manual);
+    let handle = ToolServer::new().run();
+    let deferral = Deferral::default();
+    deferral.set_policy(DeferMode::On, None);
+    let double = Double::with_tools(vec![lookup_tool()]);
+    let calls = double.calls.clone();
+    let _connection = serve_deferred(double, &rig, &handle, deferral.clone()).await;
+    assert!(deferral.is_active());
+    assert!(deferral.is_registered("mcp__double__lookup"));
+    // The tool stays registered and wrapped: deferral only changes what is advertised.
+    assert_eq!(
+        handle.toolset().names().collect::<Vec<_>>(),
+        ["mcp__double__lookup"]
+    );
+
+    // Not loaded: a call that reaches the callback by any route still asks the human.
+    let denied = call(&handle, "mcp__double__lookup").await.unwrap_err();
+    assert!(denied.contains("denied"), "{denied}");
+    assert_eq!(rig.approver.asked(), 1);
+
+    assert!(calls.lock().unwrap().is_empty());
+    for record in rig
+        .audit()
+        .iter()
+        .filter(|r| r.tool == "mcp__double__lookup")
+    {
+        assert!(
+            matches!(record.tier, Tier::Mode | Tier::Human),
+            "{record:?}"
+        );
+    }
+    // The ask records its decision and the human's answer.
+    assert!(
+        rig.audit()
+            .iter()
+            .filter(|r| r.tool == "mcp__double__lookup")
+            .count()
+            >= 1
+    );
+
+    rig.approver
+        .answer(fontaine_core::permissions::Answer::AllowOnce);
+    assert!(call(&handle, "mcp__double__lookup").await.is_ok());
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_list_changed_refresh_updates_the_deferred_names_and_drops_vanished_loaded_tools() {
+    let rig = Rig::new(Manual);
+    let handle = ToolServer::new().run();
+    let deferral = Deferral::default();
+    deferral.set_policy(DeferMode::On, None);
+    let double = Double::with_tools(vec![echo_tool(), lookup_tool()]);
+    let _connection = serve_deferred(double.clone(), &rig, &handle, deferral.clone()).await;
+    let sets = LoadedSets::default();
+    sets.load(
+        ROOT_AGENT,
+        [
+            "mcp__double__echo".to_string(),
+            "mcp__double__lookup".to_string(),
+        ],
+    );
+    assert_eq!(sets.loaded(ROOT_AGENT, &deferral).len(), 2);
+
+    double.replace_tools(vec![lookup_tool()]).await;
+    for _ in 0..200 {
+        if !deferral.is_registered("mcp__double__echo") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!deferral.is_registered("mcp__double__echo"));
+    assert_eq!(sets.loaded(ROOT_AGENT, &deferral), ["mcp__double__lookup"]);
+    assert_eq!(
+        deferral.names_by_server(&|_| true),
+        [(
+            "double".to_string(),
+            vec!["mcp__double__lookup".to_string()]
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_closed_connection_takes_its_tools_out_of_the_deferral_registry() {
+    let rig = Rig::new(Manual);
+    let handle = ToolServer::new().run();
+    let deferral = Deferral::default();
+    let connected = serve_deferred(
+        Double::with_tools(vec![echo_tool()]),
+        &rig,
+        &handle,
+        deferral.clone(),
+    )
+    .await;
+    assert!(deferral.is_registered("mcp__double__echo"));
+    connected.mute();
+    assert!(!deferral.is_registered("mcp__double__echo"));
 }

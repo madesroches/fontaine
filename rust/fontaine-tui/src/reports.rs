@@ -923,6 +923,14 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
         Some(usage.mcp_tools.len()),
         &usage.mcp_tools,
     ));
+    if !usage.loaded_tools.is_empty() {
+        rows.push(row(
+            "loaded MCP",
+            sum(&usage.loaded_tools),
+            Some(usage.loaded_tools.len()),
+            &usage.loaded_tools,
+        ));
+    }
     rows.push(row("messages", usage.messages, None, &[]));
     let free = usage
         .window
@@ -948,6 +956,20 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
             items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             for (name, n) in items {
                 let _ = write!(out, "\n    {name}  {}", compact_count(*n));
+            }
+        }
+    }
+    if !usage.deferred_tools.is_empty() {
+        let _ = write!(
+            out,
+            "\n  {:<14}{:>width$}  ({}, names only)",
+            "deferred MCP",
+            "-",
+            usage.deferred_tools.len()
+        );
+        if all {
+            for name in &usage.deferred_tools {
+                let _ = write!(out, "\n    {name}");
             }
         }
     }
@@ -1599,6 +1621,8 @@ mod tests {
             skills: 400,
             tools: vec![("read".into(), 300), ("shell".into(), 900)],
             mcp_tools: vec![("mcp__gh__issue".into(), 2_900)],
+            loaded_tools: Vec::new(),
+            deferred_tools: Vec::new(),
             messages: 35_700,
         }
     }
@@ -1804,6 +1828,29 @@ mod tests {
             text,
             "context ~43.6k of 200.0k tokens (21%), estimated · anthropic/claude-sonnet-5-5\n  system prompt   2.1k\n  instructions    1.3k\n  skills           400\n  tools           1.2k  (2)\n  MCP tools       2.9k  (1)\n  messages       35.7k\n  free          156.4k\nauto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)"
         );
+    }
+
+    #[test]
+    fn context_splits_deferred_names_from_loaded_definitions() {
+        let plain = context(&usage(), false);
+        assert!(
+            !plain.contains("deferred") && !plain.contains("loaded"),
+            "{plain}"
+        );
+        let mut u = usage();
+        u.loaded_tools = vec![("mcp__gh__pr".into(), 800)];
+        u.deferred_tools = vec!["mcp__gh__a".into(), "mcp__gh__b".into()];
+        let text = context(&u, false);
+        assert!(text.contains("\n  loaded MCP       800  (1)"), "{text}");
+        assert!(
+            text.contains("\n  deferred MCP       -  (2, names only)"),
+            "{text}"
+        );
+        assert_eq!(u.total(), usage().total() + 800, "names add nothing here");
+        assert!(!text.contains("mcp__gh__a"), "{text}");
+        let all = context(&u, true);
+        assert!(all.contains("    mcp__gh__pr  800"), "{all}");
+        assert!(all.contains("    mcp__gh__a\n    mcp__gh__b"), "{all}");
     }
 
     #[test]

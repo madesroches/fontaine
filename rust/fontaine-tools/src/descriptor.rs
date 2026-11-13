@@ -307,6 +307,16 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &[],
     ),
+    // Reads only the in-memory registry of tool definitions and takes no path. Loading a
+    // definition grants nothing: a call to the loaded tool takes its own gate.
+    row(
+        "tool_search",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["ToolSearch"],
+    ),
     row(
         DRAFT_BUG_REPORT,
         RiskClass::Arbitrary,
@@ -458,6 +468,10 @@ mod tests {
         assert!(is_shell_class("monitor") && !is_shell_class("job_output"));
         assert!(!is_shell_class("no_such_tool"));
         assert_eq!(find_claude("Monitor").map(|d| d.name), Some("monitor"));
+        assert_eq!(
+            find_claude("ToolSearch").map(|d| d.name),
+            Some("tool_search")
+        );
         assert_eq!(find_claude("Bash").map(|d| d.name), Some("shell"));
         // PowerShell text never meets the POSIX analyses.
         assert!(!is_shell_class("powershell"));
@@ -473,7 +487,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 32] = [
+        let expected: [Pinned; 33] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -640,6 +654,14 @@ mod tests {
                 &["ScheduleWakeup"],
             ),
             ("models", R::ReadOnly, true, D::Never, S::None, &[]),
+            (
+                "tool_search",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["ToolSearch"],
+            ),
             (
                 "draft_bug_report",
                 R::Arbitrary,

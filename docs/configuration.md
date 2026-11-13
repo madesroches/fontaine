@@ -142,6 +142,7 @@ without one is refused from project and project-local files. For those scopes:
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
 | `[mcp.servers.*]` | yes, after workspace trust and your approval of each server | yes, after workspace trust | yes |
+| `[mcp] tool_search` | yes | yes | yes |
 | `[lsp.servers.*]` | no | no | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
 | `[tui]` | no | no | yes |
@@ -883,7 +884,7 @@ refresh_interval_secs = 10
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
 of `shell`, `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
-`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `models`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `list_mcp_resources`, `read_mcp_resource` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `models`, `tool_search`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `list_mcp_resources`, `read_mcp_resource` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
 `deny` and `ask` rules apply in every mode; `allow` rules act after the floor.
@@ -995,6 +996,19 @@ env_vars = ["GITHUB_TOKEN"]
 [mcp.servers.docs]
 url = "https://mcp.example.com/docs"
 headers = { "X-Team" = "payments" }
+```
+
+### `[mcp]`
+
+`tool_search` controls [tool search](mcp.md#tool-search), which keeps MCP tool definitions out of
+requests until the model loads them with the `tool_search` tool: `auto` (the default) defers them
+when their definitions would take more than a tenth of the model's context window, `on` always
+defers them, `off` never does. Either scope may set it: deferral hides schemas and changes no
+permission decision. It has no effect with `claude-subscription` accounts.
+
+```toml
+[mcp]
+tool_search = "on"
 ```
 
 ### `[lsp.servers.<name>]`

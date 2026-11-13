@@ -38,6 +38,7 @@ use tokio::sync::watch;
 use tracing::Instrument;
 
 use crate::agent::apply_common;
+use crate::agent::deferred::{DeferredAdvertiser, child_section};
 use crate::fork_context::{FORK_NOTE, ParentContext};
 use crate::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
@@ -333,6 +334,9 @@ pub struct ChildContext {
     /// The session's kill switches: each spawn registers its receiver so a killed child's
     /// in-flight calls end at the tool choke point.
     pub kills: Arc<KillSwitches>,
+    /// The session's MCP tool definitions and what each agent has loaded of the deferred ones.
+    pub deferral: fontaine_tools::mcp::Deferral,
+    pub loaded: fontaine_tools::mcp::LoadedSets,
 }
 
 pub struct CoreChildRunner {
@@ -764,13 +768,24 @@ fn build_child_agent(
 ) -> Agent {
     let state = &context.state;
     let store = context.store.clone();
+    let mut preamble = (context.preamble)(agent_type);
+    if let Some(section) = child_section(&context.deferral, tools) {
+        preamble.push_str("\n\n");
+        preamble.push_str(&section);
+    }
     let builder = AgentBuilder::new(model.completion.clone())
-        .preamble((context.preamble)(agent_type))
+        .preamble(preamble)
         .memory(store.clone())
         .conversation(id.to_string());
     apply_common(builder, state, context.record_content)
         .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
         .add_hook(KillHook { kill })
+        .add_hook(DeferredAdvertiser {
+            agent: id.to_string(),
+            tools: tools.clone(),
+            deferral: context.deferral.clone(),
+            loaded: context.loaded.clone(),
+        })
         .add_hook(RecoveryHook::new(
             store.clone(),
             id.to_string(),
@@ -822,6 +837,14 @@ impl CoreChildRunner {
         let child = child_model(context, id, agent_type, &model, served, &budget);
         let priced = child.priced;
         let tools = fork_tools(&context.tool_server, tools);
+        // A child loads only the deferred tools its own toolset holds, and starts with none.
+        // Names, not the handle: the closure outlives the child in the session-long map and a
+        // handle would keep the pruned child's forked tool set alive.
+        let held: Vec<String> = tools.snapshot().names().map(str::to_string).collect();
+        context.loaded.enroll(
+            id,
+            Arc::new(move |name| held.iter().any(|held| held == name)),
+        );
         // The channel lives above the agent build so the hook can subscribe; the choke
         // point's registry takes the same receiver.
         let (kill, kill_rx) = watch::channel(false);

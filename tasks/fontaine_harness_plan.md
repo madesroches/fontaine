@@ -875,6 +875,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-10: (#32) A project-scope `headersHelper` is refused (Claude Code runs it after a trust prompt): it is an executable that mints credentials, and project scope can only tighten.
 - 2026-11-09: (#31) `fontaine mcp get` masks `env` values as `***` (Claude Code prints them): the output lands in terminals and logs.
 - 2026-11-09: (#31) `fontaine mcp list` and `get` probe only what `fontaine doctor` would, so an unapproved repository server shows as pending and is never started by the CLI.
+- 2026-11-13: (#34) Names-only prompt plus loading the real tool definition, not a `tool_call` proxy tool: keeps rules, hooks and audit keyed on the real `mcp__server__tool` name.
+- 2026-11-13: (#34) Loaded tools appear in their registry position (rig-agent 0.46 `RequestPatch::active_tools` only filters), not append-only; the provider's cached prefix breaks from the first changed position, an accepted cost with no cache-prefix promise.
+- 2026-11-13: (#34) Deferral is provider-neutral and client-side, not provider-native tool search: native needs per-provider wire support; #439 tracks the Kimi variant.
+- 2026-11-13: (#34) `[mcp] tool_search = "auto"` decides on a heuristic token estimate (10% of the context window, 10,000 tokens if unknown), as Claude Code does; the estimate only trades context for one round trip.
+- 2026-11-13: (#34) `[mcp] tool_search` is not a loosening key and either scope may set it: deferral hides schemas but changes no gate.
+- 2026-11-13: AFK: (#34) The loaded set starts empty on resume and after compaction (no transcript parser); the model re-searches, and the unloaded-call `Skip` refusal already says to search first.
+- 2026-11-13: (#34) One `tool_search` instance serves every agent and keeps a loaded set per agent id (as `todo_write` keeps its list), rather than one instance per child: a child's forked toolset shares the parent's wrapped tools, so a per-child instance would need its own guard; the set and the completion hook are still per agent, and a child's toolset bounds what it can load.
 
 ### Observability
 

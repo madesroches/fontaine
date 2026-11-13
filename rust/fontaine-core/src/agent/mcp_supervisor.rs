@@ -190,9 +190,55 @@ pub struct McpServers {
     slots: Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
     /// Set by the first start; the one that restarts a server by hand.
     pub(crate) supervisor: Option<Arc<Supervisor>>,
+    /// Every MCP tool's definition, and whether the session defers them.
+    pub(crate) deferral: fontaine_tools::mcp::Deferral,
+    /// What each agent has loaded of the deferred tools.
+    pub(crate) loaded: fontaine_tools::mcp::LoadedSets,
 }
 
 impl McpServers {
+    /// Applies `[mcp] tool_search` and the main model's window to the deferral. The
+    /// `claude-subscription` transport hands the tool list to the CLI, which owns tool search
+    /// itself, so Fontaine never defers there.
+    pub(crate) fn sync_deferral(
+        &self,
+        config: &crate::config::Config,
+        models: &crate::models::Models,
+    ) {
+        use crate::config::ToolSearch;
+        use fontaine_tools::mcp::DeferMode;
+        let cli_owns_tools = models.main.kind.provider().name()
+            == crate::providers::claude_subscription::PROVIDER_NAME;
+        let mode = match config.mcp.tool_search {
+            _ if cli_owns_tools => DeferMode::Off,
+            ToolSearch::Auto => DeferMode::Auto,
+            ToolSearch::On => DeferMode::On,
+            ToolSearch::Off => DeferMode::Off,
+        };
+        let window = models
+            .main
+            .completion
+            .spec()
+            .and_then(|spec| spec.context_window)
+            .map(u64::from);
+        self.deferral.set_policy(mode, window);
+    }
+
+    /// The deferred tool names the root's prompt lists, grouped by server; empty while deferral
+    /// is off.
+    pub(crate) fn deferred_names(&self) -> Vec<(String, Vec<String>)> {
+        if self.deferral.is_active() {
+            self.deferral.names_by_server(&|_| true)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The MCP part of the prompt: the resource section and the deferred-tools section.
+    pub(crate) fn prompt_section(&self) -> Option<String> {
+        crate::prompt::mcp_section(&self.listings(), &self.deferred_names())
+    }
+
     pub fn states(&self) -> Vec<(String, McpServerState)> {
         read(&self.slots, "MCP server slots")
             .iter()

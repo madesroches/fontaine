@@ -33,6 +33,47 @@ pub fn mcp_resource_section(listings: &[(String, Listings)]) -> Option<String> {
     ))
 }
 
+/// The names of the MCP tools whose definitions are deferred, grouped by server, present only
+/// while deferral is on. Names only and sorted, so the section is stable between turns.
+pub fn deferred_tools_section(by_server: &[(String, Vec<String>)]) -> Option<String> {
+    let mut groups: Vec<&(String, Vec<String>)> = by_server
+        .iter()
+        .filter(|(_, names)| !names.is_empty())
+        .collect();
+    if groups.is_empty() {
+        return None;
+    }
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut text = String::from(
+        "Deferred MCP tools: the tools below exist, but their definitions are not loaded, so you \
+         cannot call one yet. Call `tool_search` with keywords, or `select:name1,name2` for exact \
+         names, to load the definitions; a loaded tool is callable from your next turn and goes \
+         through the same permission checks as any other.",
+    );
+    for (server, names) in groups {
+        let mut names: Vec<&str> = names.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        text.push_str(&format!("\n{server}: {}", names.join(", ")));
+    }
+    Some(text)
+}
+
+/// The MCP part of the prompt: the resource section and the deferred-tools section, each only
+/// when it applies.
+pub fn mcp_section(
+    listings: &[(String, Listings)],
+    deferred: &[(String, Vec<String>)],
+) -> Option<String> {
+    let parts: Vec<String> = [
+        mcp_resource_section(listings),
+        deferred_tools_section(deferred),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 /// Added only when the scheduling tools are registered.
 pub const SCHEDULING_PROMPT: &str = "\
 Scheduling: use `cron_create` only when the user asks for something to happen later or repeatedly. \
@@ -227,4 +268,50 @@ pub fn subagent_layer(agent_type: &str, instructions: Option<&str>) -> String {
         text.push_str(instructions.trim_end());
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(server: &str, names: &[&str]) -> (String, Vec<String>) {
+        (
+            server.to_string(),
+            names.iter().map(|n| n.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn the_deferred_section_is_absent_without_names() {
+        assert!(deferred_tools_section(&[]).is_none());
+        assert!(deferred_tools_section(&[group("gh", &[])]).is_none());
+    }
+
+    #[test]
+    fn the_deferred_section_lists_sorted_names_by_server_and_is_stable() {
+        let one = deferred_tools_section(&[
+            group("gh", &["mcp__gh__b", "mcp__gh__a"]),
+            group("db", &["mcp__db__q"]),
+        ])
+        .expect("the section");
+        let other = deferred_tools_section(&[
+            group("db", &["mcp__db__q"]),
+            group("gh", &["mcp__gh__a", "mcp__gh__b"]),
+        ])
+        .expect("the section");
+        assert_eq!(one, other);
+        assert!(
+            one.ends_with("\ndb: mcp__db__q\ngh: mcp__gh__a, mcp__gh__b"),
+            "{one}"
+        );
+        assert!(one.contains("tool_search"), "{one}");
+    }
+
+    #[test]
+    fn the_mcp_section_joins_what_applies() {
+        assert!(mcp_section(&[], &[]).is_none());
+        let deferred = [group("gh", &["mcp__gh__a"])];
+        let text = mcp_section(&[], &deferred).expect("the section");
+        assert!(text.starts_with("Deferred MCP tools"), "{text}");
+    }
 }

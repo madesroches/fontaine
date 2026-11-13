@@ -6,6 +6,7 @@
 //! request for input is shown to the person, never answered by the harness.
 
 pub mod auth;
+pub mod deferral;
 pub mod elicitation;
 pub mod listings;
 mod meta;
@@ -13,6 +14,7 @@ pub mod output;
 pub mod register;
 pub mod servers;
 
+pub use deferral::{DeferMode, Deferral, LoadedSets, TOOL_SEARCH, search};
 pub use elicitation::{
     CallGuard, CancelAll, Choice, ElicitForm, ElicitReply, ElicitRequest, ElicitUrl, Elicitor,
     Field, FieldKind, TextFormat, openable_url,

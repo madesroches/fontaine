@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use fontaine_tools::mcp::TOOL_SEARCH;
+
 use crate::effort::Effort;
 use crate::mode::ModeSetting;
 
@@ -210,7 +212,7 @@ impl AgentType {
         for tool in parent {
             // `tools: None` types inherit everything else, so the strip lives here rather
             // than in each type.
-            if ROOT_ONLY.contains(&tool.as_str()) {
+            if ROOT_ONLY.contains(&tool.as_str()) || tool == TOOL_SEARCH {
                 continue;
             }
             let named = wanted
@@ -219,6 +221,15 @@ impl AgentType {
             if named && !removed.iter().any(|r| entry_covers(r, tool)) && !out.contains(tool) {
                 out.push(tool.clone());
             }
+        }
+        // `tool_search` loads the deferred definitions of MCP tools, so it follows them: a child
+        // with none has nothing to search, and one that has any needs it whatever its type
+        // names.
+        if parent.iter().any(|t| t == TOOL_SEARCH)
+            && !removed.contains(&TOOL_SEARCH)
+            && out.iter().any(|t| fontaine_tools::names::is_mcp(t))
+        {
+            out.push(TOOL_SEARCH.to_string());
         }
         out
     }
@@ -573,6 +584,30 @@ mod tests {
                 "{entry}"
             );
         }
+    }
+
+    #[test]
+    fn tool_search_follows_the_mcp_tools_a_child_gets() {
+        let parent = names(&["read", "mcp__gh__issue", "tool_search"]);
+        let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
+        ty.tools = Some(names(&["read", "mcp__gh"]));
+        assert_eq!(
+            ty.toolset(&parent),
+            names(&["read", "mcp__gh__issue", "tool_search"])
+        );
+        ty.tools = Some(names(&["read"]));
+        assert_eq!(ty.toolset(&parent), names(&["read"]));
+        ty.tools = Some(names(&["read", "mcp__gh", "tool_search"]));
+        ty.disallowed = names(&["tool_search"]);
+        assert_eq!(ty.toolset(&parent), names(&["read", "mcp__gh__issue"]));
+        ty.tools = None;
+        ty.disallowed = names(&["mcp__gh"]);
+        assert_eq!(ty.toolset(&parent), names(&["read"]));
+        assert_eq!(
+            ty.toolset(&names(&["read", "mcp__gh__issue"])),
+            names(&["read"]),
+            "a parent without it has none to give"
+        );
     }
 
     #[test]

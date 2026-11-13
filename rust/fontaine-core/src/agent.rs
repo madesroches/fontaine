@@ -66,6 +66,7 @@ use fontaine_tools::live::Live;
 mod advisor;
 mod afk;
 mod build;
+pub(crate) mod deferred;
 mod goal;
 mod hooks;
 mod lsp;
@@ -344,7 +345,7 @@ impl AgentRuntime {
             &gates.results,
         );
         let (main, tool_server, runner, kills) =
-            setup::subagent_support(&deps, &tree, &setup.models, &setup.config);
+            setup::subagent_support(&deps, &tree, &setup.models, &setup.config, &mcp);
         let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &gates.retained,
             roots: state.scope().roots(),
@@ -439,10 +440,17 @@ impl AgentRuntime {
         })
     }
 
+    /// The MCP part of the prompt as it would be built now, after applying the deferral
+    /// setting and the main model's window.
+    pub(crate) fn mcp_prompt_section(&self) -> Option<String> {
+        self.mcp.sync_deferral(&self.config, &self.models);
+        self.mcp.prompt_section()
+    }
+
     /// Rebuilds the registry and the agent for the current scope.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let prompt_afk = self.state.afk_on();
-        let mcp = prompt::mcp_resource_section(&self.mcp.listings());
+        let mcp = self.mcp_prompt_section();
         let (agent, prompt_pieces, launch_instructions, native_search) = self.build_candidate()?;
         self.install_agent(
             agent,
@@ -489,7 +497,7 @@ impl AgentRuntime {
         self.notice_disk_changes();
         let offered = self.native_search_entry().is_some();
         let afk = self.state.afk_on();
-        let mcp = prompt::mcp_resource_section(&self.mcp.listings());
+        let mcp = self.mcp_prompt_section();
         if offered == self.native_search && afk == self.prompt_afk && mcp == self.prompt_mcp {
             return Ok(());
         }
@@ -539,11 +547,14 @@ impl AgentRuntime {
         self.state.memory_root.is_some()
     }
 
-    /// The names of the tools the agent has now, MCP tools included.
+    /// The names of the tools the agent has now, MCP tools included. `tool_search` counts only
+    /// while MCP tools are deferred: otherwise it is registered but never offered.
     pub fn tool_names(&self) -> Vec<String> {
+        let search = self.mcp.deferral.is_active();
         self.tool_server
             .toolset()
             .names()
+            .filter(|name| search || *name != fontaine_tools::mcp::TOOL_SEARCH)
             .map(str::to_owned)
             .collect()
     }
@@ -1128,6 +1139,9 @@ impl AgentRuntime {
         let pruned = agents.clear_ended();
         spawn::settle_retired(agents, &self.ledger_window(), pruned, true);
         agents.discard_root_reminders();
+        // Definitions loaded for the conversation that just ended would be advertised into the
+        // emptied one.
+        self.mcp.loaded.clear_all();
         self.end_jobs().await;
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});
@@ -1186,6 +1200,34 @@ impl AgentRuntime {
         &self.setup.lsp
     }
 
+    /// The registered tool definitions split by what the next request carries: the ones it
+    /// advertises, the deferred ones the model loaded, and the names of the deferred ones it
+    /// did not. `tool_search` is advertised only while deferral is on.
+    fn deferral_split(&self, defs: Vec<ToolDefinition>) -> DeferralSplit {
+        self.mcp.sync_deferral(&self.config, &self.models);
+        let deferral = &self.mcp.deferral;
+        let active = deferral.is_active();
+        let loaded = self.mcp.loaded.loaded(ROOT_AGENT, deferral);
+        let mut split = DeferralSplit::default();
+        for def in defs {
+            let name = def.name.to_string();
+            if name == fontaine_tools::mcp::TOOL_SEARCH {
+                if active {
+                    split.advertised.push(def);
+                }
+            } else if active && deferral.is_registered(&name) {
+                if loaded.contains(&name) {
+                    split.loaded.push(def);
+                } else {
+                    split.deferred.push(name);
+                }
+            } else {
+                split.advertised.push(def);
+            }
+        }
+        split
+    }
+
     /// `/context`: what fills the window now, estimated.
     pub async fn context_usage(&self) -> Result<ContextUsage, ContextError> {
         let conversation = load_async(&self.session.store(), CONVERSATION_LOG)
@@ -1197,7 +1239,9 @@ impl AgentRuntime {
             .await
             .map_err(|e| ContextError::Tools(Box::new(e)))?;
         let defs: Vec<ToolDefinition> = defs.iter().map(|def| (**def).clone()).collect();
-        let (tools, mcp_tools) = context::tool_tokens(&defs);
+        let split = self.deferral_split(defs);
+        let (tools, mcp_tools) = context::tool_tokens(&split.advertised);
+        let (_, loaded_tools) = context::tool_tokens(&split.loaded);
         let pieces = &self.prompt_pieces;
         let spec = self.models.main.completion.spec();
         let count = |text: &Option<String>| text.as_deref().map_or(0, context::text_tokens);
@@ -1222,7 +1266,17 @@ impl AgentRuntime {
             skills: count(&pieces.skills),
             tools,
             mcp_tools,
+            loaded_tools,
+            deferred_tools: split.deferred,
             messages: estimate_tokens(conversation.messages()),
         })
     }
+}
+
+/// The tool definitions of the root agent's next request, by how they reach the model.
+#[derive(Default)]
+struct DeferralSplit {
+    advertised: Vec<ToolDefinition>,
+    loaded: Vec<ToolDefinition>,
+    deferred: Vec<String>,
 }

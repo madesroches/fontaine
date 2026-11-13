@@ -13,6 +13,16 @@ All notable changes are recorded here. The format follows
   pausing the whole session; the run pauses only when `fallback` is spent too. With no `fallback`
   role nothing changes. A user role that was already named `fallback` now also serves as the
   usage-window fallback.
+- Deferred MCP tool loading (#34). When MCP tool definitions would take more than a tenth of the
+  model's context window (10,000 tokens when the window is unknown), Fontaine keeps them out of
+  requests: the system prompt lists only the tool names, grouped by server, and the model loads the
+  definitions it needs with the new read-only `tool_search` tool. `[mcp] tool_search = "auto" | "on" |
+  "off"` (default `auto`; user and project scope) controls it, and it is off whenever
+  the main model is on `claude-subscription`, whose CLI owns the tool list (a subagent on such a
+  model under another main model still defers). Deferred tools are registered and guarded
+  exactly like loaded ones, so rules, hooks, the guardian and the audit log are unchanged; a call to
+  a deferred tool whose definition was not loaded is refused with a note to search first. `/context`
+  shows the deferred names and the loaded definitions separately.
 - `[headless] require_trust` (#228). Opt-in, user file or `--settings` only: a `fontaine -p` run
   skips project hooks, repository MCP servers and project skill commands unless the workspace was
   trusted in the terminal UI, and prints one line on stderr. The default is unchanged (headless

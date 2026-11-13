@@ -20,6 +20,7 @@ lsp-types.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rig-core.workspace = true
+rig-memory.workspace = true
 rig-rmcp.workspace = true
 rig-tools.workspace = true
 rmcp.workspace = true

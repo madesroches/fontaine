@@ -989,6 +989,7 @@ pub(super) fn subagent_support(
     tree: &AgentTree,
     models: &Models,
     config: &Config,
+    mcp: &super::mcp_supervisor::McpServers,
 ) -> (
     Arc<RwLock<MainModel>>,
     ToolServerHandle,
@@ -1008,6 +1009,7 @@ pub(super) fn subagent_support(
         &main,
         config.telemetry.records_content(),
         &kills,
+        mcp,
     );
     wire_root_tree(tree, models, &tool_server);
     let revival: Arc<dyn fontaine_agents::runner::ChildRunner> = runner.clone();
@@ -1022,6 +1024,7 @@ fn child_runner(
     main: &Arc<RwLock<MainModel>>,
     record_content: bool,
     kills: &Arc<KillSwitches>,
+    mcp: &super::mcp_supervisor::McpServers,
 ) -> Arc<CoreChildRunner> {
     let ChildDeps {
         retained,
@@ -1081,6 +1084,8 @@ fn child_runner(
             results: results.clone(),
             store: retained.store.clone(),
             kills: kills.clone(),
+            deferral: mcp.deferral.clone(),
+            loaded: mcp.loaded.clone(),
         }),
     })
 }

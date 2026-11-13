@@ -32,6 +32,7 @@ pub mod shell_cwd;
 pub mod skill;
 pub mod tls;
 pub mod todo;
+pub mod tool_search;
 pub mod webfetch;
 pub mod websearch;
 
