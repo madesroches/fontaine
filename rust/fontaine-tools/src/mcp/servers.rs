@@ -23,7 +23,7 @@ use rig_rmcp::{McpClientError, McpClientHandler, McpConnection};
 use rmcp::ServiceError;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, ElicitationCapability, FormElicitationCapability,
-    Implementation, UrlElicitationCapability,
+    Implementation, JsonObject, TASKS_EXTENSION_ID, UrlElicitationCapability,
 };
 use rmcp::service::ClientInitializeError;
 use rmcp::transport::auth::{
@@ -542,12 +542,17 @@ impl CallScope {
     }
 }
 
-/// Elicitation in form and URL mode, over the newest protocol version rmcp offers. A server
-/// that answers `initialize` with an older version is served the request form; one that answers
-/// with the newest sends it as an `input_required` result, which the elicitation tap drives
-/// because rig-rmcp cannot surface it.
+/// Elicitation in form and URL mode, and the tasks extension, over the newest protocol version
+/// rmcp offers. A server that answers `initialize` with an older version is served the request
+/// form; one that answers with the newest sends it as an `input_required` result, and may answer
+/// a tool call with a task handle. The elicitation tap drives both because rig-rmcp cannot
+/// surface them.
 fn client_config() -> ClientConfig {
     let mut capabilities = ClientCapabilities::default();
+    capabilities
+        .extensions
+        .get_or_insert_default()
+        .insert(TASKS_EXTENSION_ID.to_string(), JsonObject::new());
     capabilities.elicitation = Some(
         ElicitationCapability::new()
             .with_form(FormElicitationCapability::new())
@@ -1327,9 +1332,11 @@ mod tests {
         let elicitation = config
             .capabilities
             .elicitation
+            .as_ref()
             .expect("elicitation is declared");
         assert!(elicitation.form.is_some());
         assert!(elicitation.url.is_some());
+        assert!(config.capabilities.supports_tasks());
     }
 
     async fn status_of(client: &reqwest::Client, url: String) -> u16 {

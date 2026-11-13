@@ -8,6 +8,10 @@
 //! `resources/read` instead (an `input_required` result). The same wrapper drives those rounds:
 //! it takes the result off the wire, serves its elicitations through the same dialogs and retries
 //! the call with the answers, so rmcp only ever sees the call's final response.
+//!
+//! A server that saw the tasks extension declared may answer a `tools/call` with a task handle
+//! instead. The wrapper polls the task to its end below rmcp as well, serving the input the task
+//! asks for along the way, and hands rmcp the call's result or error under the call's id.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -16,11 +20,14 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use rmcp::RoleClient;
 use rmcp::model::{
-    CancelledNotification, CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification,
-    ClientRequest, ClientResult, ElicitRequestParams, ElicitResult, ElicitationAction, EnumSchema,
-    ErrorData, InputRequest, InputRequiredResult, MultiSelectEnumSchema, PrimitiveSchemaDefinition,
-    RequestId, ServerJsonRpcMessage, ServerNotification, ServerRequest, ServerResult,
-    SingleSelectEnumSchema, StringFormat,
+    CallToolResult, CancelTaskParams, CancelTaskRequest, CancelledNotification,
+    CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification, ClientRequest,
+    ClientResult, CreateTaskResult, ElicitRequestParams, ElicitResult, ElicitationAction,
+    EnumSchema, ErrorCode, ErrorData, GetTaskParams, GetTaskRequest, GetTaskResult, InputRequest,
+    InputRequests, InputRequiredResult, JsonObject, MultiSelectEnumSchema,
+    PrimitiveSchemaDefinition, RequestId, ServerJsonRpcMessage, ServerNotification, ServerRequest,
+    ServerResult, SingleSelectEnumSchema, StringFormat, TaskPayload, UpdateTaskParams,
+    UpdateTaskRequest,
 };
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -684,15 +691,57 @@ struct Answer {
 enum Event {
     /// A `requestState`-only round has waited out its back-off.
     RetryDue(RequestId),
-    /// The retry for a driven call could not be written.
-    RetryFailed(RequestId),
+    /// A task's poll interval has elapsed.
+    PollDue(RequestId),
+    /// The retry or task request for a driven call could not be written.
+    SendFailed(RequestId),
 }
 
 /// Requests sent for one call, the first included; rmcp's own driver stops at the same count.
 const MAX_REQUESTS: usize = 10;
 
-/// A call whose server answered with `input_required`, between the first answer and the final one.
+/// How long to wait before polling a task whose server named no interval, and the bounds on one
+/// it did: a hostile or buggy value must neither spin the poll loop nor stall it.
+const DEFAULT_POLL: Duration = Duration::from_secs(1);
+const MIN_POLL: Duration = Duration::from_millis(50);
+const MAX_POLL: Duration = Duration::from_secs(5);
+
+fn poll_interval(millis: Option<u64>) -> Duration {
+    millis
+        .map(Duration::from_millis)
+        .map_or(DEFAULT_POLL, |interval| interval.clamp(MIN_POLL, MAX_POLL))
+}
+
+const UNSUPPORTED_INPUT: &str =
+    "the server asked for sampling or roots, which this client does not offer";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PollKind {
+    Get,
+    Update,
+}
+
+/// A call the server answered with a task handle.
+struct TaskState {
+    task_id: String,
+    /// The `tasks/get` or `tasks/update` in flight.
+    poll: Option<RequestId>,
+    interval: Duration,
+    /// Input request keys already put in front of the person; a key is unique for the task's life.
+    surfaced: BTreeSet<String>,
+}
+
+enum Phase {
+    /// Re-sent with the answers after each `input_required` result.
+    Retrying,
+    /// Polled until the task ends.
+    Task(TaskState),
+}
+
+/// A call whose server answered with `input_required` or a task, between that answer and the
+/// final one.
 struct Driven {
+    phase: Phase,
     request: ClientRequest,
     /// Requests sent so far, the first included.
     sent: usize,
@@ -701,10 +750,31 @@ struct Driven {
     /// Keys of this round's requests nobody has answered yet.
     awaiting: BTreeSet<String>,
     state: Option<String>,
-    /// The id the retry in flight was sent under.
+    /// The id the retry in flight was sent under; always `None` for a task.
     retry: Option<RequestId>,
     /// Consecutive rounds that carried only `requestState`, for the back-off.
     state_only_rounds: u32,
+}
+
+fn has_unsupported_input(inputs: &InputRequests) -> bool {
+    inputs
+        .values()
+        .any(|input| !matches!(input, InputRequest::Elicitation(_)))
+}
+
+/// The error a failed task carried, built from whatever fields it has: `error` is an open object
+/// and a server's may be missing or mistyped in any of them.
+fn task_error(error: &JsonObject) -> ErrorData {
+    let code = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
+        .map_or(ErrorCode::INTERNAL_ERROR, ErrorCode);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the server's task failed");
+    ErrorData::new(code, message.to_string(), error.get("data").cloned())
 }
 
 fn is_eligible(request: &ClientRequest) -> bool {
@@ -762,13 +832,16 @@ pub(crate) struct ElicitationTap<T> {
     driven: HashMap<RequestId, Driven>,
     /// Retry id to the driven call it belongs to.
     retries: HashMap<RequestId, RequestId>,
-    /// Retries whose call was cancelled; their late responses are swallowed.
+    /// Poll id to the driven task call it belongs to.
+    task_polls: HashMap<RequestId, (RequestId, PollKind)>,
+    /// Retries and task requests whose call ended; their late responses are swallowed.
     dropped_retries: HashSet<RequestId>,
     /// Synthetic dialog id to the driven call and the server's key it answers.
     mrtr_inputs: HashMap<RequestId, (RequestId, String)>,
     /// Responses the tap made up, handed to rmcp before anything else.
     outbox: VecDeque<ServerJsonRpcMessage>,
     retry_count: u64,
+    task_count: u64,
 }
 
 impl<T> ElicitationTap<T> {
@@ -797,10 +870,12 @@ impl<T> ElicitationTap<T> {
             eligible: HashMap::new(),
             driven: HashMap::new(),
             retries: HashMap::new(),
+            task_polls: HashMap::new(),
             dropped_retries: HashSet::new(),
             mrtr_inputs: HashMap::new(),
             outbox: VecDeque::new(),
             retry_count: 0,
+            task_count: 0,
         }
     }
 }
@@ -966,8 +1041,10 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             .collect();
         for id in ended {
             if let Some((call, _)) = self.mrtr_inputs.get(&id).cloned() {
-                // The call is over, so nobody is left to retry it.
-                self.drop_call(&call);
+                // The call is over, so nobody is left to retry or poll it.
+                if let Some(driven) = self.drop_call(&call) {
+                    self.cancel_task(&driven);
+                }
                 continue;
             }
             if let Some(pending) = self.pending.remove(&id) {
@@ -993,20 +1070,84 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             }
         }
         let driven = self.driven.remove(call);
-        if let Some(retry) = driven.as_ref().and_then(|d| d.retry.as_ref()) {
-            self.retries.remove(retry);
+        if let Some(driven) = &driven {
+            if let Some(retry) = &driven.retry {
+                self.retries.remove(retry);
+            }
+            if let Phase::Task(task) = &driven.phase
+                && let Some(poll) = &task.poll
+            {
+                self.task_polls.remove(poll);
+                self.dropped_retries.insert(poll.clone());
+            }
         }
         driven
     }
 
-    /// Ends a call the tap cannot continue with an error response to rmcp.
+    /// Ends a call the tap cannot continue with an error response to rmcp, and tells the server
+    /// to stop a task it would otherwise keep running until its TTL.
     fn fail(&mut self, call: RequestId, text: &str) {
+        tracing::warn!(server = %self.shown, call = %call, reason = text, "ending an MCP call the tap could not continue");
+        if let Some(driven) = self.drop_call(&call) {
+            self.cancel_task(&driven);
+        }
+        self.finish_error(call, ErrorData::internal_error(text.to_string(), None));
+    }
+
+    /// Ends a call with a response from the server, or one the tap made up from it.
+    fn finish(&mut self, call: RequestId, result: ServerResult) {
         self.drop_call(&call);
-        tracing::warn!(server = %self.shown, call = %call, reason = text, "ending an MCP call that asked for input");
-        self.outbox.push_back(ServerJsonRpcMessage::error(
-            ErrorData::internal_error(text.to_string(), None),
-            Some(call),
-        ));
+        self.outbox
+            .push_back(ServerJsonRpcMessage::response(result, call));
+    }
+
+    fn finish_error(&mut self, call: RequestId, error: ErrorData) {
+        self.drop_call(&call);
+        self.outbox
+            .push_back(ServerJsonRpcMessage::error(error, Some(call)));
+    }
+
+    /// A `tasks/cancel` for a dropped call's task, whose ack nobody wants.
+    fn task_cancel_message(&mut self, driven: &Driven) -> Option<ClientJsonRpcMessage> {
+        let Phase::Task(task) = &driven.phase else {
+            return None;
+        };
+        let id = self.next_task_id();
+        self.dropped_retries.insert(id.clone());
+        Some(ClientJsonRpcMessage::request(
+            ClientRequest::CancelTaskRequest(CancelTaskRequest::new(CancelTaskParams::new(
+                task.task_id.clone(),
+            ))),
+            id,
+        ))
+    }
+
+    fn cancel_task(&mut self, driven: &Driven) {
+        if let Some(message) = self.task_cancel_message(driven) {
+            self.dispatch(message, None);
+        }
+    }
+
+    fn next_task_id(&mut self) -> RequestId {
+        self.task_count += 1;
+        RequestId::String(format!("fontaine-task/{}", self.task_count).into())
+    }
+
+    /// Writes a message the tap made up. The write runs on its own task for the same reason
+    /// `respond` does; a failed write ends `call`, when there is one.
+    fn dispatch(&mut self, message: ClientJsonRpcMessage, call: Option<RequestId>) {
+        let sending = self.inner.send(message);
+        let events = self.event_sender.clone();
+        let shown = self.shown.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sending.await {
+                let text = crate::error_chain::chain(&e);
+                tracing::warn!(server = %shown, error = %text, "could not send an MCP request of the tap's own");
+                if let Some(call) = call {
+                    let _ = events.send(Event::SendFailed(call));
+                }
+            }
+        });
     }
 
     fn record_answer(&mut self, call: RequestId, key: String, result: &ElicitResult) {
@@ -1027,7 +1168,10 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         driven.answers.insert(key.clone(), value);
         driven.awaiting.remove(&key);
         if driven.awaiting.is_empty() {
-            self.retry(call);
+            match driven.phase {
+                Phase::Retrying => self.retry(call),
+                Phase::Task(_) => self.update_task(call),
+            }
         }
     }
 
@@ -1049,18 +1193,72 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         driven.sent += 1;
         driven.retry = Some(retry_id.clone());
         self.retries.insert(retry_id.clone(), call.clone());
-        let sending = self
-            .inner
-            .send(ClientJsonRpcMessage::request(request, retry_id));
+        self.dispatch(ClientJsonRpcMessage::request(request, retry_id), Some(call));
+    }
+
+    /// Waits out `interval`, then polls the task of `call`.
+    fn schedule_poll(&mut self, call: RequestId, interval: Duration) {
+        // A set keeps each finished timer until it is joined.
+        while self.tasks.try_join_next().is_some() {}
         let events = self.event_sender.clone();
-        let shown = self.shown.clone();
-        tokio::spawn(async move {
-            if let Err(e) = sending.await {
-                let text = crate::error_chain::chain(&e);
-                tracing::warn!(server = %shown, error = %text, "could not send an MCP retry");
-                let _ = events.send(Event::RetryFailed(call));
-            }
+        self.tasks.spawn(async move {
+            tokio::time::sleep(interval).await;
+            let _ = events.send(Event::PollDue(call));
         });
+    }
+
+    /// Sends `request` for the task of `call` under a fresh id that answers to `kind`.
+    fn send_task_request(&mut self, call: RequestId, kind: PollKind, request: ClientRequest) {
+        let id = self.next_task_id();
+        let Some(Driven {
+            phase: Phase::Task(task),
+            ..
+        }) = self.driven.get_mut(&call)
+        else {
+            return;
+        };
+        task.poll = Some(id.clone());
+        self.task_polls.insert(id.clone(), (call.clone(), kind));
+        self.dispatch(ClientJsonRpcMessage::request(request, id), Some(call));
+    }
+
+    fn update_task(&mut self, call: RequestId) {
+        let Some(Driven {
+            phase: Phase::Task(task),
+            answers,
+            sent,
+            ..
+        }) = self.driven.get_mut(&call)
+        else {
+            return;
+        };
+        *sent += 1;
+        let params = UpdateTaskParams::new(task.task_id.clone(), std::mem::take(answers));
+        self.send_task_request(
+            call,
+            PollKind::Update,
+            ClientRequest::UpdateTaskRequest(UpdateTaskRequest::new(params)),
+        );
+    }
+
+    fn poll_task(&mut self, call: RequestId) {
+        let Some(Driven {
+            phase: Phase::Task(task),
+            awaiting,
+            ..
+        }) = self.driven.get(&call)
+        else {
+            return;
+        };
+        if task.poll.is_some() || !awaiting.is_empty() {
+            return;
+        }
+        let params = GetTaskParams::new(task.task_id.clone());
+        self.send_task_request(
+            call,
+            PollKind::Get,
+            ClientRequest::GetTaskRequest(GetTaskRequest::new(params)),
+        );
     }
 
     fn on_event(&mut self, event: Event) {
@@ -1074,9 +1272,13 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
                     self.retry(call);
                 }
             }
-            Event::RetryFailed(call) => {
+            Event::PollDue(call) => self.poll_task(call),
+            Event::SendFailed(call) => {
                 if self.driven.contains_key(&call) {
-                    self.fail(call, "the server's request for input could not be continued: sending the retry failed");
+                    self.fail(
+                        call,
+                        "the call could not be continued: sending the next request to the server failed",
+                    );
                 }
             }
         }
@@ -1096,14 +1298,8 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             self.fail(call, "the server's input_required result asked for nothing");
             return;
         }
-        if inputs
-            .values()
-            .any(|input| !matches!(input, InputRequest::Elicitation(_)))
-        {
-            self.fail(
-                call,
-                "the server asked for sampling or roots, which this client does not offer",
-            );
+        if has_unsupported_input(&inputs) {
+            self.fail(call, UNSUPPORTED_INPUT);
             return;
         }
         driven.state = result.request_state;
@@ -1128,7 +1324,12 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             });
             return;
         }
-        // Registered before any dialog starts: a gated one answers at once, and the retry must
+        self.start_dialogs(call, round, inputs);
+    }
+
+    /// Starts a dialog for each of `inputs`; the call goes on once all are answered.
+    fn start_dialogs(&mut self, call: RequestId, round: usize, inputs: InputRequests) {
+        // Registered before any dialog starts: a gated one answers at once, and the call must
         // wait for the others.
         let dialogs: Vec<(RequestId, InputRequest)> = inputs
             .into_iter()
@@ -1159,6 +1360,159 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         }
     }
 
+    /// Takes a task handle for `call`, answered to a `tools/call`, and starts polling it.
+    fn task_created(&mut self, call: RequestId, mut driven: Driven, created: &CreateTaskResult) {
+        let interval = poll_interval(created.task.poll_interval_ms);
+        driven.phase = Phase::Task(TaskState {
+            task_id: created.task.task_id.clone(),
+            poll: None,
+            interval,
+            surfaced: BTreeSet::new(),
+        });
+        if !matches!(driven.request, ClientRequest::CallToolRequest(_)) {
+            self.cancel_task(&driven);
+            self.fail(
+                call,
+                "the server answered with a task, which only a tool call may be",
+            );
+            return;
+        }
+        driven.retry = None;
+        self.driven.insert(call.clone(), driven);
+        self.schedule_poll(call, interval);
+    }
+
+    /// Takes the server's answer to a request the tap sent for the task of `call`.
+    fn task_answered(&mut self, call: RequestId, kind: PollKind, message: ServerJsonRpcMessage) {
+        let Some(Driven {
+            phase: Phase::Task(task),
+            ..
+        }) = self.driven.get_mut(&call)
+        else {
+            return;
+        };
+        task.poll = None;
+        let interval = task.interval;
+        match message {
+            ServerJsonRpcMessage::Response(response) => match (kind, response.result) {
+                (PollKind::Get, ServerResult::GetTaskResult(polled)) => {
+                    self.task_polled(call, polled);
+                }
+                (PollKind::Get, _) => {
+                    self.fail(call, "the server answered a task poll with something else");
+                }
+                // The ack changes nothing; the next poll shows what the answers did.
+                (PollKind::Update, _) => self.schedule_poll(call, interval),
+            },
+            ServerJsonRpcMessage::Error(error) => {
+                let what = match kind {
+                    PollKind::Get => "poll",
+                    PollKind::Update => "answer",
+                };
+                self.fail(
+                    call,
+                    &format!(
+                        "the server refused the task {what}: {}",
+                        error.error.message
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn task_polled(&mut self, call: RequestId, polled: GetTaskResult) {
+        if let Some(Driven {
+            phase: Phase::Task(task),
+            ..
+        }) = self.driven.get_mut(&call)
+            && let Some(millis) = polled.task.task.poll_interval_ms
+        {
+            task.interval = poll_interval(Some(millis));
+        }
+        match polled.task.payload {
+            TaskPayload::Working => {
+                let interval = self.task_interval(&call);
+                self.schedule_poll(call, interval);
+            }
+            TaskPayload::InputRequired { input_requests } => self.task_input(call, input_requests),
+            TaskPayload::Completed { result } => {
+                match serde_json::from_value::<CallToolResult>(Value::Object(result)) {
+                    Ok(result) => self.finish(call, ServerResult::CallToolResult(result)),
+                    Err(e) => {
+                        tracing::warn!(server = %self.shown, error = %crate::error_chain::chain(&e), "a completed task carried no tool result");
+                        self.finish_error(
+                            call,
+                            ErrorData::internal_error(
+                                "the server's completed task carried no valid tool result",
+                                None,
+                            ),
+                        );
+                    }
+                }
+            }
+            TaskPayload::Failed { error } => self.finish_error(call, task_error(&error)),
+            TaskPayload::Cancelled => self.finish_error(
+                call,
+                ErrorData::internal_error("the server cancelled the task", None),
+            ),
+            _ => self.fail(
+                call,
+                "the server reported a task status this client does not know",
+            ),
+        }
+    }
+
+    fn task_interval(&self, call: &RequestId) -> Duration {
+        match self.driven.get(call) {
+            Some(Driven {
+                phase: Phase::Task(task),
+                ..
+            }) => task.interval,
+            _ => DEFAULT_POLL,
+        }
+    }
+
+    /// Serves the input requests of a task that have not been surfaced yet, then updates the task.
+    fn task_input(&mut self, call: RequestId, requests: InputRequests) {
+        let Some(Driven {
+            phase: Phase::Task(task),
+            sent,
+            ..
+        }) = self.driven.get_mut(&call)
+        else {
+            return;
+        };
+        let fresh: InputRequests = requests
+            .into_iter()
+            .filter(|(key, _)| !task.surfaced.contains(key))
+            .collect();
+        let (interval, round) = (task.interval, *sent);
+        if fresh.is_empty() {
+            // Already asked: the server has not yet seen the answers.
+            self.schedule_poll(call, interval);
+            return;
+        }
+        if round >= MAX_REQUESTS {
+            self.fail(
+                call,
+                &format!("the server kept asking for input; gave up after {MAX_REQUESTS} requests"),
+            );
+            return;
+        }
+        if has_unsupported_input(&fresh) {
+            self.fail(call, UNSUPPORTED_INPUT);
+            return;
+        }
+        task.surfaced.extend(fresh.keys().cloned());
+        let Some(driven) = self.driven.get_mut(&call) else {
+            return;
+        };
+        driven.answers.clear();
+        driven.awaiting = fresh.keys().cloned().collect();
+        self.start_dialogs(call, round, fresh);
+    }
+
     /// Handles a response or error from the server. `None` means it was taken; otherwise the
     /// message, its id rewritten when it answers a retry, goes on to rmcp.
     fn route(&mut self, mut message: ServerJsonRpcMessage) -> Option<ServerJsonRpcMessage> {
@@ -1174,6 +1528,10 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         if self.dropped_retries.remove(&id) {
             return None;
         }
+        if let Some((call, kind)) = self.task_polls.remove(&id) {
+            self.task_answered(call, kind, message);
+            return None;
+        }
         let (call, driven) = if let Some(call) = self.retries.remove(&id) {
             let mut driven = self
                 .driven
@@ -1183,6 +1541,7 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             (call, driven)
         } else if let Some(request) = self.eligible.remove(&id) {
             let driven = Driven {
+                phase: Phase::Retrying,
                 request,
                 sent: 1,
                 answers: BTreeMap::new(),
@@ -1195,11 +1554,18 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
         } else {
             return Some(message);
         };
-        if let ServerJsonRpcMessage::Response(response) = &message
-            && let ServerResult::InputRequiredResult(result) = &response.result
-        {
-            self.input_required(call, driven, result.clone());
-            return None;
+        if let ServerJsonRpcMessage::Response(response) = &message {
+            match &response.result {
+                ServerResult::InputRequiredResult(result) => {
+                    self.input_required(call, driven, result.clone());
+                    return None;
+                }
+                ServerResult::CreateTaskResult(created) => {
+                    self.task_created(call, driven, created);
+                    return None;
+                }
+                _ => {}
+            }
         }
         match &mut message {
             ServerJsonRpcMessage::Response(r) => r.id = call,
@@ -1224,6 +1590,9 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
                 {
                     self.eligible.remove(call);
                     if let Some(driven) = self.drop_call(call) {
+                        if let Some(cancel) = self.task_cancel_message(&driven) {
+                            return Some(cancel);
+                        }
                         // With no retry in flight the server holds no live request.
                         let retry = driven.retry?;
                         self.dropped_retries.insert(retry.clone());
@@ -2380,6 +2749,541 @@ mod tests {
         assert!(rig.tap.receive().await.is_none());
         settle().await;
         assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+    }
+
+    fn created(id: i64, poll_ms: Option<u64>) -> ServerJsonRpcMessage {
+        let mut result = json!({
+            "resultType": "task", "taskId": "t1", "status": "working",
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:00Z",
+            "ttlMs": null,
+        });
+        if let Some(ms) = poll_ms {
+            result["pollIntervalMs"] = json!(ms);
+        }
+        done(json!(id), result)
+    }
+
+    /// A `tasks/get` response; `extra` carries the status's own fields.
+    fn task_status(id: Value, status: &str, extra: Value, poll_ms: u64) -> ServerJsonRpcMessage {
+        let mut result = json!({
+            "resultType": "complete", "taskId": "t1", "status": status,
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:01Z",
+            "ttlMs": null, "pollIntervalMs": poll_ms,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            result[key] = value.clone();
+        }
+        done(id, result)
+    }
+
+    fn task_requests(sent: &[Value], method: &str) -> Vec<Value> {
+        sent.iter()
+            .filter(|m| m["method"] == json!(method))
+            .cloned()
+            .collect()
+    }
+
+    fn rpc_error(id: Value, message: &str) -> ServerJsonRpcMessage {
+        serde_json::from_value(json!({
+            "jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}
+        }))
+        .expect("an error response")
+    }
+
+    fn ack(id: Value) -> ServerJsonRpcMessage {
+        done(id, json!({"resultType": "complete"}))
+    }
+
+    /// Sends call 1, answers it with a task and waits for the first poll; returns its id.
+    async fn start_task(rig: &mut Rig, poll_ms: Option<u64>) -> Value {
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script.push(created(1, poll_ms));
+        let out = drain(&mut rig.tap, Duration::from_secs(6)).await;
+        assert!(
+            out.is_empty(),
+            "the task handle never reaches rmcp: {out:?}"
+        );
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 1, "{gets:?}");
+        assert_eq!(gets[0]["params"]["taskId"], json!("t1"));
+        gets[0]["id"].clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_is_polled_until_it_completes_and_rmcp_sees_one_result() {
+        let mut rig = rig(Scripted::new(vec![]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script.push(created(1, Some(200)));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(150))
+                .await
+                .is_empty()
+        );
+        assert!(task_requests(&rig.script.sent(), "tasks/get").is_empty());
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(100))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 1);
+        assert!(
+            gets[0]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("fontaine-task/"))
+        );
+        rig.script.push(task_status(
+            gets[0]["id"].clone(),
+            "working",
+            json!({}),
+            200,
+        ));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(300))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 2);
+        rig.script.push(task_status(
+            gets[1]["id"].clone(),
+            "completed",
+            json!({"result": {"content": [{"type": "text", "text": "fin"}]}}),
+            200,
+        ));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert_eq!(out[0]["result"]["content"][0]["text"], json!("fin"));
+        settle().await;
+        assert!(task_requests(&rig.script.sent(), "tasks/cancel").is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_completed_task_with_is_error_passes_as_a_normal_result() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(task_status(
+            get,
+            "completed",
+            json!({"result": {"content": [{"type": "text", "text": "bad"}], "isError": true}}),
+            100,
+        ));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert_eq!(out[0]["result"]["isError"], json!(true));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_task_is_an_error_built_from_whatever_the_server_sent() {
+        for (error, code, message) in [
+            (
+                json!({"code": -32000, "message": "boom", "data": {"k": 1}}),
+                json!(-32000),
+                "boom",
+            ),
+            (
+                json!({"code": "x", "message": 7}),
+                json!(-32603),
+                "the server's task failed",
+            ),
+            (json!({}), json!(-32603), "the server's task failed"),
+        ] {
+            let mut rig = rig(Scripted::new(vec![]));
+            let get = start_task(&mut rig, Some(100)).await;
+            rig.script
+                .push(task_status(get, "failed", json!({"error": error}), 100));
+            let out = drain(&mut rig.tap, SHORT).await;
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0]["id"], json!(1));
+            assert_eq!(out[0]["error"]["code"], code, "{error}");
+            assert_eq!(out[0]["error"]["message"], json!(message), "{error}");
+            settle().await;
+            assert!(task_requests(&rig.script.sent(), "tasks/cancel").is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_task_and_an_unparseable_result_each_fail_the_call() {
+        for (status, extra) in [
+            ("cancelled", json!({})),
+            ("completed", json!({"result": {"content": "not a list"}})),
+        ] {
+            let mut rig = rig(Scripted::new(vec![]));
+            let get = start_task(&mut rig, Some(100)).await;
+            rig.script.push(task_status(get, status, extra, 100));
+            let out = drain(&mut rig.tap, SHORT).await;
+            assert_eq!(out.len(), 1, "{status}: {out:?}");
+            assert_eq!(out[0]["id"], json!(1));
+            assert!(out[0].get("error").is_some(), "{out:?}");
+            settle().await;
+            assert!(task_requests(&rig.script.sent(), "tasks/cancel").is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_error_answering_a_poll_fails_the_call() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(rpc_error(get, "no such task"));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(
+            out[0]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no such task")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_answered_with_another_result_fails_the_call() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(done(get, json!({"foo": "bar"})));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_poll_interval_is_clamped() {
+        for (poll_ms, expected) in [
+            (None, 1000),
+            (Some(0), 50),
+            (Some(10), 50),
+            (Some(u64::MAX), 5000),
+        ] {
+            let mut rig = rig(Scripted::new(vec![]));
+            rig.tap.send(call_tool(1)).await.unwrap();
+            rig.script.push(created(1, poll_ms));
+            if expected >= 500 {
+                drain(&mut rig.tap, Duration::from_millis(expected - 100)).await;
+                settle().await;
+                assert!(
+                    task_requests(&rig.script.sent(), "tasks/get").is_empty(),
+                    "{poll_ms:?}: polled early"
+                );
+                drain(&mut rig.tap, Duration::from_millis(100)).await;
+            } else {
+                drain(&mut rig.tap, Duration::from_millis(expected + 10)).await;
+            }
+            settle().await;
+            assert_eq!(
+                task_requests(&rig.script.sent(), "tasks/get").len(),
+                1,
+                "{poll_ms:?}"
+            );
+        }
+    }
+
+    fn input_status(get: Value, keys: &[&str]) -> ServerJsonRpcMessage {
+        let requests: Map<String, Value> = keys
+            .iter()
+            .map(|key| (key.to_string(), form_input("Who?")))
+            .collect();
+        task_status(
+            get,
+            "input_required",
+            json!({"inputRequests": requests}),
+            100,
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_input_required_task_is_updated_with_the_answers_and_polled_again() {
+        let answer = Map::from_iter([("name".to_string(), json!("Ada"))]);
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Accept(answer)]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        assert!(drain(&mut rig.tap, SHORT).await.is_empty());
+        settle().await;
+        let forms = rig.elicitor.forms.lock().unwrap().clone();
+        assert_eq!(forms.len(), 1);
+        assert_eq!(forms[0].id, "fontaine-mrtr/1/1/k");
+        let updates = task_requests(&rig.script.sent(), "tasks/update");
+        assert_eq!(updates.len(), 1, "{updates:?}");
+        assert_eq!(updates[0]["params"]["taskId"], json!("t1"));
+        assert_eq!(
+            updates[0]["params"]["inputResponses"]["k"]["content"],
+            json!({"name": "Ada"})
+        );
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/get").len(), 1);
+        rig.script.push(ack(updates[0]["id"].clone()));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(150))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 2, "polling resumes after the update's ack");
+        // The same key again is not asked twice.
+        rig.script.push(input_status(gets[1]["id"].clone(), &["k"]));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(150))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/get").len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_subagents_call_cancels_a_tasks_dialog() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let _sub = rig.tracker.enter(false);
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert_eq!(rig.elicitor.asked(), 0);
+        let updates = task_requests(&rig.script.sent(), "tasks/update");
+        assert_eq!(updates.len(), 1, "{updates:?}");
+        assert_eq!(
+            updates[0]["params"]["inputResponses"]["k"]["action"],
+            json!("cancel")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_error_answering_an_update_fails_the_call() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        let update = task_requests(&rig.script.sent(), "tasks/update")[0]["id"].clone();
+        rig.script.push(rpc_error(update, "bad answer"));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_tenth_input_required_status_fails_the_call() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let mut get = start_task(&mut rig, Some(100)).await;
+        let mut out = Vec::new();
+        for round in 1..=10 {
+            rig.script
+                .push(input_status(get.clone(), &[&format!("k{round}")]));
+            out = drain(&mut rig.tap, Duration::from_millis(300)).await;
+            settle().await;
+            if round < 10 {
+                assert!(out.is_empty(), "{out:?}");
+                let update = task_requests(&rig.script.sent(), "tasks/update")
+                    .last()
+                    .unwrap()["id"]
+                    .clone();
+                rig.script.push(ack(update));
+                drain(&mut rig.tap, Duration::from_millis(300)).await;
+                settle().await;
+                get = task_requests(&rig.script.sent(), "tasks/get")
+                    .last()
+                    .unwrap()["id"]
+                    .clone();
+            }
+        }
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/update").len(), 9);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sampling_or_roots_input_in_a_task_fails_the_call_and_cancels_the_task() {
+        let sampling = json!({
+            "method": "sampling/createMessage",
+            "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}], "maxTokens": 10}
+        });
+        for input in [sampling, json!({"method": "roots/list"})] {
+            let mut rig = rig(Scripted::new(vec![]));
+            let get = start_task(&mut rig, Some(100)).await;
+            rig.script.push(task_status(
+                get,
+                "input_required",
+                json!({"inputRequests": {"s": input}}),
+                100,
+            ));
+            let out = drain(&mut rig.tap, SHORT).await;
+            settle().await;
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0]["id"], json!(1));
+            assert!(out[0].get("error").is_some());
+            let cancels = task_requests(&rig.script.sent(), "tasks/cancel");
+            assert_eq!(cancels.len(), 1);
+            assert_eq!(cancels[0]["params"]["taskId"], json!("t1"));
+            rig.script.push(ack(cancels[0]["id"].clone()));
+            assert!(drain(&mut rig.tap, SHORT).await.is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_task_call_cancels_the_task_and_swallows_late_responses() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        drain(&mut rig.tap, SHORT).await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        rig.tap.send(cancel_call(1)).await.unwrap();
+        settle().await;
+        let sent = rig.script.sent();
+        let cancels = task_requests(&sent, "tasks/cancel");
+        assert_eq!(cancels.len(), 1, "{sent:?}");
+        assert_eq!(cancels[0]["params"]["taskId"], json!("t1"));
+        assert!(task_requests(&sent, "notifications/cancelled").is_empty());
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+        rig.script.push(ack(cancels[0]["id"].clone()));
+        assert!(drain(&mut rig.tap, SHORT).await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_in_flight_when_the_call_is_cancelled_is_swallowed() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.tap.send(cancel_call(1)).await.unwrap();
+        settle().await;
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/cancel").len(), 1);
+        rig.script.push(task_status(get, "working", json!({}), 100));
+        assert!(drain(&mut rig.tap, Duration::from_secs(2)).await.is_empty());
+        assert_eq!(
+            task_requests(&rig.script.sent(), "tasks/get").len(),
+            1,
+            "no poll follows the late response"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_last_call_ending_cancels_a_tasks_dialogs_and_the_task() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        let call = rig.tracker.enter(true);
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        drain(&mut rig.tap, SHORT).await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        drop(call);
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/cancel").len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_transport_drops_the_task_without_cancelling_it() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        let get = start_task(&mut rig, Some(100)).await;
+        rig.script.push(input_status(get, &["k"]));
+        drain(&mut rig.tap, SHORT).await;
+        *rig.script.hung_up.lock().unwrap() = true;
+        rig.script.wake.notify_one();
+        assert!(rig.tap.receive().await.is_none());
+        settle().await;
+        assert_eq!(*rig.elicitor.dropped.lock().unwrap(), 1);
+        assert!(task_requests(&rig.script.sent(), "tasks/cancel").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_task_for_a_prompt_or_a_resource_fails_the_call() {
+        for call in [get_prompt(1), read_resource(1)] {
+            let mut rig = rig(Scripted::new(vec![]));
+            rig.tap.send(call).await.unwrap();
+            rig.script.push(created(1, Some(50)));
+            let out = drain(&mut rig.tap, SHORT).await;
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0]["id"], json!(1));
+            assert!(out[0].get("error").is_some());
+            settle().await;
+            assert_eq!(task_requests(&rig.script.sent(), "tasks/cancel").len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_without_an_interval_keeps_the_previous_one() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let get = start_task(&mut rig, Some(200)).await;
+        let mut working = json!({
+            "resultType": "complete", "taskId": "t1", "status": "working",
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:01Z",
+            "ttlMs": null,
+        });
+        working["pollIntervalMs"] = Value::Null;
+        rig.script.push(done(get, working));
+        drain(&mut rig.tap, Duration::from_millis(300)).await;
+        settle().await;
+        assert_eq!(task_requests(&rig.script.sent(), "tasks/get").len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_poll_or_update_that_cannot_be_sent_fails_the_call_once() {
+        let mut first = rig(Scripted::new(vec![]));
+        first.tap.send(call_tool(1)).await.unwrap();
+        *first.script.fail_sends.lock().unwrap() = true;
+        first.script.push(created(1, Some(100)));
+        let out = drain(&mut first.tap, Duration::from_millis(400)).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        let get = start_task(&mut rig, Some(100)).await;
+        *rig.script.fail_sends.lock().unwrap() = true;
+        rig.script.push(input_status(get, &["k"]));
+        let out = drain(&mut rig.tap, Duration::from_millis(400)).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert!(out[0].get("error").is_some(), "{out:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_answered_with_a_task_is_polled_under_the_original_id() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        rig.tap.send(call_tool(1)).await.unwrap();
+        rig.script
+            .push(needs_input(json!(1), json!({"a": form_input("x")}), None));
+        drain(&mut rig.tap, SHORT).await;
+        settle().await;
+        let retry = retries(&rig.script.sent())[0]["id"].clone();
+        let mut task = json!({
+            "resultType": "task", "taskId": "t1", "status": "working",
+            "createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:00Z",
+            "ttlMs": null, "pollIntervalMs": 100,
+        });
+        task["pollIntervalMs"] = json!(100);
+        rig.script.push(done(retry, task));
+        assert!(
+            drain(&mut rig.tap, Duration::from_millis(150))
+                .await
+                .is_empty()
+        );
+        settle().await;
+        let gets = task_requests(&rig.script.sent(), "tasks/get");
+        assert_eq!(gets.len(), 1, "{gets:?}");
+        rig.script.push(task_status(
+            gets[0]["id"].clone(),
+            "completed",
+            json!({"result": {"content": [{"type": "text", "text": "fin"}]}}),
+            100,
+        ));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(1));
+        assert_eq!(out[0]["result"]["content"][0]["text"], json!("fin"));
+    }
+
+    #[tokio::test]
+    async fn a_task_for_an_unrecorded_id_passes_through() {
+        let mut rig = rig(Scripted::new(vec![]));
+        rig.script.push(created(99, Some(50)));
+        let out = drain(&mut rig.tap, SHORT).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0]["id"], json!(99));
     }
 
     fn form(schema: ElicitationSchema) -> ElicitForm {

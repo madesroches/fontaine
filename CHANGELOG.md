@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP tool calls that a server answers with a task (protocol 2026-07-28, tasks extension) now
+  work (#614). Fontaine declares the extension, polls the task until it ends, serves the task's
+  requests for input through the usual dialogs, and cancels the task when the call times out or is
+  interrupted; the model sees the tool's final result or error.
 - MCP servers that ask for input as a result of the call (protocol 2026-07-28, "input required")
   are served (#542). Fontaine now offers the newest protocol version and drives those rounds for
   tool calls, prompt fetches and resource reads: the request is answered through the usual

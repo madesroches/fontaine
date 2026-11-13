@@ -429,6 +429,25 @@ retries the call with your answer, and the server may ask again; a call is given
 requests in total. A server that asks for something other than a form or a link (a model sample or
 the list of roots) fails the call, because Fontaine offers neither.
 
+## Long-running tool calls (tasks)
+
+At protocol version 2026-07-28 a server that supports the tasks extension can answer a tool call
+with a handle to a task it keeps running, instead of the result. Fontaine declares the extension
+when it connects and handles the handle itself: it asks the server for the task's state at the
+interval the server suggests (never faster than every 50 ms or slower than every 5 s; once a
+second when the server names none) until the task ends, and the model sees the tool's result or
+error as for any other call. Only tool calls can become tasks; a task handle for a prompt or a
+resource fails that call.
+
+- **The call's timeout and your interrupt apply.** When the call times out or you interrupt it,
+  Fontaine tells the server to cancel the task. Fontaine also cancels the task when it has to give
+  up on the call itself.
+- **A task can ask for input.** A task that needs you is served through the same dialogs as any
+  other [request for input](#requests-for-input), and your answer goes to the task. The same limit
+  applies: the tenth request for input fails the call, after nine answers.
+- **A failed or cancelled task is an error.** The server's error is shown as the call's error. A
+  completed task whose result is an error result is a normal tool error.
+
 ## Reconnecting
 
 A remote (streamable HTTP) server that drops mid-session is reconnected. Fontaine notices when a
