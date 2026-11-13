@@ -47,8 +47,7 @@ and each caller builds its own `Err` text ("every model in X failed" vs nothing 
 
 - Walks the `fallback` chain over `0..entries.len()` in order, ignoring the chain's `active` and
   with no `failed` exclusion (so it does not reuse `fall_through_order`/`Tried::order`, which start
-  at `active`), skipping the accounts of every own-list entry that actually failed on quota in this
-  request (collected during `fall_through_child`), entries that fail to resolve (with an
+  at `active`), skipping entries on accounts in the spent-accounts set (defined in the last bullet), entries that fail to resolve (with an
   `Approver::warn`), and unpriced entries under an explicit `--max-budget-usd`. Its own walk
   never settles the fallback chain (`settles = false`). A child already on the fallback chain (its
   list chain is the fallback chain by `Arc::ptr_eq`, which includes `ModelSpec::Named("fallback")`)
@@ -73,12 +72,16 @@ and each caller builds its own `Err` text ("every model in X failed" vs nothing 
   (`failure.class.unwrap_or("quota")`) and the `fallback` role named in the record (session log and
   audit log, like any fall-through).
 - If every fallback entry is also spent on a window, the existing `wait_out_usage_limit` pause runs
-  on the current account and, after the reset, the request goes through again with tried entries
-  forgotten. After the wait, and after later answers, the child stays on the fallback chain and
-  retries its current entry with `tried` reset. The set of spent accounts and the fallback chain's
-  skipped entries survive the resets after an answer and are cleared only after a successful wait;
-  while serving from the fallback chain, `fall_through_child` also skips entries on accounts in that
-  set, so a later window failure on fallback entry k never walks back onto a spent account.
+  on the serving entry's account and, after the reset, the request goes through again with tried
+  entries forgotten. After the wait, and after later answers, the child stays on the fallback chain
+  (it does not return to its own list) and retries its current entry with `tried` reset.
+- Spent-accounts set: `run_child` keeps it as a local. On every usage-window failure, before calling
+  `fall_through_child`, it adds `shared.model().served.account()` (`fall_through_child` returns
+  `Err(String::new())` for list-less children, so it cannot collect them). `fall_back_child` and,
+  while serving the fallback chain, `fall_through_child` skip entries on accounts in the set, so a
+  later window failure on fallback entry k never walks back onto a spent account. The set (and the
+  fallback chain's noted skips) survive the `tried` resets after an answer and are cleared only
+  after a successful wait.
 
 ## Implementation Steps
 
@@ -86,7 +89,8 @@ and each caller builds its own `Err` text ("every model in X failed" vs nothing 
 2. `child_runner.rs`: fetch the chain at switch time with
    `shared.context.chains.chain_of_role(&shared.context.roles, FALLBACK_ROLE)`; turn `RunShared.list` into the
    serving state (`Mutex<Option<Arc<ChildList>>>`, locked with `fontaine_tools::lock::lock`); extract the shared entry-switch helper from `fall_through_child`;
-   add `fall_back_child`; call it before the `wait_out_usage_limit` block.
+   add `fall_back_child`; keep the spent-accounts set as a `run_child` local (Design, last bullet) and
+   pass it to both walks; call `fall_back_child` before the `wait_out_usage_limit` block.
 3. Add the usage-window notice wording in `model_roles.rs`, beside `fall_through_notice`.
 4. Docs and CHANGELOG (below).
 5. Tests (below).
@@ -108,6 +112,12 @@ and each caller builds its own `Err` text ("every model in X failed" vs nothing 
 
 - 2026-11-13 AFK: the `fallback` role is opt-in (undefined = pause as today), the most conservative
   reading of "configurable".
+- 2026-11-13 AFK: spent accounts are tracked in a `run_child` local set filled from
+  `shared.model().served.account()` on every usage-window failure (not inside `fall_through_child`,
+  which returns `Err(String::new())` for list-less children); it survives post-answer `tried` resets
+  and is cleared only after a successful wait.
+- 2026-11-13 AFK: after the wait the child stays on the fallback chain rather than returning to its
+  own list (the spent list would only fail again), and the wait runs on the serving entry's account.
 - 2026-11-13 AFK: transport failures (503) are not in scope; they are not quota-class and the issue's
   stall was the usage-window pause. Revisit separately if wanted.
 
@@ -153,8 +163,9 @@ no-`fallback` regression pin needs that new setup); `rust/fontaine-core/tests/us
 - Switch does not change the child's mode, rules or guardian; other children of the role keep their
   entry.
 - Later quota failure on the fallback entry walks the fallback chain, never back to the spent entry.
-- A fallback entry fails on its window after an answer: the walk skips the spent account and the
-  pause waits on the fallback entry's window.
+- A fallback entry fails on its window after an answer: the walk skips the spent accounts (including
+  a list-less child's own account) and the pause waits on the fallback entry's window; the set is
+  cleared only after a successful wait.
 
 ## Open Questions
 
