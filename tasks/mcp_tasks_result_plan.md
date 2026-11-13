@@ -69,7 +69,10 @@ generalises to cover swallowed poll responses.
    - `Cancelled`: write a JSON-RPC error "the server cancelled the task".
    - `TaskStatus` / `TaskPayload` are `non_exhaustive`: a wildcard arm fails the call.
 4. A JSON-RPC error answering a poll (unknown or expired task) fails the call with that error. An
-   expired `ttl_ms` is the server's business: it surfaces as such an error.
+   expired `ttl_ms` is the server's business: it surfaces as such an error. A response to a poll id
+   that is not a `GetTaskResult` (`ServerResult` is untagged, so it may land as `CustomResult`) fails
+   the call; an error answering `tasks/update` fails the call; an error answering `tasks/cancel` is
+   swallowed.
 5. Cancellation (rig-rmcp's timeout or the user's interrupt): `outgoing` sees
    `notifications/cancelled` for the call; the tap drops the `Driven`, sends `tasks/cancel {taskId}`
    (fire and forget; its ack and any in-flight poll response are swallowed) instead of a
@@ -77,7 +80,10 @@ generalises to cover swallowed poll responses.
    `drop_call`. `outgoing` currently does `let retry = driven.retry?;`, which returns early for a task
    call: branch on the phase first. `end_calls` also sends `tasks/cancel` for task-phase calls. A
    stale `PollDue` for a dropped call is a no-op, and every terminal status removes the `Driven` and
-   its poll mapping.
+   its poll mapping. `fail` sends a best-effort `tasks/cancel {taskId}` (ack swallowed) for a
+   task-phase call, so a call the tap fails itself (sampling/roots input, `MAX_REQUESTS`, an
+   unparseable result, a poll error) does not leave the server task live until its TTL; not for
+   `Completed` / `Failed` / `Cancelled` terminal statuses and not on transport close.
 
 Every tap-sent `tasks/get`, `tasks/update` and `tasks/cancel` id is registered (in `task_poll_ids` or
 `dropped_retries`) at send time so no response leaks to rmcp. The `tasks/update` and `tasks/cancel`
@@ -86,7 +92,8 @@ acks are always swallowed (the update ack keeps the call alive). On every drop p
 response is swallowed.
 
 The three failure paths funnel through the existing `fail(call, text)` so the user-visible error text
-is built in one place; a new `finish(call, ServerResult)` writes a synthetic success the same way.
+is built in one place; its log text (currently hard-coded as "ending an MCP call that asked for
+input") is made generic, or parameterised, since `fail` is reused for tasks; a new `finish(call, ServerResult)` writes a synthetic success the same way.
 
 ### Capability
 
@@ -155,6 +162,8 @@ All unit tests in `elicitation.rs` using the existing `Script` transport double 
   and aborts pending dialogs; transport close drops the task.
 - A task result for a `prompts/get` or `resources/read` fails that call.
 - More than `MAX_REQUESTS` `tasks/update` rounds fails the call.
+- Sampling/roots input in a task fails the call and sends `tasks/cancel` from `fail`.
+- An error answering `tasks/update` fails the call.
 - `servers.rs`: `client_config()` declares the tasks extension (`supports_tasks()`) and still the
   elicitation capability.
 - Regression guard: existing MRTR tests stay green (the `Driven` refactor must not change them).
