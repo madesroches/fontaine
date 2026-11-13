@@ -106,7 +106,9 @@ fn in_scratch(path: &str, scratch: Option<&std::path::Path>) -> bool {
 
 /// Nothing is at `path` as the request is built. A dangling symlink is something. A path that
 /// went through a lossy conversion (U+FFFD) names a different file than the one on disk.
-fn is_absent(path: &str) -> bool {
+/// The live-eval request builder shares this so a derived path is marked the same way a
+/// session would mark it.
+pub fn is_absent(path: &str) -> bool {
     !path.contains('\u{FFFD}')
         && matches!(
             std::fs::symlink_metadata(path),

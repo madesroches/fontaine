@@ -13,6 +13,7 @@ use rig_tools::fs::file_change;
 use serde_json::Value;
 
 use crate::memory;
+use crate::memory_tool;
 
 /// Files larger than this get no preview, far below what the tools themselves read.
 pub const PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
@@ -100,9 +101,9 @@ pub fn preview(
 }
 
 /// The diff a `memory` call makes to its note's topic file, or `None` when there is nothing
-/// to show: no memory root, a missing argument, or a topic the save itself would refuse. The
-/// topic file already on disk is the `before`; a first save has no file, so the whole note
-/// renders as added lines, `args.content` standing in for the file the call will write.
+/// to show: no memory root, a missing argument, or arguments the save itself would refuse.
+/// The topic file already on disk is the `before`; a first save has no file, so the whole
+/// note renders as added lines, `args.content` standing in for the file the call will write.
 fn memory_preview(args: &Value, memory_root: Option<&Path>) -> Option<DiffPreview> {
     let root = memory_root?;
     let topic = args.get("topic")?.as_str()?;
@@ -110,10 +111,17 @@ fn memory_preview(args: &Value, memory_root: Option<&Path>) -> Option<DiffPrevie
     if content.len() as u64 > PREVIEW_MAX_BYTES {
         return None;
     }
+    // The checks the save itself runs first, so a call execution would refuse shows no
+    // preview: the tool's argument validation (blank, multiline or overlong topic,
+    // oversized content) and the store's topic validation in `memory::validate_topic`
+    // (unsluggable, reserved names, Markdown link delimiters).
+    memory_tool::validate(&memory_tool::MemoryArgs {
+        topic: topic.to_string(),
+        content: content.to_string(),
+    })
+    .ok()?;
+    memory::validate_topic(topic).ok()?;
     let file = memory::slug(topic)?;
-    if file.eq_ignore_ascii_case(memory::INDEX_FILE) {
-        return None;
-    }
     let before = read_text(&root.join(&file)).ok()?;
     let change = file_change(&file, before.as_deref(), Some(content));
     from_change(&file, &change)
@@ -521,5 +529,27 @@ mod tests {
         assert!(memory(&dir, json!({"content": "x"})).is_none());
         assert!(memory(&dir, json!({"topic": "!!!", "content": "x"})).is_none());
         assert!(memory(&dir, json!({"topic": "MEMORY", "content": "x"})).is_none());
+    }
+
+    #[test]
+    fn a_memory_call_the_save_would_refuse_gets_no_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        // The tool's argument validation: blank, multiline or overlong topic, oversized
+        // content (still below the preview's own byte cap).
+        assert!(memory(&dir, json!({"topic": "  ", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "two\nlines", "content": "x"})).is_none());
+        assert!(
+            memory(&dir, json!({"topic": "x".repeat(crate::memory_tool::MAX_TOPIC_CHARS + 1), "content": "x"}))
+                .is_none()
+        );
+        assert!(
+            memory(&dir, json!({"topic": "x", "content": "x".repeat(crate::memory_tool::MAX_CONTENT_BYTES + 1)}))
+                .is_none()
+        );
+        // The store's topic validation: reserved device names, a trailing backslash, a
+        // Markdown link delimiter.
+        assert!(memory(&dir, json!({"topic": "CON", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "Commands\\", "content": "x"})).is_none());
+        assert!(memory(&dir, json!({"topic": "a]b", "content": "x"})).is_none());
     }
 }

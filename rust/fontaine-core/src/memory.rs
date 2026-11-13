@@ -248,6 +248,22 @@ fn refuse_link(path: &Path) -> io::Result<()> {
     }
 }
 
+/// The topic file's current bytes, read before a save replaces them so a failed index write
+/// can roll the file back. A missing topic is `Ok(None)`; a link is refused, as the index's
+/// is, and any other read error refuses the save before it mutates anything.
+fn read_topic_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    refuse_link(path)?;
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        // A read error names no path of its own; the save's report must say which file.
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("could not read {}: {e}", path.display()),
+        )),
+    }
+}
+
 /// The index text as it is on disk, so a save can rewrite it whole. A missing index is
 /// `Ok(None)`; a link, a non-regular file, unreadable content or non-UTF-8 is an error,
 /// matching `load`'s refusal posture.
@@ -359,15 +375,12 @@ fn matching_link_spans(
     None
 }
 
-/// Saves `content` as the note on `topic` in the store at `dir`: writes the topic file
-/// atomically, then keeps `MEMORY.md`'s line for it — the line whose link target is the
-/// file, ignoring case, gets the topic as its new link text and the file as its
-/// destination in place, anything else appends one. A topic is refused when it would
-/// name the index file or carries Markdown link delimiters (a trailing backslash included)
-/// it could smuggle into the index. Two sessions saving at once are last-writer-wins on the index, as with raw
-/// edits; the atomic renames keep individual files whole. The index caps are a warning, not a
-/// failure: the note is saved and `Saved.warning` says the index no longer loads whole.
-pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
+/// The semantic checks a topic must pass before a save writes anything: it has to slug to
+/// a file, the file must not be the index or a Windows device name, and the topic must not
+/// carry Markdown link delimiters (a trailing backslash included) it could smuggle into the
+/// index. Shared with the approval preview, which shows no diff for a call the save would
+/// refuse.
+pub fn validate_topic(topic: &str) -> io::Result<()> {
     let file = slug(topic).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -405,11 +418,29 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
             ),
         ));
     }
-    let target = dir.join(&file);
-    refuse_link(&target)?;
-    owner_only::write_atomic(&target, content.as_bytes())?;
+    Ok(())
+}
 
+/// Saves `content` as the note on `topic` in the store at `dir`. The whole call is
+/// prepared before anything is written: the topic is validated, the current note and the
+/// index are read and the new index text built, so an index that cannot be read or
+/// rewritten — a link, not UTF-8, too large — refuses the save with the note still on disk
+/// exactly as it was. Only then is the topic file replaced atomically, then `MEMORY.md`'s
+/// line for it — the line whose link target is the file, ignoring case, gets the topic as
+/// its new link text and the file as its destination in place, anything else appends one.
+/// An index write that fails even so rolls the topic file back to its previous content,
+/// best-effort. Two sessions saving at once are last-writer-wins on the index, as with raw
+/// edits; the atomic renames keep individual files whole. The index caps are a warning, not a
+/// failure: the note is saved and `Saved.warning` says the index no longer loads whole.
+pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
+    validate_topic(topic)?;
+    let file = slug(topic).expect("validate_topic rejects an unsluggable topic");
+    let target = dir.join(&file);
     let index_path = dir.join(INDEX_FILE);
+
+    // Read and prepare the index before the topic file is touched: a store whose index
+    // cannot be read or rewritten refuses the save with the note still intact.
+    let previous = read_topic_bytes(&target)?;
     let text = read_index_text(&index_path)?.unwrap_or_default();
     let mut out = String::new();
     let mut fence = None;
@@ -458,14 +489,32 @@ pub fn save(dir: &Path, topic: &str, content: &str) -> io::Result<Saved> {
     if !found {
         out.push_str(&format!("- [{topic}]({file})\n"));
     }
+    if !matches!(state, LineState::Unchanged) {
+        refuse_link(&index_path)?;
+    }
+    owner_only::write_atomic(&target, content.as_bytes())?;
+    if !matches!(state, LineState::Unchanged) {
+        let written = owner_only::write_atomic(&index_path, out.as_bytes());
+        if let Err(e) = written {
+            // The note is replaced but the index is not; put the previous note back,
+            // best-effort, so the store is no worse than before the call.
+            match &previous {
+                Some(bytes) => {
+                    let _ = owner_only::write_atomic(&target, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&target);
+                }
+            }
+            return Err(e);
+        }
+    }
     // The cap is judged on the bytes that persist: what was just written, or — when the
     // line was already right — what is on disk, without the newline this reconstruction
     // appends.
     let persisted: &str = if matches!(state, LineState::Unchanged) {
         &text
     } else {
-        refuse_link(&index_path)?;
-        owner_only::write_atomic(&index_path, out.as_bytes())?;
         &out
     };
     let warning = (persisted.lines().count() > MAX_INDEX_LINES || persisted.len() > MAX_INDEX_BYTES).then(|| {
@@ -1480,14 +1529,54 @@ mod tests {
     }
 
     #[test]
-    fn a_non_utf8_index_is_refused_and_the_topic_file_is_still_written() {
+    fn a_non_utf8_index_refuses_the_save_and_the_note_is_untouched() {
         let (_tmp, dir) = store();
         std::fs::write(dir.join(INDEX_FILE), [0xff, 0xfe, b'a']).unwrap();
+        // A first save creates nothing.
+        let error = save(&dir, "Commands", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!dir.join("commands.md").exists());
+        // A re-save over an existing note keeps the old content.
+        std::fs::write(dir.join("commands.md"), "the old note\n").unwrap();
         let error = save(&dir, "Commands", "x\n").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
             std::fs::read_to_string(dir.join("commands.md")).unwrap(),
+            "the old note\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_index_refuses_the_save_and_the_note_is_untouched() {
+        let (tmp, dir) = store();
+        std::fs::write(dir.join("commands.md"), "the old note\n").unwrap();
+        let outside = tmp.path().join("outside.md");
+        std::fs::write(&outside, "- [x](x.md)\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(INDEX_FILE)).unwrap();
+        let error = save(&dir, "Commands", "x\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("commands.md")).unwrap(),
+            "the old note\n"
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "- [x](x.md)\n");
+    }
+
+    #[test]
+    fn a_happy_save_still_writes_the_topic_and_the_index() {
+        let (_tmp, dir) = store();
+        std::fs::write(dir.join(INDEX_FILE), "- [old](old.md)\n").unwrap();
+        let saved = save(&dir, "Commands", "x\n").unwrap();
+        assert_eq!(saved.file, "commands.md");
+        assert_eq!(saved.index, LineState::Added);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("commands.md")).unwrap(),
             "x\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "- [old](old.md)\n- [Commands](commands.md)\n"
         );
     }
 }

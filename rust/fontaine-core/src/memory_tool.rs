@@ -31,7 +31,9 @@ pub struct MemoryArgs {
     pub content: String,
 }
 
-fn validate(args: &MemoryArgs) -> Result<(), String> {
+/// The argument checks a call runs before it touches the store. Shared with the approval
+/// preview, which shows no diff for a call the tool would refuse.
+pub(crate) fn validate(args: &MemoryArgs) -> Result<(), String> {
     if args.topic.trim().is_empty() {
         return Err("topic must not be blank".to_string());
     }
