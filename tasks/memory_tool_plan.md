@@ -307,8 +307,8 @@ that this branch does not touch.
 
 Remaining before merge:
 
-- [ ] Docs-site build and link check (`.github/scripts/docs-site.sh`): `mdbook` and `lychee` are
-      not installed locally; let CI run it, or install them and run it.
+- [x] Docs-site build and link check (`.github/scripts/docs-site.sh`, mdbook 0.5.4 and lychee
+      0.24.2 as pinned in CI): 24 pages built, 0 link errors.
 - [ ] Windows compile check (`cargo clippy --all-targets --target x86_64-pc-windows-gnu`) and the
       pg2 clippy/test run: not run locally.
 - [x] Baseline live run on `main` (same model): 20 failures of 400 scored, a superset of this
