@@ -163,9 +163,9 @@ All notable changes are recorded here. The format follows
 
 - Guardian over-denials, fourth pass (#611; tracker #312). The guardian is shown each remote's git
   name with its URL (`origin https://…`), `(none)` when the repository had none and `(not
-  recorded)` when the harness did not read them, and trusts a remote the call names by a git name
-  it was shown, or the repository's own `origin` when the names were not read; a remote added
-  during the session is still untrusted. Text in a call that tries to steer the guardian is ignored
+  recorded)` when the harness could not read them completely, and trusts a remote the call names by
+  a git name it was shown, or, when the names were not read, a named remote the session did not add
+  or repoint; a remote added during the session, in this call or an earlier one, is untrusted. Text in a call that tries to steer the guardian is ignored
   rather than punished, a target you name (a file, a path, a remote, what to share) clears the soft
   concerns about it except printing a live credential from a home-directory store and sending
   external context or personal and entrusted data to a public destination you did not name it for,
