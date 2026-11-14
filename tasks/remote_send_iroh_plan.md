@@ -81,13 +81,13 @@ relays; documented metadata exposure) or `disabled` (direct connections only). T
 
 - A ticket is minted by `/remote-inbox on` (lifetime default 10 minutes, `--ttl`, max 24 h). One
   ticket = one line. The secret is one-time: the first successful request *consumes* it and
-  binds the sender's iroh node id as the authenticated sender. Consumption, binding and the `seen` entry happen only on `Accepted`; `InboxFull`, `TooLarge`, `Closed` and a hook-dropped message do not consume the secret, so the sender may retry with the same ticket. Retries by the same node id with
+  binds the sender's iroh node id as the authenticated sender. Consumption, binding and the `seen` entry happen only on `Accepted`; `InboxFull`, `TooLarge` and `Closed` do not consume the secret, so the sender may retry with the same ticket. The sequence check, `Delivery::accept`, then consume/bind/`seen` runs under one `RemoteInbox` lock (`accept` is synchronous and non-blocking), so two concurrent first requests cannot both be `Accepted`. Retries by the same node id with
   the same `message_id` return the original `Accepted` (lost-ack case, exactly-once queueing);
   this is only idempotent while the ticket is live: after expiry, or revocation by a newer ticket,
   a late retry gets `Expired`/`BadTicket` (documented). `Reused` applies only to a different
   `message_id` on a consumed, still-live secret. Further messages need a new ticket
   (`/remote-inbox ticket`), which is what "one-shot" means.
-- `/remote-inbox ticket` mints a new ticket and revokes the previous one, consumed or not (a single
+- `/remote-inbox on [--ttl <dur>] | off | status | ticket [--ttl <dur>]`; `ticket` mints a new ticket and revokes the previous one, consumed or not (a single
   live secret); minting any ticket clears `seen` and the old secret hash. After consumption or expiry the endpoint stays up until `off` or session end and
   the status indicator shows "inbox: no live ticket".
 - Checks run in this order: secret, then expiry, then reuse, so a wrong secret learns nothing
@@ -115,7 +115,7 @@ deliverable-message check. Bounds: 16 queued remote entries and 8 KiB per messag
 `Steering`, which enforces the cap of 16 under its lock (today `Steering::queue` returns `()`; the remote enqueue returns a `Result` with a `Full` error that `accept` maps to `DeliveryError::Full`); the idle `Input` variant below is only a
 wake-up that makes the loop drain Steering's remote entries through typed dispatch, so ordering and
 bound have one owner. Remote entries are never merged by `group()` (`ui/turn.rs`) with typed ones:
-each is its own submission carrying its remote identity. `Steering::retract()` returns every entry with its origin. The submit paths (`end_of_turn` and
+each is its own submission carrying its remote identity. `Steering::retract()` returns every entry with its origin and sequence number, `Submission` carries that sequence number, and a new `Steering::requeue(entry, seq)` inserts in sequence order ("position" means sequence order), adjusting `announced` per the rule below. The submit paths (`end_of_turn` and
 `group` in `ui/turn.rs`, reached from `converse`, `harness_turn_tail` and `goal.rs`) submit remote
 entries in arrival order as separate submissions (`end_of_turn` today returns a single `EndOfTurn`; its return type changes to carry both the restore text and the remote submissions, e.g. a pair or a new variant), including after an interrupted or failed turn:
 the post-interrupt drain point is the `end_of_turn` call in `converse`/`harness_turn_tail`, which
@@ -130,7 +130,7 @@ sites, before the idle drain: it DROPs already-accepted remote
 entries still queued, so they are never delivered across a context boundary; each gets an audit
 drop record and a transcript notice (the sender's `accepted` meant queued, documented). Remote entries still queued at session end or `TurnEnd::InputClosed` are audit-dropped the same way.
 
-Re-queued remote entries (`restore_block`, `pending` on interruption or failure, the `Break` paths, the `RestoreToInput` filters) keep their original `Steering` sequence number and queue position (or are marked dialog-ineligible), so an old mid-turn `y` can never answer a later dialog. Every mid-queue removal or insert (a dialog taking an entry, `drain_remote`, a re-queue) adjusts `Steering.announced`.
+Re-queued remote entries (`restore_block`, `pending` on interruption or failure, the `Break` paths, the `RestoreToInput` filters) go back through `Steering::requeue(entry, seq)` with their original sequence number (or are marked dialog-ineligible), so an old mid-turn `y` can never answer a later dialog. Every mid-queue removal or insert (a dialog taking an entry, `drain_remote`, a re-queue) adjusts `Steering.announced`.
 
 - **Wake-up**: the idle `Input` wake-up is edge-triggered, so the idle loop also checks `Steering` for deliverable remote entries before awaiting input and after each modal/dialog/`serve_queued` exit (level-triggered, like the `has_notifications` check); modal and dialog loops that decline an entry leave it queued for that check.
 - **Dispatch**: a remote line runs through the same dispatch as a typed line. While idle it
@@ -144,11 +144,10 @@ Re-queued remote entries (`restore_block`, `pending` on interruption or failure,
   letters (the same options a local user could pick). `accept` always enqueues and acks "queued"; the cap applies at enqueue only. When the dialog
   consumes a matching line, the injection point takes that entry out of `Steering`.
   Only remote lines accepted after the dialog opened can answer it: `Steering` stamps each entry with a sequence number and a dialog registers through `Steering::open_dialog(options) -> guard` (the guard releases the hold on drop; each dialog has its own watermark); entries at or below it stay ordinary queued messages. While a dialog is open, steer does not deliver dialog-eligible entries into a tool result (they are held for the dialog); post-open entries that do not match stay queued as normal messages and are delivered after the dialog closes, not held forever. When a dialog consumes a line, the host writes a `remote_inbox` audit record (rule `dialog_answer`) with node id, message id and dialog kind. Anything else stays queued as a normal
-  message behind the dialog, and the dialog stays pending. Mid-turn, plain messages
+  message behind the dialog, and the dialog stays pending. Remote-answerable dialogs are exactly these four kinds (approval selector, `ask_user_question`, `/guardian-disable` confirmation, AFK review); every other awaiting-input loop (Guardian unavailable prompt, UsagePause, RetryDenied, pickers, rewind confirm) declines and leaves the entry queued. Mid-turn, plain messages
   ride the next tool result (wrapped with a one-line provenance header
-  `[Remote message from <short node id>]`); slash, skill and `!` lines are queued as
-  `Queued::Command/Skill/Shell` and execute after the turn, under the same `main_only` /
-  `runs_mid_turn` rules as typed lines.
+  `[Remote message from <short node id>]`); remote slash, skill and `!` lines are always queued as
+  `Queued::Command/Skill/Shell` and execute after the turn (including `/remote-inbox off` and `status`), under the `main_only` rules; typed lines keep their `runs_mid_turn` behaviour.
 - **Ledger**: a delivered remote message becomes a `Record::UserMessage` with its existing
   origin (`MessageOrigin::Other` for an idle remote line, never `Prompt`, so `reply_before_last`
   (`ledger.rs`) does not bind it to an agent reply the sender never saw) and the new optional `remote: { node, message_id }` field (see section 6). The remote
@@ -163,7 +162,7 @@ Re-queued remote entries (`restore_block`, `pending` on interruption or failure,
   streak like any user prompt. The first remote line of a session may become its name /
   `first_prompt`, like a typed one.
 - **Prompt-submit hooks** run in `converse` as for typed prompts; a hook block drops the message
-  with an audit record (the sender already got `accepted`, which means queued: documented).
+  with an audit record only: `accepted` means queued, and the secret was already consumed at `Accepted` (documented).
 - **Guardian**: a remote message counts as human intent (it is a user message). Because the
   ticket is a bearer credential, that is the deliberate widening of trust this slice makes.
 - **Remote is a terminal, not just a prompt**: slash commands (`/permissions`, mode changes,
@@ -180,9 +179,9 @@ Re-queued remote entries (`restore_block`, `pending` on interruption or failure,
 ### 4. Enabling and disabling (local, explicit, user-only)
 
 - `[remote]` is user-scope-only: `fontaine-core/src/config.rs` rejects or ignores it in project scope, like other loosening keys; documented in `docs/configuration.md`.
-- `/remote-inbox [on|off|status|ticket]` slash command, interactive TUI only and `main_only`.
+- `/remote-inbox on [--ttl <dur>] | off | status | ticket [--ttl <dur>]` slash command, interactive TUI only and `main_only`.
   Registered in `fontaine-tui/src/commands.rs` (`Command` variant, `parse_command`, `BUILTINS`,
-  `main_only`, `runs_mid_turn`: it is in the immediate-UI set; its handler is synchronous and spawns the async endpoint start as a task (update the `runs_mid_turn` doc comment in `commands.rs`, which says handlers touch only UI state); remote slash lines follow the same `runs_mid_turn` rules as typed ones, so the immediate set runs immediately; the `commands.rs` test
+  `main_only`, `runs_mid_turn`: it is in the immediate-UI set; its handler is synchronous and spawns the async endpoint start as a task (update the `runs_mid_turn` doc comment in `commands.rs`, which says handlers touch only UI state); remote slash lines are always queued and run after the turn, never immediately (typed lines keep `runs_mid_turn`); the `commands.rs` test
   `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` needs updating; a remote
   `/remote-inbox off` and `status` are allowed, `ticket` and `on` are refused; `on` while already enabled is a no-op that shows status) with a `dispatch_command` arm in `fontaine-tui/src/ui/mod.rs` and
   an entry in the `docs/tui.md` command list and help. Never enabled by config or project scope;
@@ -223,7 +222,7 @@ on a lost ack with the same id. It needs no config, session or provider credenti
   by a prompt-submit hook. The ticket and secret never appear. No new `Tier` variant is needed:
   the events use `Tier::Human` like `skill_trust`, so `tier.rs` and `permissions.rs` are
   unchanged.
-- **Ledger**: `MessageOrigin` gets no new variant (an older build fails to parse an unknown enum
+- **Ledger**: `Record::UserMessage.text` of a remote message stores the verbatim text; the provenance header is added only in the tool result. `MessageOrigin` gets no new variant (an older build fails to parse an unknown enum
   value in `Ledger::open`). `Record::UserMessage` keeps its origin and gains
   `#[serde(default, skip_serializing_if = "Option::is_none")] remote: Option<RemoteSender
   { node, message_id }>`; older builds ignore the unknown field, so resume of a newer ledger
@@ -300,7 +299,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 
 - 2026-11-14: remote messages are presumed to come from the user (user message, guardian intent, prompt hooks), superseding the issue's original untrusted-agent-mail wording; the issue body was updated to match.
 - 2026-11-14: a remote line is full terminal input (slash commands, mode changes, approval answers), because the feature is the first slice of remote control; there is no exception, `/guardian-disable` included (confirmation still required, toggles still audited with remote identity). AGENTS.md and the master plan's Decisions are updated to say the terminal may be remote.
-- 2026-11-14: AFK: one ticket = one line; a multi-step interaction (a `/guardian-disable` confirmation, an approval answer) needs another ticket/line, so a remote `/guardian-disable` leaves its confirmation pending for the next input; a new ticket revokes the previous unconsumed one; lockout is per remote node id; checks run secret, expiry, reuse.
+- 2026-11-14: AFK: one ticket = one line; a multi-step interaction (a `/guardian-disable` confirmation, an approval answer) needs another ticket/line, so a remote `/guardian-disable` leaves its confirmation pending for the next input; a new ticket revokes the previous ticket, consumed or not; lockout is per remote node id; checks run secret, expiry, reuse.
 - 2026-11-14: AFK: `retract()` returns everything with its origin; `end_of_turn`/`group` submit remote entries as separate submissions in arrival order (after an interrupted or failed turn too, at the `end_of_turn` drain in `converse`/`harness_turn_tail`); only the restore-to-draft paths (`EndOfTurn::RestoreToInput`, `edit_queued`, `serve_queued`) filter remote entries out and re-queue them.
 - 2026-11-14: AFK: remote messages are remote-tagged `Steering` entries (no separate queue) with the typed hook, ordering and `hold`/`announced` rules; draft restore skips them and they never enter prompt history; remote lines use the typed dispatch through `Steering`; an `Input` variant only wakes the idle loop to drain them.
 - 2026-11-14: AFK: the ledger gets no `MessageOrigin::Remote` (older builds fail on unknown enum values); `Record::UserMessage` gains an optional `remote { node, message_id }` field and `Record::GuardianOff` an optional `remote` of the same type (amended: not an origin value), both serde-defaulted.
@@ -320,6 +319,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - 2026-11-14: AFK: re-queued remote entries (`restore_block`, `pending`, `Break` paths, `RestoreToInput` filters) keep their original `Steering` sequence number and position or are marked dialog-ineligible, so an old mid-turn `y` never answers a later dialog; dialogs register via `open_dialog` and non-matching post-open entries are delivered after it closes.
 - 2026-11-14: AFK: the ticket is shown in a dismissible TUI modal cleared on dismiss, or in the linear renderer printed once directly to the terminal outside the transcript model (scrollback retention of that print accepted, documented); never in transcript, ledger, audit, history, export or telemetry.
 - 2026-11-14: AFK: `/clear` and resume stop accepting first (`accept` returns `Closed`), then `drain_remote`; the secret is consumed only on `Accepted`; remaining remote entries are audit-dropped at session end.
+- 2026-11-14: AFK: a hook-dropped remote message is audit-only: `accepted` means queued and the secret is consumed at `Accepted`, so a hook drop never un-consumes it.
 - 2026-11-14: AFK: relay mode is the user-scope-only key `[remote] relay` (`default` = n0 relays, `disabled` = direct only), default `default`; it never enables the inbox.
 
 ## Documentation
@@ -342,7 +342,7 @@ prompt history; parked root wait wakes for a remote message; tool-result deliver
 dispatch as slash commands, a mode change from a remote line takes effect, per dialog kind
 (approval selector, `ask_user_question`, `/guardian-disable` confirmation, AFK review): a remote line equal to an option label or hotkey (case-insensitive, trimmed) answers it and any other text is queued with the dialog still pending; an idle remote line is recorded as `MessageOrigin::Other` and `reply_before_last` does not bind it; a remote line refused while stopped is not restored to the input and writes an audit drop record; a remote `/guardian-disable` leaves its confirmation pending, and the toggle is
 audited and ledgered with `remote`; remote `/remote-inbox ticket` is refused; the ticket
-never appears in ledger, audit, history or `/export`; a project-scope `[remote]` key is rejected/ignored; a `y` queued mid-turn does not approve a later dialog, including after it was re-queued by `restore_block`/`pending`/`Break`/`RestoreToInput` (sequence number and position preserved); a non-matching post-open entry is delivered after the dialog closes; `open_dialog` guard drop releases the hold; `Steering.announced` stays consistent after a dialog takes an entry, `drain_remote` and a re-queue (beside `retract_delivery_and_hold_keep_the_announcement_consistent`); remaining remote entries are audit-dropped at session end; `InboxFull`/`TooLarge`/`Closed`/hook-drop do not consume the secret and the same ticket can retry; `--ticket-stdin` with text `-` exits 2; prompt-submit hook block is audited; remote lines are
+never appears in ledger, audit, history or `/export`; a project-scope `[remote]` key is rejected/ignored; a `y` queued mid-turn does not approve a later dialog, including after it was re-queued by `restore_block`/`pending`/`Break`/`RestoreToInput` (sequence number and position preserved); a non-matching post-open entry is delivered after the dialog closes; `open_dialog` guard drop releases the hold; `Steering.announced` stays consistent after a dialog takes an entry, `drain_remote` and a re-queue (beside `retract_delivery_and_hold_keep_the_announcement_consistent`); remaining remote entries are audit-dropped at session end; `InboxFull`/`TooLarge`/`Closed` do not consume the secret and the same ticket can retry; two concurrent first requests give exactly one `Accepted` and the other `Reused`; a remote message's ledger text is verbatim without the provenance header; dialogs outside the four remote-answerable kinds decline and leave the entry queued; a remote slash line is queued and runs after the turn, `/remote-inbox off` included; `--ticket-stdin` with text `-` exits 2; prompt-submit hook block is audited; remote lines are
 not held while AFK is blocked and reset the stop streak; the first remote line may become the
 session name/`first_prompt`; audit records for accept, reject, enable, disable and hook-dropped
 message; teardown on `off`, `/clear` and resume; accepted remote entries still queued are dropped on `/clear` and resume switch with an audit drop record and transcript notice, via `drain_remote` after accepting stops (`accept` returns `Closed`); a lost-ack retry within the live ticket window returns the original `Accepted` once, a late retry after expiry or revocation gets `Expired`/`BadTicket`; sending to a torn-down endpoint (the issue's "unknown sessions" case) is the connection-failure/`Closed` path, exit 4.
