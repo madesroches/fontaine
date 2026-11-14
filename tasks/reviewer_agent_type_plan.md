@@ -44,15 +44,15 @@ New built-in in `AgentTypes::builtin()`:
   command.
 - `model: Main`, `mode: Inherit`, `effort: None`, `origin: Builtin`, `inherits_context: false`.
 
-Allowlist (fixed; each command needs a bare entry and a `*` entry because `shell(x *)` does not
-match `x` alone):
+Allowlist (fixed; one `shell(<command> *)` entry per command: a trailing ` *` matches the command
+alone as well as with arguments, so no bare entry is needed):
 
 - `git diff`, `git log`, `git show`, `git status`
 - `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`
 - `cargo clippy`, `cargo test`, `cargo fmt --check`
 
-`cargo fmt --check` needs only a `cargo fmt --check` / `cargo fmt --check *` pair, so plain
-`cargo fmt` (which rewrites files) is refused.
+The `cargo fmt --check *` entry requires `--check`, so plain `cargo fmt` (which rewrites files) is
+refused.
 
 `enable_teams` gives `reviewer` `board_show`, like `explore`.
 
@@ -67,21 +67,24 @@ every call it makes still passes the full pipeline.
 
 ## Implementation Steps
 
-1. `registry.rs`: extract the `explore` tool list into a shared constant; add the `reviewer`
-   built-in with the allowlist entries and prompt; add `reviewer` to `enable_teams`; update the
-   doc comment on `builtin()`.
-2. Registry unit tests (below).
-3. A gate-level test in `fontaine-core` that a `reviewer` child's `shell` call is allowed for
-   `git diff HEAD~1` and refused for `git diff && rm x`, `git diff > x`, `cargo fmt` and
-   `git push`.
+1. `registry.rs`: update the module doc ("the built-in three") and the `builtin()` doc comment;
+   extract the `explore` tool list into a shared constant; add the `reviewer`
+   built-in with the allowlist entries and prompt; add `reviewer` to `enable_teams`.
+2. Unit tests (below), split by crate: toolset tests in `registry.rs`, the rule-parsing and
+   `restrictions` test in `child_runner.rs`, the spawn-classification assertion in
+   `adjudication.rs`.
+3. Extend `an_agent_types_specifiers_limit_and_forbid_calls` in
+   `rust/fontaine-core/tests/agent_pipeline.rs`: build `only` from the real built-in `reviewer`
+   entries and assert `git diff HEAD~1` is allowed (the `~` is not treated as an expansion) and
+   `git diff && rm x`, `git diff > x`, `cargo fmt` and `git push` are refused.
 4. `docs/agents.md`: "Four types are built in", table row, the shell-limit and Windows notes.
 5. `CHANGELOG.md` Added entry; a dated line in the master plan's `## Decisions` under `### Agents`.
 
 ## Files to Modify
 
 - `rust/fontaine-agents/src/registry.rs`
-- `rust/fontaine-core/tests/` (a gate test, in the file that already drives child restrictions or
-  `permissions.rs`)
+- `rust/fontaine-core/src/child_runner.rs` (test module), `rust/fontaine-core/src/adjudication.rs`
+  (test assertion), `rust/fontaine-core/tests/agent_pipeline.rs`
 - `docs/agents.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -110,18 +113,21 @@ every call it makes still passes the full pipeline.
 
 ## Testing Strategy
 
-Unit tests in `registry.rs`:
+Unit tests in `registry.rs` (assert sorted sets: `toolset` keeps the parent's order):
 - `reviewer` is built in, holds no `edit`, `write`, `notebook_edit` or `memory`, and its toolset
   from a full parent is the `explore` tools plus `shell`.
-- Every `reviewer` specifier entry parses with `parse_rule` (guards the `expect` in
-  `restrictions`) and `restrictions(reviewer).only` contains the expected rules.
 - With a parent lacking `shell`, the toolset has no `powershell`.
 - `enable_teams` gives it `board_show` and not `board_update`.
-- A `reviewer` toolset is not read-only, so no fast path (asserted through the existing read-only
-  classification if reachable from the crate; otherwise by containing `shell`).
 
-Gate test (step 3) pins that chained, redirected and non-listed commands are refused. No live
-services are needed.
+In `child_runner.rs` tests (`parse_rule` and `restrictions` are core-only): every `reviewer`
+specifier entry parses (guards the `expect` in `restrictions`) and `restrictions(reviewer).only`
+holds the expected rules.
+
+In `adjudication.rs`, next to `explore_cannot_change_state_and_worker_can`: a `reviewer` spawn
+changes state, so it has no read-only fast path.
+
+The `agent_pipeline.rs` test (step 3) pins that chained, redirected and non-listed commands are
+refused. No live services are needed.
 
 ## Open Questions
 
