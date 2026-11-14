@@ -22,11 +22,14 @@ deliberate deviation from Claude Code, which has plan mode.
 - **Tier** (`tier.rs`): `Tier::PlanBlock`, `Tier::ALL` is `[Tier; 22]`, `as_str` → `"plan_block"`.
   `afk_report.rs` (~123, ~1022) lists `PlanBlock` among the Medium-severity denials.
 - **Agents** (`fontaine-agents/src/mode.rs`, `tree.rs`): `RootMode::Plan`, `Posture::plan_block`,
-  `Posture::of_root`/`child`. With plan gone, `RootMode` has one variant (`Ladder`).
-  `tree.rs` holds `set_root_mode` and a `RootModeSource` closure; `gate.rs:144` maps
-  `PermissionMode` to `RootMode`.
+  `Posture::of_root`/`child`. `tree.rs` holds `set_root_mode` and a `RootModeSource` closure
+  (~598, 815, 821, and a test at ~2314-2327); `gate.rs:144` maps `PermissionMode` to `RootMode`;
+  `tests/seam.rs:264` uses the signature.
 - **Stale doc comment**: `fontaine-core/src/agent.rs:749` ("The permission mode now, which Shift+Tab,
-  `/plan` and the guardian prompts can change").
+  `/plan` and the guardian prompts can change"). Three more the compiler will not flag: the `mode.rs:1-3` module doc ("`plan` is off the
+  ladder, a session-root posture that child agents inherit only as a ban on edits"), the `posture_of`
+  doc in `permissions.rs` ~961-962 ("and whether edits are blocked for it") and the `Posture::child` doc
+  ("under a `plan` ancestor never allowed to edit").
 - **Mode lists that simply name it**: `headless.rs` (1037, 1601), `agent/goal.rs:54`,
   `native_search.rs` (26, tests), `claude_compat/cli.rs:503` (`parse_mode`), `cli.rs` (`ModeArg::Plan`).
 - **Config**: `config_scope.rs` (project scope already refuses `plan`; test at ~929 and ~524, both on a raw `toml::Value` so they still pass but would test a value that is no longer a mode).
@@ -50,7 +53,9 @@ deliberate deviation from Claude Code, which has plan mode.
   166 `auto / plan allow (spawn)`, 171 `manual / acceptEdits / plan ask`), `docs/tui.md:1327` (`/plan` among
   the queued commands), `tasks/design/testing.md` (10 "plan-mode branch 9", 82 the `--guardian none`
   mode list), `tasks/design/permissions.md` (every plan mention: 38, 41, 52, 54, 90, 114-118, 127, 163,
-  177-179, 225) and the master plan's `## Decisions` lines that describe plan behavior.
+  177-179, 225), `research/research-claude-code-parity.md` (the `plan` entry in the permission-modes
+  row ~258 and the EnterPlanMode/ExitPlanMode "partial / backlog" row ~327, which points at the closed
+  #24) and the master plan's `## Decisions` lines that describe plan behavior.
 
 `pr-run-mode = "plan"` in `rust/Cargo.toml` is the dist release tool's setting and is unrelated.
 
@@ -59,8 +64,9 @@ deliberate deviation from Claude Code, which has plan mode.
 Delete the mode end to end; add nothing. The pieces that need a decision:
 
 - **`PermissionMode`**: drop the `Plan` variant. serde then rejects `default_mode = "plan"` with its
-  own "unknown variant `plan`, expected one of …" error, which names the key and the valid values;
-  that is the clear failure the issue asks for (config errors already exit 2 with the chain
+  own "unknown variant `plan`, expected one of …" error, which the loader reports as a `ConfigError::Parse`
+  naming the file, line:column and the valid modes (the key and source line are deliberately left out
+  of the message); that is the clear failure the issue asks for (config errors already exit 2 with the chain
   printed). No special-case message.
 - **CLI**: drop `ModeArg::Plan`; clap rejects `--permission-mode plan` and lists the accepted values.
 - **Claude-compat** (`claude_compat/cli.rs::parse_mode`): `"plan"` falls to the `other` arm,
@@ -74,7 +80,8 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
   mode) and the `Plan` arms; `Spawn` allows `Auto | Afk`, and the mode match loses `Plan`.
 - **Agents**: with no root posture other than the ladder, `RootMode` and `Posture::plan_block`
   have no remaining meaning. Remove `RootMode`, `Posture::of_root`'s plan arm and `plan_block`; keep
-  `Posture { mode }`. Keep this refactor as small as the compiler allows: delete first,
+  `Posture { mode }`, so `set_root_mode` takes `Fn() -> Ladder`, `gate::root_mode` returns `Ladder`
+  and the root posture is `Posture { mode }`. Keep this refactor as small as the compiler allows: delete first,
   simplify only what is left empty.
 - **`Tier::PlanBlock`**: remove it, drop it from `Tier::ALL` (now 21), `as_str`, the AFK severity
   list and the headless schema's tier enum. The audit log, ledger and `gate_decision` events of
@@ -102,29 +109,33 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
    (add `#[serde(alias = "plan")]` to `AfkSource::Command`).
 2. **Pipeline.** `permissions.rs`: delete the plan edit block, the `plan_block` plumbing and the
    `Plan` arms. `gate.rs`, `goal.rs`, `native_search.rs`: drop `Plan` from the mode lists.
-   `agent.rs:749`: drop `/plan` from the permission-mode doc comment.
+   `agent.rs:749`: drop `/plan` from the permission-mode doc comment; fix the `posture_of` doc in
+   `permissions.rs` the same way.
 3. **Agents.** `fontaine-agents/src/mode.rs` and `tree.rs`: remove the plan posture as designed
-   above; update `tests/seam.rs` for the changed `RootMode`/`set_root_mode` signature.
+   above (including the `mode.rs` module doc and the `Posture::child` doc); update `tests/seam.rs`
+   and the `tree.rs` test at ~2314-2327 for the new `set_root_mode` signature.
 4. **CLI and compat.** `cli.rs` (`ModeArg`), `claude_compat/cli.rs` (`parse_mode` and its test),
    `headless.rs` (the two mode lists).
 5. **TUI.** `commands.rs`, `ui/mod.rs`, `statusbar.rs` (labels, `CYCLE`, style, tests), `theme.rs`,
    `linear.rs`, `reports.rs`, and the `/plan` tests in `app.rs`, `ui/tests.rs`.
-6. **Tests.** Remove or rewrite every plan test listed under Current State. The mode matrices in
-   `permissions.rs`/`permissions_auto.rs` (`MODES` arrays) lose `Plan`; the `(Plan, …)` rows go.
+6. **Tests.** Remove or rewrite every plan test listed under Current State. The mode matrices lose `Plan`: the `MODES` arrays in
+   `permissions.rs` and `audit_telemetry.rs` (now `[PermissionMode; 3]`) and the inline mode loops in
+   `permissions_auto.rs`; the `(Plan, …)` rows go.
    `tui/tests/extensions.rs` `a_plan_command_queued_mid_turn_enters_plan_mode_and_sends_its_description`
    (~536) is deleted: it depends on `/plan` returning `Submission::Message`, which no other built-in does,
    and queued built-ins stay covered by `a_builtin_queued_mid_turn_runs_after_the_turn_in_typed_order`.
    `exit_code.rs` `a_valid_settings_overlay_is_accepted` switches its example mode to `manual`. In
    `fontaine-core/tests/config.rs` the `default_mode = "plan"` case (~959-979) in
-   `cli_scope_accepts_everything_but_the_user_file_only_keys` and the `Some(PermissionMode::Plan)` assertion
-   (~102) in `scalar_precedence_is_cli_then_project_local_then_project_then_user` switch to `acceptEdits`
-   (asserted values updated); a new small test there asserts `default_mode = "plan"` errors, naming the
-   key. In `config_scope.rs` swap the `:524` example to `default_mode = "acceptEdits"` and drop the
+   `cli_scope_accepts_everything_but_the_user_file_only_keys` switches to `acceptEdits`, and the CLI file's `plan` in
+   `scalar_precedence_is_cli_then_project_local_then_project_then_user` (~95-102) switches to `auto`
+   (assert `Some(PermissionMode::Auto)`; the user, project and local files keep `acceptEdits`, `dontAsk`
+   and `manual`, so all four values stay distinct); a new small test there asserts `default_mode = "plan"` yields a `ConfigError::Parse` whose message
+   contains `plan`, the line:col and the remaining mode names (as
+   `tui_notify_accepts_its_four_values_and_names_them_on_error` in `config_scope.rs` does). In `config_scope.rs` swap the `:524` example to `default_mode = "acceptEdits"` and drop the
    `"plan"` assertion at `:929`. The eval `none_mode.rs` `plan-write` case and `pipeline_headless.rs` plan row go.
 7. **Schemas and fixtures.** Update `docs/schemas/headless-v1.schema.json` (tier and
-   `permission_mode` enums); the headless schema test must stay green. Leave the SDK `controls`
-   fixtures/scripts unchanged and flip the `set_mode_plan` assertion in `claude_sdk_compat.rs:547`
-   to expect `error`.
+   `permission_mode` enums); the headless schema test must stay green. Flip the `set_mode_plan` assertion in
+   `claude_sdk_compat.rs:547` as designed under Claude-compat.
 8. **Docs.** Update the pages listed under Current State, in each case by rewriting the sentence or
    row; `tui.md` loses the `/plan` row and the cycle text, `agents.md` loses the "`plan` is not on the
    ladder" paragraph, `memory.md` and `tools.md` lose the `plan` row of the mode table, `guardian.md`
@@ -132,7 +143,8 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
    (six becomes five), `docs/hooks.md:102`, `docs/evals.md:265`, `evals/README.md:40` and `:63`, and
    `tasks/design/config.md:119`. Edit `AGENTS.md:66` to `auto`/`afk` (the spawn-allow wording in the
    fast-path invariant). Update `docs/architecture.md` (156, 166, 171), `docs/tui.md:1327` (drop `/plan`
-   from the queued commands), `tasks/design/testing.md` (10, 82) and `tasks/design/permissions.md`
+   from the queued commands), `research/research-claude-code-parity.md` (drop `plan` from the modes row
+   and mark the EnterPlanMode/ExitPlanMode row as removed: a recorded deviation, #638), `tasks/design/testing.md` (10, 82) and `tasks/design/permissions.md`
    (every plan mention, including step 9 and the tier list) to current behavior.
 9. **Decisions and changelog.** One dated line in the master plan's `## Decisions` (see below) at the
    end of the permissions subsection, and a CHANGELOG entry under unreleased: plan mode, `/plan`,
@@ -153,9 +165,11 @@ See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md
 ## Decisions
 
 - Removal is a deviation from Claude Code, recorded in the master plan as a dated line that
-  supersedes the plan-mode lines in its permissions, AFK and TUI subsections (the `plan` child
-  posture, the `default_mode` project-scope note, the carousel order, `/plan` leaving AFK and the
-  screen-reader announcement of `/plan`). The older lines stay as history.
+  supersedes the plan-mode lines in its subsections: `### Permissions` (plan following Claude Code's
+  default, the spawn `auto`/`plan` allow, `/plan` leaving AFK, the carousel order and the `set_mode`
+  line), `### Agents` (the `plan` child posture), `### Config` (the `default_mode` project-scope
+  note), `### Guardian` (the `auto`/`plan` source-inspection line), `### Tools` (the "plan block"
+  mention) and `### TUI` (the screen-reader announcement of `/plan`). The older lines stay as history.
 - A leftover `plan` in config, `--permission-mode` or an SDK `set_permission_mode` is an error, never
   a silent fallback.
 - The headless v1 schema loses the `plan` and `plan_block` enum values without a version bump: no
@@ -172,7 +186,7 @@ Everything here is unit or integration level; no live API and no manual step is 
 - `cargo test` across the workspace after the deletions; the choke-point and tier-completeness tests
   (`Tier::ALL`) stay green with 21 tiers.
 - `a_valid_settings_overlay_is_accepted` on `manual`; the two `tests/config.rs` tests that used `plan`
-  move to `acceptEdits`, and a new small test asserts `default_mode = "plan"` errors naming the key; new tests that `--permission-mode plan`
+  move to `acceptEdits` and `auto`, and a new small test asserts `default_mode = "plan"` yields a `ConfigError::Parse` naming `plan` and the valid modes; new tests that `--permission-mode plan`
   and the compat `parse_mode("plan")` fail with an error naming `plan`.
 - `statusbar.rs` test that the cycle is manual → accept edits → auto → AFK → manual.
 - Shim tests: a ledger with `"plan"` (`AfkSource`) and a ledger line with tier `"plan_block"` still
