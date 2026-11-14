@@ -36,7 +36,9 @@ pub enum PreExistence {
     PreExisting,
     /// Not indexed, and an earlier action of this session touched it.
     CreatedThisSession,
-    /// Not indexed and not touched by this session: possibly pre-existing.
+    /// Not indexed and not recorded as created by this session: the harness cannot vouch for it
+    /// (it may be gitignored, past the index cap, a symlink or in an added root, or made by a shell
+    /// command), so outside the workspace roots it is possibly pre-existing.
     Unindexed,
 }
 
