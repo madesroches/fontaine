@@ -990,7 +990,9 @@ prompt gives the fields fixed meanings:
   repository's named remotes (`origin`) count as its own, and one this call or an earlier one added or repointed does not.
 - A location, target or destination missing from the lists says nothing about its safety.
 
-**What counts as sensitive.** The guardian judges data by class, from what it can see (the
+### What counts as sensitive
+
+The guardian judges data by class, from what it can see (the
 content, and a file's name, path or type), not by whether git tracks the file:
 
 1. **Secrets**: credentials, private keys, tokens, live session cookies.
