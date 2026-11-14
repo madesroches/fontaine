@@ -1103,7 +1103,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 {
                     Break(()) => Break(()),
                     // A picker or dialog the command opened is served by the idle loop.
-                    Continue(CommandOutcome::Done | CommandOutcome::AwaitingModal) => Continue(()),
+                    Continue(
+                        CommandOutcome::Done
+                        | CommandOutcome::Cleared
+                        | CommandOutcome::AwaitingModal,
+                    ) => Continue(()),
                     Continue(CommandOutcome::Turn(submission)) => {
                         self.converse(
                             runtime,
@@ -1460,8 +1464,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Continue(CommandOutcome::Done)
             }
             Command::Clear(name) => {
-                self.clear(runtime, &name).await;
-                Continue(CommandOutcome::Done)
+                if self.clear(runtime, &name).await {
+                    Continue(CommandOutcome::Cleared)
+                } else {
+                    Continue(CommandOutcome::Done)
+                }
             }
             Command::Compact(focus) => match self.compact(runtime, focus).await {
                 Break(()) => Break(()),

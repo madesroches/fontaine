@@ -52,6 +52,9 @@ pub(crate) fn parse_remote_command(argument: &str) -> Result<RemoteCommand, Stri
         }
         _ => return Err(USAGE.to_string()),
     }
+    if ttl.is_zero() || ttl > fontaine_remote::MAX_TTL {
+        return Err("--ttl must be between 1s and 24h".to_string());
+    }
     match verb {
         "on" => Ok(RemoteCommand::On(ttl)),
         "off" if rest.is_empty() => Ok(RemoteCommand::Off),
@@ -91,6 +94,9 @@ impl RemoteHost {
 
     /// From here on `accept` answers `Closed`.
     pub(crate) fn close(&self) {
+        // Under the `started` lock so a start finishing concurrently sees either the close or
+        // its stored result, and never a server stored after the final `take_started`.
+        let _started = fontaine_tools::lock::lock_recovering(&self.started);
         self.closed.store(true, Ordering::SeqCst);
     }
 
@@ -110,10 +116,22 @@ impl RemoteHost {
     }
 
     /// Leaves the start's result and wakes the loop; the loop takes it with `take_started`.
-    pub(crate) fn finish_start(&self, result: Result<RemoteServer, String>) {
-        // The slot holds one result at a time and is read out whole; a poisoned lock still holds it.
-        *fontaine_tools::lock::lock_recovering(&self.started) = Some(result);
-        self.wake();
+    pub(crate) async fn finish_start(&self, result: Result<RemoteServer, String>) {
+        let rejected = {
+            // The slot holds one result at a time and is read out whole; a poisoned lock still holds it.
+            let mut started = fontaine_tools::lock::lock_recovering(&self.started);
+            if self.is_closed() {
+                // Switched off while it started: nothing waits for this endpoint.
+                result.ok()
+            } else {
+                *started = Some(result);
+                None
+            }
+        };
+        match rejected {
+            Some(server) => server.shutdown().await,
+            None => self.wake(),
+        }
     }
 
     pub(crate) fn take_started(&self) -> Option<Result<RemoteServer, String>> {
@@ -204,6 +222,8 @@ mod tests {
         assert_eq!(parse_remote_command("status"), Ok(RemoteCommand::Status));
         assert!(parse_remote_command("off --ttl 5m").is_err());
         assert!(parse_remote_command("on --ttl soon").is_err());
+        assert!(parse_remote_command("on --ttl 0s").is_err());
+        assert!(parse_remote_command("ticket --ttl 25h").is_err());
         assert!(parse_remote_command("maybe").is_err());
         assert!(parse_remote_command("on extra").is_err());
     }

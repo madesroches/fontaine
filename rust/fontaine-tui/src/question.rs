@@ -109,6 +109,11 @@ impl QuestionPanel {
         self.selected == self.question().options.len()
     }
 
+    /// Whether the person has typed into "Other" or checked a box, which an answer would eat.
+    pub(crate) fn is_mid_edit(&self) -> bool {
+        self.other_text().is_some() || self.checked.iter().any(|on| *on)
+    }
+
     /// What a remote line may say to answer the current question: an option's label or its
     /// number.
     pub(crate) fn remote_options(&self) -> Vec<String> {

@@ -136,11 +136,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let result = RemoteServer::start(host.clone(), Arc::new(SystemClock), relay)
                 .await
                 .map_err(|e| chain(&e));
-            match result {
-                // Switched off while it started: nothing waits for this endpoint.
-                Ok(server) if host.is_closed() => server.shutdown().await,
-                other => host.finish_start(other),
-            }
+            host.finish_start(result).await;
         });
     }
 

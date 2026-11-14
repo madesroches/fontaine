@@ -2164,6 +2164,10 @@ impl App {
             });
         }
         let panel = self.questions.front()?;
+        // A line must not send the person's half-typed text as a note or discard checked boxes.
+        if panel.is_mid_edit() {
+            return None;
+        }
         Some(RemoteDialog {
             kind: DialogKind::Question,
             // A question panel advances through its questions under one id; the options change
@@ -3118,6 +3122,21 @@ mod tests {
         assert_eq!(overlay.title, "approval");
         app.approval = None;
         assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "question");
+    }
+
+    #[test]
+    fn a_remote_line_leaves_a_question_alone_while_the_person_is_mid_edit() {
+        let mut app = app();
+        let _rx = open_question(&mut app, "root", true);
+        assert!(app.remote_dialog().is_some());
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.remote_dialog().is_none(), "a box is checked");
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.remote_dialog().is_some());
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.remote_dialog().is_none(), "Other holds text");
     }
 
     #[test]

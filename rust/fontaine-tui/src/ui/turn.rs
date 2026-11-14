@@ -153,6 +153,8 @@ impl Submission {
 pub(crate) enum CommandOutcome {
     /// The command did its work; the next submission runs.
     Done,
+    /// `/clear` emptied the conversation, so submissions meant for it are stale.
+    Cleared,
     /// The command opened a picker or dialog; replay suspends until it closes.
     AwaitingModal,
     /// The command prepared a turn, which front-pushes and runs next.
@@ -935,7 +937,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     let Some(command) = parse_command(&raw) else {
                         continue;
                     };
-                    let clears = matches!(&command, Command::Clear(name) if name.is_empty());
                     match self
                         .dispatch_command(runtime, launch_dir, command, &raw, has_typed_pending)
                         .await
@@ -944,22 +945,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             runtime.steering.set_delivery_hold(false);
                             return Break(());
                         }
-                        Continue(CommandOutcome::Done) => {
-                            if clears {
-                                // They were meant for the conversation that is gone.
-                                let (remote, typed): (Vec<_>, Vec<_>) =
-                                    pending.drain(..).partition(Submission::is_remote);
-                                pending.extend(typed);
-                                let dropped: Vec<Retracted> = remote
-                                    .into_iter()
-                                    .filter_map(Submission::into_remote)
-                                    .collect();
-                                self.drop_remote_entries(
-                                    runtime,
-                                    dropped,
-                                    "the conversation was cleared",
-                                );
-                            }
+                        Continue(CommandOutcome::Done) => {}
+                        Continue(CommandOutcome::Cleared) => {
+                            // They were meant for the conversation that is gone.
+                            let (remote, typed): (Vec<_>, Vec<_>) =
+                                pending.drain(..).partition(Submission::is_remote);
+                            pending.extend(typed);
+                            let dropped: Vec<Retracted> = remote
+                                .into_iter()
+                                .filter_map(Submission::into_remote)
+                                .collect();
+                            self.drop_remote_entries(
+                                runtime,
+                                dropped,
+                                "the conversation was cleared",
+                            );
                         }
                         Continue(CommandOutcome::AwaitingModal) => {
                             if self.serve_modal(runtime, pending).await.is_break() {

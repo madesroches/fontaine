@@ -8,12 +8,13 @@ use fontaine_tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/clear`: empties the model's context and the transcript, and keeps the session.
-    pub(crate) async fn clear(&mut self, runtime: &AgentRuntime, name: &str) {
+    /// Returns whether the conversation was actually cleared.
+    pub(crate) async fn clear(&mut self, runtime: &AgentRuntime, name: &str) -> bool {
         if !name.is_empty() {
             self.app.transcript.error(
                 "/clear takes no name; /rename names this session, and /resume returns to a session later",
             );
-            return;
+            return false;
         }
         // A refused clear leaves the conversation, so the inbox and its queue must stay too.
         if !runtime.subagents_idle() {
@@ -22,14 +23,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .error(fontaine_tools::error_chain::chain(
                     &ClearError::SubagentsRunning,
                 ));
-            return;
+            return false;
         }
         let had_goal = runtime.session.goal().is_active();
-        // The endpoint goes down first so nothing more is accepted, and entries already queued
-        // are dropped: they were meant for the conversation that is going away.
-        let dropped = self.remote_clear(runtime);
         match runtime.clear_conversation().await {
             Ok(()) => {
+                // Only a clear that happened tears the inbox down; a failed one keeps both it
+                // and its queue, which still belong to the surviving conversation.
+                let dropped = self.remote_clear(runtime);
                 self.app.transcript.clear();
                 self.app.reset_suggestions();
                 // The old conversation would otherwise stay on screen and in scrollback, which
@@ -55,11 +56,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         "dropped {dropped} queued remote message(s) with it; their senders were told `accepted`, which meant queued"
                     ));
                 }
+                true
             }
-            Err(e) => self
-                .app
-                .transcript
-                .error(fontaine_tools::error_chain::chain(&e)),
+            Err(e) => {
+                self.app
+                    .transcript
+                    .error(fontaine_tools::error_chain::chain(&e));
+                false
+            }
         }
     }
 
