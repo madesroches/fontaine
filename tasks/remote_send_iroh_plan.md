@@ -109,8 +109,12 @@ from `Steering`, so nothing here is ever restored into the human's input.
   (`/permissions`, mode changes, `/compact`...), skills and `!` lines work, and a pending
   approval or question dialog can be answered by a remote line. It never goes through the
   `Input` key/paste events or the human's input buffer, so the draft and its cursor are untouched.
-  The one exception is `/guardian-disable` (and `/guardian-enable`), which stay local-terminal
-  only: AGENTS.md makes the escape hatch interactive-only with an explicit local confirmation.
+  There is no exception: `/guardian-disable` and `/guardian-enable` work from a remote line too,
+  including their explicit confirmation step, since the remote line is the user's terminal. They
+  remain blocked in headless runs (which cannot enable the inbox anyway) and are still recorded in
+  the ledger and audit log, with the remote origin noted. This extends AGENTS.md's
+  "after an explicit confirmation in the terminal UI" to a remote terminal; update that wording
+  and the master plan's Decisions entry for `/guardian-disable` in the same change.
 
 ### 4. Enabling and disabling (local, explicit, user-only)
 
@@ -141,8 +145,8 @@ field ignore it via serde defaults, and `MessageOrigin::Remote` is added so resu
 ### 7. Invariants kept
 
 The remote line is presumed-user terminal input: it can answer approvals, change modes and run
-slash commands, but not `/guardian-disable` or `/guardian-enable` (local terminal only). Every tool
-call it induces crosses the floor, guardian, workspace scope and result pipeline unchanged. The
+slash commands, and run `/guardian-disable` after its confirmation, exactly as a local line can.
+Every tool call it induces crosses the floor, guardian, workspace scope and result pipeline unchanged. The
 guardian is not optional, no regex is applied to arguments, no new tool is registered (the
 risk-class choke-point is untouched), and enabling is user-only, per session, never via config,
 project scope or the model. The ticket's bearer risk is the accepted cost of the presumption:
@@ -166,7 +170,8 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - `rust/fontaine-tui/src/ui/{mod.rs,turn.rs}`
 - `rust/fontaine/src/cli.rs`, `send_cmd.rs` (new), `main.rs`
 - `rust/fontaine-tui/src/ui/commands/{mod.rs,remote.rs}`
-- `docs/remote-inbox.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/agents.md`,
+- `AGENTS.md` (floor invariant wording), `tasks/fontaine_harness_plan.md` (Decisions, layout),
+  `docs/remote-inbox.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/agents.md`,
   `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -188,7 +193,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 ## Decisions
 
 - 2026-11-14: remote messages are presumed to come from the user (user message, guardian intent, prompt hooks), superseding the issue's original untrusted-agent-mail wording; the issue body was updated to match.
-- 2026-11-14: a remote line is full terminal input (slash commands, mode changes, approval answers), because the feature is the first slice of remote control; `/guardian-disable` and `/guardian-enable` remain local-only to keep the AGENTS.md floor invariant.
+- 2026-11-14: a remote line is full terminal input (slash commands, mode changes, approval answers), because the feature is the first slice of remote control; there is no exception, `/guardian-disable` included (confirmation still required, toggles still audited with remote origin). AGENTS.md and the master plan's Decisions are updated to say the terminal may be remote.
 
 ## Documentation
 
@@ -205,7 +210,7 @@ frame cap and oversized text; rate lock after bad attempts; inbox cap → `Inbox
 `RemoteQueue` bounds, FIFO and never-restored-into-draft; tool-result delivery then ledger
 `UserMessage{origin: Remote}` in order; remote text is present in guardian human intent; `/` lines dispatch as slash commands, a mode
 change takes effect, a pending approval is answered by a remote line, `/guardian-disable` from a
-remote line is refused; prompt-submit hook block; AFK-blocked hold; audit records;
+remote line requires its confirmation and is audited with remote origin; prompt-submit hook block; AFK-blocked hold; audit records;
 `MessageOrigin` serde back-compat.
 
 Integration (`fontaine-remote/tests`): server and client in one process on local iroh endpoints
