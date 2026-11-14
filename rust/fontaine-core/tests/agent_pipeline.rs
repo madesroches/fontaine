@@ -204,6 +204,41 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
     assert!(allowed(
         &rig.check("read", json!({"path": "private.txt"})).await
     ));
+
+    // The built-in reviewer's entries: listed commands pass, chains, redirections, plain
+    // `cargo fmt` and unlisted commands are refused.
+    let reviewer = fontaine_agents::registry::AgentTypes::builtin()
+        .get("reviewer")
+        .unwrap()
+        .clone();
+    let id = child(&rig, Ladder::Manual);
+    rig.state.set_child_restrictions(
+        &id,
+        ChildRestrictions {
+            only: reviewer
+                .tools
+                .iter()
+                .flatten()
+                .filter(|entry| fontaine_agents::registry::entry_has_specifier(entry))
+                .map(|entry| parse_rule(entry).unwrap())
+                .collect(),
+            deny: Vec::new(),
+        },
+    );
+    assert!(allowed(
+        &rig.check_as(&id, "shell", shell("git diff HEAD~1")).await
+    ));
+    for command in ["git diff && rm x", "git diff > x", "cargo fmt", "git push"] {
+        assert!(
+            !allowed(&rig.check_as(&id, "shell", shell(command)).await),
+            "{command}"
+        );
+        assert_eq!(
+            rig.audit().last().unwrap().rule.as_deref(),
+            Some("agent tools"),
+            "{command}"
+        );
+    }
 }
 
 #[tokio::test]

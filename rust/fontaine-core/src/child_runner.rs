@@ -1437,6 +1437,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_reviewers_shell_entries_parse_into_the_restrictions() {
+        let types = fontaine_agents::registry::AgentTypes::builtin();
+        let reviewer = types.get("reviewer").unwrap();
+        for entry in reviewer.tools.as_ref().unwrap() {
+            parse_rule(entry).unwrap_or_else(|e| panic!("{entry}: {e:?}"));
+        }
+        let only = restrictions(reviewer).only;
+        let rules: Vec<String> = only.iter().map(|r| format!("{r:?}")).collect();
+        let want: Vec<String> = [
+            "shell(git diff *)",
+            "shell(git log *)",
+            "shell(git show *)",
+            "shell(git status *)",
+            "shell(gh pr view *)",
+            "shell(gh pr diff *)",
+            "shell(gh pr checks *)",
+            "shell(gh issue view *)",
+            "shell(cargo clippy *)",
+            "shell(cargo test *)",
+            "shell(cargo fmt --check *)",
+        ]
+        .iter()
+        .map(|e| format!("{:?}", parse_rule(e).unwrap()))
+        .collect();
+        assert_eq!(rules, want);
+        assert!(restrictions(reviewer).deny.is_empty());
+    }
+
     #[derive(Default)]
     struct Recording(Mutex<Vec<String>>);
 
