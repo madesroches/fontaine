@@ -218,6 +218,8 @@ All notable changes are recorded here. The format follows
 - `fontaine-evals cache-bench` now accepts a relative `--fontaine` or `--claude` path (#498). The
   bench runs each side from a temporary fixture directory, so a path such as `target/debug/fontaine`
   failed with "cannot run"; it is now resolved against the current directory first.
+  The `claude -p` stream parser's `message.id` dedupe was checked against the real stream: one
+  message spans several events sharing an id, so it is correct and now has a real-shape test.
 - Guardian over-denials, fourth pass (#611; tracker #312). The guardian is shown each remote's git
   name with its URL (`origin https://…`), `(none)` when the repository had none and `(not
   recorded)` when the harness could not read them completely, and trusts a remote the call names by

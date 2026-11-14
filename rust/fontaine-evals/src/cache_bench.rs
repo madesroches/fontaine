@@ -473,6 +473,29 @@ mod tests {
     }
 
     #[test]
+    fn a_live_parallel_tool_turn_is_one_step() {
+        // Shape captured from a real `claude -p --output-format stream-json --verbose` turn that
+        // wrote a sentence and issued two parallel reads: one message id across three events.
+        let usage = json!({"input_tokens": 2, "cache_creation_input_tokens": 9717,
+            "cache_read_input_tokens": 13223, "output_tokens": 4});
+        let event = |id: &str, block: &str| {
+            json!({"type": "assistant", "message": {"id": id,
+                "content": [{"type": block}], "usage": usage}})
+        };
+        let out = lines(&[
+            event("msg_a", "text"),
+            event("msg_a", "tool_use"),
+            event("msg_a", "tool_use"),
+            json!({"type": "user"}),
+            event("msg_b", "text"),
+        ]);
+        let stream = parse_claude_stream(&out).unwrap();
+        assert_eq!(stream.steps.len(), 2);
+        assert_eq!(totals(&stream.steps).cache_read, 2 * 13223);
+        assert!(stream.steps[0].calls_tool);
+    }
+
+    #[test]
     fn a_relative_path_with_a_separator_becomes_absolute() {
         let relative = Path::new("target").join("debug").join("fontaine");
         let resolved = resolve_program(relative.to_str().unwrap()).unwrap();
