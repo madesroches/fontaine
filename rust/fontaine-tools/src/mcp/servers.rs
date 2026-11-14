@@ -356,23 +356,12 @@ fn classify_http(error: &StreamableHttpError<reqwest::Error>) -> McpErrorKind {
         | StreamableHttpError::TransportChannelClosed
         | StreamableHttpError::ControlRequestTimeout => McpErrorKind::Transient,
         StreamableHttpError::HttpStatus(error) => classify_status(error.status),
-        StreamableHttpError::UnexpectedServerResponse(text) => classify_status_text(text),
         _ => McpErrorKind::Permanent,
     }
 }
 
 fn classify_status(status: u16) -> McpErrorKind {
     if status == 429 || (500..=599).contains(&status) {
-        McpErrorKind::Transient
-    } else {
-        McpErrorKind::Permanent
-    }
-}
-
-/// Text-form HTTP errors keep no typed status, so the status is read back from the text. Only a
-/// 5xx or a 429 is worth another try.
-fn classify_status_text(text: &str) -> McpErrorKind {
-    if text.starts_with("HTTP 5") || text.starts_with("HTTP 429") {
         McpErrorKind::Transient
     } else {
         McpErrorKind::Permanent
@@ -1236,6 +1225,8 @@ mod tests {
             StreamableHttpError::ControlRequestTimeout,
             StreamableHttpError::Io(std::io::Error::other("reset")),
             StreamableHttpError::HttpStatus(HttpStatusError::new(503, None)),
+            StreamableHttpError::HttpStatus(HttpStatusError::new(500, None)),
+            StreamableHttpError::HttpStatus(HttpStatusError::new(429, None)),
         ] {
             assert_eq!(
                 classify_http(&transient),
@@ -1246,6 +1237,11 @@ mod tests {
         for permanent in [
             StreamableHttpError::<reqwest::Error>::SessionExpired,
             StreamableHttpError::HttpStatus(HttpStatusError::new(400, None)),
+            StreamableHttpError::HttpStatus(HttpStatusError::new(404, None)),
+            StreamableHttpError::HttpStatus(HttpStatusError::new(401, None)),
+            StreamableHttpError::UnexpectedServerResponse(
+                "HTTP 503 Service Unavailable: down".into(),
+            ),
             StreamableHttpError::MissingSessionIdInResponse,
             StreamableHttpError::ReinitializationFailed(rmcp::model::ErrorData::new(
                 rmcp::model::ErrorCode(-1),
@@ -1272,35 +1268,6 @@ mod tests {
 
     fn fmt_error() -> std::fmt::Error {
         std::fmt::Error
-    }
-
-    #[test]
-    fn a_status_text_is_transient_only_for_5xx_and_429() {
-        for text in [
-            "HTTP 500 Internal Server Error: boom",
-            "HTTP 503 Service Unavailable: ",
-            "HTTP 429 Too Many Requests: slow down",
-        ] {
-            assert_eq!(
-                classify_status_text(text),
-                McpErrorKind::Transient,
-                "{text}"
-            );
-        }
-        for text in [
-            "HTTP 404 Not Found: gone",
-            "HTTP 401 Unauthorized: ",
-            "HTTP 400 Bad Request: ",
-            "Unexpected JSON-RPC body: {}",
-            "500 without a prefix",
-            "",
-        ] {
-            assert_eq!(
-                classify_status_text(text),
-                McpErrorKind::Permanent,
-                "{text}"
-            );
-        }
     }
 
     #[test]

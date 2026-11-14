@@ -439,6 +439,11 @@ All notable changes are recorded here. The format follows
 
 - `fontaine-mcp` is folded into `fontaine-tools` as the `mcp` module (8 → 7 crates) (#485).
 
+#### MCP
+
+- A failed MCP connect is classified from rmcp's typed HTTP status only: 5xx and 429 stay
+  transient, and the `HTTP <code>` text parse is gone, so any other error text is permanent (#541).
+
 #### Providers
 
 - `claude-subscription` reads replayed history from the prompt cache and starts each request about
