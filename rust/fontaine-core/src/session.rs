@@ -1,6 +1,7 @@
 //! A session's two stores, plus its task list, schedule and goal files. rig-memory holds the model context, which compaction
 //! may rewrite; the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -262,7 +263,7 @@ impl Session {
             dir,
             store,
             checkpoints: Arc::new(checkpoints),
-            policy: CompactionPolicy::default(),
+            policy: compaction_policy(),
             autocompact_window: None,
             context_reset: Arc::default(),
         })
@@ -302,7 +303,7 @@ impl Session {
             dir,
             store,
             checkpoints: Arc::new(checkpoints),
-            policy: CompactionPolicy::default(),
+            policy: compaction_policy(),
             autocompact_window: None,
             context_reset: Arc::default(),
         })
@@ -486,7 +487,7 @@ impl Session {
     /// at a quarter of it, so a compaction leaves the conversation under it.
     pub fn set_autocompact_window(&mut self, window: Option<u64>) {
         self.autocompact_window = window;
-        let mut policy = CompactionPolicy::default();
+        let mut policy = compaction_policy();
         if let Some(window) = window {
             let quarter = window / 4;
             policy.keep_recent = policy
@@ -1139,6 +1140,30 @@ pub fn resolve(data_dir: &Path, root: &Path, text: &str) -> Result<String, Resol
     }
 }
 
+const EVIDENCE_RULES: &str = "\n\nKeep observed evidence apart from unsupported claims. \
+The labels below are allowed in addition to the format above: place them inside \
+\"Critical context\" as fixed labelled sub-lists, keeping the six headings as they are.\n\
+- Record exact commands and touched paths with their concrete outcomes.\n\
+- Unknowns: list unknowns and unsupported assumptions here, separately from decisions.\n\
+- Unverified or stale: list claims nothing in the conversation verified, and checks made \
+stale by a later edit.\n\
+- Output state: state whether each output was a preview, truncated or spilled to a file, \
+with the pointer to recover it. Never infer that the full output was seen; list uninspected \
+ranges as unknown.\n\
+- Never copy credentials, even when preserving a command or a value.";
+
+const UPDATE_RULE: &str = "\n- do not upgrade an unverified claim in the previous summary to a fact, and mark \
+a check stale when a later edit touched what it covered.";
+
+/// The only constructor of the compaction policy, so a rebuild never drops the evidence rules.
+fn compaction_policy() -> CompactionPolicy {
+    let mut policy = CompactionPolicy::default();
+    let prompts = &mut policy.summarizer.prompts;
+    prompts.format = Cow::Owned(format!("{}{EVIDENCE_RULES}", prompts.format));
+    prompts.update = Cow::Owned(format!("{}{UPDATE_RULE}", prompts.update));
+    policy
+}
+
 /// The default reserve and summary size leave no room on a small window: the threshold falls
 /// to zero and the summarizer is sent nothing. Below twice their sum each is capped at a quarter
 /// of the window, so compaction starts by three quarters full and the summarizer gets at
@@ -1178,6 +1203,36 @@ mod tests {
         assert!(policy.over_threshold(13_000, &spec));
         let limits = &policy.summarizer.limits;
         assert!(16_384 - limits.reserve - limits.summary_tokens > 0);
+    }
+
+    #[test]
+    fn the_compaction_prompts_carry_the_evidence_rules_and_keep_the_structured_format() {
+        let defaults = CompactionPolicy::default().summarizer.prompts;
+        let prompts = compaction_policy().summarizer.prompts;
+        assert!(prompts.format.starts_with(defaults.format.as_ref()));
+        for heading in [
+            "## Goal",
+            "## Constraints and preferences",
+            "## Progress",
+            "## Key decisions",
+            "## Next steps",
+            "## Critical context",
+        ] {
+            assert!(prompts.format.contains(heading), "{heading}");
+        }
+        for label in ["Unverified or stale", "Unknowns", "Output state"] {
+            assert!(prompts.format.contains(label), "{label}");
+        }
+        assert!(prompts.format.contains("Never copy credentials"));
+        assert!(prompts.update.starts_with(defaults.update.as_ref()));
+        assert!(
+            prompts
+                .update
+                .contains("do not upgrade an unverified claim")
+        );
+        assert_eq!(prompts.system, defaults.system);
+        assert_eq!(prompts.in_place, defaults.in_place);
+        assert_eq!(prompts.notes, defaults.notes);
     }
 
     #[test]

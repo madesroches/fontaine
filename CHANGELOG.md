@@ -21,6 +21,13 @@ All notable changes are recorded here. The format follows
   (user scope, off by default) to have the server clear old tool results before the model reads the
   conversation, with `trigger_tokens`, `keep`, `clear_at_least_tokens` and `exclude_tools`. The main
   agent and subagents send it; the guardian and side calls never do. The stored history is untouched.
+- Final-delivery and compaction evidence prompts (#443): the base system prompt now asks the
+  model to match the response to the request, run the relevant standard checks on the final
+  deliverable before calling it complete, never claim verified completion with red, unrun or stale
+  checks, report blocked and unverified parts plainly, and inspect the final worktree state. The
+  compaction summary prompts keep observed evidence apart from unsupported claims across repeated
+  compactions: unknowns, unverified or stale checks and output state (preview, truncation, spill
+  pointers) are kept as labelled lists inside `Critical context`, and credentials are never copied.
 - MCP large-result warning (#539): a tool or resource result over 10,000 tokens that is still under
   the output limit now raises a warning naming the tool and its size, as Claude Code does.
 - Cache-write lifetime split (#631): when an Anthropic reply splits its cache writes into 5-minute

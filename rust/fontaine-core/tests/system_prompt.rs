@@ -78,6 +78,22 @@ fn the_base_steers_toward_the_dedicated_tools_and_explains_denials_and_secrets()
 }
 
 #[test]
+fn the_base_asks_for_final_delivery_verification_and_honest_reporting() {
+    for needle in [
+        "keep analysis, explanation and plan-only requests read-only",
+        "run the project's relevant standard checks on the final deliverable",
+        "exercise the affected scenario end to end",
+        "Never claim verified completion",
+        "Do not silently shrink the deliverable",
+        "inspect the final worktree state",
+        "remove only unneeded artifacts you know you created",
+        "no production calls, no destructive checks",
+    ] {
+        assert!(BASE_PROMPT.contains(needle), "the base lacks `{needle}`");
+    }
+}
+
+#[test]
 fn the_roots_section_lists_every_root_with_the_primary_first() {
     let roots = roots();
     let assembled = prompt::assemble(&PromptParts {
