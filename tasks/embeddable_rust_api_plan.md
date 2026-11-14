@@ -32,26 +32,31 @@ route and documents all three as one embedding story.
 
 ### One crate for the SDK
 
-The SDK is **one crate**, `rust/fontaine-sdk`, and it is the only crate a Rust embedder names in
-`Cargo.toml` or reads on docs.rs. A user following the docs should never have to work out which of
-`fontaine-core`, `-tools`, `-agents` holds a type.
+The SDK is **one crate**, `rust/fontaine-sdk`, the only crate a Rust embedder names in `Cargo.toml`
+or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so the current
+`fontaine-core`, `fontaine-tools` and `fontaine-agents` become **modules** of it:
 
-- It depends on `fontaine-core`, `fontaine-tools` and `fontaine-agents` and exposes everything an
-  embedder needs from them through its own module tree (`fontaine_sdk::permissions::Approver`,
-  `fontaine_sdk::config::PermissionMode`, `fontaine_sdk::tools::HostTool`, ...), as curated
-  `pub use` re-exports with the docs attached to the SDK path. No type is promised at its internal
-  path; the internal crates stay `publish = false` and unstable.
-- `fontaine-guardian` stays its own crate: the repo's invariant is that it is dependency-light and
-  lift-out-able by other harnesses, so folding it in would break that. The SDK re-exports its
-  public types (`fontaine_sdk::guardian`) so embedders still see one crate; a guardian-only
-  consumer keeps using `fontaine-guardian` directly.
+- `fontaine_sdk::core`, `fontaine_sdk::tools`, `fontaine_sdk::agents` hold the existing source trees
+  unchanged (`core/src/*` -> `sdk/src/core/*`, and so on). Module names collide across the three
+  crates (`tasks`, `effort`, `schedule`, `checkpoint`, `tools`), which is why each tree keeps its
+  own namespace instead of being flattened.
+- The embedder-facing facade (`SessionBuilder`, `Session`, `Event`, `HostTool`, and curated
+  re-exports of `Approver`, `PermissionMode`, `HookDecision` and the like) sits at the crate root
+  and in a few top-level modules (`fontaine_sdk::permissions`, `::config`, ...), so the docs lead
+  with the facade. The module trees stay `pub` for the binary, the TUI and the evals, but only the
+  root facade is the documented, semver-stable surface; the rustdoc landing page says so, and the
+  trees are `#[doc(hidden)]`-free so links in the facade's docs resolve.
+- The merge is mechanical: `git mv` the trees, `fontaine_core::` -> `fontaine_sdk::core::` (and
+  likewise) across the roughly 340 files that import them, and the three `Cargo.toml` dependency
+  lists fold into one. It lands as its own commit, ahead of any behavior change, so the tests are
+  the proof it changed nothing.
+- `fontaine-guardian` stays its own crate: the repo requires it to be dependency-light and
+  lift-out-able by other harnesses, and folding it in would end that. It is the SDK's one
+  re-exported dependency (`fontaine_sdk::guardian`). An embedder still names one crate.
 - Out of the SDK: `fontaine-tui`, `fontaine-remote`, `fontaine-evals`, `fontaine-testkit` and the
-  `fontaine` binary; none is something an embedding program needs.
-- Publication is out of scope (workspace is `publish = false`), but the design must not block it.
-  crates.io requires every dependency to be published, so shipping the SDK as one crate means
-  merging core, tools and agents into it as modules. That is a mechanical but repo-wide import
-  move, so it is a separate follow-up issue that gates publishing; the facade here is what makes it
-  safe to do later, because the SDK paths are already the only public ones.
+  `fontaine` binary. They depend on the SDK.
+- Publication is out of scope (workspace stays `publish = false`), but nothing here blocks it:
+  after this change the published set would be `fontaine-sdk` and `fontaine-guardian`.
 
 ### Public surface
 
@@ -130,13 +135,16 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 
 ## Implementation Steps
 
-1. Create `rust/fontaine-sdk` crate; add it to the workspace and `deny.toml`/dist config as needed.
+1. Merge `fontaine-core`, `fontaine-tools` and `fontaine-agents` into the new `rust/fontaine-sdk` as
+   the `core`, `tools` and `agents` modules (one mechanical commit, see One crate for the SDK);
+   repoint every dependent crate, the workspace manifest, `deny.toml`, the dist config and the CI
+   steps that name the old crates; the existing test suites must pass unchanged.
 2. Move the `headless-v1` event model and its serialization from `fontaine/src/headless.rs` into
    `fontaine-sdk::events`; rewire `HeadlessV1Sink`. Add the schema-validation test.
 3. Move session assembly (`load_config`, `resolve_roots`, `open_session`, `prepare_session`,
    `resolve_models`, `start_scanner`, `AgentSetup` construction) from `fontaine/src/lib.rs` into
    `fontaine-sdk::assemble`; the CLI calls it. No behavior change.
-4. Add `HostTool` and `AgentSetup::host_tools`; register through `fontaine-core::tools` with a risk
+4. Add `HostTool` and `AgentSetup::host_tools`; register through `fontaine_sdk::core::tools` with a risk
    class; extend the choke-point test to cover host tools.
 5. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over `AgentRuntime::new` and `drive`.
 6. Add `fontaine-sdk/examples/embed.rs` (a 30-line program: builder, approver, one host tool, print
@@ -147,23 +155,25 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 
 ## Files to Modify
 
-- `rust/Cargo.toml`, `rust/deny.toml` (new member)
-- `rust/fontaine-sdk/**` (new)
+- `rust/Cargo.toml`, `rust/deny.toml`, `.github/workflows/*` (core, tools and agents removed, sdk added)
+- `rust/fontaine-sdk/**` (new; receives `fontaine-core/**`, `fontaine-tools/**`, `fontaine-agents/**`)
+- every `Cargo.toml` and import in `fontaine`, `fontaine-tui`, `fontaine-remote`, `fontaine-evals`,
+  `fontaine-testkit`
 - `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine/Cargo.toml`
-- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/tools.rs` (host tools)
+- `rust/fontaine-sdk/src/core/agent.rs`, `rust/fontaine-sdk/src/core/tools.rs` (host tools)
 - `docs/embedding.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/architecture.md`,
   `docs/agent-sdk.md`, `docs/headless.md` (cross-links)
 - `tasks/fontaine_harness_plan.md` (Decisions, workspace layout), `CHANGELOG.md`, `AGENTS.md`
-  (crate list)
+  (crate list), `tasks/design/*.md` and docs that name the merged crates
 
 ## Trade-offs
 
-- **Facade in `fontaine-core` (issue wording) vs new crate:** assembly depends on agents/tools
-  wiring, and core is large and internally unstable. A new crate keeps the promised surface small.
-  The issue's intent (a stabilized facade over core) is kept.
-- **Several public crates (core, tools, agents, ...) vs one:** many crates on crates.io make the
-  docs hard to follow, so the SDK is one crate with re-exports. Merging the internals into it now
-  was rejected as a large churn unrelated to the API itself; it is a follow-up gating publication.
+- **Facade in `fontaine-core` (issue wording) vs a new crate that contains it:** core alone cannot
+  hold the facade (assembly needs the agents and tools wiring), and the user wants a single crate
+  for readable docs. So the facade and the three internals share one crate.
+- **Several public crates vs one:** one crate keeps the docs followable. A re-export-only facade
+  over three crates was rejected: docs.rs would still show three crates and three version numbers.
+- **Fold guardian in too:** rejected, it would end its lift-out property.
 - **Run the binary as a subprocess from Rust:** needs no new code, but gives no in-process tools or
   typed callbacks. Kept as the documented route for other languages only.
 - **Expose `AgentSetup` directly:** cheapest, but promises 35 internal fields.
@@ -171,7 +181,7 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 ## Decisions
 
 - 2026-11-14: Rust embedding is a typed, in-process facade whose event stream serializes to `headless-v1` unchanged; foreign languages use the existing stdio surfaces, with no third protocol.
-- 2026-11-14: The Rust SDK is a single crate, `fontaine-sdk`, re-exporting the needed parts of core, tools, agents and guardian under its own paths; guardian stays a separate crate for lift-out; merging the internal crates into the SDK is a follow-up that gates any crates.io publication.
+- 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools` and `fontaine-agents` become its modules in this same change. `fontaine-guardian` stays separate for lift-out and is re-exported.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
 
 ## Documentation
