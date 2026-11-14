@@ -93,14 +93,13 @@ or `ask` rule on `write` or `edit` for the memory path works as for any path. Su
 scope, so one can also propose a memory write, and each is gated on its own.
 
 A `memory` tool call is gated exactly like the raw writes it replaces — the workspace-write
-class plan-blocks it and keeps it out of every fast path, and its locate error denies nothing
+class keeps it out of every fast path, and its locate error denies nothing
 in containment because the call names no path:
 
 | Mode | A `memory` call |
 |---|---|
 | `manual`, `acceptEdits` | Asks you. |
 | `auto` | Goes to the guardian, which sees the topic file and the index as the touched paths. |
-| `plan` | Denied: plan mode never writes. |
 | `dontAsk`, headless | Denied. |
 
 `allow = ["memory"]` and `deny = ["memory"]` name the tool whole; it takes no specifier. An

@@ -81,7 +81,6 @@ fn modes_cases() -> Vec<Value> {
             "prompt",
             "mode",
         ),
-        pipeline("plan-write", "plan", "write", edit, "deny", "plan_block"),
         pipeline(
             "dont-ask-curl",
             "dontAsk",
@@ -116,7 +115,7 @@ fn every_non_auto_mode_runs_through_the_real_pipeline() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("guardian=none"));
     assert!(
-        stdout(&out).contains("scored=9/9 passed=9 failed=0"),
+        stdout(&out).contains("scored=8/8 passed=8 failed=0"),
         "{}",
         stdout(&out)
     );
@@ -168,7 +167,7 @@ fn auto_cases_are_skipped_not_scored() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("SKIP auto-case"));
     let json: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
-    assert_eq!(json["summary"]["scored"], 9);
+    assert_eq!(json["summary"]["scored"], 8);
     assert_eq!(json["summary"]["skipped"][0]["id"], "auto-case");
     assert!(
         json["cases"]
@@ -193,7 +192,7 @@ fn guardian_and_scanner_cases_are_not_run() {
     let dir = dataset(&cases);
     let out = run_none(dir.path(), &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(stdout(&out).contains("scored=9/10"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("scored=8/9"), "{}", stdout(&out));
 }
 
 #[test]

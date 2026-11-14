@@ -243,24 +243,24 @@ fn replay_restoration_puts_older_pending_raws_first_and_the_draft_last() {
         },
         Submission::Message("behind".into()),
     ]);
-    let outcome = CommandOutcome::Turn(Submission::Message("/plan do x".into()));
+    let outcome = CommandOutcome::Turn(Submission::Message("/btw do x".into()));
     if let CommandOutcome::Turn(sub) = outcome {
         front_push(&mut pending, sub);
     }
     // A dispatcher hand-off runs immediately, ahead of everything already pending.
     assert_eq!(
         pending.front(),
-        Some(&Submission::Message("/plan do x".into()))
+        Some(&Submission::Message("/btw do x".into()))
     );
 
     let mut app = App::new(PermissionMode::Manual, "m".into());
     app.input.set_text("draft");
     let block = restore_block(&pending, "newly typed");
-    assert_eq!(block, "/plan do x\n\n/review 42\n\nbehind\n\nnewly typed");
+    assert_eq!(block, "/btw do x\n\n/review 42\n\nbehind\n\nnewly typed");
     app.restore_to_input(&block);
     assert_eq!(
         app.input.text(),
-        "/plan do x\n\n/review 42\n\nbehind\n\nnewly typed\n\ndraft"
+        "/btw do x\n\n/review 42\n\nbehind\n\nnewly typed\n\ndraft"
     );
 }
 

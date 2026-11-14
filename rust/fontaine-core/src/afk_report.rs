@@ -23,13 +23,13 @@ use crate::tier::Tier;
 #[serde(rename_all = "snake_case")]
 pub enum AfkSource {
     /// `/afk` in the terminal UI of an older session, or `/afk review` leaving a stopped stretch.
+    /// `plan` is what an older session wrote for `/plan` leaving AFK.
+    #[serde(alias = "plan")]
     Command,
     /// The start of the session: `--afk`, `--permission-mode afk` or `default_mode = "afk"`.
     Cli,
     /// The mode carousel (Shift+Tab or a rebound `cycle_mode` key).
     Cycle,
-    /// `/plan` out of AFK.
-    Plan,
     /// A Claude Agent SDK host's mode change; it can leave AFK, never enter it.
     Sdk,
 }
@@ -115,13 +115,9 @@ pub fn severity_weight(facts: &DenialFacts<'_>) -> f64 {
             Some(Tier::Guardian) if facts.converted != Some(Converted::BreakerPaused) => {
                 take(facts.rule.map_or(Severity::Medium, label_severity).weight());
             }
-            Some(
-                Tier::Screen
-                | Tier::DenyRule
-                | Tier::CriticalPath
-                | Tier::ProtectedPath
-                | Tier::PlanBlock,
-            ) => take(Severity::Medium.weight()),
+            Some(Tier::Screen | Tier::DenyRule | Tier::CriticalPath | Tier::ProtectedPath) => {
+                take(Severity::Medium.weight())
+            }
             _ => {}
         }
     }
@@ -1014,12 +1010,11 @@ mod tests {
     }
 
     #[test]
-    fn floor_screen_and_plan_denials_are_medium_and_other_tiers_low() {
+    fn floor_and_screen_denials_are_medium_and_other_tiers_low() {
         for tier in [
             Tier::DenyRule,
             Tier::CriticalPath,
             Tier::ProtectedPath,
-            Tier::PlanBlock,
             Tier::Screen,
         ] {
             assert!(

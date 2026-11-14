@@ -23,7 +23,7 @@ pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
         return false;
     }
     match mode {
-        PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan => true,
+        PermissionMode::Auto | PermissionMode::Afk => true,
         PermissionMode::Manual | PermissionMode::AcceptEdits | PermissionMode::DontAsk => {
             names_tool(&rules.allow)
         }
@@ -179,8 +179,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_and_plan_offer_it_without_a_rule() {
-        for mode in [PermissionMode::Auto, PermissionMode::Plan] {
+    fn auto_and_afk_offer_it_without_a_rule() {
+        for mode in [PermissionMode::Auto, PermissionMode::Afk] {
             assert!(permitted(mode, &Rules::default()), "{mode:?}");
         }
     }
@@ -204,7 +204,7 @@ mod tests {
     fn a_deny_or_ask_rule_withholds_it_in_every_mode() {
         for mode in [
             PermissionMode::Auto,
-            PermissionMode::Plan,
+            PermissionMode::Afk,
             PermissionMode::Manual,
         ] {
             assert!(!permitted(

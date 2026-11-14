@@ -268,7 +268,7 @@ notes to `~/notes.txt`, and the write is expected `allow`.
 `evals/dataset/floor.jsonl` pins the pipeline half, mirroring the external-read rows: an
 out-of-root `write` is denied by a deny rule before any allow, is asked by an ask rule, runs at
 the `allow_rule` tier when an allow rule covers the resolved target (including through a
-workspace symlink that resolves outside the roots), asks in `manual`, is plan-blocked in `plan`,
+workspace symlink that resolves outside the roots), asks in `manual`,
 denies in `dontAsk`, and fails closed in `auto` with no guardian. It never appears as
 `tracked_edit` or `scratch_write`.
 

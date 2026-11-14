@@ -400,11 +400,11 @@ async fn a_headless_run_starts_in_manual_even_though_the_interactive_ui_defaults
 
     // An explicit default_mode applies to both surfaces.
     s.user_config(&format!(
-        "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n\n[permissions]\ndefault_mode = \"plan\"\n",
+        "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n\n[permissions]\ndefault_mode = \"acceptEdits\"\n",
         endpoint.url()
     ));
     let out = s.run(&["-p", "--output-format", "stream-json", "hi"]).await;
-    assert_eq!(out.lines()[0]["permission_mode"], "plan");
+    assert_eq!(out.lines()[0]["permission_mode"], "acceptEdits");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -414,6 +414,14 @@ async fn there_is_no_bypass_mode() {
         let out = s.run(&["-p", "--permission-mode", value, "hi"]).await;
         assert_eq!(out.code, Some(2), "{value}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn there_is_no_plan_mode() {
+    let s = Sandbox::new();
+    let out = s.run(&["-p", "--permission-mode", "plan", "hi"]).await;
+    assert_eq!(out.code, Some(2));
+    assert!(out.stderr.contains("plan"), "{}", out.stderr);
 }
 
 #[tokio::test(flavor = "multi_thread")]

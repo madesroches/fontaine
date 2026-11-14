@@ -2672,7 +2672,6 @@ mod tests {
             "/goal the build is green",
             "/loop 5m check",
             "/init",
-            "/plan add a test",
             "/review",
             "!ls",
         ] {
@@ -2693,10 +2692,6 @@ mod tests {
     #[test]
     fn ui_commands_still_run_in_a_view() {
         let mut app = viewing_app();
-        assert_eq!(
-            submit(&mut app, "/plan"),
-            Action::Submit("/plan".into(), Vec::new()),
-        );
         assert_eq!(
             submit(&mut app, "/status"),
             Action::Submit("/status".into(), Vec::new())
@@ -2773,7 +2768,7 @@ mod tests {
     fn what_a_command_wrote_while_an_agent_is_shown_moves_to_that_agents_view() {
         let mut app = viewing_app();
         let mark = app.notice_mark();
-        app.transcript.notice("plan mode on");
+        app.transcript.notice("a notice");
         app.move_notices_to_shown(mark);
         assert!(app.transcript.entries.is_empty());
         let shown: String = app
@@ -2782,7 +2777,7 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect();
-        assert!(shown.contains("plan mode on"), "{shown}");
+        assert!(shown.contains("a notice"), "{shown}");
         // On main nothing moves.
         app.view(None);
         let mark = app.notice_mark();
@@ -4193,10 +4188,10 @@ mod tests {
         );
         assert!(app.input.is_empty());
 
-        type_text(&mut app, "/plan");
+        type_text(&mut app, "/permissions");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Submit("/plan".into(), Vec::new())
+            Action::Submit("/permissions".into(), Vec::new())
         );
 
         type_text(&mut app, "/add");

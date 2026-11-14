@@ -155,7 +155,7 @@ async fn a_mode_switch_adds_and_removes_it_on_the_next_turn() {
         .runtime
         .state
         .set_mode(
-            PermissionMode::Plan,
+            PermissionMode::Auto,
             fontaine_core::afk_report::AfkSource::Command,
         )
         .expect("not AFK mode");
@@ -207,7 +207,7 @@ async fn a_deny_or_ask_rule_withholds_it_even_with_an_allow_rule() {
         let w = world(&format!(
             "{ANTHROPIC}[permissions]\n{rule} = [\"websearch\"]\nallow = [\"websearch\"]\n"
         ));
-        for mode in [PermissionMode::Auto, PermissionMode::Plan] {
+        for mode in [PermissionMode::Auto, PermissionMode::Afk] {
             let built = build(&w, mode, "anthropic", vec![answer()]);
             assert!(!built.runtime.native_search_active(), "{rule} {mode:?}");
             turn(&built).await;

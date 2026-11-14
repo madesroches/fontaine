@@ -4,7 +4,7 @@ mod common;
 
 use common::World;
 use common::runtime::build;
-use fontaine_core::config::PermissionMode::{Auto, Manual, Plan};
+use fontaine_core::config::PermissionMode::{Auto, DontAsk, Manual};
 
 #[tokio::test]
 async fn the_mode_follows_the_state_while_the_start_mode_stays() {
@@ -15,9 +15,9 @@ async fn the_mode_follows_the_state_while_the_start_mode_stays() {
     built
         .runtime
         .state()
-        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .set_mode(DontAsk, fontaine_core::afk_report::AfkSource::Command)
         .expect("not AFK mode");
-    assert_eq!(built.runtime.mode(), Plan);
+    assert_eq!(built.runtime.mode(), DontAsk);
     built
         .runtime
         .state()

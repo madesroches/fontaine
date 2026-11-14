@@ -7,14 +7,14 @@ use common::World;
 use common::pipeline::{Options, Rig};
 use common::runtime::{build, build_with_document};
 use fontaine_core::audit::DecisionRecord;
-use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
+use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual};
 use fontaine_core::permissions::Answer;
 use fontaine_core::turn::{Drive, Flow, TurnOutcome, TurnParams, drive, run_turn};
 use rig_core::ProviderResponseError;
 use rig_core::test_utils::{MockError, MockStreamEvent, TraceCapture, mock_final};
 use serde_json::{Value, json};
 
-const MODES: [PermissionMode; 4] = [Manual, AcceptEdits, Plan, DontAsk];
+const MODES: [PermissionMode; 3] = [Manual, AcceptEdits, DontAsk];
 
 fn calls() -> Vec<(&'static str, Value)> {
     vec![
@@ -257,10 +257,10 @@ async fn a_mode_change_emits_an_event() {
     let _guard = tracing::subscriber::set_default(capture.subscriber());
     let rig = Rig::new(Manual);
     rig.state
-        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .set_mode(DontAsk, fontaine_core::afk_report::AfkSource::Command)
         .expect("not AFK mode");
     rig.state
-        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .set_mode(DontAsk, fontaine_core::afk_report::AfkSource::Command)
         .expect("not AFK mode");
     let events: Vec<_> = capture
         .events()
@@ -269,7 +269,7 @@ async fn a_mode_change_emits_an_event() {
         .collect();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].fields["from"], "manual");
-    assert_eq!(events[0].fields["to"], "plan");
+    assert_eq!(events[0].fields["to"], "dontAsk");
 }
 
 #[tokio::test]

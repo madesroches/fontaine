@@ -116,7 +116,7 @@ max_parallel = 4                  # concurrent subagents (v1 requirement, Claude
 # subagent_cost_budget_usd = 2.0  # opt-in per-subagent spend cap, unset by default; inactive (one-time notice) on a model with no catalog price, a token cap, if set, still binds
 # session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
-[agents.types]                    # per-type model + toolset + mode (`mode` accepts only `inherit`/`manual`/`dontAsk`, else load error (exit 2); default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
+[agents.types]                    # per-type model + toolset + mode (`mode` accepts only `inherit`/`manual`/`dontAsk`, else load error (exit 2); default "inherit", never looser than parent)
   explore = { model = "$main", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 
@@ -163,7 +163,7 @@ files: `<config dir>/` and `<root>/.fontaine/` each hold `skills/<name>/SKILL.md
 `agents/<name>.md` and `output-styles/<name>.md`. Agent files and `[agents.types]` entries feed one
 agent-type registry (project definitions override user ones of the same name, as in Claude Code); a
 project agent file may only narrow — toolset a subset of the parent's, `mode` `manual` (default) or
-`dontAsk` (no `inherit`), no `model` key (it runs on the session model). A user-scope agent file follows the `[agents.types]` mode rule: `permissionMode` is accepted only as `inherit`, `default` (↦ `manual`) or `dontAsk`; any other value (`acceptEdits`, `auto`, `plan`, `bypassPermissions`) is a load error (exit 2) naming the file (stricter than Claude Code). A skill's `allowed-tools`
+`dontAsk` (no `inherit`), no `model` key (it runs on the session model). A user-scope agent file follows the `[agents.types]` mode rule: `permissionMode` is accepted only as `inherit`, `default` (↦ `manual`) or `dontAsk`; any other value (`acceptEdits`, `auto`, `bypassPermissions`) is a load error (exit 2) naming the file (stricter than Claude Code). A skill's `allowed-tools`
 acts as session-scope allow rules while the skill is active when the skill comes from a user trust
 scope, and is ignored from project scope.
 

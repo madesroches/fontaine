@@ -521,7 +521,7 @@ mod tests {
         (
             "permissions.default_mode",
             "[permissions]\ndefault_mode = \"dontAsk\"\n",
-            Some("[permissions]\ndefault_mode = \"plan\"\n"),
+            Some("[permissions]\ndefault_mode = \"acceptEdits\"\n"),
         ),
         (
             "permissions.deny",
@@ -926,7 +926,6 @@ mod tests {
         let b = toml::Value::Boolean;
         assert!(is_tightening_mode(&s("manual")));
         assert!(is_tightening_mode(&s("dontAsk")));
-        assert!(!is_tightening_mode(&s("plan")));
         assert!(!is_tightening_mode(&s("auto")));
         assert!(!is_tightening_mode(&s("afk")));
         assert!(is_false(&b(false)));

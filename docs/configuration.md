@@ -722,8 +722,7 @@ breaks the session's spend down by role and model.
 
 ### `[guardian]`
 
-Keys of the guardian that judges tool calls in `auto` mode and in the consequential branch of
-`plan` mode. [The guardian](guardian.md) explains what they do.
+Keys of the guardian that judges tool calls in `auto` mode. [The guardian](guardian.md) explains what they do.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -742,7 +741,7 @@ of every scanner type (the `llm` scanner retries a stalled attempt within it), a
 
 #### `[guardian.composition]`
 
-How the guardian is composed from the LLM guardian and cheap local reads in `auto` and `plan`
+How the guardian is composed from the LLM guardian and cheap local reads in `auto`
 mode: a built-in preset or a Rune script. With the `screen` preset it is an allow screen in front
 of the guardian: a small model, local (Ollama, yes/no questions) or hosted (Jev on OpenRouter), allows
 a call that is clearly safe without waiting for the guardian, and escalates a call that is
@@ -893,7 +892,7 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 
 | Key | Meaning | Default |
 |---|---|---|
-| `default_mode` | `manual`, `acceptEdits`, `plan`, `dontAsk`, `auto` or `afk`. Applies to both surfaces. | unset: the terminal UI starts in `auto`, a headless run in `manual` |
+| `default_mode` | `manual`, `acceptEdits`, `dontAsk`, `auto` or `afk`. Applies to both surfaces. | unset: the terminal UI starts in `auto`, a headless run in `manual` |
 | `deny` | Rules that always deny. | `[]` |
 | `ask` | Rules that always prompt. | `[]` |
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
@@ -1426,7 +1425,7 @@ The actions and their default keystrokes:
 
 | Action | Default | What it does |
 |---|---|---|
-| `cycle_mode` | `shift+tab` | Cycle the permission mode; the cycle stays manual → plan → accept edits → auto → AFK → manual, no matter the key. |
+| `cycle_mode` | `shift+tab` | Cycle the permission mode; the cycle stays manual → accept edits → auto → AFK → manual, no matter the key. |
 | `interrupt` | `ctrl+c` (reserved) | Interrupt a running turn; quit when idle. |
 | `quit` | `ctrl+d` (reserved) | Quit when the input is empty; with text it deletes the character under the cursor. |
 | `agents_panel` | none | Open or close the agents panel; `/agents` opens it without a key. |

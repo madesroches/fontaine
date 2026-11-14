@@ -1034,7 +1034,7 @@ fn announce(runtime: &AgentRuntime) {
     }
     if !matches!(
         runtime.start_mode(),
-        PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
+        PermissionMode::Auto | PermissionMode::Afk
     ) {
         // The guardian is never consulted here, but a subagent on its model stays quiet in
         // expectation of this notice, so it is printed even so.
@@ -1598,7 +1598,7 @@ pub(crate) async fn run_session<I: InputSource>(
     if let Some((account, login)) = guardian_login
         && matches!(
             runtime.start_mode(),
-            PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
+            PermissionMode::Auto | PermissionMode::Afk
         )
     {
         eprintln!(

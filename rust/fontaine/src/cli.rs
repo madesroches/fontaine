@@ -486,8 +486,6 @@ pub enum ModeArg {
     Manual,
     #[value(name = "acceptEdits")]
     AcceptEdits,
-    #[value(name = "plan")]
-    Plan,
     #[value(name = "auto")]
     Auto,
     #[value(name = "dontAsk")]
@@ -501,7 +499,6 @@ impl From<ModeArg> for PermissionMode {
         match mode {
             ModeArg::Manual => PermissionMode::Manual,
             ModeArg::AcceptEdits => PermissionMode::AcceptEdits,
-            ModeArg::Plan => PermissionMode::Plan,
             ModeArg::Auto => PermissionMode::Auto,
             ModeArg::DontAsk => PermissionMode::DontAsk,
             ModeArg::Afk => PermissionMode::Afk,

@@ -1,5 +1,5 @@
 //! Subagent calls through the permission pipeline: a child's mode is the tighter of its own and
-//! its parent's on every call, `plan` bans a child's edits, the guardian's intent comes from the
+//! its parent's on every call, the guardian's intent comes from the
 //! root's human messages alone, and everything is audited per agent.
 
 mod common;
@@ -7,7 +7,7 @@ mod common;
 use common::pipeline::{Options, Rig, allow_verdict, allowed, fake_guardian};
 use fontaine_agents::mode::Ladder;
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::{self, Auto, Manual, Plan};
+use fontaine_core::config::PermissionMode::{self, Auto, Manual};
 use fontaine_core::gate::{AgentViewEvent, ChildRestrictions};
 use fontaine_core::ledger::Record;
 use fontaine_core::permission_rules::parse_rule;
@@ -19,10 +19,6 @@ use serde_json::{Value, json};
 
 fn shell(command: &str) -> Value {
     json!({"command": command})
-}
-
-fn edit_args(path: &str) -> Value {
-    json!({"path": path, "edits": [{"old_text": "a", "new_text": "b", "replace_all": false}]})
 }
 
 fn child(rig: &Rig, own: Ladder) -> String {
@@ -90,49 +86,6 @@ async fn a_dont_ask_child_denies_what_would_need_approval_under_any_parent() {
     ));
     assert_eq!(rig.audit().last().unwrap().tier, Tier::DontAsk);
     assert_eq!(fake.calls(), 0);
-}
-
-#[tokio::test]
-async fn under_a_plan_parent_every_child_edit_is_blocked_and_the_rest_is_manual() {
-    let fake = fake_guardian(allow_verdict());
-    let rig = auto_rig(&fake, Plan);
-    std::fs::write(rig.work().join("a.txt"), "a").unwrap();
-    for own in [Ladder::Auto, Ladder::AcceptEdits, Ladder::Manual] {
-        let id = child(&rig, own);
-        let blocked = rig.check_as(&id, "edit", edit_args("a.txt")).await;
-        assert!(!allowed(&blocked), "{own:?}");
-        assert_eq!(rig.audit().last().unwrap().tier, Tier::PlanBlock, "{own:?}");
-        // A write too, and a shell call asks the human instead of the guardian.
-        rig.check_as(&id, "write", json!({"path": "b.txt", "content": "x"}))
-            .await;
-        assert_eq!(rig.audit().last().unwrap().tier, Tier::PlanBlock);
-        let asked = rig.approver.asked();
-        rig.check_as(&id, "shell", shell("python a.py")).await;
-        assert_eq!(rig.approver.asked(), asked + 1, "{own:?} drops to manual");
-    }
-    assert_eq!(fake.calls(), 0);
-}
-
-#[tokio::test]
-async fn a_parent_entering_plan_mid_run_blocks_the_childs_next_edit() {
-    let fake = fake_guardian(allow_verdict());
-    let rig = auto_rig(&fake, Auto);
-    std::fs::write(rig.work().join("a.txt"), "a").unwrap();
-    let id = child(&rig, Ladder::Auto);
-    // An edit is judged normally while the parent is in auto.
-    rig.check_as(&id, "edit", edit_args("a.txt")).await;
-    assert_ne!(rig.audit().last().unwrap().tier, Tier::PlanBlock);
-
-    rig.state
-        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
-        .expect("not AFK mode");
-    assert!(!allowed(
-        &rig.check_as(&id, "edit", edit_args("a.txt")).await
-    ));
-    assert_eq!(rig.audit().last().unwrap().tier, Tier::PlanBlock);
-    let asked = rig.approver.asked();
-    rig.check_as(&id, "shell", shell("python a.py")).await;
-    assert_eq!(rig.approver.asked(), asked + 1);
 }
 
 #[tokio::test]
@@ -512,7 +465,6 @@ async fn a_caller_the_tree_does_not_hold_is_denied_in_every_mode() {
     for mode in [
         Manual,
         PermissionMode::AcceptEdits,
-        Plan,
         PermissionMode::DontAsk,
         Auto,
     ] {
@@ -578,7 +530,6 @@ fn types_with(name: &str, tools: &[&str]) -> fontaine_agents::registry::AgentTyp
 async fn a_read_only_spawn_takes_the_fast_path_in_every_mode_without_the_guardian() {
     for mode in [
         Manual,
-        Plan,
         Auto,
         PermissionMode::DontAsk,
         PermissionMode::AcceptEdits,
@@ -664,7 +615,7 @@ async fn a_spawn_that_can_change_state_is_allowed_in_auto_without_the_guardian()
 #[tokio::test]
 async fn a_state_changing_spawn_follows_the_mode_outside_auto() {
     for (mode, expect_allowed, expect_tier, asked) in [
-        (Plan, true, Tier::Spawn, 0),
+        (PermissionMode::Auto, true, Tier::Spawn, 0),
         (PermissionMode::AcceptEdits, false, Tier::Mode, 1),
         (PermissionMode::DontAsk, false, Tier::DontAsk, 0),
     ] {

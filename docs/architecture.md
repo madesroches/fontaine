@@ -153,7 +153,7 @@ decision before anything else sees it:
     |
     v
  1. hooks (deny / ask / allow / rewrite the arguments)
- 2. floor: deny rule -> [plan: block edits] -> ask rule -> critical path -> protected path
+ 2. floor: deny rule -> ask rule -> critical path -> protected path
     |
     v   (the floor can only ask or deny, in every mode)
  3. read-only fast path: read-only tool, every path inside a workspace root and none a secret
@@ -163,12 +163,12 @@ decision before anything else sees it:
  5. allow rules (user trust scopes, session grants, always-allow rules) -> allow
  6. `auto` only: scratch write (file tool inside the session scratch directory) -> allow, then
     tracked edit (file tool on a tracked, new or session-created file in the primary root) -> allow
- 6b. any other `agent` spawn (never guardian-judged): auto / plan allow (`spawn`), manual / acceptEdits
+ 6b. any other `agent` spawn (never guardian-judged): auto allows (`spawn`), manual / acceptEdits
     ask, dontAsk denies
  6c. `send_message` / `board_update` (never guardian-judged): allow in every mode (`coordination`)
  6d. `draft_bug_report` (never guardian-judged; writes a redacted draft only): allow in every mode
     (`bug_draft`)
- 7. the mode: manual / acceptEdits / plan ask, dontAsk denies, auto asks the guardian
+ 7. the mode: manual / acceptEdits ask, dontAsk denies, auto asks the guardian
     |
     v
  audit log -> tool_decision event -> gate_decision event / transcript

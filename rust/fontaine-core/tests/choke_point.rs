@@ -673,7 +673,6 @@ async fn no_mode_answers_the_question_for_the_human() {
     for mode in [
         PermissionMode::Manual,
         PermissionMode::AcceptEdits,
-        PermissionMode::Plan,
         PermissionMode::DontAsk,
         PermissionMode::Auto,
     ] {

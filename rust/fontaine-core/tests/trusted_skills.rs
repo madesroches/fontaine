@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use common::pipeline::{Fake, Options, Rig, allow_verdict, allowed, fake_guardian};
 use common::write;
-use fontaine_core::config::PermissionMode::{self, Auto, Manual, Plan};
+use fontaine_core::config::PermissionMode::{self, Auto, Manual};
 use fontaine_core::extensions::{self, Extensions};
 use fontaine_core::permissions::{Answer, ApprovalRequest, Approver};
 use fontaine_core::plugins::{self, PluginContext, build_plugin, checkout_dir};
@@ -212,12 +212,9 @@ async fn an_untrusted_or_stale_plugin_skill_lends_nothing_and_warns_once() {
 async fn wildcard_rules_are_context_for_the_guardian_never_an_allow() {
     for (mode, tools) in [
         (Auto, "Bash(git *)"),
-        (Plan, "Bash(git *)"),
         (Auto, "Bash"),
         (Manual, "Bash(git *)"),
-        (Plan, "PowerShell"),
         (Manual, "PowerShell"),
-        (Plan, "Agent"),
         (Manual, "Agent"),
     ] {
         let s = setup(mode, "");

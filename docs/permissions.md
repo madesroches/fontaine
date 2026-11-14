@@ -8,7 +8,7 @@ result and the run goes on.
 ## Modes
 
 The session mode is set by `[permissions] default_mode` or `--permission-mode`, and in the
-terminal UI Shift+Tab cycles it, and `/plan` enters plan mode. `afk` is also a valid `default_mode`
+terminal UI Shift+Tab cycles it. `afk` is also a valid `default_mode`
 and `--permission-mode` (`--afk` is shorthand for the latter), and the last stop of the cycle. With neither set, the terminal UI starts in `auto` and a headless
 run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default`.
 
@@ -16,7 +16,6 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 |---|---|
 | `manual` | The human is asked. |
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
-| `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied, except `send_message` and `board_update`. Only other calls that are pre-approved run. |
 | `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch, every `agent` spawn and the coordination tools `send_message` and `board_update` (step 7 below), skip it. |
 | `afk` | [AFK mode](afk.md): decides exactly as `auto` does, and every outcome that would ask you is a denial instead. It is a valid `default_mode` (user file and `--settings` only, as `auto`) and `--permission-mode`; `--afk` is shorthand for `--permission-mode afk`, and the last stop of the Shift+Tab cycle enters it. |
@@ -49,7 +48,6 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    [User hooks](hooks.md).
 2. **The deterministic floor**, in this order:
    - a `[permissions] deny` rule: denied.
-   - in `plan`, an edit tool: blocked.
    - an `ask` rule, a hook's ask, or an MCP tool its server
      [marked as requiring your approval](mcp.md#requiring-approval-for-a-tool): asks.
    - **critical path**: a `shell` command that removes the file system root, a top-level
@@ -76,7 +74,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    resolve inside a workspace root runs. Symlinks are resolved first. A `read`, `grep` or `lsp`
    of a [secret file](tools.md#what-earns-the-read-only-fast-path) does not: it goes on to
    the allow rules, the hooks and the mode, so `manual` and `acceptEdits` ask, `dontAsk` denies
-   and `auto` and `plan` send it to the guardian. The label alone earns
+   and `auto` sends it to the guardian. The label alone earns
    nothing: a path outside the roots does not qualify, and an external read never takes this
    step. `lsp` has no external route at all: a path outside every root is denied, with the
    `/add-dir` hint. `skill`, `ask_user_question`, `todo_write`, `models`, `board_show` and the read-only scheduling tools name
@@ -105,7 +103,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    all use, so retargeting a symlink mid-decision cannot redirect an approved call, and deny
    and ask rules still match the path as written. In `manual` and `acceptEdits` an external
    write asks (that approval is itself the establishment that you asked for it, and the prompt
-   shows the resolved target's diff); in `plan` it is plan-blocked like every edit; in `auto`
+   shows the resolved target's diff); in `auto`
    the guardian decides, allowing it only when your own messages, including what you picked in a question dialog, asked for that write;
    in `dontAsk` and in headless runs it is denied unless an allow rule or hook already covers
    it. An allow rule or a hook written for the resolved path runs
@@ -146,10 +144,10 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    included, with no guardian verdict and no prompt (`tier = coordination`). `draft_bug_report`
    runs the same way (`tier = bug_draft`): it only writes a redacted draft under the data
    directory and sends nothing. An `agent` spawn that did not take step 4 is never judged
-   by the guardian: `auto` and `plan` allow it (`tier = spawn`), `manual` and `acceptEdits` ask you
+   by the guardian: `auto` allows it (`tier = spawn`), `manual` and `acceptEdits` ask you
    and `dontAsk` denies it. Every call the child makes is gated on its own, and the child's mode is
    never looser than its parent's, so judging the spawn's prompt would repeat that coverage. In
-   `auto`, and for the other consequential calls of `plan`, the mode is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
+   `auto` the mode is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
    back to the agent as `Denied by guardian: [Rule] explanation`; an escalate asks you with the
    guardian's explanation (and is a denial in a headless run). Three denials in a row, or twenty
    in a session, pause `auto` and prompting resumes until you approve a call.
@@ -162,7 +160,7 @@ to a prompt adds a second record with `tier = human`. The same record is project
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
-`guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on),
+`guardian`, `dont_ask`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on),
 `afk` (a temperature stop denied the call, or the record is an AFK toggle), `bug_draft` (a
 `draft_bug_report` call) and `bug_report` (you filed a report with [`/bug`](tui.md)). A record also has an
 `afk` flag, and `converted` when a prompt nobody could answer became a denial; see
@@ -305,7 +303,7 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 - A bare `websearch` rule also governs the provider's own search: while a `deny` or `ask` rule
   covers `websearch`, or a `pre_tool_use` hook could (it has no `matcher`, its `matcher` names
   `websearch`, or its matcher cannot be read), it is not offered to the model, and in `manual`, `acceptEdits` and `dontAsk`
-  it is offered only when an `allow` rule exists. In `auto` and `plan` it is offered otherwise.
+  it is offered only when an `allow` rule exists. In `auto` it is offered otherwise.
   Because it runs inside the model's response, an offered provider search is checked once, when the
   request is built, not per query. A mode switch or a new rule takes effect on the next turn, so
   tightening the mode mid-turn (Shift+Tab, or the fallback when the guardian is unavailable) leaves
@@ -322,7 +320,7 @@ contributed a rule, for example `shell(rm) [user]`; a plugin rule reads `[plugin
 ### Allow rules
 
 An allow rule acts after the floor and never past it: a deny, ask, critical-path or protected-path
-outcome stands whatever allow says, and `plan` still blocks edits. A matching allow rule skips the
+outcome stands whatever allow says. A matching allow rule skips the
 prompt in `manual` and `acceptEdits`, pre-approves in `dontAsk`, and skips the guardian in `auto`.
 
 While `auto` is on, **broad code-execution allow rules are suspended**: a bare `shell` or `agent`,

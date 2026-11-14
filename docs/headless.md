@@ -26,7 +26,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `fontaine doctor [--format=text\|json] [--connect=yes\|no] [--all]` | Checks the settings layers, trust, models, MCP servers, extensions and auto memory, and exits 1 when a check fails; starts no session. See [`fontaine doctor`](doctor.md). A prompt that is exactly `doctor` runs this subcommand; write `fontaine -p -- doctor` for a literal prompt. |
 | `fontaine mcp add\|list\|get\|remove` | Declares, lists, shows and removes [MCP servers](mcp.md#the-fontaine-mcp-command) in the local, project (`.mcp.json`) or user scope; starts no session, and `list` and `get` start only the servers `fontaine doctor` would. A prompt that is exactly `mcp` runs this subcommand; write `fontaine -p -- mcp` for a literal prompt. |
 | `fontaine update` | Replaces the installed binary with the newest build on the channel it was installed from, prints one line and exits; starts no session. Exits 3 for an install that cannot update itself, 4 for a network failure and 5 for a verification failure. See [Updating](installing.md#updating). A prompt that is exactly `update` runs this subcommand; write `fontaine -p -- update` for a literal prompt. |
-| `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk\|afk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
+| `--permission-mode <manual\|acceptEdits\|auto\|dontAsk\|afk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
 | `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
 | `--afk` | Runs in [AFK mode](afk.md), which decides as `auto` does (the `init` event reports `afk`) and is shorthand for `--permission-mode afk`: the same would-prompt denials, with guidance to finish the allowed work or stop and report, the temperature stop, and an `afk` object in `result`. |
 | `--afk-temperature-ceiling <n>` | The temperature at which an AFK run stops, a finite number above zero; overrides `[afk] temperature_ceiling`. A project file can only lower it. |
@@ -65,7 +65,7 @@ A headless run on a `claude-subscription` account needs the Claude CLI signed in
 before any turn with ``account `claude` is not signed in; run `claude auth login --claudeai`, then
 retry`` (the command carries the account's `claude_config_dir` as `CLAUDE_CONFIG_DIR=...` when it
 sets one). If a pinned [guardian](guardian.md) model is on another account that is signed out, a run
-in `auto`, `afk` or `plan` mode exits 1 the same way, naming the guardian's account, before the
+in `auto` or `afk` mode exits 1 the same way, naming the guardian's account, before the
 session starts and before any guardian call; `manual` and `acceptEdits` runs are not stopped. The
 guardian model also backs the scanner, the goal evaluator and prompt hooks in every mode; in
 `manual` and `acceptEdits` those behave as before, pausing or failing with the unavailable reason.
@@ -239,7 +239,7 @@ guardian that judged everything unsafe.
 
 Warnings about the configuration that do not stop the run, such as an additional directory that
 was skipped, go to stderr as `fontaine: warning: ...` before the model is resolved, so a run that
-then exits early (a usage error, for instance) still shows them. In `auto` and `plan` a guardian
+then exits early (a usage error, for instance) still shows them. In `auto` a guardian
 running on the main model prints its notice as one line, headline and advice joined by a dash.
 
 A headless `auto` run whose project has no stored [environment facts](guardian.md#project-environment)
@@ -276,7 +276,7 @@ these is one line, in the order the run produces them. The table lists the kinds
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
 `critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`,
-`screen`, `guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off`, `afk`, `bug_draft` or `bug_report`. The audit log records the same values.
+`screen`, `guardian`, `dont_ask`, `human`, `guardian_off`, `afk`, `bug_draft` or `bug_report`. The audit log records the same values.
 
 Every `gate_decision` also carries `afk` (whether [AFK mode](afk.md) was on) and `converted`, which
 names the prompt that was turned into a denial because nobody could answer it (`ask_rule`, `floor`,

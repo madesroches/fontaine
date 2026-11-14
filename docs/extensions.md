@@ -220,7 +220,7 @@ changed or untrusted plugin skill that declares `allowed-tools` lends nothing an
 An agent file adds a type to the registry that `agent` offers; see
 [Subagents](agents.md#agent-types) for how types combine. A file in your config directory follows
 the rules of `[agents.types]`: `permissionMode` is `inherit`, `default` or `dontAsk`, and
-`acceptEdits`, `auto`, `plan` and `bypassPermissions` are errors.
+`acceptEdits`, `auto` and `bypassPermissions` are errors.
 
 A file in a repository can only narrow what its parent can do:
 

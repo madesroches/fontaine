@@ -66,8 +66,6 @@ pub enum Command {
     Loop(String),
     /// `/goal <condition>`, `/goal` or `/goal clear`.
     Goal(String),
-    /// `/plan [description]`.
-    Plan(String),
     /// `/copy [n]`.
     Copy(String),
     /// `/init`: has the agent write or improve the project instruction file; takes no argument.
@@ -126,7 +124,7 @@ impl Command {
             | Command::Plugin(_)
             | Command::ReloadPlugins
             | Command::Init(_) => true,
-            Command::OutputStyle(argument) | Command::Plan(argument) => !argument.is_empty(),
+            Command::OutputStyle(argument) => !argument.is_empty(),
             _ => false,
         }
     }
@@ -401,13 +399,6 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the permission mode and rules in force",
         command: |_| Command::Permissions,
-    },
-    Builtin {
-        name: "plan",
-        aliases: &[],
-        hint: Some("[description]"),
-        description: "enter plan mode, optionally with a task",
-        command: Command::Plan,
     },
     Builtin {
         name: "plugin",
@@ -1009,11 +1000,6 @@ mod tests {
         );
         assert_eq!(parse_command("/mcp x"), Some(Command::Mcp("x".into())));
         assert_eq!(parse_command("/mcp"), Some(Command::Mcp(String::new())));
-        assert_eq!(
-            parse_command("/plan  fix the bug "),
-            Some(Command::Plan("fix the bug".into()))
-        );
-        assert_eq!(parse_command("/plan"), Some(Command::Plan(String::new())));
         assert_eq!(parse_command("/copy 2"), Some(Command::Copy("2".into())));
         assert_eq!(
             parse_command("/expand 3"),
@@ -1195,7 +1181,6 @@ mod tests {
             "/resume",
             "/branch",
             "/rename x",
-            "/plan do x",
             "/goal win",
             "/init",
             "/mcp reconnect all",
@@ -1462,7 +1447,7 @@ mod tests {
     #[test]
     fn a_hint_opening_with_an_angle_bracket_requires_an_argument() {
         assert!(entry("add-dir", &[], Some("<path>")).requires_argument());
-        assert!(!entry("plan", &[], Some("[description]")).requires_argument());
+        assert!(!entry("loop", &[], Some("[interval] <prompt>")).requires_argument());
         assert!(!entry("help", &[], None).requires_argument());
     }
 

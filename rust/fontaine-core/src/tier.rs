@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
+    /// `plan_block` is the tier an older session's ledger and audit log wrote for a plan-mode
+    /// denial; they are read back on resume.
+    #[serde(alias = "plan_block")]
     DenyRule,
     AskRule,
     CriticalPath,
@@ -27,7 +30,6 @@ pub enum Tier {
     Screen,
     Guardian,
     DontAsk,
-    PlanBlock,
     Human,
     /// The session escape hatch `/guardian-disable` is on: the call ran before the floor and
     /// the guardian, so nothing judged it.
@@ -43,7 +45,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 22] = [
+    pub const ALL: [Tier; 21] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -60,7 +62,6 @@ impl Tier {
         Tier::Screen,
         Tier::Guardian,
         Tier::DontAsk,
-        Tier::PlanBlock,
         Tier::Human,
         Tier::GuardianOff,
         Tier::Afk,
@@ -86,7 +87,6 @@ impl Tier {
             Tier::Screen => "screen",
             Tier::Guardian => "guardian",
             Tier::DontAsk => "dont_ask",
-            Tier::PlanBlock => "plan_block",
             Tier::Human => "human",
             Tier::GuardianOff => "guardian_off",
             Tier::Afk => "afk",

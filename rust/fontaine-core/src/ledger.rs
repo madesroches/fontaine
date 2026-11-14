@@ -1067,6 +1067,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_ledger_written_before_plan_mode_left_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(LEDGER_DIR)).unwrap();
+        std::fs::write(
+            dir.path().join(LEDGER_DIR).join(LEDGER_FILE),
+            concat!(
+                r#"{"seq":0,"ts_ms":1,"kind":"afk","on":true,"source":"cycle"}"#,
+                "\n",
+                r#"{"seq":1,"ts_ms":2,"kind":"action","tool":"write","agent":"main","tier":"plan_block"}"#,
+                "\n",
+                r#"{"seq":2,"ts_ms":3,"kind":"afk","on":false,"source":"plan"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let entries = Ledger::open(dir.path()).unwrap().read().unwrap();
+        assert!(matches!(
+            &entries[1].record,
+            Record::Action {
+                tier: Some(Tier::DenyRule),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &entries[2].record,
+            Record::Afk {
+                source: AfkSource::Command,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn credentials_are_stripped_from_remote_urls() {
         assert_eq!(
             without_credentials("https://me:ghp_secret@github.com/org/repo.git"),

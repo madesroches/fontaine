@@ -1,5 +1,5 @@
 //! The status bar and the labels the modes show under. This is the one place that names
-//! them: `manual`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `dontAsk`.
+//! them: `manual`, `⏵⏵ accept edits on`, `⏵⏵ auto mode on`, `dontAsk`.
 
 use std::fmt::Display;
 use std::path::Path;
@@ -49,7 +49,6 @@ pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Manual => "manual",
         PermissionMode::AcceptEdits => "⏵⏵ accept edits on",
-        PermissionMode::Plan => "⏸ plan mode on",
         PermissionMode::Auto => "⏵⏵ auto mode on",
         PermissionMode::Afk => "⏵⏵⏵ AFK mode on",
         PermissionMode::DontAsk => "dontAsk",
@@ -59,7 +58,6 @@ pub fn mode_label(mode: PermissionMode) -> &'static str {
 /// The modes Shift+Tab walks through, by increasing autonomy.
 const CYCLE: &[PermissionMode] = &[
     PermissionMode::Manual,
-    PermissionMode::Plan,
     PermissionMode::AcceptEdits,
     PermissionMode::Auto,
     PermissionMode::Afk,
@@ -77,7 +75,6 @@ fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
     let color = match mode {
         PermissionMode::Manual | PermissionMode::DontAsk => theme.mode_manual,
         PermissionMode::AcceptEdits => theme.mode_accept,
-        PermissionMode::Plan => theme.mode_plan,
         PermissionMode::Auto => theme.mode_auto,
         PermissionMode::Afk => theme.mode_afk,
     };
@@ -258,7 +255,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(vim) = app.input.vim_label() {
         spans.push(Span::styled(
             format!(" {vim} "),
-            Style::default().fg(app.theme.mode_plan),
+            Style::default().fg(app.theme.accent),
         ));
     }
     if app.guardian_off {
@@ -764,14 +761,13 @@ mod tests {
     fn the_cycle_walks_by_increasing_autonomy_through_afk_and_wraps() {
         let mut mode = PermissionMode::Manual;
         let mut seen = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..4 {
             mode = next_mode(mode);
             seen.push(mode);
         }
         assert_eq!(
             seen,
             [
-                PermissionMode::Plan,
                 PermissionMode::AcceptEdits,
                 PermissionMode::Auto,
                 PermissionMode::Afk,

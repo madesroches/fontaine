@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use common::pipeline::{Options, Rig, allow_verdict, allowed, denied_message, fake_guardian};
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
+use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual};
 use fontaine_core::permissions::Answer;
 #[cfg(unix)]
 use fontaine_core::permissions::ApprovalRequest;
 use fontaine_core::tier::Tier;
 use serde_json::{Value, json};
 
-const MODES: [PermissionMode; 4] = [Manual, AcceptEdits, Plan, DontAsk];
+const MODES: [PermissionMode; 3] = [Manual, AcceptEdits, DontAsk];
 
 fn write_args(path: &str) -> Value {
     json!({"path": path, "content": "x"})
@@ -43,202 +43,122 @@ async fn first(rig: &Rig, tool: &str, args: Value) -> (Decision, Tier) {
 #[tokio::test]
 async fn the_mode_and_risk_class_matrix() {
     use Decision::{Allow, Deny, Prompt};
-    use Tier::{DontAsk as Dont, Guardian, Mode, PlanBlock, ReadOnlyFastPath, Tier05};
-    type Row = (&'static str, Value, [(Decision, Tier); 4]);
+    use Tier::{DontAsk as Dont, Mode, ReadOnlyFastPath, Tier05};
+    type Row = (&'static str, Value, [(Decision, Tier); 3]);
     let rows: Vec<Row> = vec![
         (
             "read",
             json!({"path": "a.txt"}),
-            [(Allow, ReadOnlyFastPath); 4],
+            [(Allow, ReadOnlyFastPath); 3],
         ),
         (
             "todo_write",
             json!({"todos": [{"content": "a", "status": "pending"}]}),
-            [(Allow, ReadOnlyFastPath); 4],
+            [(Allow, ReadOnlyFastPath); 3],
         ),
-        ("models", json!({}), [(Allow, ReadOnlyFastPath); 4]),
+        ("models", json!({}), [(Allow, ReadOnlyFastPath); 3]),
         (
             "read",
             json!({"path": "../outside.txt"}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "write",
             write_args("new.txt"),
-            [
-                (Prompt, Mode),
-                (Allow, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Allow, Mode), (Deny, Dont)],
         ),
         (
             "edit",
             edit_args("a.txt"),
-            [
-                (Prompt, Mode),
-                (Allow, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Allow, Mode), (Deny, Dont)],
         ),
         (
             "notebook_edit",
             notebook_args("a.ipynb"),
-            [
-                (Prompt, Mode),
-                (Allow, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Allow, Mode), (Deny, Dont)],
         ),
         (
             "write",
             write_args("../outside.txt"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "edit",
             edit_args("../outside.txt"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "notebook_edit",
             notebook_args("../outside.ipynb"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "lsp",
             json!({"operation": "hover", "path": "../outside.txt", "line": 1, "character": 1}),
-            [(Deny, Mode), (Deny, Mode), (Deny, Mode), (Deny, Dont)],
+            [(Deny, Mode), (Deny, Mode), (Deny, Dont)],
         ),
         (
             "shell",
             shell("touch x"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
-        ("shell", shell("ls"), [(Allow, Tier05); 4]),
-        ("shell", shell("cat a.txt"), [(Allow, Tier05); 4]),
+        ("shell", shell("ls"), [(Allow, Tier05); 3]),
+        ("shell", shell("cat a.txt"), [(Allow, Tier05); 3]),
         (
             "read",
             json!({"path": ".env"}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "grep",
             json!({"pattern": "K", "path": ".env"}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "lsp",
             json!({"operation": "hover", "path": ".env", "line": 1, "character": 1}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "shell",
             shell("cat .env"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "shell",
             shell("head .env"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "shell",
             shell("grep -f.env x"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "read",
             json!({"path": ".env.example"}),
-            [(Allow, ReadOnlyFastPath); 4],
+            [(Allow, ReadOnlyFastPath); 3],
         ),
-        ("shell", shell("cat .env.example"), [(Allow, Tier05); 4]),
+        ("shell", shell("cat .env.example"), [(Allow, Tier05); 3]),
         (
             "ls",
             json!({"path": ".env"}),
-            [(Allow, ReadOnlyFastPath); 4],
+            [(Allow, ReadOnlyFastPath); 3],
         ),
         (
             "glob",
             json!({"pattern": "*", "path": ".env"}),
-            [(Allow, ReadOnlyFastPath); 4],
+            [(Allow, ReadOnlyFastPath); 3],
         ),
         (
             "webfetch",
             json!({"url": "https://example.com/"}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
         (
             "advisor",
             json!({"question": "Which approach?"}),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, Guardian),
-                (Deny, Dont),
-            ],
+            [(Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
         ),
     ];
     for (tool, args, expected) in rows {
@@ -314,62 +234,6 @@ async fn headless_turns_every_prompt_into_a_denial() {
 }
 
 #[tokio::test]
-async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_guardian() {
-    let fake = fake_guardian(allow_verdict());
-    let rig = Rig::with(Options::new(Plan).guardian(fake.guardian.clone()));
-    let d = rig.check("write", write_args("n.txt")).await;
-    assert!(denied_message(&d).contains("plan mode"));
-    assert_eq!(rig.approver.asked(), 0, "an edit is never put to the human");
-    assert_eq!(rig.audit()[0].tier, Tier::PlanBlock);
-    assert_eq!(fake.calls(), 0, "no verdict can reach past the edit block");
-
-    // The same in a headless run, and an allow rule does not let an edit run, whatever the
-    // guardian would say.
-    let headless = Rig::with(
-        Options::new(Plan)
-            .headless()
-            .guardian(fake.guardian.clone())
-            .settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
-    );
-    for (tool, args) in [
-        ("write", write_args("n.txt")),
-        ("edit", edit_args("n.txt")),
-        ("notebook_edit", notebook_args("n.ipynb")),
-    ] {
-        let d = headless.check(tool, args).await;
-        assert!(!allowed(&d));
-    }
-    assert!(headless.audit().iter().all(|r| r.tier == Tier::PlanBlock));
-    assert_eq!(fake.calls(), 0);
-
-    // Every other consequential call goes to the guardian, as in auto: write-capable shell,
-    // webfetch and MCP, and out-of-scope shell reads.
-    for (tool, args) in [
-        ("shell", shell("touch x")),
-        ("webfetch", json!({"url": "https://example.com/"})),
-        ("mcp__srv__tool", json!({})),
-        ("shell", shell("ls ../")),
-    ] {
-        let before = fake.calls();
-        let d = rig.check(tool, args.clone()).await;
-        assert!(allowed(&d), "{tool} {args}");
-        assert_eq!(fake.calls(), before + 1, "{tool} {args}");
-        let record = rig.audit().last().cloned().unwrap();
-        assert_eq!(
-            (record.decision, record.tier),
-            (Decision::Allow, Tier::Guardian)
-        );
-    }
-    assert_eq!(rig.approver.asked(), 0);
-
-    // In-scope `ls` proceeds through the pre-classifier without the guardian.
-    let before = fake.calls();
-    assert!(allowed(&rig.check("shell", shell("ls")).await));
-    assert_eq!(rig.audit().last().unwrap().tier, Tier::Tier05);
-    assert_eq!(fake.calls(), before);
-}
-
-#[tokio::test]
 async fn a_symlink_out_of_the_workspace_is_adjudicated_not_fast_pathed() {
     #[cfg(unix)]
     {
@@ -431,11 +295,10 @@ async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
     }
 
     // An external read follows the ordinary pipeline: it asks in the interactive modes,
-    // reaches the guardian in auto and plan, and denies in dontAsk.
+    // reaches the guardian in auto, and denies in dontAsk.
     let cases: Vec<(PermissionMode, (Decision, Tier))> = vec![
         (Manual, (Prompt, Mode)),
         (AcceptEdits, (Prompt, Mode)),
-        (Plan, (Deny, Guardian)),
         (DontAsk, (Deny, Dont)),
     ];
     for (mode, want) in cases {
@@ -444,8 +307,8 @@ async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
         assert_eq!(got, want, "in {mode:?}");
     }
 
-    // With a working guardian, auto and plan allow it at the guardian tier.
-    for mode in [fontaine_core::config::PermissionMode::Auto, Plan] {
+    // With a working guardian, auto allows it at the guardian tier.
+    for mode in [fontaine_core::config::PermissionMode::Auto] {
         let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
         let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
         let got = first(&rig, "read", json!({"path": "../outside.txt"})).await;
@@ -468,16 +331,15 @@ async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
 #[tokio::test]
 async fn external_writes_follow_the_mode_matrix_and_never_take_a_fast_path() {
     use Decision::{Allow, Deny, Prompt};
-    use Tier::{DontAsk as Dont, Guardian, Mode, PlanBlock};
+    use Tier::{DontAsk as Dont, Guardian, Mode};
     let args = write_args("../outside.txt");
 
     // An external write follows the ordinary pipeline per mode, exactly like an external
-    // read: it asks in the interactive modes, is plan-blocked, and denies in dontAsk.
+    // read: it asks in the interactive modes and denies in dontAsk.
     // acceptEdits never auto-allows it: the auto-allow requires a located in-root path.
     let cases: Vec<(PermissionMode, (Decision, Tier))> = vec![
         (Manual, (Prompt, Mode)),
         (AcceptEdits, (Prompt, Mode)),
-        (Plan, (Deny, PlanBlock)),
         (DontAsk, (Deny, Dont)),
     ];
     for (mode, want) in cases {
@@ -558,7 +420,6 @@ async fn external_writes_keep_the_floor_and_their_preapproved_tiers() {
 
 #[tokio::test]
 async fn malformed_external_write_arguments_are_an_argument_error_after_the_floor() {
-    // Plan blocks every edit before the arguments are read, as it does for readable ones.
     for mode in [Manual, AcceptEdits, DontAsk] {
         let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
         let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
@@ -576,10 +437,6 @@ async fn malformed_external_write_arguments_are_an_argument_error_after_the_floo
         assert_eq!(fake.calls(), 0, "{mode:?}: the guardian never sees them");
         assert_eq!(rig.approver.asked(), 0, "{mode:?}: neither does a human");
     }
-    let rig = Rig::with(Options::new(Plan));
-    let d = rig.check("write", json!({"path": 3})).await;
-    assert!(!allowed(&d));
-    assert!(denied_message(&d).contains("plan mode"), "{d:?}");
     // A deny rule still precedes the argument error.
     let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"write\"]\n"));
     let d = rig.check("write", json!({"path": 3})).await;
@@ -990,7 +847,7 @@ async fn critical_paths_prompt_in_the_interactive_modes_and_deny_in_dont_ask_and
     ];
     let allow_all = "[permissions]\nallow = [\"shell\", \"shell(rm *)\"]\n";
     for command in commands {
-        for mode in [Manual, AcceptEdits, Plan] {
+        for mode in [Manual, AcceptEdits] {
             let rig = Rig::with(Options::new(mode).settings(allow_all));
             let got = first(&rig, "shell", shell(command)).await;
             assert_eq!(
@@ -1354,11 +1211,11 @@ async fn a_mode_change_takes_effect_on_the_next_call() {
         (Decision::Allow, Tier::Mode)
     );
     rig.state
-        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .set_mode(DontAsk, fontaine_core::afk_report::AfkSource::Command)
         .expect("not AFK mode");
     assert_eq!(
         first(&rig, "write", write_args("a.txt")).await,
-        (Decision::Deny, Tier::PlanBlock)
+        (Decision::Deny, Tier::DontAsk)
     );
     let ledger: Vec<_> = rig
         .session
@@ -1375,14 +1232,14 @@ async fn a_mode_change_takes_effect_on_the_next_call() {
         ledger,
         [
             ("manual".to_string(), "acceptEdits".to_string()),
-            ("acceptEdits".to_string(), "plan".to_string())
+            ("acceptEdits".to_string(), "dontAsk".to_string())
         ]
     );
 }
 
 #[tokio::test]
 async fn read_rules_cover_the_paths_of_read_only_shell_commands() {
-    for mode in [Manual, AcceptEdits, Plan, DontAsk] {
+    for mode in [Manual, AcceptEdits, DontAsk] {
         let rig =
             Rig::with(Options::new(mode).settings("[permissions]\ndeny = [\"read(.env)\"]\n"));
         for command in [
@@ -1424,7 +1281,7 @@ async fn read_rules_cover_the_paths_of_read_only_shell_commands() {
 #[tokio::test]
 async fn an_allow_rule_restores_the_skip_for_secret_reads() {
     let allow = "[permissions]\nallow = [\"read(.env)\"]\n";
-    for mode in [Manual, AcceptEdits, Plan, DontAsk] {
+    for mode in [Manual, AcceptEdits, DontAsk] {
         let rig = Rig::with(Options::new(mode).settings(allow));
         for (tool, args) in [
             ("read", json!({"path": ".env"})),
@@ -1706,13 +1563,6 @@ async fn the_memory_tool_routes_by_mode_and_never_takes_a_fast_path() {
         (Allow, Tier::Guardian)
     );
 
-    // The WorkspaceWrite class plan-blocks it, exactly like a file-tool write.
-    let rig = Rig::with(Options::new(Plan).memory());
-    assert_eq!(
-        first(&rig, "memory", args.clone()).await,
-        (Deny, Tier::PlanBlock)
-    );
-
     // The asking modes prompt with the protected-path tier; headless and dontAsk deny.
     for mode in [Manual, AcceptEdits] {
         let rig = Rig::with(Options::new(mode).memory());
@@ -1884,7 +1734,7 @@ async fn powershell_deletes_of_critical_paths_prompt_in_every_mode() {
 allow = [\"powershell\"]
 ";
     for template in commands {
-        for mode in [Manual, AcceptEdits, Plan] {
+        for mode in [Manual, AcceptEdits] {
             let rig = Rig::with(Options::new(mode).settings(allow_all));
             let command = &fill(&rig, template);
             assert_eq!(

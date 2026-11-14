@@ -79,16 +79,11 @@ async fn shift_tab_enters_afk_reports_and_leaves_into_manual_with_a_review() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_cycle_walks_all_five_modes_and_a_rebound_key_walks_the_same_one() {
+async fn the_cycle_walks_all_four_modes_and_a_rebound_key_walks_the_same_one() {
     let w = World::new(Vec::new()).with_config("[keybindings]\n\"f2\" = \"cycle_mode\"\n");
     w.run(|ui| async move {
         idle(&ui).await;
-        for expected in [
-            "plan mode on",
-            "accept edits on",
-            "auto mode on",
-            "AFK mode on",
-        ] {
+        for expected in ["accept edits on", "auto mode on", "AFK mode on"] {
             ui.press(KeyCode::F(2));
             ui.wait_until(expected, |s| {
                 s.lines().last().unwrap_or("").contains(expected)
@@ -148,25 +143,6 @@ async fn afk_and_the_guardian_escape_hatch_refuse_each_other() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn plan_out_of_afk_reviews_the_stretch() {
-    let w = World::new(Vec::new()).in_mode(PermissionMode::Auto);
-    w.run(|ui| async move {
-        idle(&ui).await;
-        ui.press(KeyCode::BackTab);
-        ui.wait_for("AFK mode on").await;
-        ui.send("/plan");
-        ui.wait_for("plan mode on").await;
-        ui.wait_for("AFK: ended.").await;
-        ui.wait_until("the plan label", |s| {
-            s.lines().last().unwrap_or("").contains("plan mode on")
-        })
-        .await;
-    })
-    .await;
-    assert!(w.ledger_text().contains("\"source\":\"plan\""));
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn leaving_afk_during_a_turn_reviews_the_stretch_when_the_turn_ends() {
     let w = World::new(vec![shell_turn("c1", "sleep 2"), text_turn("finished")])
         .in_mode(PermissionMode::Auto)
@@ -197,8 +173,8 @@ async fn entering_afk_with_an_approval_open_denies_it_and_opens_no_overlay() {
         idle(&ui).await;
         ui.send("run it");
         ui.wait_for_prompt("python x.py").await;
-        // manual -> plan -> accept edits -> auto -> AFK
-        for _ in 0..4 {
+        // manual -> accept edits -> auto -> AFK
+        for _ in 0..3 {
             ui.press(KeyCode::BackTab);
         }
         ui.wait_for("denied, so stopped").await;

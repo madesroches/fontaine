@@ -95,11 +95,11 @@ fn scalar_precedence_is_cli_then_project_local_then_project_then_user() {
     w.user_file("[permissions]\ndefault_mode = \"acceptEdits\"\n");
     w.project_file("[permissions]\ndefault_mode = \"dontAsk\"\n");
     w.local_file("[permissions]\ndefault_mode = \"manual\"\n");
-    let cli = w.cli_file("[permissions]\ndefault_mode = \"plan\"\n");
+    let cli = w.cli_file("[permissions]\ndefault_mode = \"auto\"\n");
 
     assert_eq!(
         w.load_with_settings(&cli).unwrap().permissions.default_mode,
-        Some(PermissionMode::Plan)
+        Some(PermissionMode::Auto)
     );
     assert_eq!(
         w.load().unwrap().permissions.default_mode,
@@ -628,6 +628,24 @@ fn default_mode_afk_loads_from_user_scope() {
 }
 
 #[test]
+fn default_mode_plan_is_a_parse_error_naming_the_valid_modes() {
+    match parse_settings(
+        "[permissions]\ndefault_mode = \"plan\"\n",
+        Path::new("user.toml"),
+        Column::User,
+    ) {
+        Err(ConfigError::Parse { message, .. }) => {
+            assert!(message.contains("plan"), "{message}");
+            assert!(message.contains("2:16"), "{message}");
+            for mode in ["manual", "acceptEdits", "dontAsk", "auto", "afk"] {
+                assert!(message.contains(mode), "{message}");
+            }
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
 fn agent_type_mode_accepts_only_inherit_manual_dont_ask() {
     for ok in ["inherit", "manual", "dontAsk"] {
         user_ok(&format!("[agents.types.t]\nmode = \"{ok}\"\n"));
@@ -956,7 +974,7 @@ profile = "minimal"
 model = "a/g"
 
 [permissions]
-default_mode = "plan"
+default_mode = "acceptEdits"
 allow = ["shell(ls)"]
 additional_directories = ["/x"]
 
@@ -976,7 +994,10 @@ screen_reader = true
     );
     let c = w.load_with_settings(&cli).unwrap();
     assert_eq!(c.tui.theme, ThemeName::Light);
-    assert_eq!(c.permissions.default_mode, Some(PermissionMode::Plan));
+    assert_eq!(
+        c.permissions.default_mode,
+        Some(PermissionMode::AcceptEdits)
+    );
     assert_eq!(c.guardian.model.as_deref(), Some("a/g"));
 }
 

@@ -150,13 +150,8 @@ async fn audit_gate_decision_and_tool_call_ids_agree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn dont_ask_and_plan_modes_deny_with_their_own_tiers() {
-    for (mode, tiers) in [
-        ("dontAsk", ["dont_ask", "dont_ask"]),
-        // The edit is blocked outright; the shell call goes to the guardian, which here is the
-        // scripted main model and answers in prose, so the call fails closed.
-        ("plan", ["plan_block", "guardian"]),
-    ] {
+async fn dont_ask_mode_denies_with_its_own_tier() {
+    for (mode, tiers) in [("dontAsk", ["dont_ask", "dont_ask"])] {
         let endpoint = Endpoint::start(
             Wire::Chat,
             vec![

@@ -35,10 +35,10 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               `Tool(specifier)` grammar (§Permission rules); critical-path check →
               `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or a
               workspace root or one of its parents force the human prompt in
-              manual/acceptEdits/plan/auto (never auto-approved by any mode or verdict) and Deny in
+              manual/acceptEdits/auto (never auto-approved by any mode or verdict) and Deny in
               `dontAsk`; protected-path check (a separate list, enumerated under Protected paths below; applies to
               the edit-class tools `edit`/`write`) → writes prompt in manual/acceptEdits, go to the
-              guardian in `auto`, Deny in `dontAsk`; in `plan` edit-class is already blocked outright
+              guardian in `auto`, Deny in `dontAsk`
               (Claude Code's protected-paths behavior). In headless `-p` every prompt outcome is a Deny. All
               structured matching (tool name + risk metadata + path containment), never regex on raw
               args. For `shell` calls the critical-path check parses the command with the same
@@ -49,12 +49,6 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               a command that fails to parse, or parses as anything but one simple command, while
               containing an `rm`/`rmdir` word anywhere (every segment of `;`/`|`/`&&`/`||` lists is
               inspected), is treated as critical.
-           3. mode == plan?  → no edit ever executes: ReadOnly-in-scope, Tier-0.5-eligible and
-              allow-rule-matched non-edit calls proceed (steps 4–5a); everything else reaches the
-              terminal plan-mode branch 9.
-              Structurally blocked = WorkspaceWrite / edit-class only; write-capable/unparsed
-              shell is NOT edit-class — it is adjudicated at branch 9 with the other
-              consequential calls
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian);
               likewise an `agent` call whose Fontaine-computed child toolset holds only
               ReadOnly + Destructive::Never tools (plus the coordination tools `send_message` and `board_update`); an MCP tool, a missing
@@ -86,8 +80,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               protected-path routing):
               `[permissions] allow` rule match (session grants in `SessionState` included) or a
               PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
-              in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
-              in `plan`, edit-class calls never get here
+              in `auto`, broad code-execution rules and hooks are suspended (§Permission rules)
            5b. a call whose path `Scope::locate` cannot place, for a tool with no external
               route — today only `lsp` among the file tools (`shell`/`powershell` are
               `Arbitrary` and never reach this branch) → Deny with the per-session scratch
@@ -111,20 +104,13 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               ends in the LLM leave the call to it. A paused breaker prompts before any of this,
               and a composition allow does not reset the breaker.
            8. mode == dontAsk → anything not pre-allowed is Denied (pre-allowed = steps 4, 5, 5a)
-           9. mode == plan (not allowed by steps 4–5a): WorkspaceWrite / edit-class → BLOCKED
-              outright (structural; no verdict or escalation can override the edit block while
-              plan mode is on); every other consequential call — write-capable or unparsed shell,
-              webfetch, ALL MCP calls (anything non-shell `Arbitrary`) →
-              Guardian::adjudicate as in auto (CC parity: plan mode routes consequential calls
-              through the classifier by default; never edits). Until the guardian ships (Phase 4),
-              these step-9 calls fall through to the human prompt.
                       │
          Allow ──▶ inner rig Tool executes ──▶ ResultPipeline ──▶ result appended to conversation (rig-memory)
          Deny  ──▶ tool_result = "Denied by guardian: [explanation]"; agent sees it and adapts
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
-  gated at steps 6–9 like any other, except that a spawn whose child can only read takes step 4 and any other spawn skips the guardian (`auto`/`plan` allow at tier `spawn`, `manual`/`acceptEdits` ask, `dontAsk` denies); `send_message` and `board_update` are likewise never guardian-judged: after the floor, hooks and rules every mode allows them at tier `coordination`, `dontAsk` included;
+  gated at steps 4–8 like any other, except that a spawn whose child can only read takes step 4 and any other spawn skips the guardian (`auto`/`afk` allow at tier `spawn`, `manual`/`acceptEdits` ask, `dontAsk` denies); `send_message` and `board_update` are likewise never guardian-judged: after the floor, hooks and rules every mode allows them at tier `coordination`, `dontAsk` included;
   every tool call the subagent then makes re-enters this same
   pipeline)
 
@@ -160,7 +146,7 @@ the home directory, plus any path under Fontaine's own config and data directori
 `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`,
 `.mcp.json`. This follows Claude Code's documented protected-paths list; confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.
 Per mode: manual/acceptEdits → prompt (acceptEdits' edit auto-allow does not apply); auto → guardian;
-plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; headless → Deny.
+dontAsk → Deny; headless → Deny.
 
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
@@ -174,9 +160,9 @@ second record with `tier = human`.
 **Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
-floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`plan` allow it) | `coordination` (`send_message` and `board_update` after the floor, hooks and rules, every mode) | `allow_rule`
-(step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (steps 7, 9) |
-`screen` (step 7/9: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `plan_block` (step 9 edit block) | `human`. Two outcomes map explicitly: a prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`; the pre-Phase-4 plan-mode step-9 fall-through prompt (and its headless Deny) carries `mode`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
+floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`afk` allow it) | `coordination` (`send_message` and `board_update` after the floor, hooks and rules, every mode) | `allow_rule`
+(step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (step 7) |
+`screen` (step 7: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `human`. A prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 
 **Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
 grants, the user-hook runner, the session ledger (source of task intent, recent user messages,
@@ -222,7 +208,7 @@ redirections, substitution, globs), optionally after one leading `cd <literal di
 rules match the given path and the resolved path; path allow rules match the resolved path only.
 
 **Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask,
-critical-path or protected-path outcome stands whatever allow says, and `plan` still blocks edits. A
+critical-path or protected-path outcome stands whatever allow says. A
 matching allow rule skips the human prompt in manual/acceptEdits, pre-approves in `dontAsk`, and
 skips the guardian in `auto` (Claude Code parity). In `auto`, **broad code-execution allow rules are
 suspended** for as long as the mode is on (Claude Code parity: its docs drop blanket `Bash(*)`,

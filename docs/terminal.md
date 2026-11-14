@@ -237,7 +237,7 @@ What is printed:
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |
 | `selected: ...` | The highlighted row of the open dialog. |
 | `viewing agent-3 (worker)` | You showed a subagent's transcript. Its entries not printed before follow, and `back to the main conversation` and the main chat's entries not printed before follow when you return. The terminal is not erased, so nothing is printed twice. |
-| `[plan mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`, however it changed. |
+| `[manual mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[auto mode on]`, `[AFK mode on]` or `[dontAsk mode on]`, however it changed. |
 
 A dialog is printed in full when it opens and afterwards only the lines that changed: moving the
 selection prints the newly selected row as `selected: ...`, and scrolling a long list prints the

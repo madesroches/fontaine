@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fontaine_agents::budget::Spend;
-use fontaine_agents::mode::{Ladder, RootMode};
+use fontaine_agents::mode::Ladder;
 use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::composition::Composition;
@@ -141,13 +141,12 @@ impl Drop for WaitGuard {
 }
 
 /// The root session's mode as the agent tree sees it.
-pub fn root_mode(mode: PermissionMode) -> RootMode {
+pub fn root_mode(mode: PermissionMode) -> Ladder {
     match mode {
-        PermissionMode::Plan => RootMode::Plan,
-        PermissionMode::DontAsk => RootMode::Ladder(Ladder::DontAsk),
-        PermissionMode::Manual => RootMode::Ladder(Ladder::Manual),
-        PermissionMode::AcceptEdits => RootMode::Ladder(Ladder::AcceptEdits),
-        PermissionMode::Auto | PermissionMode::Afk => RootMode::Ladder(Ladder::Auto),
+        PermissionMode::DontAsk => Ladder::DontAsk,
+        PermissionMode::Manual => Ladder::Manual,
+        PermissionMode::AcceptEdits => Ladder::AcceptEdits,
+        PermissionMode::Auto | PermissionMode::Afk => Ladder::Auto,
     }
 }
 

@@ -15,7 +15,7 @@ use tokio::sync::Notify;
 
 use crate::budget::{Budget, Exhausted, Spend};
 use crate::effort::Effort;
-use crate::mode::{Ladder, Posture, RootMode, own_mode};
+use crate::mode::{Ladder, Posture, own_mode};
 use crate::registry::{AgentType, AgentTypes, ModelSpec};
 use crate::root_ledger::RootLedger;
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, RevivalRequest};
@@ -595,7 +595,7 @@ impl Drop for WakeHold<'_> {
     }
 }
 
-type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
+type RootModeSource = Arc<dyn Fn() -> Ladder + Send + Sync>;
 type RootToolsSource = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 pub struct AgentTree {
@@ -672,7 +672,7 @@ impl AgentTree {
                 wake_hold: None,
                 pause_clock: None,
             }),
-            root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
+            root_mode: RwLock::new(Arc::new(|| Ladder::Manual)),
             root_tools: RwLock::new(None),
             changed: Notify::new(),
             display: Notify::new(),
@@ -812,13 +812,13 @@ impl AgentTree {
 
     /// Where the tree reads the root session's current mode, so a child's posture follows
     /// the parent on every call.
-    pub fn set_root_mode(&self, source: impl Fn() -> RootMode + Send + Sync + 'static) {
+    pub fn set_root_mode(&self, source: impl Fn() -> Ladder + Send + Sync + 'static) {
         *write(&self.root_mode, "root mode") = Arc::new(source);
     }
 
     fn root_posture(&self) -> Posture {
         let source = read(&self.root_mode, "root mode").clone();
-        Posture::of_root(source())
+        Posture { mode: source() }
     }
 
     /// Where the tree reads the tools the root session's registry holds now, which bound every
@@ -2311,20 +2311,16 @@ mod tests {
     #[test]
     fn posture_follows_the_parent_on_every_call() {
         let tree = tree(4);
-        let mode = Arc::new(Mutex::new(RootMode::Ladder(Ladder::Auto)));
+        let mode = Arc::new(Mutex::new(Ladder::Auto));
         let source = mode.clone();
         tree.set_root_mode(move || *source.lock().unwrap());
         let child = tree
             .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Auto)
             .unwrap();
         assert_eq!(tree.posture(&child).mode, Ladder::Auto);
-        *mode.lock().unwrap() = RootMode::Ladder(Ladder::Manual);
+        *mode.lock().unwrap() = Ladder::Manual;
         assert_eq!(tree.posture(&child).mode, Ladder::Manual);
-        *mode.lock().unwrap() = RootMode::Plan;
-        let in_plan = tree.posture(&child);
-        assert_eq!(in_plan.mode, Ladder::Manual);
-        assert!(in_plan.plan_block);
-        *mode.lock().unwrap() = RootMode::Ladder(Ladder::Auto);
+        *mode.lock().unwrap() = Ladder::Auto;
         assert_eq!(tree.posture(&child).mode, Ladder::Auto);
     }
 

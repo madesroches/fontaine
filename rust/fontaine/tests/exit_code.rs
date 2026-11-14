@@ -64,7 +64,7 @@ fn an_interactive_start_with_no_terminal_is_a_usage_error() {
 fn a_valid_settings_overlay_is_accepted() {
     let s = Sandbox::new();
     let file = s.work.join("extra.toml");
-    write(&file, "[permissions]\ndefault_mode = \"plan\"\n");
+    write(&file, "[permissions]\ndefault_mode = \"manual\"\n");
     let out = s.run(&["--settings", file.to_str().unwrap()]);
     // Past config loading, the start ends at the missing terminal.
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
