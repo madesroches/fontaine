@@ -21,8 +21,10 @@ evasion assessment once, after input EOF, but no streamed line carries it: every
 
 ## Design
 - Issue option 1: new event `{"type":"afk_report","schema_version":1,"session_id":..,"afk":{..}}`,
-  emitted once, after the last `result`, only when the assessment ran after the loop (the
-  post-loop fallback). When the in-loop review already ran (single prompt, failed turn, goal
+  emitted once, after the last `result`, whenever the stream ends at EOF with AFK still active
+  (the post-loop fallback; `final_afk_report` returns a report even with no denials, so the
+  status may be `no_denials`). An unreadable input line ends the run earlier, with no report and
+  no event. When the in-loop review already ran (single prompt, failed turn, goal
   failure), that `result` carries the assessed report and no event follows. One guardian call per
   run is unchanged.
 - Add `fn afk_report(&mut self, _session_id: &str, _report: &AfkReport) {}` to `EventSink`
@@ -37,8 +39,9 @@ evasion assessment once, after input EOF, but no streamed line carries it: every
 1. `rust/fontaine/src/headless.rs`: trait method, `HeadlessV1Sink` impl, post-loop call.
 2. `docs/schemas/headless-v1.schema.json`: `afk_report` event.
 3. `docs/headless.md` (event list and AFK row) and `docs/afk.md` "Headless runs": say that with
-   stream-json a `result` mid-run shows `pending`, and the assessed report arrives in one
-   `afk_report` event after the last `result`, unless an earlier `result` already carried it.
+   stream-json a mid-run `result` shows `pending` when the stretch has denials, and that a stream
+   ending at EOF gets the assessed report in one `afk_report` event after the last `result`,
+   unless an earlier `result` already carried it.
 4. `tasks/fontaine_harness_plan.md` `## Decisions` > Headless: dated line for the new event.
 5. `CHANGELOG.md` entry per existing convention (the `pr` step handles it).
 6. Tests in `rust/fontaine/tests/afk.rs`.
@@ -55,16 +58,18 @@ evasion assessment once, after input EOF, but no streamed line carries it: every
   is closed, so the schema file is updated in the same change).
 
 ## Decisions
-- AFK: schema_version stays 1; a new event type is additive, as `usage_paused` was.
-- AFK: no `afk_report` event when an earlier `result` already carried the assessed report.
+- Headless: schema_version stays 1; a new event type is additive, as `usage_paused` was.
+- Headless: no `afk_report` event when an earlier `result` already carried the assessed report.
 
 ## Documentation
 `docs/headless.md`, `docs/afk.md`, schema file, master plan Decisions (Headless).
 
 ## Testing Strategy
 In `rust/fontaine/tests/afk.rs`, a multi-message stream-json AFK integration test (none exists
-today; pins #428) with wiremock guardian: three user lines to stdin, EOF; assert every `result`
-is `pending`, exactly one `afk_report` line follows the last `result`, its assessment status is
-the stubbed verdict, all lines validate against the schema, and the review request count at the
-guardian endpoint is exactly 1. A second test: a single-prompt stream-json run emits no
-`afk_report` and its `result` carries the assessment (guards against double reporting).
+today; pins #428) with a wiremock guardian: the scripted agent makes one call per message that
+the adjudication route denies (a review runs only when the stretch has denials), the review
+route returns `nothing_suspected()`; three user lines on stdin, then EOF. Assert every `result`
+shows `pending`, exactly one `afk_report` line follows the last `result` with status
+`no_suspected_evasion`, all lines validate against the schema, and the guardian endpoint saw
+exactly one request matching the `REVIEW` marker. Also add an `afk_report`-is-absent assertion
+to the existing single-prompt test `a_guardian_denial_carries_its_rule_...`.
