@@ -107,7 +107,7 @@ impl Plain for SessionGoal {
             .then(|| "agent a1".to_string())
             .into_iter()
             .collect();
-        match self.take_step(&work, Instant::now(), true, &CAPS) {
+        match self.take_step(&work, Instant::now(), true, &CAPS, Spend::default(), true) {
             Some(Due::Evaluate(pending)) => Some(pending),
             Some(other) => panic!("no check-in is due without a schedule: {other:?}"),
             None => None,
@@ -529,11 +529,24 @@ fn work_running_defers_a_pending_evaluation_until_it_is_gone() {
     let t0 = Instant::now();
     answered_with_work(&goal, t0);
     let caps = checkin_caps(30);
-    assert_eq!(goal.take_step(&work(), t0, true, &caps), None);
-    assert!(goal.deferred());
-    assert_eq!(goal.take_step(&work(), t0 + minutes(10), true, &caps), None);
     assert_eq!(
-        goal.take_step(&[], t0 + minutes(11), true, &caps),
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+    assert!(goal.deferred());
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(10),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(11), true, &caps, Spend::default(), true),
         Some(Due::Evaluate(Pending {
             condition: "done".into()
         }))
@@ -549,17 +562,27 @@ fn check_ins_fall_due_at_30_minutes_then_60_then_every_120() {
     let t0 = Instant::now();
     answered_with_work(&goal, t0);
     let caps = checkin_caps(30);
-    assert_eq!(goal.take_step(&work(), t0, true, &caps), None);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
 
     let mut last = t0;
     for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
         let due = last + minutes(gap);
         assert_eq!(
-            goal.take_step(&work(), due - Duration::from_secs(1), true, &caps),
+            goal.take_step(
+                &work(),
+                due - Duration::from_secs(1),
+                true,
+                &caps,
+                Spend::default(),
+                true
+            ),
             None,
             "not before {gap} minutes"
         );
-        let check = check_in(goal.take_step(&work(), due, true, &caps));
+        let check = check_in(goal.take_step(&work(), due, true, &caps, Spend::default(), true));
         assert_eq!(check.work, work());
         assert_eq!(check.condition, "done");
         assert_eq!(check.last_idle, nth == IDLE_CHECKINS, "check-in {nth}");
@@ -568,16 +591,37 @@ fn check_ins_fall_due_at_30_minutes_then_60_then_every_120() {
     // The idle check-ins are used up: the next one that falls due is refused, at the same
     // 120-minute spacing.
     assert_eq!(
-        goal.take_step(&work(), last + minutes(119), true, &caps),
+        goal.take_step(
+            &work(),
+            last + minutes(119),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
         None
     );
     assert_eq!(
-        goal.take_step(&work(), last + minutes(120), true, &caps),
+        goal.take_step(
+            &work(),
+            last + minutes(120),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
         Some(Due::IdleExhausted)
     );
     // Not idle: nothing is delivered and nothing is used up.
     assert_eq!(
-        goal.take_step(&work(), last + minutes(121), false, &caps),
+        goal.take_step(
+            &work(),
+            last + minutes(121),
+            false,
+            &caps,
+            Spend::default(),
+            true
+        ),
         None
     );
 }
@@ -592,7 +636,14 @@ fn without_a_check_in_interval_none_ever_falls_due() {
     let caps = checkin_caps(0);
     for hours in [1, 24, 1000] {
         assert_eq!(
-            goal.take_step(&work(), t0 + minutes(hours * 60), true, &caps),
+            goal.take_step(
+                &work(),
+                t0 + minutes(hours * 60),
+                true,
+                &caps,
+                Spend::default(),
+                true
+            ),
             None
         );
     }
@@ -611,14 +662,30 @@ fn a_check_in_after_the_turn_ends_is_a_turn_end_one_and_later_ones_are_idle() {
 
     // The first look after the answered turn finds a check-in due: it is the turn's own, takes
     // the pending evaluation with it and does not use up an idle one.
-    let check = check_in(goal.take_step(&work(), t0 + minutes(30), false, &caps));
+    let check = check_in(goal.take_step(
+        &work(),
+        t0 + minutes(30),
+        false,
+        &caps,
+        Spend::default(),
+        true,
+    ));
     assert!(!check.last_idle);
     assert!(!goal.deferred());
 
     // Its work is gone without a report and nothing is pending: an idle surface looks again.
-    assert_eq!(goal.take_step(&[], t0 + minutes(31), false, &caps), None);
-    assert!(goal.take_step(&[], t0 + minutes(32), true, &caps).is_some());
-    assert_eq!(goal.take_step(&[], t0 + minutes(33), true, &caps), None);
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(31), false, &caps, Spend::default(), true),
+        None
+    );
+    assert!(
+        goal.take_step(&[], t0 + minutes(32), true, &caps, Spend::default(), true)
+            .is_some()
+    );
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(33), true, &caps, Spend::default(), true),
+        None
+    );
 }
 
 #[test]
@@ -630,29 +697,45 @@ fn a_check_in_turns_own_answer_does_not_make_every_later_check_in_a_turn_end_one
     answered_with_work(&goal, t0);
     let caps = checkin_caps(30);
     // Looked at once, as an idle surface does after every turn.
-    assert_eq!(goal.take_step(&work(), t0, true, &caps), None);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
 
     let mut at = t0;
     for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
         at += minutes(gap);
-        let check = check_in(goal.take_step(&work(), at, true, &caps));
+        let check = check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
         assert_eq!(check.last_idle, nth == 3);
         // The check-in turn answers with the work still running.
         answered_with_work(&goal, at);
         assert!(goal.deferred());
-        assert_eq!(goal.take_step(&work(), at, true, &caps), None);
+        assert_eq!(
+            goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+            None
+        );
     }
     at += minutes(120);
     assert_eq!(
-        goal.take_step(&work(), at, true, &caps),
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
         Some(Due::IdleExhausted)
     );
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
     assert!(!goal.deferred());
     answered_with_work(&goal, at);
-    assert_eq!(goal.take_step(&work(), at, true, &caps), None);
-    let check = check_in(goal.take_step(&work(), at + minutes(30), true, &caps));
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+        None
+    );
+    let check = check_in(goal.take_step(
+        &work(),
+        at + minutes(30),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
     assert!(!check.last_idle, "the idle count started over");
 }
 
@@ -668,15 +751,41 @@ fn a_surface_that_waits_without_looking_first_still_gets_idle_check_ins() {
     for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
         assert!(goal.checkin_wait(true, at, false, &caps).is_some());
         at += minutes(gap);
-        let check = check_in(goal.take_step(&work(), at, true, &caps));
+        let check = check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
         assert_eq!(check.last_idle, nth == 3, "check-in {nth}");
         answered_with_work(&goal, at);
     }
     assert!(goal.checkin_wait(true, at, false, &caps).is_some());
     at += minutes(120);
     assert_eq!(
-        goal.take_step(&work(), at, true, &caps),
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
         Some(Due::IdleExhausted)
+    );
+}
+
+#[test]
+fn a_due_check_in_over_the_cost_cap_pauses_and_is_inactive_without_a_price() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", spend(0, Some(10.0)), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    let caps = GoalCaps {
+        max_cost_usd: Some(1.0),
+        ..checkin_caps(30)
+    };
+    answered_with_work(&goal, t0);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, spend(0, Some(10.0)), true),
+        None
+    );
+    let at = t0 + minutes(30);
+    check_in(goal.take_step(&work(), at, true, &caps, spend(0, Some(10.9)), true));
+    let at = at + minutes(60);
+    check_in(goal.take_step(&work(), at, true, &caps, spend(0, Some(11.2)), false));
+    let at = at + minutes(120);
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, spend(0, Some(11.2)), true),
+        Some(Due::Paused(PauseReason::CostCap(1.0)))
     );
 }
 
@@ -691,17 +800,48 @@ fn a_due_check_in_at_the_turn_cap_pauses_and_below_it_counts_as_a_turn() {
         ..checkin_caps(30)
     };
     answered_with_work(&goal, t0);
-    assert_eq!(goal.take_step(&work(), t0, true, &caps), None);
-    check_in(goal.take_step(&work(), t0 + minutes(30), true, &caps));
-    check_in(goal.take_step(&work(), t0 + minutes(90), true, &caps));
     assert_eq!(
-        goal.take_step(&work(), t0 + minutes(210), true, &caps),
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(30),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(90),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(210),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
         Some(Due::Paused(PauseReason::TurnCap(2)))
     );
     let status = goal.status(Spend::default()).active.unwrap();
     assert_eq!(status.paused, Some(PauseReason::TurnCap(2)));
     assert_eq!(
-        goal.take_step(&work(), t0 + minutes(400), true, &caps),
+        goal.take_step(
+            &work(),
+            t0 + minutes(400),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
         None
     );
 
@@ -709,10 +849,24 @@ fn a_due_check_in_at_the_turn_cap_pauses_and_below_it_counts_as_a_turn() {
     goal.user_prompt(Spend::default(), Duration::ZERO);
     answered_with_work(&goal, t0 + minutes(500));
     assert_eq!(
-        goal.take_step(&work(), t0 + minutes(500), true, &caps),
+        goal.take_step(
+            &work(),
+            t0 + minutes(500),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
         None
     );
-    check_in(goal.take_step(&work(), t0 + minutes(530), true, &caps));
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(530),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
 }
 
 #[test]
@@ -747,7 +901,7 @@ fn the_check_in_wait_counts_down_and_is_none_when_off_or_used_up() {
     let mut at = t0;
     for gap in [30, 60, 120] {
         at += minutes(gap);
-        check_in(goal.take_step(&work(), at, true, &caps));
+        check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
     }
     assert_eq!(goal.checkin_wait(true, at, true, &caps), None, "cap used");
     assert_eq!(

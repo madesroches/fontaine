@@ -498,7 +498,7 @@ impl AgentRuntime {
     }
 
     /// What the goal needs now, if anything. `idle` says the surface is not busy with the user.
-    /// A check-in that would pass the turn cap pauses the goal, which is recorded here.
+    /// A check-in that would pass the turn or cost cap pauses the goal, which is recorded here.
     pub fn next_goal_step(&self, idle: bool) -> Option<Due> {
         self.next_goal_step_at(idle, Instant::now())
     }
@@ -510,6 +510,8 @@ impl AgentRuntime {
             now,
             idle,
             &GoalCaps::from(&self.config.goal),
+            self.tree_spend(),
+            self.models.main.priced(),
         );
         if let Some(Due::Paused(reason)) = &due {
             self.state.append(Record::Goal {

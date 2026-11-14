@@ -747,6 +747,8 @@ impl SessionGoal {
         now: Instant,
         idle: bool,
         caps: &GoalCaps,
+        spend_now: Spend,
+        priced: bool,
     ) -> Option<Due> {
         let mut state = lock(&self.state, "goal");
         let goal = state.active.as_mut()?;
@@ -784,8 +786,12 @@ impl SessionGoal {
                 return Some(Due::IdleExhausted);
             }
         }
-        if goal.stretch.turns >= caps.max_turns {
-            let reason = PauseReason::TurnCap(caps.max_turns);
+        let cap_reason = if goal.stretch.turns >= caps.max_turns {
+            Some(PauseReason::TurnCap(caps.max_turns))
+        } else {
+            over_cost(&goal.stretch, &spend_now, caps, priced)
+        };
+        if let Some(reason) = cap_reason {
             goal.pending = false;
             goal.paused = Some(reason.clone());
             return Some(Due::Paused(reason));
@@ -909,6 +915,23 @@ fn checkin_interval(first: Duration, checkins: u32) -> Duration {
     first * (1u32 << checkins.min(CHECKIN_BACKOFF_CAP.ilog2()))
 }
 
+/// The cost cap, once the stretch's spend has passed it; inactive without a price.
+fn over_cost(
+    stretch: &Stretch,
+    spend_now: &Spend,
+    caps: &GoalCaps,
+    priced: bool,
+) -> Option<PauseReason> {
+    let cap = caps.max_cost_usd.filter(|_| priced)?;
+    let spent = spend_since(spend_now, &stretch.spend_base);
+    Budget {
+        tokens: None,
+        cost_usd: Some(cap),
+    }
+    .exhausted(&spent, false)
+    .map(|_| PauseReason::CostCap(cap))
+}
+
 fn not_met(
     goal: &mut ActiveGoal,
     verdict: &GoalVerdict,
@@ -930,15 +953,6 @@ fn not_met(
         return Step::Pause(pause);
     }
     let spent = spend_since(&spend_now, &stretch.spend_base);
-    let over_cost = priced
-        && caps.max_cost_usd.is_some_and(|cap| {
-            Budget {
-                tokens: None,
-                cost_usd: Some(cap),
-            }
-            .exhausted(&spent, false)
-            .is_some()
-        });
     let over_tokens = caps.max_tokens.is_some_and(|cap| {
         Budget {
             tokens: Some(cap),
@@ -956,10 +970,8 @@ fn not_met(
         Some(PauseReason::NoProgress(NO_PROGRESS_LIMIT))
     } else if stretch.turns >= caps.max_turns {
         Some(PauseReason::TurnCap(caps.max_turns))
-    } else if over_cost {
-        Some(PauseReason::CostCap(
-            caps.max_cost_usd.expect("over_cost needs a cap"),
-        ))
+    } else if let Some(cost) = over_cost(stretch, &spend_now, caps, priced) {
+        Some(cost)
     } else if over_tokens {
         Some(PauseReason::TokenCap(
             caps.max_tokens.expect("over_tokens needs a cap"),
