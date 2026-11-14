@@ -96,6 +96,12 @@ Read from the released packages: TS `@anthropic-ai/claude-agent-sdk@0.3.325`, Py
   `--setting-sources=<list>`, `--plugin-dir`, `--thinking`, `--max-thinking-tokens`,
   `--effort`, `--json-schema`, `--betas`, `--task-budget`, `--resume-session-at`,
   `--session-mirror`, `--await-initialize`, `--channels`, plus any `extraArgs`.
+- **TS `initialize` channel.** The TS SDK never passes `--system-prompt` on argv.
+  `buildInitializeRequest` sends `systemPrompt` (default `[""]`, an array form),
+  `appendSystemPrompt`, `jsonSchema`, `agents`, `sdkMcpServers`, `sdkMcpServerConfigs` and
+  `sdkMcpServerManifests` in `initialize`, plus, when set, `toolAliases`, `planModeInstructions`,
+  `title`, `promptSuggestions`, `plugins`, `managedSettings` and `workspaceTrust`. Python sends
+  none of the unsupported fields by default.
 - **Env.** `CLAUDE_CODE_ENTRYPOINT=sdk-ts|sdk-py` and `CLAUDE_AGENT_SDK_VERSION`.
 - **Host → CLI control.** `initialize` (`hooks` as `{event: [{matcher, hookCallbackIds,
   timeout, onFailure}]}`, `agents`, `skills`, `excludeDynamicSections`, …), `interrupt`,
@@ -177,15 +183,19 @@ Today `run_attempt` turns `SessionEvent`s into `headless-v1` JSON inline. Extrac
 
 ```rust
 pub(crate) trait EventSink: Send {
-    fn init(&mut self, info: &InitInfo);
+    fn init(&mut self, info: &InitInfo); // called at each turn start
     fn event(&mut self, session_id: &str, event: &SessionEvent);
     fn result(&mut self, outcome: &RunOutcome);
     // usage_paused/resumed, goal: default no-op where the compat surface has no equivalent
 }
 ```
 
-`RunOutcome` is the existing private `Outcome` (headless.rs), extended; `InitInfo` is new. The
-sink takes over every emission site, not only the `run_attempt` closure: goal, init, the
+`RunOutcome` is the existing private `Outcome` (headless.rs), extended; `InitInfo` is new.
+`HeadlessV1Sink::init` emits only on the first call (today's once-per-session output);
+`ClaudeSink::init` emits `system/init` each time (§4). The usage-pause observer takes an
+`Arc<dyn Fn(&PauseEvent) + Send + Sync>` (`usage_pause.rs`), which a `&mut self` sink cannot be
+moved into, so the sink hands out a cloneable writer/observer for that site (`ClaudeSink`'s is a
+no-op). The sink takes over every emission site, not only the `run_attempt` closure: goal, init, the
 usage-pause observer and both result emissions. It replaces the `stream_events` bool threaded
 through `run_one`, `continue_on_stop`, `settle` and `guarded_turn`. `HeadlessV1Sink` holds today's code unchanged, and the existing `headless_contract.rs` / schema
 tests are the guard that its output stays byte-identical. `ClaudeSink` (in `translate.rs`)
@@ -339,10 +349,12 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   difference is documented. `--settings` with anything other than an empty object exits 2, since
   Claude's JSON settings schema is not Fontaine's.
 - **`--system-prompt` / `--append-system-prompt`** map to Fontaine's existing flags.
-  `--system-prompt-file` reads the file.
+  `--system-prompt-file` reads the file. The TS SDK sends the same values as `initialize`
+  `systemPrompt` / `appendSystemPrompt` (§7), which map onto the same options; empty and absent
+  handling is decided in Decisions.
 - **`--mcp-config <json|path>`** (repeatable): `stdio` / `http` servers map to Fontaine
   `[mcp.servers]` entries at CLI scope. `sse` entries are unsupported (exit 2; Fontaine's http
-  transport is streamable HTTP). `sdk` servers are covered in §8. `--strict-mcp-config` sets an
+  transport is streamable HTTP). `sdk` servers are covered in §8 (the TS SDK declares them in `initialize`, §7). `--strict-mcp-config` sets an
   `AgentSetup` "CLI MCP servers only" switch, so no configured server starts.
 - **Accepted and mapped:** `--continue`, `--resume`, `--session-id`, `--fork-session`,
   `--max-turns`, `--max-budget-usd`, `--add-dir`, `--json-schema`, `--effort`,
@@ -372,10 +384,13 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   meaning here: `commands: []`, `agents`, `models` (configured), `current_permission_mode`,
   `claude_code_version`, `pid`, `hook_on_failure_supported: true` and
   `hooks_applied: true`. `initialize.hooks` registers callback hooks (§8) and
-  `initialize.agents` registers session agents (§8). Unsupported fields
-  (`excludeDynamicSections`, `systemPromptSnapshot`, `skills` as a list, `forwardSubagentText`,
-  plugins) get an error response naming them, and the run continues without them. The SDK
-  raises on an error response to `initialize`, so the caller sees it.
+  `initialize.agents` registers session agents (§8). `systemPrompt`, `appendSystemPrompt`,
+  `jsonSchema` and `sdkMcpServers` / `sdkMcpServerConfigs` / `sdkMcpServerManifests` map onto the
+  same options as their argv forms (§6, §8). Fields set to a non-default value that Fontaine
+  cannot honor (`excludeDynamicSections`, `systemPromptSnapshot`, `skills` as a non-empty list,
+  `forwardSubagentText`, `toolAliases`, `planModeInstructions`, `title`, `promptSuggestions`,
+  `plugins`, `managedSettings`, `workspaceTrust`) get an error response naming them; default
+  values never do. The SDK raises on an error response to `initialize`, so the caller sees it.
 - **`interrupt`.** `run_attempt` gains a `select!` arm on a cancel receiver, next to the AFK
   stop. Interrupt drops the turn future (the TUI's mechanism), kills the turn's foreground
   children through the existing teardown, and cancels pending outbound requests (each fails
@@ -399,14 +414,15 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
 
 ### 8. Host-provided tools, hooks and agents
 
-- **SDK MCP servers.** `--mcp-config` entries with `type:"sdk"` become a new
+- **SDK MCP servers.** `--mcp-config` entries (or `initialize` `sdkMcpServers` / configs / manifests) with `type:"sdk"` become a new
   `Transport::Sdk { name }`. Its connector builds an rmcp `IntoTransport` over a channel pair.
   Outbound JSON-RPC goes out as `mcp_message` control requests, and the `mcp_response` comes
   back through the router. A public transport-factory trait
   on `AgentSetup` supplies the channel pair (the connector types are `pub(crate)` today), and
   the server specs come from a non-Config source, since `server_spec` returns nothing without a
-  command or url. Servers named in `--mcp-config` are known at argv time; only their
-  transports are bound after the startup read. It enters `McpSupervisor` through the existing `ServerConnector` via
+  command or url. Servers named in `--mcp-config` or `initialize` are known by argv or
+  `initialize`, both before the runtime is built (startup read, §7); only their transports are
+  bound afterwards. It enters `McpSupervisor` through the existing `ServerConnector` via
   `connect_transport` for `Transport::Sdk`, so registration, deferral, `list_changed` and naming are the normal
   MCP path. **These tools register as `RiskClass::Arbitrary` and cross the full gate and result
   pipeline like any MCP tool.** Results are untrusted tool output (scanner included).
@@ -418,8 +434,10 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   `HandlerKind` (which deserializes from TOML `type`), so a callback is not declarable from
   config. `AgentSetup` gains an input for callback hooks, feeding both the pipeline's
   pre-hooks (frozen in `PipelineParams.hooks`) and `LifecycleHooks`, which are built before the
-  runtime is shared. Callback hooks are registered at the CLI scope,
-  with the same authority as `--settings` hooks. Timeout is the matcher's `timeout`, or the
+  runtime is shared. Callback hooks are registered at Fontaine's CLI scope
+  (`Slot::Cli`, user trust), so a callback hook's `allow` is a trusted hook allow after the
+  floor (`Tier::Hook`), which skips `canUseTool` and, for narrow matchers in auto, the guardian,
+  as a PreToolUse allow does in Claude Code. Timeout is the matcher's `timeout`, or the
   command-hook default. An error or timeout follows `onFailure`: `block` makes a PreToolUse
   deny, and `continue` or absent gives command-hook non-blocking-error semantics. A hook's output
   is data, never a human answer. Events with no Fontaine equivalent get an `initialize` error
@@ -463,7 +481,11 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 4. `fontaine-core/src/permissions.rs`: `headless: bool` → `HumanChannel`. Add
    `Answer::AllowModified`, the `Readjudicate(args)` return of `ask_human` / `prompt_or_ask` and
    the restart in `adjudicate`. Add `human_channel` to `DecisionRecord` (`audit.rs`; `tier.rs`
-   if a tier is needed) and carry it into the ledger and spans.
+   if a tier is needed) and carry it into the ledger and spans. Update the callers this breaks in
+   the same step: `fontaine-evals/src/none.rs` (~:165), `fontaine-core/tests/common/pipeline.rs`
+   (~:307), `fontaine-tui/src/app.rs` (the `Answer` match ~:1835 and the `DecisionRecord`
+   literal ~:2110-2143), `fontaine-core/src/statusline.rs` (~:487-520) and
+   `fontaine-core/tests/audit_telemetry.rs`.
 5. `fontaine-core/src/user_hooks.rs`: add `Handler::Callback` behind a `HookTransport` trait,
    built by a constructor that bypasses `HandlerKind`.
 6. `fontaine-tools/src/mcp/servers.rs` and `fontaine-core/src/agent/mcp*.rs`: add
@@ -473,7 +495,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    `mcp.rs`: `AgentSetup` inputs for callback hooks (pipeline pre-hooks and `LifecycleHooks`),
    session agents (kept across reload), a "CLI MCP servers only" switch, a root-toolset
    restriction applied where the root tool server is built, and a non-persisting model switch.
-8. `fontaine-agents/src/registry.rs` and `rust/fontaine/src/extensions.rs`: a session
+8. `fontaine-agents/src/registry.rs` and `rust/fontaine-core/src/extensions.rs`: a session
    `TypeOrigin` / `Scope`, and the JSON agent-definition mapping with the toolset, model and
    effort restrictions of tightened scopes applied.
 9. `rust/fontaine/src/lib.rs`: `agent_setup` and `run_headless` take an approver and a
@@ -503,39 +525,39 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
     `tests/common`, runs each consumer program (its env reaches `fontaine` through the SDK's
     inherited environment), and asserts on the program's JSON report and on Fontaine's
     audit/ledger. When `node` / `python3` / the pinned packages are missing it prints a skip
-    notice, unless `FONTAINE_SDK_COMPAT=required`, in which case it fails. Update
-    `fontaine-tui/src/app.rs`, `fontaine-tui/src/ui/tests.rs`, `fontaine-evals/src/none.rs`
-    and `tests/audit_telemetry.rs` for the `HumanChannel` change.
+    notice, unless `FONTAINE_SDK_COMPAT=required`, in which case it fails.
 18. `.github/workflows/ci.yml`: an `sdk-compat` job (Linux) that installs the pinned packages
     and runs that test with `FONTAINE_SDK_COMPAT=required`. It needs no provider keys, since the
     model is wiremock.
 
 **Step 6: Docs and plan.**
 19. `docs/agent-sdk.md` (new), `docs/headless.md`, `docs/permissions.md`, `docs/mcp.md`,
-    `docs/hooks.md`, `docs/SUMMARY.md`, `docs/index.md`, `CHANGELOG.md`.
+    `docs/hooks.md`, `docs/telemetry.md`, `docs/guardian.md`, `docs/agents.md`,
+    `docs/extensions.md`, `docs/SUMMARY.md`, `docs/index.md`, `CHANGELOG.md`.
 20. Master plan `## Decisions`: the lines listed under Decisions below, in their subsections.
 
 ## Files to Modify
 
-- `rust/fontaine/src/{lib.rs,headless.rs,extensions.rs}`
+- `rust/fontaine/src/{lib.rs,headless.rs}`, `rust/fontaine-core/src/extensions.rs`
 - `rust/fontaine/src/claude_compat/` (new: `mod.rs`, `cli.rs`, `wire.rs`, `router.rs`,
   `translate.rs`, `approver.rs`, `hooks.rs`, `mcp.rs`, `control.rs`)
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `ledger.rs`, `audit.rs`,
   `user_hooks.rs`, `agent/mcp.rs`, `agent/mcp_supervisor.rs`, `agent/setup.rs`,
-  `agent/build.rs`, `agent/models.rs`, `agent/reload.rs`
+  `agent/build.rs`, `agent/models.rs`, `agent/reload.rs`, `statusline.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (LineReader moved out)
 - `rust/fontaine-tools/src/mcp/servers.rs`
 - `rust/fontaine-agents/src/registry.rs`
 - `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/ui/tests.rs`,
   `rust/fontaine-evals/src/none.rs`
 - `rust/fontaine/tests/claude_sdk_compat.rs`, `rust/fontaine/tests/sdk_compat/**`,
-  `rust/fontaine/tests/fixtures/claude_sdk/**`, `rust/fontaine/tests/audit_telemetry.rs`
-- `rust/fontaine-core/tests/` (pipeline tests for `Delegate` and `AllowModified`)
+  `rust/fontaine/tests/fixtures/claude_sdk/**`
+- `rust/fontaine-core/tests/` (`audit_telemetry.rs`, `common/pipeline.rs`, pipeline tests for `Delegate` and `AllowModified`)
 - `rust/fontaine-tools/tests/mcp_registration.rs`
 - `evals/claude_sdk/capture.sh`
 - `.github/workflows/ci.yml`, `.gitignore`, `.ignore`
 - `docs/agent-sdk.md`, `docs/headless.md`, `docs/permissions.md`, `docs/mcp.md`,
-  `docs/hooks.md`, `docs/SUMMARY.md`, `docs/index.md`
+  `docs/hooks.md`, `docs/telemetry.md`, `docs/guardian.md`, `docs/agents.md`,
+  `docs/extensions.md`, `docs/SUMMARY.md`, `docs/index.md`
 - `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md`
 
@@ -608,6 +630,9 @@ Master-plan lines to add (`### Headless` unless noted):
 - **`docs/permissions.md`**: the delegate as a human channel.
 - **`docs/mcp.md`**: SDK servers.
 - **`docs/hooks.md`**: callback hooks.
+- **`docs/telemetry.md`**: `tool_decision` attributes gain `human_channel`.
+- **`docs/guardian.md`**: in SDK mode a headless escalation can reach `canUseTool` (~:428, :681).
+- **`docs/agents.md`** and **`docs/extensions.md`**: the session agent origin.
 - **`docs/SUMMARY.md`** and **`docs/index.md`**: list the new page.
 - **`CHANGELOG.md`**: an entry for SDK mode.
 
