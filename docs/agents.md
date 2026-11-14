@@ -99,7 +99,7 @@ command tool. `reviewer` gets none there: its `shell` entries carry specifiers, 
 `reviewer` has no edit tools and its prompt tells it to report findings, not fix them, but it is
 not read-only. Each command is matched like a `shell` allow rule, so a chain, pipe, redirection or
 substitution is refused, as is plain `cargo fmt`. Still, `cargo` writes `target/` and runs build
-scripts and tests, and some `git` and `gh` options write files. Because it holds `shell`, a
+scripts and tests, `cargo clippy --fix` rewrites source files, and some `git` and `gh` options write files. Because it holds `shell`, a
 `reviewer` spawn has no read-only fast path and is gated like `worker`; every call it makes still
 passes the full permission pipeline. The list is fixed: for another one, define a type of your own
 with `tools = ["shell(...)"]` entries.
