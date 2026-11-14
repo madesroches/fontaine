@@ -142,8 +142,10 @@ cannot flip detection. That struct carries Claude's exact flag spellings (camelC
 included). Its value enums and the unsupported list come from the capability matrix (§9). Any
 unknown flag, and any flag classed as unsupported, exits with code 2 and a one-line stderr
 message naming the flag and pointing to `docs/agent-sdk.md`, before stdin is read or a model
-is contacted. The SDKs surface the CLI's stderr and exit code in their error, so this is how
-"fail explicitly" reaches the caller.
+is contacted. The TS SDK appends the tail of the CLI's stderr to its exit error, so the message
+reaches the caller in the raised error; the Python SDK raises `ProcessError` with the exit code
+and a placeholder stderr, and the message reaches the parent's stderr or the caller's `stderr`
+callback option.
 
 ### 2. Module layout
 
@@ -314,7 +316,8 @@ original args digest, as the hook `updated_input` rewrite does. The re-run can s
 If the re-run would prompt again, the callback is asked once more about the new args. An answer
 that changes the args a second time is denied.
 
-**`updatedPermissions`** is accepted only where it is no looser than what Fontaine's TUI offers:
+**`updatedPermissions`** is accepted only where it is no looser than what Fontaine's TUI offers, except `setMode`, which is
+equivalent to the host's own `set_permission_mode` control (bypass still refused):
 
 - `addRules` with `behavior: "allow"` and destination `session` or `cliArg`, for rules that
   `map_tool_entry` accepts. These become session grants (`RuleSource::Session`) and still sit
@@ -723,7 +726,7 @@ Python consumer programs, deterministic wiremock model, covering the issue's lis
 `query()` with streamed output; sequential and mid-turn input; continue, resume and fork;
 `canUseTool` allow, deny, modified input, permission update and disconnect; AskUserQuestion; an
 SDK MCP custom tool and a callback hook; interrupt; mode and model controls; malformed input;
-unsupported options (the SDK raises with the flag named); process shutdown; subagent attribution
+unsupported options (TS: the raised error names the flag; Python: `ProcessError` with exit code 2 and, via its `stderr` callback, the flag named); process shutdown; subagent attribution
 and result/usage shapes. The CI job installs pinned
 packages from the registries and contacts no model provider.
 
