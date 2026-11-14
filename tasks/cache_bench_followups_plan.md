@@ -39,7 +39,7 @@ dedupe in the `claude -p` parser must be confirmed against the real stream.
 
 ## Implementation Steps
 1. Add `resolve_program` and use it in `run_bench` for both executables.
-2. Unit tests for `resolve_program` (see Testing Strategy).
+2. Unit tests for `resolve_program` and the relative-path integration test (see Testing Strategy).
 3. Run the live check from Manual Verification; apply the matching branch of Design item 2.
 4. Update `evals/README.md` flag row: relative paths are resolved against the current directory.
 5. CHANGELOG entry.
@@ -48,12 +48,17 @@ dedupe in the `claude -p` parser must be confirmed against the real stream.
 - `rust/fontaine-evals/src/cache_bench.rs`
 - `evals/README.md`
 - `CHANGELOG.md`
-- possibly a fixture under `rust/fontaine-evals/tests/` (Design item 2)
+- `rust/fontaine-evals/tests/cache_bench.rs` (relative-path regression test; possibly a dedupe fixture, Design item 2)
 
 ## Trade-offs
 Resolving in `run_bench` rather than only in the CLI handler (`runner.rs`) keeps the library
 entry point safe for any caller. Resolving by `absolute` rather than `canonicalize` avoids an
 existence requirement, so the existing "cannot run" error still names a missing binary.
+
+## Decisions
+- Scope is cache-bench only. `baseline capture --claude` (`baseline.rs`) has the same relative-path
+  weakness; it is left for a separate issue so this change stays small. The helper stays private to
+  `cache_bench.rs`.
 
 ## Documentation
 `evals/README.md` flag table (above). `docs/claude-subscription.md` needs no change unless the
@@ -61,9 +66,16 @@ live check shows the dedupe key differs.
 
 ## Testing Strategy
 Unit tests in `cache_bench.rs`: relative path with a separator becomes absolute and ends with the
-same components; a bare name is returned unchanged; an already absolute path is unchanged.
-The pre-existing integration test `rust/fontaine-evals/tests/cache_bench.rs` keeps covering the
-spawn path.
+same components; a bare name is returned unchanged; an already absolute path (built from
+`tempfile::tempdir().path()`, not a literal, so it is portable to Windows) is unchanged, compared
+as `Path`, not string.
+
+Regression test for the bug itself: a new `cfg(unix)` case in
+`rust/fontaine-evals/tests/cache_bench.rs` creates the stub executables under
+`env!("CARGO_TARGET_TMPDIR")` and passes `--fontaine`/`--claude` as paths relative to the test
+process's cwd (cwd prefix stripped); it asserts exit 0 and the argv files. It fails if `run_bench`
+does not resolve before the `current_dir` switch. The existing cases pass absolute stubs and
+cannot catch this.
 
 ## Manual Verification
 1. From `rust/`, `cargo build -p fontaine`, then
