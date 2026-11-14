@@ -35,7 +35,9 @@ deliberate deviation from Claude Code, which has plan mode.
 - **Config**: `config_scope.rs` (project scope already refuses `plan`; test at ~929 and ~524, both on a raw `toml::Value` so they still pass but would test a value that is no longer a mode).
 - **TUI**: `Command::Plan` and its `/plan` catalog row (`commands.rs`), `ui/mod.rs:1272`
   (the handler), `statusbar.rs` (`mode_label`, `CYCLE`, `mode_style`), `theme.rs` (`mode_plan` in six
-  themes), `linear.rs:209`, `reports.rs:524` and `AfkSource::Plan` (`afk_report.rs:32`, set when `/plan`
+  themes; also used outside the plan label by `statusbar.rs:261`, the `vim:insert`/`vim:normal` label, and
+  `spinner.rs:164`, `accents()`, whose test `a_named_colour_cycles_the_deduped_accents` expects 4 hues for
+  DarkAnsi and 3 for LightAnsi), `linear.rs:209`, `reports.rs:524` and `AfkSource::Plan` (`afk_report.rs:32`, set when `/plan`
   leaves AFK).
 - **Tests** that exercise it: `fontaine-core/tests/{permissions,permissions_auto,agent_pipeline,
   audit_telemetry,hook_slot,permission_rules,choke_point,config,native_search,runtime_state,
@@ -97,9 +99,12 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 - **Resume**: a resume does not restore the mode, and `Record::ModeChange` stores plain strings, so
   no fallback or warning is needed.
 - **TUI**: remove `Command::Plan`, its catalog row and handler, so `/plan` becomes an unknown
-  command like any other. Remove the `⏸ plan mode on` label, the plan color from the theme struct and
-  its six values, the linear-mode label and the `/plan` entry in the AFK report source labels. The
-  cycle becomes manual, accept edits, auto, AFK.
+  command like any other. Remove the `⏸ plan mode on` label, the linear-mode label and the `/plan` entry in the AFK report source labels. The
+  cycle becomes manual, accept edits, auto, AFK. The theme colour `mode_plan` is not removed: the vim
+  label (`statusbar.rs:261`) and the spinner's `accents()` (`spinner.rs:164`) also use it. Rename the field
+  to `accent` (a mode-neutral name) with the same six values in `theme.rs`, and point `statusbar.rs:261` and
+  `spinner.rs:164` at `theme.accent`; the `mode_style` plan arm (`statusbar.rs:80`) is deleted. The vim
+  label and the spinner hues are unchanged, so the spinner test counts (4 DarkAnsi, 3 LightAnsi) stay.
 
 ## Implementation Steps
 
@@ -116,7 +121,8 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
    and the `tree.rs` test at ~2314-2327 for the new `set_root_mode` signature.
 4. **CLI and compat.** `cli.rs` (`ModeArg`), `claude_compat/cli.rs` (`parse_mode` and its test),
    `headless.rs` (the two mode lists).
-5. **TUI.** `commands.rs`, `ui/mod.rs`, `statusbar.rs` (labels, `CYCLE`, style, tests), `theme.rs`,
+5. **TUI.** `commands.rs`, `ui/mod.rs`, `statusbar.rs` (labels, `CYCLE`, style, tests; line 261 vim label to `theme.accent`), `theme.rs` (rename
+   `mode_plan` to `accent`, values kept), `spinner.rs` (`accents()` line 164 to `theme.accent`; tests unchanged),
    `linear.rs`, `reports.rs`, and the `/plan` tests in `app.rs`, `ui/tests.rs`.
 6. **Tests.** Remove or rewrite every plan test listed under Current State. The mode matrices lose `Plan`: the `MODES` arrays in
    `permissions.rs` and `audit_telemetry.rs` (now `[PermissionMode; 3]`) and the inline mode loops in
@@ -170,6 +176,8 @@ See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md
   line), `### Agents` (the `plan` child posture), `### Config` (the `default_mode` project-scope
   note), `### Guardian` (the `auto`/`plan` source-inspection line), `### Tools` (the "plan block"
   mention) and `### TUI` (the screen-reader announcement of `/plan`). The older lines stay as history.
+- AFK: the theme field `mode_plan` is renamed `accent` with its six values kept, not removed, because the vim
+  label and the spinner's 16-colour accents also use it; this keeps visible behaviour and the spinner tests unchanged.
 - A leftover `plan` in config, `--permission-mode` or an SDK `set_permission_mode` is an error, never
   a silent fallback.
 - The headless v1 schema loses the `plan` and `plan_block` enum values without a version bump: no
