@@ -236,6 +236,22 @@ impl Steering {
             .collect()
     }
 
+    /// `retract` for a turn's end: remote entries an open dialog holds stay queued, since they
+    /// may be its answer and run only once it closes.
+    pub fn retract_unheld(&self) -> Vec<Retracted> {
+        let mut state = self.state();
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < state.queued.len() {
+            if state.held(&state.queued[index]) {
+                index += 1;
+            } else {
+                taken.push(retracted(state.remove_at(index)));
+            }
+        }
+        taken
+    }
+
     /// Takes what the human typed and leaves remote entries queued, in place: only typed text
     /// may go back into the input.
     pub fn retract_typed(&self) -> Vec<Queued> {
@@ -1133,6 +1149,22 @@ mod tests {
                 .contains("something else")
         );
         assert_eq!(ledger.view().user_messages.len(), 3);
+    }
+
+    #[test]
+    fn retract_unheld_leaves_dialog_held_remote_lines_queued() {
+        let steering = Steering::default();
+        steering.queue(Queued::Message("typed".into()));
+        let dialog = steering.open_dialog(&options(&["y"]));
+        remote(&steering, 1, "y");
+        let taken = steering.retract_unheld();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].entry.raw(), "typed");
+        assert_eq!(steering.queued(), vec!["y"]);
+        assert!(steering.take_dialog_answer(&dialog).is_some());
+        remote(&steering, 2, "later");
+        drop(dialog);
+        assert_eq!(steering.retract_unheld().len(), 1);
     }
 
     #[test]

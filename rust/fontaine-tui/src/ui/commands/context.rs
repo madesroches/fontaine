@@ -3,7 +3,7 @@ use crate::reports;
 use crate::ui::turn::{Serve, TurnEnd};
 use crate::{App, Ui};
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::session::{CompactReason, CompactResult};
+use fontaine_core::session::{ClearError, CompactReason, CompactResult};
 use fontaine_tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -13,6 +13,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.app.transcript.error(
                 "/clear takes no name; /rename names this session, and /resume returns to a session later",
             );
+            return;
+        }
+        // A refused clear leaves the conversation, so the inbox and its queue must stay too.
+        if !runtime.subagents_idle() {
+            self.app
+                .transcript
+                .error(fontaine_tools::error_chain::chain(
+                    &ClearError::SubagentsRunning,
+                ));
             return;
         }
         let had_goal = runtime.session.goal().is_active();

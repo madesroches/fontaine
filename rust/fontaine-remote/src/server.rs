@@ -17,6 +17,10 @@ use crate::ticket::Ticket;
 pub const CLOSED_CODE: u32 = 1;
 const MAX_CONNECTIONS: usize = 32;
 const ONLINE_WAIT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const STREAM_TIMEOUT: Duration = crate::protocol::FRAME_TIMEOUT;
+#[cfg(test)]
+const STREAM_TIMEOUT: Duration = Duration::from_millis(300);
 const RESPONSE_LINGER: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -138,12 +142,18 @@ async fn serve(incoming: Incoming, inbox: Arc<RemoteInbox>, mut closing: watch::
         () = exchange(&connection, &inbox, &from) => {}
         _ = closing.wait_for(|closed| *closed) => {
             connection.close(CLOSED_CODE.into(), b"closed");
+            return;
         }
     }
+    connection.close(0u32.into(), b"done");
 }
 
 async fn exchange(connection: &Connection, inbox: &RemoteInbox, from: &Sender) {
-    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+    // iroh keep-alives hold an idle connection open, so a peer that never opens a stream would
+    // otherwise pin its connection slot for good.
+    let Ok(Ok((mut send, mut recv))) =
+        tokio::time::timeout(STREAM_TIMEOUT, connection.accept_bi()).await
+    else {
         return;
     };
     let response = match read_frame(&mut recv).await {
@@ -164,4 +174,46 @@ async fn exchange(connection: &Connection, inbox: &RemoteInbox, from: &Sender) {
 
 fn reject(inbox: &RemoteInbox, from: &Sender, reason: Reason) -> Response {
     inbox.reject(from, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inbox::SystemClock;
+    use crate::protocol::Reason;
+
+    struct Nobody;
+    impl Delivery for Nobody {
+        fn accept(
+            &self,
+            _: &Sender,
+            _: &str,
+            _: String,
+        ) -> Result<(), crate::inbox::DeliveryError> {
+            Ok(())
+        }
+        fn on_reject(&self, _: Reason, _: &Sender) {}
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_opens_no_stream_is_closed() {
+        let server =
+            RemoteServer::start(Arc::new(Nobody), Arc::new(SystemClock), RelayMode::Disabled)
+                .await
+                .expect("start");
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("bind");
+        let connection = client
+            .connect(server.endpoint.addr(), ALPN)
+            .await
+            .expect("connect");
+        tokio::time::timeout(Duration::from_secs(5), connection.closed())
+            .await
+            .expect("the server frees an idle connection");
+        client.close().await;
+        server.shutdown().await;
+    }
 }

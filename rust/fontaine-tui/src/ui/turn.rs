@@ -416,7 +416,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.drain_deferred(runtime).await.is_break() {
             return Break(());
         }
-        match end_of_turn(&end, runtime.steering.retract()) {
+        match end_of_turn(&end, runtime.steering.retract_unheld()) {
             EndOfTurn::Submit(submissions) => {
                 self.converse(
                     runtime,
@@ -893,7 +893,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 }
                 Submission::Expanded { text, prompt } => {
-                    self.app.transcript.user(text.clone());
+                    self.show_user_line(&text);
                     // A prompt from the user resumes a paused goal.
                     runtime.goal_user_prompt();
                     match self.refresh_before_turn(runtime) {
@@ -990,7 +990,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 runtime.steering.set_delivery_hold(false);
                 return Break(());
             }
-            match end_of_turn(&end, runtime.steering.retract()) {
+            match end_of_turn(&end, runtime.steering.retract_unheld()) {
                 EndOfTurn::Submit(submissions) => pending.extend(submissions),
                 EndOfTurn::RestoreToInput(back, remote) => {
                     runtime.steering.set_delivery_hold(false);

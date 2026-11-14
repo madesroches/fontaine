@@ -374,6 +374,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 tokio::spawn(server.shutdown());
             }
         }
+        self.record_remote_disabled(runtime);
+    }
+
+    fn record_remote_disabled(&self, runtime: &AgentRuntime) {
         runtime.state.record_remote_event(
             "disabled",
             "the remote inbox was disabled",
@@ -392,10 +396,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if let Some(Ok(server)) = host.take_started() {
                     server.shutdown().await;
                 }
+                self.record_remote_disabled(runtime);
             }
             RemoteState::Running { host, server } => {
                 host.close();
                 server.shutdown().await;
+                self.record_remote_disabled(runtime);
             }
         }
         let dropped = runtime.steering.drain_remote();

@@ -54,7 +54,7 @@ what "one-shot" means. Minting any ticket revokes the previous one, used or not.
 client sent twice because an acknowledgement was lost is queued once; this holds only while the
 ticket is live, so a late retry after expiry or revocation gets `expired` or `bad_ticket`.
 
-A wrong secret is refused before anything else is checked, so it learns nothing about the ticket.
+The secret is checked before expiry or reuse, so a wrong secret learns nothing about the ticket's state.
 After five bad attempts from one node id the server ignores that node for 30 seconds; other nodes
 are unaffected.
 
