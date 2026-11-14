@@ -76,14 +76,14 @@ async fn continue_reopens_the_latest_session_of_this_directory_with_its_conversa
 async fn resume_reopens_a_session_by_id() {
     let (endpoint, s) = setup().await;
     let (_, id) = run(&s, &[], "one").await;
-    let (_, other) = run(&s, &[], "unrelated").await;
+    let (_, other) = run(&s, &[], "other-session-marker").await;
     assert_ne!(id, other);
     let (out, resumed) = run(&s, &["--resume", &id], "two").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert_eq!(resumed, id);
     let body = endpoint.requests().await[2].to_string();
     assert!(
-        body.contains("one") && !body.contains("unrelated"),
+        body.contains("one") && !body.contains("other-session-marker"),
         "{body}"
     );
 }
@@ -255,7 +255,7 @@ async fn a_session_named_at_launch_is_resumed_by_that_name() {
     let (out, id) = run(&s, &["--name", "  Demo run "], "one").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert_eq!(names(&ledger(&s, &id)), ["Demo run"]);
-    let (_, other) = run(&s, &[], "unrelated").await;
+    let (_, other) = run(&s, &[], "other-session-marker").await;
     assert_ne!(id, other);
 
     // The prompt after the flag is still the prompt.
@@ -264,7 +264,7 @@ async fn a_session_named_at_launch_is_resumed_by_that_name() {
     assert_eq!(resumed, id);
     let body = endpoint.requests().await[2].to_string();
     assert!(
-        body.contains("one") && body.contains("two") && !body.contains("unrelated"),
+        body.contains("one") && body.contains("two") && !body.contains("other-session-marker"),
         "{body}"
     );
 
