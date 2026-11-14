@@ -8,6 +8,7 @@ use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::completion::{Cost, Message, Usage};
 use rig_core::driver::{Exchange, Opening, Transport};
+use rig_core::message::{AssistantContent, AssistantMessage, CallId, ToolName};
 use rig_core::operation::Completion;
 use rig_core::test_utils::{MockCompletionModel, MockScript, MockTurn};
 use rig_core::wire::Wire;
@@ -1107,5 +1108,124 @@ mod afk_records {
         let report = build_latest(&ledger.read().unwrap(), 12.0, true).unwrap();
         assert_eq!(report.timeline.len(), 1);
         assert_eq!(report.counts.allowed, 1);
+    }
+}
+
+fn add_tool_exchange(session: &Session, tool: &str, arguments: serde_json::Value, output: &str) {
+    let mut conversation = load(&session.store(), CONVERSATION_LOG).unwrap();
+    conversation.extend([
+        Message::Assistant(AssistantMessage::new(vec![AssistantContent::tool_call(
+            format!("call-{tool}"),
+            ToolName::new(tool).unwrap(),
+            arguments,
+        )])),
+        Message::tool_result(
+            CallId::from_wire(format!("call-{tool}")),
+            ToolName::new(tool).unwrap(),
+            output,
+        ),
+    ]);
+    save(&session.store(), CONVERSATION_LOG, &mut conversation).unwrap();
+}
+
+fn add_pairs(session: &Session, pairs: usize) {
+    let mut conversation = load(&session.store(), CONVERSATION_LOG).unwrap();
+    for i in 0..pairs {
+        conversation.extend([
+            Message::user(format!(
+                "later question {i}: {}",
+                "lorem ipsum ".repeat(100)
+            )),
+            Message::assistant(format!("later answer {i}: {}", "dolor sit ".repeat(100))),
+        ]);
+    }
+    save(&session.store(), CONVERSATION_LOG, &mut conversation).unwrap();
+}
+
+/// A history with a spilled tool result and its cut marker, a command with its outcome, an
+/// unread path, and a test followed by an edit.
+fn evidence_history(session: &Session) {
+    add_tool_exchange(
+        session,
+        "shell",
+        serde_json::json!({"command": "cargo test -p demo"}),
+        "test result: FAILED. 3 passed; 1 failed\n[output truncated: full output spilled to /tmp/spill-1.txt]",
+    );
+    add_tool_exchange(
+        session,
+        "edit",
+        serde_json::json!({"path": "src/unread_after_test.rs"}),
+        "edited src/unread_after_test.rs",
+    );
+    add_pairs(session, 4);
+}
+
+#[tokio::test]
+async fn the_initial_summary_request_carries_the_evidence_rules_after_a_window_is_set() {
+    let w = World::new();
+    let (mut session, _) = session_with_history(&w, 2);
+    evidence_history(&session);
+    session.set_autocompact_window(Some(2_000));
+    let (mock, dynamic) = model(
+        Some(small_window_spec(100_000)),
+        vec![MockTurn::text("SUMMARY-ONE")],
+    );
+    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+    let sent = format!("{:?}", mock.requests().last().unwrap());
+    for fragment in [
+        "Never copy credentials, even when preserving a command or a value.",
+        "Unverified or stale",
+        "[output truncated: full output spilled to /tmp/spill-1.txt]",
+        "cargo test -p demo",
+        "src/unread_after_test.rs",
+    ] {
+        assert!(sent.contains(fragment), "the request lacks `{fragment}`");
+    }
+}
+
+#[tokio::test]
+async fn the_update_summary_request_keeps_unverified_claims_unverified() {
+    let w = World::new();
+    let (mut session, _) = session_with_history(&w, 2);
+    evidence_history(&session);
+    session.set_autocompact_window(Some(2_000));
+    let (_, first) = model(
+        Some(small_window_spec(100_000)),
+        vec![MockTurn::text("SUMMARY-ONE")],
+    );
+    let result = session.compact_if_needed(&first, true, &DenyAll).await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+
+    add_tool_exchange(
+        &session,
+        "shell",
+        serde_json::json!({"command": "cargo clippy"}),
+        "clippy finished\n[output truncated: full output spilled to /tmp/spill-2.txt]",
+    );
+    add_pairs(&session, 6);
+    let (mock, second) = model(
+        Some(small_window_spec(100_000)),
+        vec![MockTurn::text("SUMMARY-TWO")],
+    );
+    let result = session.compact_if_needed(&second, true, &DenyAll).await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+    let sent = format!("{:?}", mock.requests().last().unwrap());
+    for fragment in [
+        "do not upgrade an unverified claim in the previous summary to a fact",
+        "Never copy credentials, even when preserving a command or a value.",
+        "SUMMARY-ONE",
+        "[output truncated: full output spilled to /tmp/spill-2.txt]",
+    ] {
+        assert!(sent.contains(fragment), "the request lacks `{fragment}`");
     }
 }
