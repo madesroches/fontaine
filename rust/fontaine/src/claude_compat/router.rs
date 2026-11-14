@@ -452,9 +452,11 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 if request.get("subtype").and_then(Value::as_str) == Some("initialize") {
                     lock(&router.inbox, "router inbox").initializing = true;
                 }
+                // Held across the spawn: a handler that answers at once waits for its entry.
+                let mut handlers = lock(&router.handlers, "control handlers");
                 let task =
                     tokio::spawn(handler.handle(router.clone(), request_id.clone(), request));
-                lock(&router.handlers, "control handlers").insert(request_id, task.abort_handle());
+                handlers.insert(request_id, task.abort_handle());
             }
             Ok(Inbound::ControlResponse(response)) => {
                 router.resolve(

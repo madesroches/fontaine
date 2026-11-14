@@ -122,6 +122,7 @@ and the control router read the same table, and a test compares it with this pag
 | `can_use_tool.blocked_path` | message field | unsupported | the pipeline has no source for it |
 | `can_use_tool.title`, `can_use_tool.display_name` | message field | unsupported | the pipeline has no source for them |
 | `system/task_*` | message field | unsupported | subagent messages are not streamed; the `Agent` tool call and result stand for them |
+| `user message image and document blocks` | message field | unsupported | only text blocks are read; any other block ends the run with an error |
 | `parent_tool_use_id` | message field | mapped | always null: only the root conversation is streamed |
 | `hook PreToolUse allow` | message field | mapped | ignored: a host hook can deny, ask and rewrite the input, never skip the mode, `canUseTool` or the guardian |
 <!-- matrix:end -->
@@ -240,6 +241,15 @@ name-based policy keeps working. See [Skills, agent files and output styles](ext
 - `initialize` fields Fontaine cannot honor (`toolAliases`, `title`, `plugins`, `managedSettings`,
   `excludeDynamicSections` and similar) fail with an error naming them when set to a non-default
   value.
+- A failed `initialize` (an unsupported field, a prompt given twice) is answered with its error and
+  then ends the run with exit code 2 and the reason on stderr, rather than running the host's
+  prompt without its hooks, agents, servers and prompts. An `initialize` after the first user
+  message is an error response.
+- A user message's text blocks are joined with a newline; an image or document block ends the run
+  with an error naming the block type.
+- A failed turn (`error_max_turns`, `error_max_budget_usd`, a provider error) is reported as its
+  `error_*` `result` and the session keeps reading messages; it ends on end of input (exit code 0),
+  a malformed line or a termination signal.
 - `get_context_usage`, `rewind_files`, `mcp_reconnect`, `mcp_toggle` and `stop_task` return a
   control error naming the request.
 - `interrupt` is answered once the turn has stopped, and its `result` goes out first. `set_model`

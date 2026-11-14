@@ -670,3 +670,81 @@ ts_only!(
     mid_turn_input,
     a_message_sent_mid_turn_is_delivered_to_the_running_turn
 );
+
+const SDK_ARGS: [&str; 7] = [
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--verbose",
+    "--max-turns",
+    "1",
+];
+
+fn user_line(text: &str) -> String {
+    format!(
+        "{}\n",
+        json!({"type": "user", "message": {"role": "user", "content": text}})
+    )
+}
+
+fn results(stdout: &str) -> Vec<Value> {
+    stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "result")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_failed_turn_leaves_the_session_open_and_end_of_input_exits_zero() {
+    let (_endpoint, s) = sandbox(vec![shell("echo hi"), Turn::text("second answer")]).await;
+    let input = format!("{}{}", user_line("first"), user_line("second"));
+    let out = s.run_with_stdin(&SDK_ARGS, &input).await;
+    let all = results(&out.stdout);
+    assert_eq!(all.len(), 2, "{}\n{}", out.stdout, out.stderr);
+    assert_eq!(all[0]["subtype"], "error_max_turns");
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+}
+
+#[tokio::test]
+async fn end_of_input_with_no_message_exits_zero() {
+    let (_endpoint, s) = sandbox(vec![Turn::text("never")]).await;
+    let out = s.run_with_stdin(&SDK_ARGS, "").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+}
+
+#[tokio::test]
+async fn a_rejected_initialize_ends_the_run_without_running_the_prompt() {
+    use tokio::io::AsyncWriteExt;
+    let (endpoint, s) = sandbox(vec![Turn::text("never")]).await;
+    let init = json!({"type": "control_request", "request_id": "r1",
+        "request": {"subtype": "initialize", "title": "t"}});
+    let mut cmd = s.command(&SDK_ARGS);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(format!("{init}\n").as_bytes())
+        .await
+        .unwrap();
+    // The host waits for the answer before it sends the prompt.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let _ = stdin.write_all(user_line("go").as_bytes()).await;
+    let out = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("the run ends")
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("title"), "{stdout}");
+    assert!(stderr.contains("title"), "{stderr}");
+    assert!(!out.status.success());
+    assert!(results(&stdout).is_empty(), "{stdout}");
+    assert!(
+        endpoint.requests().await.is_empty(),
+        "a model was contacted"
+    );
+}

@@ -53,9 +53,19 @@ pub struct Attached {
     pub mcp: McpStatesReader,
 }
 
+/// What `initialize` came to, for the runtime that is built after it.
+#[derive(Default)]
+struct InitState {
+    config: Option<InitConfig>,
+    /// Why the host's `initialize` was rejected: the run must not go on without its config.
+    failure: Option<String>,
+    /// The runtime was built from this state, so a later `initialize` cannot apply.
+    taken: bool,
+}
+
 pub struct Shared {
     pub facts: Facts,
-    init: Mutex<Option<InitConfig>>,
+    init: Mutex<InitState>,
     attached: watch::Sender<Option<Attached>>,
 }
 
@@ -63,16 +73,19 @@ impl Shared {
     pub fn new(facts: Facts) -> Arc<Shared> {
         Arc::new(Shared {
             facts,
-            init: Mutex::new(None),
+            init: Mutex::default(),
             attached: watch::channel(None).0,
         })
     }
 
-    /// What `initialize` registered; empty when none came.
-    pub fn take_init(&self) -> InitConfig {
-        lock(&self.init, "initialize config")
-            .take()
-            .unwrap_or_default()
+    /// What `initialize` registered; empty when none came, an error when it was rejected.
+    pub fn take_init(&self) -> Result<InitConfig, String> {
+        let mut state = lock(&self.init, "initialize config");
+        state.taken = true;
+        match state.failure.clone() {
+            Some(why) => Err(why),
+            None => Ok(state.config.take().unwrap_or_default()),
+        }
     }
 
     pub fn attach(&self, attached: Attached) {
@@ -321,19 +334,35 @@ impl Control {
         if router.runtime_built() {
             return Err("`initialize` must come before the first user message".to_string());
         }
-        if lock(&self.shared.init, "initialize config").is_some() {
-            return Err("`initialize` was already handled".to_string());
+        {
+            let state = lock(&self.shared.init, "initialize config");
+            if state.taken {
+                return Err("`initialize` came after the session started".to_string());
+            }
+            if state.config.is_some() {
+                return Err("`initialize` was already handled".to_string());
+            }
         }
         let transport: Arc<dyn HookTransport> = Arc::new(RouterHooks {
             router: router.clone(),
         });
-        let init = read_initialize(request, &self.shared.facts, &transport)?;
+        let init = read_initialize(request, &self.shared.facts, &transport).inspect_err(|why| {
+            lock(&self.shared.init, "initialize config")
+                .failure
+                .get_or_insert_with(|| why.clone());
+        })?;
         let agents: Vec<Value> = init
             .agents
             .iter()
             .map(|a| json!({ "name": a.name, "description": a.description }))
             .collect();
-        *lock(&self.shared.init, "initialize config") = Some(init);
+        {
+            let mut state = lock(&self.shared.init, "initialize config");
+            if state.taken {
+                return Err("`initialize` came after the session started".to_string());
+            }
+            state.config = Some(init);
+        }
         Ok(json!({
             "commands": [],
             "agents": agents,
@@ -489,6 +518,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("Nonsense"), "{error}");
+    }
+
+    #[test]
+    fn a_rejected_initialize_stops_the_run_and_a_late_one_is_refused() {
+        let shared = Shared::new(facts());
+        lock(&shared.init, "initialize config")
+            .failure
+            .get_or_insert("bad".to_string());
+        assert_eq!(shared.take_init().unwrap_err(), "bad");
+
+        let shared = Shared::new(facts());
+        assert!(shared.take_init().is_ok());
+        assert!(lock(&shared.init, "initialize config").taken);
     }
 
     #[test]

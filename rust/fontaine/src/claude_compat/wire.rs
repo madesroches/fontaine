@@ -60,15 +60,23 @@ fn user_text(value: &Value) -> Result<String, Malformed> {
     match content {
         Value::String(text) => Ok(text.clone()),
         Value::Array(blocks) => {
-            let mut text = String::new();
+            let mut parts = Vec::new();
             for block in blocks {
-                if block.get("type").and_then(Value::as_str) == Some("text")
-                    && let Some(t) = block.get("text").and_then(Value::as_str)
-                {
-                    text.push_str(t);
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(Value::as_str) {
+                            parts.push(t);
+                        }
+                    }
+                    other => {
+                        return Err(Malformed(format!(
+                            "a `user` message holds a `{}` content block, which is not supported; only text blocks are",
+                            other.unwrap_or("untyped")
+                        )));
+                    }
                 }
             }
-            Ok(text)
+            Ok(parts.join("\n"))
         }
         _ => Err(Malformed(
             "`message.content` must be a string or an array of content blocks".into(),
@@ -283,10 +291,23 @@ mod tests {
         assert!(
             matches!(parse_line(line), Ok(Inbound::User(UserMessage { text })) if text == "hi")
         );
-        let line = br#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}}"#;
+        let line = br#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}}"#;
         assert!(
-            matches!(parse_line(line), Ok(Inbound::User(UserMessage { text })) if text == "ab")
+            matches!(parse_line(line), Ok(Inbound::User(UserMessage { text })) if text == "a\nb")
         );
+    }
+
+    #[test]
+    fn a_user_message_with_a_non_text_block_names_the_block() {
+        for kind in ["image", "document"] {
+            let line = format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"a"}},{{"type":"{kind}"}}]}}}}"#
+            );
+            let Err(Malformed(why)) = parse_line(line.as_bytes()) else {
+                panic!("{kind} block accepted");
+            };
+            assert!(why.contains(kind), "{why}");
+        }
     }
 
     #[test]

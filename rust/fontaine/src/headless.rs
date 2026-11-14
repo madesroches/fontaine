@@ -113,6 +113,11 @@ pub(crate) trait InputSource {
     fn pending(&self) -> bool {
         false
     }
+    /// A session the host keeps open: a failed turn is reported and the next message still runs,
+    /// and an input that ends without a message is a normal end.
+    fn long_lived(&self) -> bool {
+        false
+    }
     /// The exit code of a run whose input could not be read.
     fn failure_code(&self) -> u8 {
         2
@@ -1740,7 +1745,7 @@ pub(crate) async fn run_session<I: InputSource>(
             code = EXIT_USAGE_LIMIT;
             break;
         }
-        if failed || goal_failure.is_some() {
+        if (failed || goal_failure.is_some()) && !input.long_lived() {
             code = 1;
             break;
         }
@@ -1764,6 +1769,9 @@ pub(crate) async fn run_session<I: InputSource>(
     runtime.lsp().shutdown_all().await;
 
     let Some(last) = last else {
+        if input.long_lived() {
+            return 0;
+        }
         eprintln!("fontaine: no prompt: the input held no user message");
         return 2;
     };

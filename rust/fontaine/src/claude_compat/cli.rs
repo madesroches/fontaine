@@ -310,6 +310,10 @@ pub const MATRIX: &[Row] = &[
         ),
     ),
     field(
+        &["user message image and document blocks"],
+        Unsupported("only text blocks are read; any other block ends the run with an error"),
+    ),
+    field(
         &["parent_tool_use_id"],
         Mapped("always null: only the root conversation is streamed"),
     ),

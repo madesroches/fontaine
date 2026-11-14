@@ -159,6 +159,10 @@ impl InputSource for SdkInput {
     fn failure_code(&self) -> u8 {
         1
     }
+
+    fn long_lived(&self) -> bool {
+        true
+    }
 }
 
 fn model_rows(config: &Config) -> Vec<serde_json::Value> {
@@ -248,7 +252,17 @@ pub async fn run(
     // The host's hooks, agents, prompts and servers arrive on stdin, and the runtime is built
     // from them.
     router.wait_started().await;
-    let init = shared.take_init();
+    let init = match shared.take_init() {
+        Ok(init) => init,
+        Err(why) => {
+            // The SDK sends its prompt even after a rejected `initialize`; running it without the
+            // host's hooks, agents and servers would silently drop what the host relies on.
+            eprintln!("fontaine: `initialize` was rejected, so the session cannot run: {why}");
+            router.close();
+            router.flush().await;
+            return crate::EXIT_CONFIG;
+        }
+    };
     if let Some(schema) = &init.json_schema {
         match Schema::try_from(schema.clone()) {
             Ok(schema) => options.json_schema = Some(schema),

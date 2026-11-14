@@ -127,6 +127,8 @@ impl Translator {
         self.last_stop = None;
         self.open = None;
         self.ended = None;
+        self.unanswered = 0;
+        self.tool_calls.clear();
     }
 
     pub fn take(&mut self) -> Vec<Value> {
@@ -831,6 +833,16 @@ mod tests {
         // Streaming text that never finished is an answer in progress.
         let finish = finish_of(&t, &outcome, true);
         assert_eq!(finish.subtype, "success");
+    }
+
+    #[test]
+    fn a_turn_starts_without_the_last_turns_tool_calls() {
+        let mut t = Translator::new(false);
+        t.begin("sid", "m");
+        t.event(&call("t1", "shell"));
+        assert_eq!((t.unanswered, t.tool_calls.len()), (1, 1));
+        t.begin("sid", "m");
+        assert_eq!((t.unanswered, t.tool_calls.len()), (0, 0));
     }
 
     #[test]
