@@ -1532,6 +1532,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// area, and every line behind it, until the session ends.
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.set_running(false);
+        let answered = matches!(end, TurnEnd::Finished(TurnOutcome::Answer(_)));
+        self.app.last_turn_finished = answered;
+        self.app.completed_turns += u32::from(answered);
+        self.app.suggestion_due = !matches!(end, TurnEnd::InputClosed);
         self.app.refusal = None;
         self.app.attach_notice = None;
         self.app.deny_pending();

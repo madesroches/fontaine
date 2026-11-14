@@ -754,7 +754,16 @@ fn tool_text(content: &[ToolResultContent]) -> String {
         .join("\n")
 }
 
-fn blocks_of(message: &Message, summary: bool) -> Vec<String> {
+/// What of the conversation a transcript carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Detail {
+    /// Tool calls with their arguments and tool results.
+    Full,
+    /// What the human saw as conversation: user and assistant text, and which tools were called.
+    Visible,
+}
+
+fn blocks_of(message: &Message, summary: bool, detail: Detail) -> Vec<String> {
     match message {
         Message::System { .. } => Vec::new(),
         Message::User { content } => content
@@ -764,6 +773,7 @@ fn blocks_of(message: &Message, summary: bool) -> Vec<String> {
                     Some(format!("[Summary of earlier conversation]\n{}", text.text))
                 }
                 UserContent::Text(text) => Some(format!("[User]\n{}", text.text)),
+                UserContent::ToolResult(_) if detail == Detail::Visible => None,
                 UserContent::ToolResult(result) => Some(format!(
                     "[Tool result] {}\n{}",
                     result.name,
@@ -777,6 +787,9 @@ fn blocks_of(message: &Message, summary: bool) -> Vec<String> {
             .iter()
             .filter_map(|item| match item {
                 AssistantContent::Text(text) => Some(format!("[Assistant]\n{}", text.text)),
+                AssistantContent::ToolCall(call) if detail == Detail::Visible => {
+                    Some(format!("[Tool call] {}", call.function.name))
+                }
                 AssistantContent::ToolCall(call) => Some(format!(
                     "[Tool call] {} {}",
                     call.function.name,
@@ -795,10 +808,14 @@ fn blocks_of(message: &Message, summary: bool) -> Vec<String> {
 /// a summary and the recent tail), cut to `budget` characters from the front, because recent
 /// work is what proves a condition.
 pub fn render_transcript(conversation: &Conversation, budget: usize) -> String {
+    render_with(conversation, budget, Detail::Full)
+}
+
+fn render_with(conversation: &Conversation, budget: usize, detail: Detail) -> String {
     let summarizer = summary_author();
     let blocks: Vec<String> = conversation
         .entries()
-        .flat_map(|entry| blocks_of(entry.message, entry.author == Some(&summarizer)))
+        .flat_map(|entry| blocks_of(entry.message, entry.author == Some(&summarizer), detail))
         .collect();
     let mut kept: Vec<String> = Vec::new();
     let mut used = 0usize;
@@ -826,6 +843,28 @@ pub fn render_transcript(conversation: &Conversation, budget: usize) -> String {
 /// The transcript budget the evaluator is given.
 pub fn transcript_of(conversation: &Conversation) -> String {
     render_transcript(conversation, TRANSCRIPT_CHARS)
+}
+
+/// The conversation as text for the prompt suggestion: no tool results and no tool arguments,
+/// so the call sees no more than the user and the assistant exchanged in the open.
+pub fn visible_transcript_of(conversation: &Conversation) -> String {
+    render_with(conversation, TRANSCRIPT_CHARS, Detail::Visible)
+}
+
+/// The text of the human's latest message, leaving out a compaction summary and tool results.
+pub fn last_user_text(conversation: &Conversation) -> Option<String> {
+    let summarizer = summary_author();
+    conversation
+        .entries()
+        .rev()
+        .filter(|entry| entry.author != Some(&summarizer))
+        .find_map(|entry| match entry.message {
+            Message::User { content } => content.iter().find_map(|item| match item {
+                UserContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
 }
 
 /// rig's structured-output errors carry no usage, so every billed response is tallied as it

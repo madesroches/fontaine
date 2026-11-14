@@ -337,6 +337,27 @@ fn a_finished_turn_leaves_no_call_pending() {
 }
 
 #[test]
+fn a_settled_turn_feeds_the_suggestion_inputs() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.settle_turn(&TurnEnd::Finished(TurnOutcome::Answer("done".into())));
+    assert!(ui.app.suggestion_due && ui.app.last_turn_finished);
+    assert_eq!(ui.app.completed_turns, 1);
+
+    ui.app.suggestion_due = false;
+    ui.settle_turn(&TurnEnd::Interrupted);
+    assert!(ui.app.suggestion_due && !ui.app.last_turn_finished);
+    assert_eq!(
+        ui.app.completed_turns, 1,
+        "an interrupted turn is not counted"
+    );
+
+    ui.app.suggestion_due = false;
+    ui.settle_turn(&TurnEnd::Finished(TurnOutcome::Failed("boom".into())));
+    assert!(!ui.app.last_turn_finished);
+}
+
+#[test]
 fn a_session_whose_ledger_cannot_be_read_is_refused_in_the_live_session() {
     use fontaine_core::session::Session;
     const THEIRS: &str = "00000000-0000-4000-8000-0000000000aa";

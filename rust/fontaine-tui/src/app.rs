@@ -145,6 +145,28 @@ pub struct HistorySearch {
     pub found: Option<usize>,
 }
 
+/// A prompt suggestion being asked for. Dropping it ends the call, so a turn that starts, a quit
+/// or a reset needs no further bookkeeping to stop it.
+pub struct PendingSuggestion {
+    task: tokio::task::JoinHandle<()>,
+    pub reply: oneshot::Receiver<Option<String>>,
+}
+
+impl PendingSuggestion {
+    pub fn new(
+        task: tokio::task::JoinHandle<()>,
+        reply: oneshot::Receiver<Option<String>>,
+    ) -> PendingSuggestion {
+        PendingSuggestion { task, reply }
+    }
+}
+
+impl Drop for PendingSuggestion {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// The `@` candidates for the token under the cursor.
 #[derive(Clone, Debug)]
 pub struct CompletionList {
@@ -315,6 +337,21 @@ pub struct App {
     /// Messages waiting for the agent's next tool result, copied from the session.
     pub queued: Vec<String>,
     pub history: History,
+    /// Show the most recent history entry that extends the typed text as ghost text.
+    pub history_completion: bool,
+    /// The model's proposed next prompt, drawn dimmed in the empty input until the human types,
+    /// presses Esc or starts a turn.
+    pub suggestion: Option<String>,
+    /// Suggestions dismissed unused since one was last accepted.
+    pub unused_suggestions: u32,
+    /// The suggestion call in flight; dropping it ends the call.
+    pub pending_suggestion: Option<PendingSuggestion>,
+    /// A turn ended and the next idle moment may ask for a suggestion.
+    pub suggestion_due: bool,
+    /// The last turn ended in an answer, not an error or an interrupt.
+    pub last_turn_finished: bool,
+    /// Model turns that ended in an answer in this conversation.
+    pub completed_turns: u32,
     pub search: Option<HistorySearch>,
     pub completion: Option<CompletionList>,
     /// The mention whose list the human closed, which stays closed until the token changes.
@@ -474,6 +511,13 @@ impl App {
             shell_running: false,
             queued: Vec::new(),
             history: History::in_memory(""),
+            history_completion: true,
+            suggestion: None,
+            unused_suggestions: 0,
+            pending_suggestion: None,
+            suggestion_due: false,
+            last_turn_finished: false,
+            completed_turns: 0,
             search: None,
             completion: None,
             dismissed: None,
@@ -596,6 +640,86 @@ impl App {
     }
 
     /// Whether the input is a `!` shell command.
+    /// Whether the input is in a state where ghost text may be shown and accepted: the main
+    /// conversation's box, nothing open over or beside it, and not vim Normal mode.
+    fn ghost_allowed(&self) -> bool {
+        self.viewing.is_none()
+            && !self.covered()
+            && self.search.is_none()
+            && self.completion.is_none()
+            && !self.history.navigating()
+            && !self.input.has_attachments()
+            && !matches!(self.input.vim, crate::input::VimState::Normal { .. })
+            && self.slash_menu().is_none()
+    }
+
+    /// The dimmed text after the cursor: the model's suggestion in an empty input, or what
+    /// the newest matching history entry adds to the typed text. Never part of the input.
+    pub fn ghost_text(&self) -> Option<&str> {
+        if !self.ghost_allowed() {
+            return None;
+        }
+        if self.input.is_empty() {
+            return self.suggestion.as_deref();
+        }
+        if !self.history_completion {
+            return None;
+        }
+        let text = self.input.text();
+        if self.input.cursor() != text.chars().count() {
+            return None;
+        }
+        self.history.completion(&text)
+    }
+
+    /// Shows `text` as the next prompt suggestion, unless the human has already moved on.
+    pub fn set_suggestion(&mut self, text: String) {
+        if !self.running && self.input.is_empty() {
+            self.suggestion = Some(text);
+        }
+    }
+
+    /// Drops the suggestion because the human went another way, which counts toward the
+    /// back-off.
+    pub fn dismiss_suggestion(&mut self) {
+        if self.suggestion.take().is_some() {
+            self.unused_suggestions += 1;
+        }
+    }
+
+    /// Forgets everything about suggestions because the conversation they were made for is
+    /// gone.
+    pub fn reset_suggestions(&mut self) {
+        self.suggestion = None;
+        self.pending_suggestion = None;
+        self.suggestion_due = false;
+        self.completed_turns = 0;
+        self.unused_suggestions = 0;
+    }
+
+    /// Tab or Right with nothing else claiming it writes the ghost text into the input.
+    fn accept_ghost(&mut self, key: KeyEvent) -> bool {
+        if !matches!(key.code, KeyCode::Tab | KeyCode::Right)
+            || key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
+            || self.keymap.lookup(key).is_some()
+        {
+            return false;
+        }
+        let Some(ghost) = self.ghost_text().map(str::to_string) else {
+            return false;
+        };
+        if self.suggestion.take().is_some() {
+            self.unused_suggestions = 0;
+        }
+        for c in ghost.chars() {
+            self.input.insert(c);
+        }
+        self.history.reset();
+        true
+    }
+
     pub fn shell_mode(&self) -> bool {
         self.input.first_char() == Some('!')
     }
@@ -1081,6 +1205,10 @@ impl App {
         let action = self.dispatch_input(input);
         // Paste and history-search accept change the text outside handle_key's tails.
         self.refresh_slash();
+        // Any path that put text in the box (paste, history recall, a menu) ends the suggestion.
+        if !self.input.is_empty() {
+            self.dismiss_suggestion();
+        }
         action
     }
 
@@ -1155,6 +1283,10 @@ impl App {
     /// Every start of main-conversation work goes through here so the spinner's clock and token
     /// count begin with it.
     pub fn set_running(&mut self, running: bool) {
+        if running {
+            self.pending_suggestion = None;
+            self.dismiss_suggestion();
+        }
         self.running = running;
         self.turn_tokens = Default::default();
         self.turn_started = running.then(std::time::Instant::now);
@@ -1543,6 +1675,10 @@ impl App {
             self.refresh_slash();
             return action;
         }
+        if key.code == KeyCode::Esc && self.ghost_text().is_some() && self.input.is_empty() {
+            self.dismiss_suggestion();
+            return Action::None;
+        }
         if key.code == KeyCode::Esc && self.wakeup_pending && !self.running {
             return Action::CancelWakeup;
         }
@@ -1571,6 +1707,11 @@ impl App {
         // to the input's delete-char; any other quit key does nothing.
         if mapped == Some(TuiAction::Quit) && self.input.is_empty() {
             return Action::Quit;
+        }
+        if self.accept_ghost(key) {
+            self.refresh_completion();
+            self.refresh_slash();
+            return Action::None;
         }
         let action = self.message_key(key);
         self.refresh_completion();
@@ -4460,5 +4601,207 @@ mod tests {
             ));
             assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("@"));
         });
+    }
+
+    mod ghost {
+        use super::*;
+        use crate::input::{PendingAttachment, PendingMedia};
+        use fontaine_core::config::EditorMode;
+
+        fn with_history(entries: &[&str]) -> App {
+            let mut app = app();
+            for entry in entries {
+                app.history.push(entry);
+            }
+            app
+        }
+
+        fn suggesting(text: &str) -> App {
+            let mut app = app();
+            app.set_suggestion(text.into());
+            app
+        }
+
+        #[test]
+        fn tab_and_right_fill_the_input_from_a_suggestion_and_enter_then_submits() {
+            for code in [KeyCode::Tab, KeyCode::Right] {
+                let mut app = suggesting("run the tests");
+                assert_eq!(app.ghost_text(), Some("run the tests"));
+                app.unused_suggestions = 2;
+                assert_eq!(press(&mut app, code), Action::None);
+                assert_eq!(app.input.text(), "run the tests");
+                assert!(app.suggestion.is_none());
+                assert_eq!(app.unused_suggestions, 0, "accepting resets the back-off");
+                assert_eq!(
+                    press(&mut app, KeyCode::Enter),
+                    Action::Submit("run the tests".into(), Vec::new())
+                );
+            }
+        }
+
+        #[test]
+        fn typing_dismisses_the_suggestion_and_counts_it_unused() {
+            let mut app = suggesting("run the tests");
+            type_text(&mut app, "x");
+            assert_eq!(app.input.text(), "x");
+            assert!(app.suggestion.is_none());
+            assert_eq!(app.unused_suggestions, 1);
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.ghost_text(), None, "it does not come back");
+        }
+
+        #[test]
+        fn escape_dismisses_the_suggestion() {
+            let mut app = suggesting("run the tests");
+            assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+            assert!(app.suggestion.is_none());
+            assert_eq!(app.unused_suggestions, 1);
+            assert!(
+                app.last_esc.is_none(),
+                "it is not the first of a double press"
+            );
+        }
+
+        #[test]
+        fn starting_a_turn_drops_the_suggestion() {
+            let mut app = suggesting("run the tests");
+            app.set_running(true);
+            assert!(app.suggestion.is_none());
+            app.set_running(false);
+            assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn a_suggestion_arriving_after_the_human_moved_on_is_not_shown() {
+            let mut busy = app();
+            type_text(&mut busy, "abc");
+            busy.set_suggestion("late".into());
+            assert!(busy.suggestion.is_none());
+            let mut running = app();
+            running.set_running(true);
+            running.set_suggestion("late".into());
+            assert!(running.suggestion.is_none());
+        }
+
+        #[test]
+        fn the_suggestion_is_hidden_behind_menus_overlays_attachments_and_views() {
+            let mut app = suggesting("run the tests");
+            app.search = Some(HistorySearch::default());
+            assert_eq!(app.ghost_text(), None);
+            app.search = None;
+            app.viewing = Some("agent-1".into());
+            assert_eq!(app.ghost_text(), None);
+            app.viewing = None;
+            app.attach_notice = None;
+            app.input.attach(PendingAttachment {
+                label: "a.png".into(),
+                path: PathBuf::from("a.png"),
+                media: PendingMedia::Pdf,
+                size: 1,
+            });
+            assert_eq!(app.ghost_text(), None);
+            app.input.take_attachments();
+            assert_eq!(app.ghost_text(), Some("run the tests"));
+            app.server = Some(ConfirmPrompt::new("t".into(), Vec::new(), ""));
+            assert_eq!(app.ghost_text(), None);
+            // Tab does not fill an input the ghost is hidden behind.
+            press(&mut app, KeyCode::Tab);
+            assert!(app.input.is_empty());
+        }
+
+        #[test]
+        fn modified_arrows_and_mapped_keys_do_not_accept() {
+            for modifiers in [
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+                KeyModifiers::SHIFT,
+            ] {
+                let mut app = suggesting("run the tests");
+                app.handle_input(key(KeyCode::Right, modifiers));
+                assert!(!app.input.text().contains("run"), "{modifiers:?}");
+            }
+        }
+
+        #[test]
+        fn vim_normal_mode_neither_shows_nor_accepts_and_insert_does() {
+            let mut app = suggesting("run the tests");
+            app.input.mode = EditorMode::Vim;
+            app.input.vim = crate::input::VimState::Normal { pending: None };
+            assert_eq!(app.ghost_text(), None);
+            press(&mut app, KeyCode::Right);
+            press(&mut app, KeyCode::Tab);
+            assert!(app.input.is_empty());
+            app.input.vim = crate::input::VimState::Insert;
+            assert_eq!(app.ghost_text(), Some("run the tests"));
+            press(&mut app, KeyCode::Right);
+            assert_eq!(app.input.text(), "run the tests");
+        }
+
+        #[test]
+        fn history_completion_appends_the_remainder_on_tab_or_right() {
+            for code in [KeyCode::Tab, KeyCode::Right] {
+                let mut app = with_history(&["fix the parser", "fix the lexer"]);
+                type_text(&mut app, "fix the p");
+                assert_eq!(app.ghost_text(), Some("arser"));
+                assert_eq!(press(&mut app, code), Action::None);
+                assert_eq!(app.input.text(), "fix the parser");
+                assert_eq!(app.ghost_text(), None, "nothing longer is left");
+            }
+        }
+
+        #[test]
+        fn history_completion_follows_the_cursor_the_switch_and_the_menus() {
+            let mut app = with_history(&["fix the parser"]);
+            type_text(&mut app, "fix");
+            assert_eq!(app.ghost_text(), Some(" the parser"));
+            press(&mut app, KeyCode::Left);
+            assert_eq!(app.ghost_text(), None, "only at the end of the buffer");
+            press(&mut app, KeyCode::End);
+            assert_eq!(app.ghost_text(), Some(" the parser"));
+            app.history_completion = false;
+            assert_eq!(app.ghost_text(), None);
+
+            let mut app = with_history(&["/model x", "!ls -la"]);
+            type_text(&mut app, "/mo");
+            assert_eq!(app.ghost_text(), None);
+            let mut app = with_history(&["!ls -la"]);
+            type_text(&mut app, "!l");
+            assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn history_completion_is_off_while_navigating_history_and_in_vim_normal() {
+            let mut app = with_history(&["fix the parser", "fix"]);
+            press(&mut app, KeyCode::Up);
+            assert_eq!(app.input.text(), "fix");
+            assert_eq!(app.ghost_text(), None, "the recalled text is not a draft");
+
+            let mut app = with_history(&["fix the parser"]);
+            type_text(&mut app, "fix");
+            app.input.mode = EditorMode::Vim;
+            app.input.vim = crate::input::VimState::Normal { pending: None };
+            assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn ghost_text_is_never_part_of_the_input() {
+            let mut app = with_history(&["fix the parser"]);
+            type_text(&mut app, "fix");
+            assert_eq!(app.input.text(), "fix");
+            let mut app = suggesting("run the tests");
+            assert_eq!(app.input.text(), "");
+            assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        }
+
+        #[test]
+        fn a_reset_forgets_the_suggestion_and_the_counts() {
+            let mut app = suggesting("run the tests");
+            app.completed_turns = 4;
+            app.unused_suggestions = 2;
+            app.suggestion_due = true;
+            app.reset_suggestions();
+            assert!(app.suggestion.is_none() && !app.suggestion_due);
+            assert_eq!((app.completed_turns, app.unused_suggestions), (0, 0));
+        }
     }
 }

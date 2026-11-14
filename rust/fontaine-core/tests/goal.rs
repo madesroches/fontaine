@@ -12,7 +12,8 @@ use fontaine_agents::budget::Spend;
 use fontaine_core::config::{AccountKind, PermissionMode::Manual};
 use fontaine_core::goal::{
     Applied, Evaluation, GoalArg, GoalCaps, GoalError, GoalEvaluator, GoalVerdict, Judgment,
-    PauseReason, SessionGoal, Step, parse_goal_arg, render_transcript,
+    PauseReason, SessionGoal, Step, last_user_text, parse_goal_arg, render_transcript,
+    visible_transcript_of,
 };
 use fontaine_core::ledger::{GoalEvent, Ledger, Record};
 use fontaine_core::models::{GuardianModel, ModelHandle, ModelRef};
@@ -638,6 +639,39 @@ fn the_transcript_labels_each_block() {
         text,
         "[User]\nfix the build\n\n[Tool call] shell {\"command\":\"cargo build\"}\n\n[Tool result] shell\nFinished\n\n[Assistant]\nit builds now"
     );
+}
+
+#[test]
+fn the_visible_transcript_has_no_tool_results_and_tool_calls_are_names_only() {
+    let mut conversation = Conversation::new();
+    conversation.push(text_message("fix the build"));
+    conversation.extend(tool_exchange(
+        "c1",
+        "shell",
+        json!({"command": "cat /etc/secret"}),
+        "hunter2",
+    ));
+    conversation.push(Message::assistant("it builds now"));
+    let text = visible_transcript_of(&conversation);
+    assert_eq!(
+        text,
+        "[User]\nfix the build\n\n[Tool call] shell\n\n[Assistant]\nit builds now"
+    );
+    assert!(!text.contains("hunter2") && !text.contains("secret"));
+    // The evaluator and /btw keep both.
+    let full = render_transcript(&conversation, 100_000);
+    assert!(full.contains("hunter2") && full.contains("cat /etc/secret"));
+}
+
+#[test]
+fn the_last_user_text_skips_tool_results_and_summaries() {
+    let mut conversation = Conversation::new();
+    conversation.push(text_message("first"));
+    conversation.push(text_message("second"));
+    conversation.extend(tool_exchange("c1", "shell", json!({}), "out"));
+    conversation.push(Entry::new(text_message("a summary")).by(summary_author()));
+    assert_eq!(last_user_text(&conversation).as_deref(), Some("second"));
+    assert_eq!(last_user_text(&Conversation::new()), None);
 }
 
 #[test]

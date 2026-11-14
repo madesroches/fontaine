@@ -11,6 +11,12 @@ All notable changes are recorded here. The format follows
 - A built-in `reviewer` agent type (#616): the `explore` tools plus `shell` limited to review
   commands (`git diff`, `gh pr view`, `cargo clippy`, `cargo test`, …), with no edit tools and a
   prompt that says to report findings, not fix them.
+- Ghost text in the TUI input box (#620). `[tui] history_completion` (on by default) dims the newest
+  earlier input that extends what you are typing after the cursor, and `[tui] prompt_suggestions`
+  (off by default) asks the main model, after a turn, for the message you are likely to type next
+  and dims it in the empty input. Tab or Right accepts either; typing dismisses a suggestion. The
+  suggestion call is skipped in plan mode, after an error or interrupt, while a usage window is
+  paused and after three unused suggestions, and shows as `suggestions` in `/cost`.
 - A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
   example each. `claude-subscription` is no longer labeled experimental.
 - MCP servers that support only protocol 2026-07-28 and reject `initialize` now connect (#613).

@@ -744,6 +744,20 @@ fn viewed_label(app: &App) -> String {
     }
 }
 
+/// `text` cut to `width` characters, ending in an ellipsis when it was cut, so ghost text never
+/// wraps onto a row the input height was not sized for.
+fn clip(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width == 0 {
+        kept
+    } else {
+        format!("{kept}…")
+    }
+}
+
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     let covered = app.covered() || app.search.is_some();
     let style = if covered {
@@ -806,6 +820,18 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
         lines.push(Line::styled(format!("Message {}…", viewed_label(app)), dim));
     } else {
         lines.extend(view.rows.iter().map(|r| Line::raw(r.clone())));
+        if let (Some(ghost), Some(last)) = (app.ghost_text(), view.rows.last()) {
+            let room = usize::from(inner.width).saturating_sub(last.chars().count());
+            let ghost = clip(ghost, room);
+            if !ghost.is_empty()
+                && let Some(row) = lines.last_mut()
+            {
+                row.push_span(Span::styled(
+                    ghost,
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
+        }
     }
     frame.render_widget(Paragraph::new(lines), inner);
     if !covered {
@@ -1238,5 +1264,94 @@ mod tests {
         let off = drawn(false);
         assert!(!off.contains('\x1b'));
         assert!(off.contains("see https://a.io/x ok"));
+    }
+
+    fn drawn_cells(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn dim_text(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| &buffer[(x, row)])
+            .filter(|cell| cell.modifier.contains(Modifier::DIM))
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn input_row(rows: &[String], marker: &str) -> usize {
+        rows.iter()
+            .position(|r| r.starts_with('│') && r.contains(marker))
+            .unwrap_or_else(|| panic!("no input row with {marker}: {rows:?}"))
+    }
+
+    #[test]
+    fn a_suggestion_is_dim_ghost_text_in_the_empty_input() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.set_suggestion("run the tests".into());
+        let rows = drawn(&app, 60, 12);
+        let at = input_row(&rows, "run the tests");
+        let buffer = drawn_cells(&app, 60, 12);
+        assert!(dim_text(&buffer, at as u16, 60).contains("run the tests"));
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn history_completion_is_dim_after_the_typed_text_only() {
+        let mut app = typed("fix the");
+        app.history.push("fix the parser");
+        app.history_completion = true;
+        let rows = drawn(&app, 60, 12);
+        let at = input_row(&rows, "fix the parser");
+        let buffer = drawn_cells(&app, 60, 12);
+        let dim = dim_text(&buffer, at as u16, 60);
+        assert_eq!(dim.trim(), "parser", "{dim:?}");
+        assert_eq!(app.input.text(), "fix the");
+    }
+
+    #[test]
+    fn ghost_text_is_clipped_so_the_input_height_does_not_change() {
+        let mut app = typed("fix the ");
+        app.history.push(&format!("fix the {}", "long ".repeat(40)));
+        let bare = chrome(&app, 30, 24);
+        let rows = drawn(&app, 30, 14);
+        // The ghost ends in an ellipsis at the box's edge and adds no row.
+        let at = input_row(&rows, "fix the");
+        assert!(rows[at].contains('…'), "{rows:?}");
+        assert!(rows[at].trim_end().ends_with('│'), "{rows:?}");
+        let mut plain = typed("fix the ");
+        plain.history_completion = false;
+        assert_eq!(chrome(&plain, 30, 24), bare);
+        assert_eq!(
+            drawn(&plain, 30, 14).len(),
+            rows.len(),
+            "the same frame height"
+        );
+        let plain_rows = drawn(&plain, 30, 14);
+        assert_eq!(
+            plain_rows.iter().position(|r| r.contains("fix the")),
+            Some(at)
+        );
+    }
+
+    #[test]
+    fn a_suggestion_wider_than_the_box_is_clipped_to_its_first_row() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.set_suggestion("word ".repeat(30));
+        let bare = chrome(&App::new(PermissionMode::Manual, "m".into()), 30, 24);
+        assert_eq!(chrome(&app, 30, 24), bare);
+        let rows = drawn(&app, 30, 14);
+        let at = input_row(&rows, "word");
+        assert!(rows[at].contains('…'), "{rows:?}");
+        assert!(!rows[at + 1].contains("word"), "{rows:?}");
+    }
+
+    #[test]
+    fn clip_cuts_to_the_width_and_marks_the_cut() {
+        assert_eq!(clip("abc", 5), "abc");
+        assert_eq!(clip("abcdef", 4), "abc…");
+        assert_eq!(clip("abcdef", 0), "");
     }
 }

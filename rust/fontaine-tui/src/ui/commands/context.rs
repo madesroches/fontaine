@@ -19,6 +19,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
+                self.app.reset_suggestions();
                 // The old conversation would otherwise stay on screen and in scrollback, which
                 // is not what clearing it means; the reprint drops the rows the clear retired.
                 self.app.reprint = true;

@@ -1456,6 +1456,12 @@ pub struct TuiSection {
     pub editor_mode: Option<EditorMode>,
     /// How a pending approval or question is signalled (default bell).
     pub notify: Option<NotifyMethod>,
+    /// Show a model-proposed next prompt as ghost text in the empty input after a turn
+    /// (default false).
+    pub prompt_suggestions: Option<bool>,
+    /// Show the most recent history entry that extends what is typed as ghost text (default
+    /// true).
+    pub history_completion: Option<bool>,
 }
 
 /// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
@@ -2822,6 +2828,8 @@ pub struct Tui {
     pub show_reasoning: bool,
     pub editor_mode: EditorMode,
     pub notify: NotifyMethod,
+    pub prompt_suggestions: bool,
+    pub history_completion: bool,
 }
 
 /// Where the session's main model list comes from, once the layers are merged.
@@ -3049,6 +3057,8 @@ impl Config {
                 show_reasoning: true,
                 editor_mode: EditorMode::default(),
                 notify: NotifyMethod::default(),
+                prompt_suggestions: false,
+                history_completion: true,
             },
             telemetry: Telemetry {
                 enabled: false,
@@ -3112,6 +3122,12 @@ impl Config {
             }
             if let Some(v) = tui.notify {
                 self.tui.notify = v;
+            }
+            if let Some(v) = tui.prompt_suggestions {
+                self.tui.prompt_suggestions = v;
+            }
+            if let Some(v) = tui.history_completion {
+                self.tui.history_completion = v;
             }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {

@@ -564,6 +564,7 @@ pub async fn drive(
     );
     ui.app.transcript.show_reasoning = runtime.config.tui.show_reasoning;
     ui.app.history = history;
+    ui.app.history_completion = runtime.config.tui.history_completion;
     ui.app.primary_root = primary_root;
     ui.app.todos.set_items(runtime.session.todos().root());
     for notice in startup

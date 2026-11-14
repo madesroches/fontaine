@@ -83,6 +83,7 @@ mod shutdown;
 pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
+pub use goal::{PreparedSuggestion, SUGGESTION_BACKOFF, SuggestionInputs, should_suggest};
 pub use mcp::{
     HookElicitor, McpOutcome, McpResourceSummary, McpServerPlan, headers_helper_refusal, mcp_plan,
     probe_server, resolved_server, server_digest, server_spec,

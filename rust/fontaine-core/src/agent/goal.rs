@@ -4,24 +4,90 @@
 use fontaine_agents::budget::Spend;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
+use rig_core::DynModel;
+use rig_core::operation::Completion;
 use rig_memory::load_async;
+use std::sync::Arc;
 
 use super::AgentRuntime;
 use super::models::announce_fall_through;
+use crate::config::PermissionMode;
 use crate::gate::SessionState;
 use crate::goal::{
     Applied, Cleared, Continue, Evaluation, GoalCaps, GoalError, GoalEvaluator, PauseReason,
-    Pending, REASON_CHARS, Step, cut, goal_prompt_text, transcript_of,
+    Pending, REASON_CHARS, Step, cut, goal_prompt_text, last_user_text, transcript_of,
+    visible_transcript_of,
 };
 use crate::ledger::{GoalEvent, Record};
 use crate::model_roles::{COMPACTION_ROLE, ModelChain};
 use crate::models::{ModelError, ModelHandle, ModelRef, Switcher};
 use crate::permissions::Approver;
 use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult, PreSummary, SummaryGate};
-use crate::side_question::{Answer, SideQuestion, SideQuestionError};
+use crate::side_question::{Answer, SideQuestion, SideQuestionError, clean_suggestion};
 use crate::turn::TurnOutcome;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::user_hooks::CompactGate;
+
+/// Unused suggestions in a row after which none is asked for until one is accepted.
+pub const SUGGESTION_BACKOFF: u32 = 3;
+
+/// What the surface knows that decides whether a prompt suggestion is asked for.
+#[derive(Clone, Copy, Debug)]
+pub struct SuggestionInputs {
+    pub enabled: bool,
+    pub mode: PermissionMode,
+    /// The last turn ended in an answer; an error or an interrupt did not.
+    pub last_turn_finished: bool,
+    pub completed_turns: u32,
+    /// Suggestions shown and left unused since the last one was accepted.
+    pub unused_streak: u32,
+}
+
+/// Whether a prompt suggestion is worth a model call now. Headless runs and child agents never
+/// call this.
+pub fn should_suggest(inputs: &SuggestionInputs) -> bool {
+    inputs.enabled
+        && inputs.mode != PermissionMode::Plan
+        && inputs.last_turn_finished
+        && inputs.completed_turns >= 1
+        && inputs.unused_streak < SUGGESTION_BACKOFF
+}
+
+/// Everything the suggestion call needs, owned, so it can run on a task while the runtime is
+/// borrowed by the input loop.
+pub struct PreparedSuggestion {
+    transcript: String,
+    last_user_message: Option<String>,
+    model: DynModel<Completion>,
+    billed: bool,
+    served: Served,
+    state: Arc<SessionState>,
+}
+
+impl PreparedSuggestion {
+    /// Asks the model, debiting the root whatever came back, and returns the cleaned line.
+    /// `None` for no suggestion: a failure or a timeout is advisory here, nothing a person
+    /// would act on.
+    pub async fn run(self) -> Option<String> {
+        let asked = SideQuestion::prompt_suggestion(self.model, self.billed)
+            .ask("", &self.transcript)
+            .await;
+        let usage = match &asked {
+            Ok(answer) => Some(&answer.usage),
+            Err(e) => e.usage(),
+        };
+        if let Some(usage) = usage {
+            self.state.record_usage(
+                UsageSource::PromptSuggestion,
+                ROOT_AGENT,
+                usage,
+                true,
+                &self.served,
+            );
+        }
+        clean_suggestion(&asked.ok()?.text, self.last_user_message.as_deref())
+    }
+}
 
 /// What a one-shot job on a role's list needs besides the job itself.
 pub(super) struct ChainJob<'a> {
@@ -295,6 +361,32 @@ impl AgentRuntime {
             );
         }
         asked
+    }
+
+    /// The skip checks of a prompt suggestion and, when none holds, the saved conversation
+    /// rendered without tool results. `None` means no suggestion is asked for. The call itself
+    /// is [`PreparedSuggestion::run`]; it writes no conversation or intent record.
+    pub async fn prepare_prompt_suggestion(
+        &self,
+        inputs: &SuggestionInputs,
+    ) -> Option<PreparedSuggestion> {
+        // A paused window is polled, not awaited, so a suggestion never waits for the reset.
+        if !should_suggest(inputs) || self.state.usage_pause().is_paused() {
+            return None;
+        }
+        // A conversation that cannot be read is the next turn's problem to report.
+        let conversation = load_async(&self.session.store(), CONVERSATION_LOG)
+            .await
+            .ok()?;
+        let main = &self.models.main;
+        Some(PreparedSuggestion {
+            transcript: visible_transcript_of(&conversation),
+            last_user_message: last_user_text(&conversation),
+            model: main.completion.clone(),
+            billed: main.catalog_billed(),
+            served: Served::direct(&main.reference),
+            state: Arc::clone(&self.state),
+        })
     }
 
     fn forward_goal_warning(&self) {
