@@ -28,7 +28,7 @@ the compatibility layer does not implement fails explicitly, before any work is 
   other SDK-only flag. Without `-p` the binary starts the TUI.
 - **Headless run.** `lib.rs:631 prepare_headless` → `lib.rs:1170 run_headless` →
   `agent_setup` (`lib.rs:1082`), which hard-codes `approver: Arc::new(DenyAll)` (`:1148`) and
-  `headless: true`. It then calls `connect_mcp(&[])` (`:1225`) and `headless::run`.
+  is passed `headless: true` by `run_headless`. It then calls `connect_mcp(&[])` (`:1225`) and `headless::run`.
 - **Headless I/O.** `headless.rs` writes untyped `serde_json::Value` through `emit_line`
   (`:57`) and `event` (`:64`). The run's `SessionEvent`s are turned into `headless-v1` events
   inside a closure in `run_attempt` (`:664-724`). Stdin is read only between turns
@@ -86,7 +86,8 @@ Read from the released packages: TS `@anthropic-ai/claude-agent-sdk@0.3.325`, Py
 
 - **Command.** Always `--output-format stream-json --verbose --input-format stream-json`, with
   **no `-p`**. On top of that, according to the options set: `--system-prompt <s>` (Python sends
-  `--system-prompt ""` when none is set), `--append-system-prompt`, `--tools`,
+  `--system-prompt ""` when none is set; `--system-prompt-file <path>` for a `file` system prompt),
+  `--append-system-prompt`, `--tools`,
   `--allowedTools a,b`, `--disallowedTools`, `--max-turns`, `--max-budget-usd`, `--model`,
   `--fallback-model`, `--permission-mode`, `--permission-prompt-tool stdio` (TS:
   `--permission-prompt-tool=stdio` whenever `canUseTool` is set), `--continue`,
@@ -263,8 +264,17 @@ session keeps `DenyAll` and today's deny-on-would-prompt behaviour. A named MCP 
 today is a `headless: bool`. It becomes
 `enum HumanChannel { Present, Absent, Delegate }`. `Delegate` behaves exactly like `Present`:
 `would_prompt` does not convert, and `ask_human` calls `approver.approve`. The difference is
-that `Delegate` (a) never offers `AllowAlways` and (b) records `delegate` in a new `DecisionRecord` field (`human_channel`, audit.rs) next to the
-unchanged `headless` bool. Since the approver is reached only from `ask_human`, the
+that `Delegate` (a) never offers `AllowAlways` (`ask_human` forces `offers.always = false` in
+`ApprovalRequest.offers`, `permissions.rs:70`, `:80-84`, `:2574-2577`; an un-offered AllowAlways
+is already downgraded, `:2690-2695`) and (b) records `delegate` in a new `DecisionRecord` field
+(`human_channel`, audit.rs, `#[serde(default)]` so existing records and the deserializer at
+`fontaine-tui/src/transcript.rs:2124` still load; not a `DecisionRecord::new` parameter) next to the
+unchanged `headless` bool. `AgentSetup` gains a `human_channel: HumanChannel` field that is passed
+to `PipelineParams` (`agent.rs:144`, `setup.rs:832-835`). `AgentSetup.headless` stays and keeps
+meaning "no person at the terminal" (teams, `setup.rs:712` and `:943`, ledger SessionStart/project
+info `agent.rs:869`, bug-report drafts `build.rs:180`): SDK mode sets `headless = true` together
+with `human_channel = Delegate` when `--permission-prompt-tool stdio` is set (`Absent` otherwise);
+the TUI sets `Present`, `headless-v1` `Absent`. Since the approver is reached only from `ask_human`, the
 callback runs after the unregistered-agent check, the AFK stop, hooks, the floor, rules, mode
 handling and (in `auto`/`afk`) the guardian. A floor deny, a guardian deny or a fail-closed
 guardian outcome never reaches it. In `afk`, `AfkApprover` still wraps the delegate, so AFK's
@@ -451,7 +461,12 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   runtime is shared. Callback hooks are registered at Fontaine's CLI scope
   (`Slot::Cli`, user trust), so a callback hook's `allow` is a trusted hook allow after the
   floor (`Tier::Hook`), which skips `canUseTool` and, for narrow matchers in auto, the guardian,
-  as a PreToolUse allow does in Claude Code. Timeout is the matcher's `timeout`, or the
+  as a PreToolUse allow does in Claude Code. `initialize.hooks` matchers use Claude syntax (`"Bash"`, `"Write|Edit"`) while Fontaine hook
+  matchers go through `parse_rule`, where an unparsed matcher runs for every call with a non-narrow
+  allow. So each matcher is split on `|` and each alternative is mapped through `map_tool_entry`
+  into one callback hook; an alternative that cannot be mapped fails `initialize` with an error
+  naming it; an empty or `*` matcher stays deliberately broad (its allow is non-narrow).
+  Timeout is the matcher's `timeout`, or the
   command-hook default. An error or timeout follows `onFailure`: `block` makes a PreToolUse
   deny, and `continue` or absent gives command-hook non-blocking-error semantics. The callback constructor sets the existing `fails_closed`
   (`PreToolUseHook::fails_closed`, `UserHook.fails_closed`) from `onFailure: block`. A hook's output
@@ -493,14 +508,17 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    flag; make `run_session` `pub(crate)`. Hook up the root `Steering` queue in headless, and
    call `keep_unsettled_turn(Unsettled::User, …)` in the interrupt arm as the AFK arm does.
    Every existing headless test must stay green and unmodified.
-4. `fontaine-core/src/permissions.rs`: `headless: bool` → `HumanChannel`. Add
+4. `fontaine-core/src/permissions.rs` and `fontaine-core/src/agent.rs`: `PipelineParams.headless:
+   bool` → `HumanChannel`, fed from a new `AgentSetup.human_channel` (`AgentSetup.headless` stays). Add
    `Answer::AllowModified`, the `Readjudicate(args)` return of `ask_human` / `prompt_or_ask` and
    the restart in `adjudicate`. Add `human_channel` to `DecisionRecord` (`audit.rs`; `tier.rs`
    if a tier is needed) and carry it into the ledger and spans. Update the callers this breaks in
    the same step: `fontaine-evals/src/none.rs` (~:165), `fontaine-core/tests/common/pipeline.rs`
    (~:307), `fontaine-tui/src/app.rs` (the `Answer` match ~:1835 and the `DecisionRecord`
-   literal ~:2110-2143), `fontaine-core/src/statusline.rs` (~:487-520) and
-   `fontaine-core/tests/audit_telemetry.rs`.
+   literal ~:2110-2143), `fontaine-core/src/statusline.rs` (~:487-520),
+   `fontaine-core/tests/audit_telemetry.rs`, the `AgentSetup` literals at `rust/fontaine/src/lib.rs:1130`,
+   `fontaine-core/tests/common/runtime.rs:454`, `fontaine-tui/tests/common/mod.rs:374` and
+   `fontaine-tui/src/ui/tests.rs:865`.
 5. `fontaine-core/src/user_hooks.rs`: add `Handler::Callback` behind a `HookTransport` trait,
    built by a constructor that bypasses `HandlerKind` and sets `fails_closed` from `onFailure`.
 6. `fontaine-tools/src/mcp/servers.rs` and `fontaine-core/src/agent/mcp*.rs`: add
@@ -517,7 +535,10 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    `HumanChannel` parameter (today `DenyAll` is hard-coded and `headless` also drives
    `confirm_project_servers` and scheduling; SDK mode passes both as false, independent of
    `HumanChannel`), and build their inputs from `headless::Options`
-   plus compat extras instead of Fontaine's `&Cli`.
+   plus compat extras instead of Fontaine's `&Cli`. That covers `Launch { cli: &Cli, … }`
+   (`lib.rs:1055`), the `headless: bool` parameter shared with the TUI (`:1087`, false at `:1331`),
+   `resolve_models(cli, …)` (`:1180`) and `start_scanner(&launch, …)` (`:1207`): a `Launch` is
+   built without a Fontaine `Cli`.
 10. Lift `LineReader` from `claude_subscription/cli.rs` into a new `pub` module,
     `fontaine-core/src/line_reader.rs`, generic over `AsyncRead`, moving `LineBuffer` and
     `ReadFail` with it, and use it from both sides.
@@ -557,7 +578,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 
 ## Files to Modify
 
-- `rust/fontaine/src/{lib.rs,headless.rs}`, `rust/fontaine-core/src/extensions.rs`
+- `rust/fontaine/src/{lib.rs,headless.rs}`, `rust/fontaine-core/src/{extensions.rs,agent.rs}`
 - `rust/fontaine/src/claude_compat/` (new: `mod.rs`, `cli.rs`, `wire.rs`, `router.rs`,
   `translate.rs`, `approver.rs`, `hooks.rs`, `mcp.rs`, `control.rs`)
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `ledger.rs`, `audit.rs`,
@@ -567,10 +588,11 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 - `rust/fontaine-tools/src/mcp/servers.rs`
 - `rust/fontaine-agents/src/registry.rs`
 - `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/ui/tests.rs`,
+  `rust/fontaine-tui/tests/common/mod.rs`,
   `rust/fontaine-evals/src/none.rs`
 - `rust/fontaine/tests/claude_sdk_compat.rs`, `rust/fontaine/tests/sdk_compat/**`,
   `rust/fontaine/tests/fixtures/claude_sdk/**`
-- `rust/fontaine-core/tests/` (`audit_telemetry.rs`, `common/pipeline.rs`, pipeline tests for `Delegate` and `AllowModified`)
+- `rust/fontaine-core/tests/` (`audit_telemetry.rs`, `common/pipeline.rs`, `common/runtime.rs`, pipeline tests for `Delegate` and `AllowModified`)
 - `rust/fontaine-tools/tests/mcp_registration.rs`
 - `evals/claude_sdk/capture.sh`
 - `.github/workflows/ci.yml`, `.gitignore`, `.ignore`
@@ -618,6 +640,8 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
   callbacks use the matcher or command-hook timeout.
 - 2026-11-13: `--setting-sources` never drops Fontaine project-scope tightening.
 - 2026-11-13: Valid Claude flags Fontaine does not implement are classed unsupported and exit 2.
+- 2026-11-13: SDK mode keeps `AgentSetup.headless = true`; only the pipeline's human channel
+  becomes Delegate.
 
 Master-plan lines to add (`### Headless` unless noted):
 - "(#582, supersedes the 2026-10-21 no-external-approval-delegate line) Claude Agent SDK mode
@@ -671,6 +695,11 @@ Master-plan lines to add (`### Headless` unless noted):
 - `approver.rs`: the response-mapping table row by row; `updatedPermissions` acceptance and
   rejection per type and destination; suggestions only at `session`; error, malformed, cancel
   and EOF → Deny / `Unavailable`.
+- `user_hooks.rs` (beside `a_timed_out_command_hook_loses_its_whole_tree`): the callback
+  constructor sets `fails_closed` from `onFailure`; a transport timeout or error maps to
+  `HookError::Failed` (`fontaine-core/tests/hook_slot.rs:273` already covers fail-closed denial).
+- `hooks.rs`: matcher mapping: `Write|Edit` → two callback hooks via `map_tool_entry`, an
+  unmappable alternative fails `initialize` naming it, empty and `*` stay broad.
 - `router.rs`: request-id correlation, cancel, malformed line → error result, EOF with pending
   requests → all fail closed, a control request served while a turn runs, input ordering against
   notification turns.
@@ -682,7 +711,6 @@ Master-plan lines to add (`### Headless` unless noted):
   scope goes back through scope; one a second time is denied; one that is clean is allowed with
   the new args (the executed args are asserted).
 - Delegate answers are recorded with `human_channel = delegate`; `AllowAlways` is never offered.
-- The callback hook `onFailure: block` turns a timeout into a PreToolUse deny.
 - An SDK MCP tool is registered `Arbitrary` and gated (asserted beside
   `fontaine-tools/tests/mcp_registration.rs` with a `Transport::Sdk` server, or in a core-side
   test).
