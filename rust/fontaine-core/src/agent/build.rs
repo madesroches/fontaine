@@ -458,6 +458,9 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());
     }
+    if let Some(options) = p.models.main.provider_options() {
+        builder = builder.provider_options(options);
+    }
     let native = native_search::offered(p.config, p.models, p.state);
     if let Some(entry) = &native {
         builder = builder.additional_params(serde_json::json!({ "tools": [entry] }));

@@ -50,6 +50,28 @@ api_key_env = "ANTHROPIC_API_KEY"
 model = "work/claude-sonnet-5"
 ```
 
+`context_editing` is off by default. When enabled it asks Anthropic to clear old tool results
+server-side once the input passes `trigger_tokens`, keeping the newest `keep` tool uses and never
+clearing the `exclude_tools`. The host must accept the `context-management-2025-06-27` beta; one
+that rejects it fails the request. The beta header goes on every request from the account,
+guardian and side calls included (only the `context_management` field is limited to the main agent
+and subagents), so a host that rejects it makes the guardian fail closed; don't enable
+`context_editing` on an account used only for the guardian. An MCP tool in `exclude_tools` is named
+by its cleaned name, `mcp__<server>__<tool>`, with characters outside `[A-Za-z0-9_-]` turned into `_`. Each clearing rewrites the cached prefix from the cleared point
+on, so `clear_at_least_tokens` skips a clearing that would free little.
+
+```toml
+[accounts.work]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[accounts.work.context_editing]
+enabled = true
+trigger_tokens = 100000
+keep = 3
+exclude_tools = ["board_show", "board_update", "memory", "todo_write"]
+```
+
 ## `openai`
 
 Responses API. Key from `api_key_env` or `/login`.

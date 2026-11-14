@@ -356,6 +356,26 @@ pub enum QuotaKind {
     Kimi,
 }
 
+/// `[accounts.<name>.context_editing]`: Anthropic's server-side clearing of old tool results. The
+/// stored conversation is untouched; only what the model reads is trimmed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextEditing {
+    /// Sends the edit; `false` when unset.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The input size that starts a clearing; 100000 when unset.
+    pub trigger_tokens: Option<u32>,
+    /// How many of the newest tool uses stay; 3 when unset.
+    pub keep: Option<u32>,
+    /// A clearing that would free fewer input tokens is skipped, since each one invalidates the
+    /// cached prefix; 20000 when unset.
+    pub clear_at_least_tokens: Option<u32>,
+    /// Tools whose results are never cleared. Unset keeps the state-carrying tools; `[]` keeps
+    /// none. MCP tools use the full `mcp__<server>__<tool>` name.
+    pub exclude_tools: Option<Vec<String>>,
+}
+
 /// How an `anthropic` account sends its credential.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum AnthropicAuth {
@@ -389,6 +409,8 @@ pub struct Account {
     /// `anthropic`, `openrouter`, `opencode-go` and `databricks` only: the lifetime of a cached
     /// prefix; `"5m"` when unset.
     pub cache_ttl: Option<CacheTtl>,
+    /// `anthropic` only: server-side clearing of old tool results. Off unless `enabled`.
+    pub context_editing: Option<ContextEditing>,
     /// `openai-compatible` only: where to read the provider's own subscription quota for the
     /// status bar. Sends the account's key to `<base_url>/usages`.
     pub quota: Option<QuotaKind>,
@@ -460,6 +482,7 @@ impl Account {
             think: None,
             prompt_caching: None,
             cache_ttl: None,
+            context_editing: None,
             quota: None,
             auth: None,
             cli_path: None,
@@ -1726,6 +1749,17 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
             ));
         }
     }
+    if let Some(editing) = &account.context_editing {
+        if !provider.accepts_context_editing() {
+            return Err((
+                format!("accounts.{name}.context_editing"),
+                format!("not used by kind = \"{}\"", provider.name()),
+            ));
+        }
+        check_context_editing(editing).map_err(|(key, message)| {
+            (format!("accounts.{name}.context_editing.{key}"), message)
+        })?;
+    }
     if account.quota.is_some() && !provider.accepts_quota() {
         return Err((
             format!("accounts.{name}.quota"),
@@ -1773,6 +1807,31 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
     provider
         .validate(account)
         .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))
+}
+
+fn check_context_editing(editing: &ContextEditing) -> Result<(), (&'static str, String)> {
+    let (trigger, _, clear_at_least) = crate::providers::context_editing::thresholds(editing);
+    if trigger == 0 {
+        return Err(("trigger_tokens", "must be at least 1".to_string()));
+    }
+    if editing.keep == Some(0) {
+        return Err(("keep", "must be at least 1".to_string()));
+    }
+    if clear_at_least >= trigger {
+        return Err((
+            "clear_at_least_tokens",
+            format!("must be below trigger_tokens ({trigger})"),
+        ));
+    }
+    if editing
+        .exclude_tools
+        .iter()
+        .flatten()
+        .any(|tool| tool.is_empty())
+    {
+        return Err(("exclude_tools", "tool names are non-empty".to_string()));
+    }
+    Ok(())
 }
 
 /// The first name that differs only by ASCII case from an earlier one, when `fold` is set.

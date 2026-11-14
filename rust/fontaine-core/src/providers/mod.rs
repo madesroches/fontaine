@@ -7,6 +7,7 @@ use std::sync::Arc;
 use fontaine_guardian::OutputProbe;
 use futures::future::BoxFuture;
 use rig_core::DynModel;
+use rig_core::completion::ProviderOptions;
 use rig_core::driver::Model;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
@@ -24,6 +25,7 @@ pub mod anthropic;
 pub mod cache_minimum;
 mod cache_wire;
 pub mod claude_subscription;
+pub mod context_editing;
 pub mod databricks;
 pub mod derived_facts;
 pub mod device_flow;
@@ -128,6 +130,11 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Whether the account may set `prompt_caching` and `cache_ttl`.
     fn accepts_prompt_caching(&self) -> bool {
+        false
+    }
+
+    /// Whether the account may set `context_editing`.
+    fn accepts_context_editing(&self) -> bool {
         false
     }
 
@@ -284,6 +291,11 @@ pub trait AccountClient: Send + Sync {
     /// What the request body must carry to turn `model`'s thinking off, where its wire needs it:
     /// the guardian and the scanner force a tool call, which a thinking model refuses.
     fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> {
+        None
+    }
+    /// The options the main agent and subagents attach to every request on this account; the
+    /// guardian and side calls never carry them.
+    fn provider_options(&self) -> Option<ProviderOptions> {
         None
     }
     /// The guardian's completion model. Its final message is per-call and never reused, so only

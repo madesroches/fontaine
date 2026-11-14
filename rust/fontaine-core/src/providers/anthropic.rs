@@ -3,8 +3,12 @@ use std::sync::Arc;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use rig_core::DynModel;
+use rig_core::completion::ProviderOptions;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
+use rig_core::providers::anthropic::extension::{
+    AnthropicOptions, CONTEXT_MANAGEMENT_BETA, ContextManagement,
+};
 use rig_core::providers::anthropic::wire::Auth;
 use rig_core::providers::anthropic::{Anthropic as Client, AnthropicConfig};
 
@@ -14,6 +18,7 @@ use std::collections::BTreeMap;
 
 use rig_core::catalog::Catalog;
 
+use super::context_editing;
 use super::derived_facts::{facts_as, no_facts_notice, notice, unlisted, unlisted_facts};
 use super::{
     AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
@@ -47,6 +52,10 @@ impl Provider for Anthropic {
     }
 
     fn default_prompt_caching(&self) -> bool {
+        true
+    }
+
+    fn accepts_context_editing(&self) -> bool {
         true
     }
 
@@ -88,7 +97,19 @@ impl Provider for Anthropic {
         if ctx.account.auth == Some(AnthropicAuth::Bearer) {
             config.dialect.quirks.auth = Auth::OptionalBearer;
         }
+        let edit = ctx
+            .account
+            .context_editing
+            .as_ref()
+            .filter(|editing| editing.enabled)
+            .map(context_editing::edit_json);
+        // rig sends the body field but not the header it needs; the header rides on every
+        // completion of the account and is inert without the field.
+        if edit.is_some() {
+            config = config.with_beta(CONTEXT_MANAGEMENT_BETA);
+        }
         Ok(Arc::new(Connected {
+            context_edit: edit,
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
             caching: PromptCaching::of(ctx.account),
             account_name: ctx.account_name.to_string(),
@@ -100,6 +121,7 @@ impl Provider for Anthropic {
 pub(super) struct Connected {
     client: Client,
     caching: PromptCaching,
+    context_edit: Option<serde_json::Value>,
     account_name: String,
     model_facts: BTreeMap<String, String>,
 }
@@ -127,6 +149,13 @@ impl AccountClient for Connected {
 
     fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
         self.model(model, CacheScope::StaticPrefix)
+    }
+
+    fn provider_options(&self) -> Option<ProviderOptions> {
+        let edit = self.context_edit.clone()?;
+        Some(ProviderOptions::new().set(
+            AnthropicOptions::default().context_management(ContextManagement::new(vec![edit])),
+        ))
     }
 
     fn catalog_vendor(&self) -> Option<ProviderId> {

@@ -775,10 +775,13 @@ fn build_child_agent(
         preamble.push_str("\n\n");
         preamble.push_str(&section);
     }
-    let builder = AgentBuilder::new(model.completion.clone())
+    let mut builder = AgentBuilder::new(model.completion.clone())
         .preamble(preamble)
         .memory(store.clone())
         .conversation(id.to_string());
+    if let Some(options) = model.provider_options() {
+        builder = builder.provider_options(options);
+    }
     apply_common(builder, state, context.record_content)
         .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
         .add_hook(KillHook { kill })

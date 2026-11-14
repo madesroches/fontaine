@@ -172,6 +172,54 @@ fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
 }
 
 #[test]
+fn context_editing_belongs_to_anthropic_and_is_checked() {
+    let ok = parse("[accounts.x]\nkind = \"anthropic\"\n[accounts.x.context_editing]\nenabled = true\ntrigger_tokens = 50000\nkeep = 2\nclear_at_least_tokens = 10000\nexclude_tools = [\"memory\"]\n")
+        .unwrap();
+    let editing = ok.accounts.unwrap()["x"].context_editing.clone().unwrap();
+    assert!(editing.enabled);
+    assert_eq!(editing.keep, Some(2));
+    assert_eq!(editing.exclude_tools, Some(vec!["memory".to_string()]));
+
+    for kind in [
+        "openai",
+        "gemini",
+        "openai-compatible",
+        "kimi",
+        "ollama",
+        "openrouter",
+    ] {
+        let err = parse(&format!(
+            "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n[accounts.x.context_editing]\nenabled = true\n"
+        ))
+        .unwrap_err();
+        assert!(err.contains("accounts.x.context_editing"), "{kind}: {err}");
+    }
+    for (body, key) in [
+        ("keep = 0", "keep"),
+        ("trigger_tokens = 0", "trigger_tokens"),
+        ("clear_at_least_tokens = 100000", "clear_at_least_tokens"),
+        (
+            "trigger_tokens = 5000\nclear_at_least_tokens = 5000",
+            "clear_at_least_tokens",
+        ),
+        ("exclude_tools = [\"\"]", "exclude_tools"),
+    ] {
+        let err = parse(&format!(
+            "[accounts.x]\nkind = \"anthropic\"\n[accounts.x.context_editing]\n{body}\n"
+        ))
+        .unwrap_err();
+        assert!(
+            err.contains(&format!("accounts.x.context_editing.{key}")),
+            "{body}: {err}"
+        );
+    }
+    assert!(
+        parse("[accounts.x]\nkind = \"anthropic\"\n[accounts.x.context_editing]\nbogus = 1\n")
+            .is_err()
+    );
+}
+
+#[test]
 fn prompt_caching_defaults_per_kind() {
     for (kind, default) in [
         ("anthropic", true),
