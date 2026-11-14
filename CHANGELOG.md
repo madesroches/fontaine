@@ -189,6 +189,11 @@ All notable changes are recorded here. The format follows
   inside the workspace roots, judging the command after it (#635). `cd <repo> && gh issue view 627`
   was refused for the `reviewer`; `;`, `||`, a second command, a redirect or a `cd` outside the
   roots still do not match.
+- The guardian no longer denies writes to `unindexed` files inside the workspace roots as "Destroy
+  Pre-existing Files" (#636): an append, `sed -i`, heredoc or file-tool `write`/`edit` onto a file the
+  harness did not index (a crate it just scaffolded, a gitignored file) is routine editing, so an
+  unattended run is not stopped by an escalation nobody can answer. Deletions, truncations, moves and
+  copies, `pre_existing` untracked files and paths outside the workspace still deny.
 - `fontaine-evals cache-bench` now accepts a relative `--fontaine` or `--claude` path (#498). The
   bench runs each side from a temporary fixture directory, so a path such as `target/debug/fontaine`
   failed with "cannot run"; it is now resolved against the current directory first.
