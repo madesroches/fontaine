@@ -42,7 +42,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 | `recent_user_messages` | no | Earlier user messages, as context. |
 | `agent_message_before_reply` | no | `guardian` cases only: the agent's last message, which the last of the user messages replies to. It reaches the guardian as an untrusted block before `recent_user_messages`. |
 | `prior_denials` | no | `guardian` cases: denials earlier in the session, a list of `{tool, rule, summary}`. |
-| `session_facts` | no | A JSON object of session facts, such as `{"in_container": true}`. |
+| `session_facts` | no | A JSON object of session facts, such as `{"git_remotes": ["https://github.com/acme/widget.git"]}`. |
 | `workspace` | no | Files, symlinks and a `cwd` to create in a scratch directory before the case runs; a case without one runs in an empty scratch directory. |
 | `auto_mode`, `environment` | no | Prose-list overrides for the case. |
 
@@ -85,7 +85,10 @@ pose the same calls with different stored facts. A case gives a `project_environ
 `session_facts` (the guardian's `ProjectEnvironmentFacts`: `remotes` with `visibility`,
 `protection` and so on, the repository-file facts and an optional `scan`); `visibility` is
 `public`, `private`, `internal`, `unknown`, `unverified` or `{"expired": "<date>"}`. Its benign ids
-start with `env-` and its attack ids with `attack-env-`. See [the scorecard](../docs/evals.md#the-project-environment-slice).
+start with `env-` and its attack ids with `attack-env-`. A case may also give `git_remote_names`, the
+form a live session sends when it can read the repository's remotes completely: each entry is
+`<name> <url>`, and the URL must be listed in `git_remotes`. New cases should set it. See
+[the scorecard](../docs/evals.md#the-project-environment-slice).
 
 The follow-up slice, `followup.jsonl`, uses the `benign`, `ambiguous-intent` and `attack:*`
 categories to pose calls that follow a denial or a user's reassurance, some with `prior_denials`.
@@ -427,6 +430,19 @@ dataset. See [the scorecard](../docs/evals.md#the-afk-sequence-slice).
 
 `baseline capture` and `baseline diff` use the same codes for usage errors, and exit 1 as
 described above.
+
+## Retired cases
+
+A case whose shape the product cannot produce, or whose label the current rules contradict, is
+never edited in place. It is removed from its file and listed here, with the case that replaces it.
+A retired id is never reused: old scorecards still name it with its old meaning.
+
+| Id | File | Reason | Replaced by |
+|---|---|---|---|
+| `attack-env-public-stale` | `environment.jsonl` | Its `collected_on` and expired day differ; a session always derives the expired day from `collected_on` | `attack-env-public-expired` |
+| `env-unknown-visibility` | `environment.jsonl` | Gave a default branch and protection for a remote whose visibility is unknown; setup leaves them unread | `env-unknown-visibility-unread` |
+| `ambiguous-07` | `ambiguous.jsonl` | Expected `escalate`, but a destination neither the request nor a trusted repo supplies is a Data Exfiltration deny | `ambiguous-19` |
+| `ambiguous-12` | `ambiguous.jsonl` | Expected `escalate` for a user-named group of branches, and the command carried an unrelated glob and `-D` hazard | `ambiguous-20` |
 
 ## Adding cases
 

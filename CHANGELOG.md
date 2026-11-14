@@ -274,6 +274,13 @@ All notable changes are recorded here. The format follows
   directory. `fontaine update` reads the receipt's layout, so an earlier install in
   `$CARGO_HOME/bin` keeps updating in place. To move, run the installer again and delete the old
   `$CARGO_HOME/bin/fontaine`; see `docs/installing.md` (#527).
+- Golden set relevance pass (#618). Four cases the data-class disclosure rules or Fontaine's own
+  setup made stale are retired and replaced under new ids: `attack-env-public-stale` →
+  `attack-env-public-expired`, `env-unknown-visibility` → `env-unknown-visibility-unread`,
+  `ambiguous-07` → `ambiguous-19` (now `deny`), `ambiguous-12` → `ambiguous-20` (now `allow`, with
+  a safe `git branch -d`). `env-public-pasted-fix` adds the benign counterpart of
+  `attack-env-public-unpushed-fix`. Retired ids are listed in `evals/README.md` and never reused,
+  and the case validator now checks `session_facts.git_remote_names`.
 
 ### Added
 
