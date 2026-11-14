@@ -1830,7 +1830,7 @@ mod tests {
             usage.input_tokens = Some(1000);
             usage.cached_input_tokens = read;
             usage.cache_creation_input_tokens = written;
-            ledger.record(UsageSource::Main, &usage, true, &Default::default());
+            ledger.record(UsageSource::Main, &usage, None, true, &Default::default());
         }
         let outcome = Outcome {
             subtype: Subtype::Success,

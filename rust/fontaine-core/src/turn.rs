@@ -23,7 +23,7 @@ use crate::audit::DecisionRecord;
 use crate::gate::{DecisionFeed, Published, SessionState};
 use crate::ledger::{AGENT_REPLY_CHARS, Record};
 use crate::preview::DiffPreview;
-use crate::usage_ledger::{Served, UsageSource};
+use crate::usage_ledger::{CacheWrites, Served, UsageSource};
 use crate::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
 
 /// A retry's prompt. The failed attempt's committed messages are already saved by the
@@ -860,9 +860,27 @@ async fn drive_once(
                 } else {
                     UsageSource::Subagent
                 };
-                params
-                    .state
-                    .record_usage(source, params.agent_id, &usage, true, &params.served);
+                let writes = CacheWrites::from_reply(&call.raw);
+                if let Some(writes) = writes {
+                    tracing::info!(
+                        target: "fontaine::telemetry",
+                        model = params.model.as_str(),
+                        provider = params.provider.as_str(),
+                        query_source = if params.agent_id == ROOT_AGENT { "main" } else { "subagent" },
+                        agent.id = params.agent_id,
+                        cache_write_5m = writes.five_minute,
+                        cache_write_1h = writes.one_hour,
+                        "cache_write_split"
+                    );
+                }
+                params.state.record_usage_split(
+                    source,
+                    params.agent_id,
+                    &usage,
+                    writes,
+                    true,
+                    &params.served,
+                );
                 let flow = on_event(SessionEvent::Usage {
                     usage,
                     calls_tool: turn_calls_tool,

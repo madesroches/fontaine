@@ -5,7 +5,7 @@ mod common;
 
 use common::World;
 use common::pipeline::{Options, Rig};
-use common::runtime::build;
+use common::runtime::{build, build_with_document};
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
 use fontaine_core::permissions::Answer;
@@ -560,4 +560,69 @@ async fn every_sink_failure_emits_an_internal_error_without_the_error_text() {
             event.fields
         );
     }
+}
+
+fn cache_write_splits(capture: &TraceCapture) -> Vec<rig_core::test_utils::CapturedEvent> {
+    capture
+        .events()
+        .into_iter()
+        .filter(|e| e.message() == "cache_write_split")
+        .collect()
+}
+
+async fn answer_with_document(capture: &TraceCapture, document: Value) {
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let w = World::new();
+    let turn = vec![
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::new())),
+    ];
+    let built = build_with_document(&w, Manual, vec![turn], document);
+    let outcome = run_turn(
+        TurnParams {
+            served: Default::default(),
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+            generation_options: None,
+            max_tokens: None,
+        },
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn a_reply_with_a_cache_write_split_emits_a_cache_write_split_event() {
+    let capture = TraceCapture::default();
+    answer_with_document(
+        &capture,
+        json!({"usage": {"cache_creation": {
+            "ephemeral_5m_input_tokens": 2, "ephemeral_1h_input_tokens": 10}}}),
+    )
+    .await;
+    let events = cache_write_splits(&capture);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    assert_eq!(event.target, "fontaine::telemetry");
+    assert_eq!(event.fields["cache_write_5m"], 2);
+    assert_eq!(event.fields["cache_write_1h"], 10);
+    assert_eq!(event.fields["query_source"], "main");
+    assert_eq!(event.fields["model"], "scripted");
+    assert_eq!(event.fields["provider"], "mock");
+}
+
+#[tokio::test]
+async fn a_reply_without_a_split_emits_no_cache_write_split_event() {
+    let capture = TraceCapture::default();
+    answer_with_document(&capture, json!({"usage": {"input_tokens": 1}})).await;
+    assert!(cache_write_splits(&capture).is_empty());
 }

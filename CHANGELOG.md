@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Cache-write lifetime split (#631): when an Anthropic reply splits its cache writes into 5-minute
+  and 1-hour tokens, the usage ledger keeps both, `/cost` adds `write 5m` and `write 1h` columns
+  (only when a split was reported), and telemetry gains `cacheWrite5m` and `cacheWrite1h` token
+  metrics and a `cache_write_split` event. Accounts whose replies carry no split are unchanged.
 - Claude Agent SDK compatibility (#582): an unmodified TypeScript or Python Agent SDK application can
   use `fontaine` as its Claude Code executable. SDK mode is selected by the SDK's own command line
   (stream-json in and out, `--verbose`, no `-p`) and serves Claude-shaped messages and control
