@@ -57,6 +57,8 @@ Appending to `format` rather than replacing prompts keeps the structured format 
 wording; a replacement would drift from rig-memory on upgrades.
 
 ## Decisions
+- AFK: the issue's AFK clause (finish allowed work and stop rather than ask) is already carried by
+  the existing AFK denial-recovery text; the static `Doing the work` bullets do not repeat it.
 - AFK: new evidence items live as labelled sub-lists inside `Critical context` (most conservative:
   keeps the six existing headings unchanged).
 - No summary schema validation, no TODO/log reattachment, no blind trust of reported completion
@@ -68,12 +70,12 @@ No docs change: no page documents the base prompt or the compaction prompts. CHA
 ## Testing Strategy
 - System prompt: snapshot updated; needle test for the new requirements.
 - Unit test in `session.rs`: `compaction_policy()` prompts (`format`, `update`) contain the
-  evidence block and keep the default structured headings; after `set_autocompact_window` the
-  session's policy prompts equal `compaction_policy()`'s (pins the reset regression).
+  evidence block and keep the default structured headings. The reset regression is pinned by the
+  request-level tests below, which go through `set_autocompact_window`.
 - `ledger.rs` request-level tests with `MockCompletionModel` (`requests()`), both through
   `set_autocompact_window`: one initial-summary and one update-summary (history extended after a
   first compaction) test, on a history holding a truncated/spilled-style tool result with its cut
-  marker, a command with its outcome, an unread path, and a test followed by an edit (a small
+  marker (kept under rig's 2000-character snippet cut so the marker is not itself truncated), a command with its outcome, an unread path, and a test followed by an edit (a small
   helper adds tool-call/result messages). Assert single-line fragments, since `{:?}` escapes
   newlines: the evidence instruction and the cut marker.
 - No live-API tests.
