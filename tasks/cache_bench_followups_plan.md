@@ -59,6 +59,7 @@ existence requirement, so the existing "cannot run" error still names a missing 
 - Scope is cache-bench only. `baseline capture --claude` (`baseline.rs`) has the same relative-path
   weakness; it is left for a separate issue so this change stays small. The helper stays private to
   `cache_bench.rs`.
+- AFK: the live `message.id` dedupe check (Manual Verification 2) was not run because the real `claude` CLI call was denied by the guardian; the parser is unchanged and the dedupe stays confirmed only by the synthetic unit test. Still to do by hand; the PR should not claim to close that half of #498.
 
 ## Documentation
 `evals/README.md` flag table (above). `docs/claude-subscription.md` needs no change unless the
@@ -71,9 +72,10 @@ same components; a bare name is returned unchanged; an already absolute path (bu
 as `Path`, not string.
 
 Regression test for the bug itself: a new `cfg(unix)` case in
-`rust/fontaine-evals/tests/cache_bench.rs` creates the stub executables under
-`env!("CARGO_TARGET_TMPDIR")` and passes `--fontaine`/`--claude` as paths relative to the test
-process's cwd (cwd prefix stripped); it asserts exit 0 and the argv files. It fails if `run_bench`
+`rust/fontaine-evals/tests/cache_bench.rs` creates the stub executables with
+`tempfile::tempdir_in(current_dir())` (cargo's test cwd is the package root, outside the workspace
+target dir) and passes `--fontaine`/`--claude` as paths relative to the test process's cwd (cwd
+prefix stripped); it asserts exit 0 and the argv files. It fails if `run_bench`
 does not resolve before the `current_dir` switch. The existing cases pass absolute stubs and
 cannot catch this.
 
