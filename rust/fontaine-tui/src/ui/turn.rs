@@ -558,7 +558,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::EditQueued if queueing => self.edit_queued(runtime),
                         Action::Command { command, raw } => {
                             self.remember(&raw);
-                            self.run_immediate(runtime, &command);
+                            self.run_typed_immediate(runtime, &command);
                             if self.quitting() {
                                 return Err(TurnEnd::InputClosed);
                             }
@@ -805,13 +805,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         let mut first = Some(first_origin);
+        // A dispatcher's hand-back runs next and keeps who asked for it, so a remote `/plan x`
+        // is still a remote turn: stop refusal and audit apply, and it never reaches the draft.
+        let mut handed_back_from: Option<RemoteSender> = None;
         while let Some(submission) = pending.pop_front() {
             let (submission, remote) = match submission {
                 Submission::Remote(line) => {
                     let (from, submission) = line.into_submission();
                     (submission, Some(from))
                 }
-                other => (other, None),
+                other => (other, handed_back_from.take()),
             };
             self.current_remote = remote;
             // Only an idle-prompt submission was typed after the previous answer was on screen;
@@ -921,6 +924,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             return Break(());
                         }
                         Continue(SkillRun::Prompt(prompt)) => {
+                            handed_back_from = self.current_remote.clone();
                             front_push(pending, Submission::Expanded { text: raw, prompt });
                         }
                         Continue(SkillRun::Spent) => {}
@@ -931,6 +935,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     let Some(command) = parse_command(&raw) else {
                         continue;
                     };
+                    let clears = matches!(&command, Command::Clear(name) if name.is_empty());
                     match self
                         .dispatch_command(runtime, launch_dir, command, &raw, has_typed_pending)
                         .await
@@ -939,14 +944,33 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             runtime.steering.set_delivery_hold(false);
                             return Break(());
                         }
-                        Continue(CommandOutcome::Done) => {}
+                        Continue(CommandOutcome::Done) => {
+                            if clears {
+                                // They were meant for the conversation that is gone.
+                                let (remote, typed): (Vec<_>, Vec<_>) =
+                                    pending.drain(..).partition(Submission::is_remote);
+                                pending.extend(typed);
+                                let dropped: Vec<Retracted> = remote
+                                    .into_iter()
+                                    .filter_map(Submission::into_remote)
+                                    .collect();
+                                self.drop_remote_entries(
+                                    runtime,
+                                    dropped,
+                                    "the conversation was cleared",
+                                );
+                            }
+                        }
                         Continue(CommandOutcome::AwaitingModal) => {
                             if self.serve_modal(runtime, pending).await.is_break() {
                                 runtime.steering.set_delivery_hold(false);
                                 return Break(());
                             }
                         }
-                        Continue(CommandOutcome::Turn(sub)) => front_push(pending, sub),
+                        Continue(CommandOutcome::Turn(sub)) => {
+                            handed_back_from = self.current_remote.clone();
+                            front_push(pending, sub);
+                        }
                     }
                     continue;
                 }
@@ -1446,7 +1470,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::EditQueued => self.edit_queued(runtime),
                         Action::Command { command, raw } => {
                             self.remember(&raw);
-                            self.run_immediate(runtime, &command);
+                            self.run_typed_immediate(runtime, &command);
                             if self.quitting() {
                                 break TurnEnd::InputClosed;
                             }

@@ -59,7 +59,7 @@ impl Reason {
             Reason::BadTicket => "the ticket was not accepted (wrong or revoked)",
             Reason::Expired => "the ticket has expired",
             Reason::Reused => "the ticket was already used; ask for a new one",
-            Reason::Locked => "too many bad attempts; try again in a minute",
+            Reason::Locked => "too many bad attempts; try again in 30 seconds",
             Reason::TooLarge => "the message is too large",
             Reason::InboxFull => "the session's remote inbox is full; try again shortly",
             Reason::Closed => "the session closed its remote inbox",

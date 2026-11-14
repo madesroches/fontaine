@@ -296,3 +296,39 @@ async fn a_second_enable_while_on_is_a_no_op_that_shows_status() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clear_queued_ahead_of_a_remote_line_drops_the_line_with_an_audit_record() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 2"})),
+        text_turn("done"),
+    ])
+    .with_config(DIRECT_ONLY);
+    w.run(|ui| async move {
+        let ticket = enable(&ui).await;
+        ui.send("start");
+        ui.wait_for("• shell sleep 2").await;
+        ui.send("/clear");
+        send(&ticket, "after the clear", options()).await.unwrap();
+        ui.wait_for("cleared the conversation").await;
+        idle(&ui).await;
+    })
+    .await;
+    assert!(
+        w.requests().iter().all(|r| !r.contains("after the clear")),
+        "{:?}",
+        w.requests()
+    );
+    let dropped = w
+        .audit()
+        .into_iter()
+        .find(|r| r["rule"] == "message_dropped")
+        .expect("the dropped line is audited");
+    assert!(
+        dropped["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("the conversation was cleared"),
+        "{dropped}"
+    );
+}

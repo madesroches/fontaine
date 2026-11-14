@@ -1531,6 +1531,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.move_notices_to_shown(mark);
     }
 
+    /// An immediate command the person typed while a remote-started turn runs: it must not
+    /// inherit that turn's sender.
+    pub(crate) fn run_typed_immediate(&mut self, runtime: &AgentRuntime, command: &Command) {
+        let remote = self.current_remote.take();
+        self.run_immediate(runtime, command);
+        self.current_remote = remote;
+    }
+
     fn run_immediate_inner(&mut self, runtime: &AgentRuntime, command: &Command) {
         match command {
             Command::Help => {

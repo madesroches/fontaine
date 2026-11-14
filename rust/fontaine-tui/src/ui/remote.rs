@@ -224,6 +224,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Keeps what the status bar, the command classifier and the dialog hold know about the
     /// inbox in step with the session. Cheap and idempotent: every draw calls it.
     pub(crate) fn sync_remote(&mut self, runtime: &AgentRuntime) {
+        // Level-triggered: a modal loop can swallow the one wake-up the start sends.
+        self.finish_remote_start(runtime);
         self.app.remote_indicator = match &self.remote {
             RemoteState::Off => None,
             RemoteState::Starting { .. } => Some("inbox: starting"),
@@ -360,7 +362,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.dialog_guard = None;
         match std::mem::replace(&mut self.remote, RemoteState::Off) {
             RemoteState::Off => return,
-            RemoteState::Starting { host, .. } => host.close(),
+            RemoteState::Starting { host, .. } => {
+                host.close();
+                // A start that finished after the last look would otherwise leak its endpoint.
+                if let Some(Ok(server)) = host.take_started() {
+                    tokio::spawn(server.shutdown());
+                }
+            }
             RemoteState::Running { host, server } => {
                 host.close();
                 tokio::spawn(server.shutdown());
@@ -379,7 +387,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.dialog_guard = None;
         match std::mem::replace(&mut self.remote, RemoteState::Off) {
             RemoteState::Off => {}
-            RemoteState::Starting { host, .. } => host.close(),
+            RemoteState::Starting { host, .. } => {
+                host.close();
+                if let Some(Ok(server)) = host.take_started() {
+                    server.shutdown().await;
+                }
+            }
             RemoteState::Running { host, server } => {
                 host.close();
                 server.shutdown().await;
