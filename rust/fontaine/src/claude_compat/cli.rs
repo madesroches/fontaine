@@ -1080,7 +1080,8 @@ mod tests {
 
     #[test]
     fn the_matrix_renders_to_the_docs_table() {
-        let docs = include_str!("../../../../docs/agent-sdk.md");
+        // A Windows checkout converts the docs to CRLF.
+        let docs = include_str!("../../../../docs/agent-sdk.md").replace("\r\n", "\n");
         let start = docs
             .find("<!-- matrix:start -->")
             .expect("the docs mark where the matrix starts");
