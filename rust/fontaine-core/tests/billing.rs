@@ -465,5 +465,7 @@ async fn a_reply_without_a_split_leaves_the_split_buckets_zero() {
     assert_eq!(bucket.cache_write_5m_tokens, 0);
     assert_eq!(bucket.cache_write_1h_tokens, 0);
     let bucket = ledger_after_a_turn(None).await;
+    assert_eq!(bucket.cache_creation_input_tokens, 12);
+    assert_eq!(bucket.cache_write_5m_tokens, 0);
     assert_eq!(bucket.cache_write_1h_tokens, 0);
 }

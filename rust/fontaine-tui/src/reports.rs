@@ -1842,9 +1842,13 @@ mod tests {
         assert!(text.contains("write 1h"), "{text}");
         assert!(text.contains("3.0k"), "{text}");
         let guardian = text.lines().find(|l| l.contains("guardian")).unwrap();
-        assert!(guardian.contains("500"), "{text}");
-        assert!(guardian.contains("500  "), "{text}");
-        assert!(guardian.contains(" 0  "), "{text}");
+        let header = text.lines().find(|l| l.contains("write 5m")).unwrap();
+        let headers: Vec<&str> = header.split("  ").filter(|h| !h.is_empty()).collect();
+        let col = |label: &str| headers.iter().position(|h| h.trim() == label).unwrap();
+        let cells: Vec<&str> = guardian.split_whitespace().collect();
+        assert_eq!(cells[col("cache write")], "500", "{text}");
+        assert_eq!(cells[col("write 5m")], "0", "{text}");
+        assert_eq!(cells[col("write 1h")], "0", "{text}");
     }
 
     #[test]
