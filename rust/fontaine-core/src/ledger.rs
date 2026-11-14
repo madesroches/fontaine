@@ -322,7 +322,8 @@ pub enum Record {
     Goal {
         event: GoalEvent,
         evaluations: u32,
-        /// Why a goal paused when the pause did not come from the goal's own rules.
+        /// Why a goal paused when its own caps did not: AFK mode, background work, a check-in at
+        /// the turn cap, or the evaluator finding it waits for the user.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },

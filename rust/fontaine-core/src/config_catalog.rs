@@ -586,6 +586,10 @@ pub const KEYS: &[KeyRow] = &[
     row!("goal.max_duration_secs", Scalar, |c, _| opt(c
         .goal
         .max_duration_secs)),
+    row!("goal.checkin_minutes", Scalar, |c, _| c
+        .goal
+        .checkin_minutes
+        .to_string()),
     row!("retry.max_retries", Scalar, |c, _| c
         .retry
         .max_retries

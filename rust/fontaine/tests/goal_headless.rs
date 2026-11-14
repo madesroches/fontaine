@@ -358,3 +358,39 @@ async fn only_goal_followed_by_a_space_or_the_end_is_the_command() {
     assert_eq!(out.stdout.trim(), "an answer");
     assert_eq!(endpoint.requests().await.len(), 1);
 }
+
+fn judged_waiting(reason: &str) -> Turn {
+    Turn::tool(
+        "g1",
+        "submit",
+        json!({"verdict": "not_met", "reason": reason, "waiting_on_user": true}),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_evaluator_that_finds_the_goal_waiting_on_the_user_pauses_it_without_a_turn() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::text("the push was denied"),
+            judged_waiting("the force push was denied and needs your approval"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .headless(&["--output-format", "text", "/goal the branch is pushed"])
+        .await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("fontaine: goal paused: it is waiting for you (the force push was denied"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(
+        endpoint.requests().await.len(),
+        2,
+        "the set turn and the evaluator, and no goal turn after"
+    );
+}

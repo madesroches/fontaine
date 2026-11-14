@@ -1247,7 +1247,11 @@ when:
 - the stretch has run longer than `[goal] max_duration_secs`, when that is set. Time spent waiting
   for a usage window does not count. The clock is checked after each evaluation and does not
   interrupt a running turn, so a stretch can overrun it by one turn plus one evaluation;
-- 8 verdicts in a row came after turns that called no tool;
+- 8 verdicts in a row came after turns that made no call other than reads (`read`, `grep`,
+  `job_output` and the other read-only built-in tools) and monitor starts;
+- the evaluator finds the next step needs you, such as an approval, an answer or a permission the
+  session was denied: `Goal paused: it is waiting for you (<reason>). Send a message to continue.`
+  The pause comes at once, without another turn;
 - a turn fails or is interrupted with Esc, or Esc interrupts the evaluation; or
 - the evaluator gives no verdict (an error, a timeout, an unreadable answer, or a guardian model
   that is unavailable).
@@ -1256,6 +1260,16 @@ The transcript then says `Goal paused: <why>. Send a message to continue.` The n
 send starts a fresh stretch and the goal is evaluated again after its turn. Text you type while a
 goal turn or an evaluation runs is queued as for any turn, and is sent as your next turn ahead of
 the goal's.
+
+**Background work.** While a subagent, a background shell or a monitor is running, the goal is not
+evaluated: it waits, and is evaluated after the turn that reads the work's report. After 30
+minutes of waiting the model is asked to check on the work (`goal: checking on background work`): a
+turn that lists what still runs and tells it to read the output, keep waiting if the work is
+progressing, and fix or stop anything stuck. Later check-ins come after 1 hour and then every 2
+hours. A check-in counts as a goal turn toward `[goal] max_turns`, and one that falls due at the cap
+pauses the goal. Check-ins that start while the session sits idle stop after 3 until you send a
+message; the third one says so. `[goal] checkin_minutes` sets the first interval, and `0` turns
+check-ins off while the goal still waits for the work.
 
 **AFK.** In [AFK mode](afk.md) a goal still pauses itself the usual ways, and also when the
 session is *blocked* by repeated denials (`Goal paused: the denial breaker tripped while the user
@@ -1266,8 +1280,7 @@ starts.
 
 A goal is saved with the session (`goal.json`) and comes back on `--continue`, `--resume` and
 `--fork-session` with its counters reset: the clock, the evaluations and the spend baseline start
-again. While subagents run, the goal waits and is evaluated after the turn that reads
-their reports. Headless runs accept `-p "/goal <condition>"`; see
+again. Headless runs accept `-p "/goal <condition>"`; see
 [Headless runs](headless.md#goals). The limits are under [Configuration](configuration.md#goal).
 
 ## The agent list and the agent view

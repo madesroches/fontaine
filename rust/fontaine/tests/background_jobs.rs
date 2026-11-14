@@ -1,5 +1,6 @@
 //! Background shell jobs through `fontaine -p`: a job that ended before the answer gets a
-//! notification turn, and a run that ends with a job still running terminates it.
+//! notification turn, a run that ends with a job still running terminates it, and a goal run waits
+//! for the jobs it started.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -142,4 +143,104 @@ async fn a_run_that_ends_with_a_job_still_running_terminates_it() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(endpoint.requests().await.len(), 2);
+}
+
+fn verdict(verdict: &str, reason: &str) -> Turn {
+    Turn::tool(
+        "g1",
+        "submit",
+        json!({"verdict": verdict, "reason": reason}),
+    )
+}
+
+fn is_evaluation(request: &Value) -> bool {
+    request.to_string().contains("Goal condition:")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_run_waits_for_a_background_job_to_end_before_evaluating() {
+    // The job outlives the answer: it sleeps well past the shell result and the model's reply,
+    // so the evaluation can only come after the end note's turn.
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new("Goal condition:", vec![verdict("met", "the job reported")]),
+            Route::new(
+                "the job reported",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "shell",
+                        json!({"command": "sleep 2; echo job-says-hi", "run_in_background": true}),
+                    ),
+                    Turn::text("started it"),
+                    Turn::text("the job said hi"),
+                ],
+            ),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint);
+    let out = run(&s, "/goal the job reported").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let result = of_type(&lines, "result").last().copied().unwrap().clone();
+    assert_eq!(result["goal"]["status"], "met", "{result}");
+
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 4, "{requests:#?}");
+    assert!(
+        is_evaluation(&requests[3]),
+        "the evaluation came last, after the note's turn"
+    );
+    assert!(
+        requests[2].to_string().contains("ended (exit code 0)"),
+        "{}",
+        requests[2]
+    );
+    assert!(
+        requests[..3].iter().all(|r| !is_evaluation(r)),
+        "nothing was evaluated while the job ran"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_check_ins_off_a_goal_run_does_not_wait_and_pauses_on_the_background_wait() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new("Goal condition:", vec![verdict("met", "unreachable")]),
+            Route::new(
+                "the job reported",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "shell",
+                        json!({"command": "sleep 120", "run_in_background": true}),
+                    ),
+                    Turn::text("started it"),
+                ],
+            ),
+        ],
+    )
+    .await;
+    let s = Sandbox::new();
+    s.point_at(&endpoint.url());
+    let base = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    s.user_config(&format!("{base}\n[goal]\ncheckin_minutes = 0\n"));
+    let out = run(&s, "/goal the job reported").await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    let lines = out.lines();
+    let result = of_type(&lines, "result").last().copied().unwrap().clone();
+    assert_eq!(result["goal"]["status"], "paused", "{result}");
+    assert!(
+        result["goal"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("background work is still running"),
+        "{result}"
+    );
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 2, "no evaluation of an unfinished wait");
+    assert!(requests.iter().all(|r| !is_evaluation(r)));
 }

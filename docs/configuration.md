@@ -1165,9 +1165,11 @@ auto = false
 | `max_cost_usd` | The stretch's spend (the main model, compaction, the guardian, the goal evaluator and subagents) that pauses the goal, zero or more. Inactive for a model with no known price. | unset |
 | `max_tokens` | The stretch's tokens (the same sources as `max_cost_usd`) that pause the goal, 1 or more. Counts tokens whether or not the model is priced. | unset |
 | `max_duration_secs` | Wall-clock seconds of one stretch that pause the goal, 1 to 2592000 (30 days); time spent waiting for a usage window does not count. Checked after a turn is evaluated, so a stretch can overrun it by one turn and one evaluation. | unset |
+| `checkin_minutes` | Minutes that a running subagent, background shell or monitor keeps the goal waiting before the model is asked to check on it, 0 to 1440. Later check-ins come after twice that, then every four times that. `0` turns check-ins off; the goal still waits for the work. | `30` |
 
 A goal turn runs with nobody typing, so only the user file and `--settings` can set these. The
-no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
+no-progress cap (8 verdicts in a row after turns that made no call other than reads and monitor
+starts) is fixed.
 
 ```toml
 [goal]
@@ -1175,6 +1177,7 @@ max_turns = 50
 max_cost_usd = 5.0
 max_tokens = 2000000
 max_duration_secs = 7200
+checkin_minutes = 30
 ```
 
 ### `[retry]`

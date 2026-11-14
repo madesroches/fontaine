@@ -325,6 +325,14 @@ All notable changes are recorded here. The format follows
 - A headless `--input-format stream-json --output-format stream-json --afk` run now prints the
   assessed evasion report: once, after the last `result`, as a new `afk_report` event. Before, only
   the ledger held it (#428).
+- A `/goal` blocked on you no longer busy-loops (#648): a guardian-denied step used to leave nine
+  *not met* verdicts starting a turn every few seconds. A running background shell or monitor now
+  defers the evaluation as a running subagent does, with a check-in on the work after 30 minutes
+  (then 1 hour, then every 2 hours, at most 3 while idle; new `[goal] checkin_minutes`, 0 turns them
+  off), and a headless goal run waits for its jobs and pauses (exit 1) after the third check-in.
+  Reads, `job_output` polls and monitor starts no longer count as progress for the no-progress cap.
+  The evaluator can say a *not met* goal is waiting for you, which pauses it at once. These deviate
+  from Claude Code, which counts any tool use as progress and has no such verdict.
 
 ### Changed
 
