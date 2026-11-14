@@ -149,9 +149,11 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
 
 #[test]
 fn executables_given_as_relative_paths_still_run_from_the_fixture_directories() {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("relative-paths");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    // CARGO_TARGET_TMPDIR sits in the workspace target dir, outside the package cwd
+    // that cargo gives integration tests, so the stubs live under the cwd instead.
+    let cwd = std::env::current_dir().unwrap();
+    let tmp = tempfile::tempdir_in(&cwd).unwrap();
+    let dir = tmp.path().to_path_buf();
     let fontaine_out = format!(
         "{}\n{}\n",
         json!({"type": "init", "model": "acct/sonnet"}),
@@ -169,11 +171,10 @@ fn executables_given_as_relative_paths_still_run_from_the_fixture_directories() 
     );
     let fontaine = stub(&dir, "fontaine", &fontaine_out);
     let claude = stub(&dir, "claude", &claude_out);
-    let cwd = std::env::current_dir().unwrap();
     let relative = |absolute: &str| {
         Path::new(absolute)
             .strip_prefix(&cwd)
-            .expect("the target tmpdir is under the test's cwd")
+            .expect("the stub directory is created under the test's cwd")
             .display()
             .to_string()
     };
