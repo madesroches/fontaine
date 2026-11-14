@@ -511,7 +511,8 @@ If the session has no scratch directory, or the file cannot be written, the resu
 and last halves of the limit with a `[… N chars cut …]` marker between them; Fontaine warns once
 when a save fails. A result a server flags as an error (`isError`) longer than 11,000 characters keeps its
 first and last 5,000 characters with the same marker. A result that carries an image is passed
-through unchanged. `MAX_MCP_OUTPUT_TOKENS` is described under
+through unchanged. A result under both limits but over 10,000 tokens comes through in full, with a
+warning that names the tool and the size, as Claude Code warns. `MAX_MCP_OUTPUT_TOKENS` is described under
 [environment variables](configuration.md#command-line-and-environment).
 
 ## Telemetry

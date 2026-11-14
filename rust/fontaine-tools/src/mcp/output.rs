@@ -18,6 +18,9 @@ pub const DEFAULT_CHAR_LIMIT: usize = 50_000;
 pub const MAX_CHAR_LIMIT: usize = 500_000;
 /// Default token limit of a result, as Claude Code's `MAX_MCP_OUTPUT_TOKENS`.
 pub const DEFAULT_MAX_TOKENS: usize = 25_000;
+/// A result that passes the limits but is larger than this many tokens is warned about, as Claude
+/// Code does.
+pub const WARN_TOKENS: usize = 10_000;
 /// Characters kept at each end of a long error result.
 pub const ERROR_KEEP: usize = 5_000;
 pub const ERROR_THRESHOLD: usize = 11_000;
@@ -123,8 +126,9 @@ fn saved_message(chars: usize, tokens: usize, path: &Path) -> String {
     )
 }
 
-/// What `outcome` becomes for the model. `warn` is called at most once per `limits`, when a save
-/// fails and the result falls back to a cut.
+/// What `outcome` becomes for the model. `warn` is called when a result under both limits is
+/// still over `WARN_TOKENS`, and at most once per `limits` when a save fails and the result falls
+/// back to a cut.
 pub(crate) fn cap(
     outcome: ToolOutcome,
     tool: &str,
@@ -141,6 +145,11 @@ pub(crate) fn cap(
             let chars = text.chars().count();
             let tokens = estimate_tokens(&text);
             if chars <= char_limit && tokens <= limits.max_tokens {
+                if tokens > WARN_TOKENS {
+                    warn(&format!(
+                        "{tool} returned a large result (~{tokens} tokens); it is in the context in full"
+                    ));
+                }
                 return Ok(output);
             }
             if let Some(spill) = &limits.spill {
@@ -234,6 +243,39 @@ mod tests {
         );
         assert_eq!(text_of(out), "x".repeat(1_000));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_result_over_the_warning_size_but_under_the_limits_warns() {
+        let warnings = std::cell::RefCell::new(Vec::new());
+        let warn = |m: &str| warnings.borrow_mut().push(m.to_string());
+        let text = "x".repeat(WARN_TOKENS * 4 + 1);
+        let out = cap(
+            Ok(ToolOutput::text(text.clone())),
+            "mcp__srv__big",
+            DEFAULT_CHAR_LIMIT,
+            &limits(None),
+            &warn,
+        );
+        assert_eq!(text_of(out), text);
+        let warnings = warnings.borrow();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("mcp__srv__big") && warnings[0].contains("~10001 tokens"));
+    }
+
+    #[test]
+    fn a_result_at_the_warning_size_does_not_warn() {
+        let warnings = Cell::new(0);
+        let warn = |_: &str| warnings.set(warnings.get() + 1);
+        let out = cap(
+            Ok(ToolOutput::text("x".repeat(WARN_TOKENS * 4))),
+            "t",
+            DEFAULT_CHAR_LIMIT,
+            &limits(None),
+            &warn,
+        );
+        assert!(out.is_ok());
+        assert_eq!(warnings.get(), 0);
     }
 
     #[test]
