@@ -471,6 +471,15 @@ fn build_with_origin(
         append_system_prompt: None,
         json_schema: None,
         headless,
+        human_channel: if headless {
+            fontaine_core::permissions::HumanChannel::Absent
+        } else {
+            fontaine_core::permissions::HumanChannel::Present
+        },
+        callback_hooks: Vec::new(),
+        session_agents: Vec::new(),
+        host_mcp: None,
+        root_tools: None,
         afk: false,
         scheduling,
         approver,

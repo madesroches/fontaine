@@ -30,6 +30,8 @@ pub enum AfkSource {
     Cycle,
     /// `/plan` out of AFK.
     Plan,
+    /// A Claude Agent SDK host's mode change; it can leave AFK, never enter it.
+    Sdk,
 }
 
 /// Whether an allowed call ran to the end.

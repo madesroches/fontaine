@@ -425,7 +425,8 @@ audit log records `screen_risk`:
   allowed to take this action?"; `question = "outside_request"` asks whether the action is outside
   what the request asked for. With `stop_threshold` set, a call whose risk reaches it is escalated
   to you, as a guardian escalation is, with `tier = screen` and `rule = screen.stop` in the audit
-  record. In a headless run an escalation is a denial.
+  record. In a headless run an escalation is a denial, except in
+  [Agent SDK mode](agent-sdk.md) with `canUseTool`, where it reaches the callback.
 - **`allow`.** The hardened permission read of [the allow path](#the-allow-path).
 - **`steering`.** The steering detector of [the allow path](#the-allow-path).
 

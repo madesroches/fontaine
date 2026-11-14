@@ -1636,6 +1636,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "dirs",
+ "fontaine-agents",
  "fontaine-core",
  "fontaine-guardian",
  "fontaine-testkit",

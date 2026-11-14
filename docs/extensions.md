@@ -53,6 +53,10 @@ The body is the subagent's instructions.
 
 ## Tool names
 
+The same names, with a Claude Code name first, are what [Agent SDK mode](agent-sdk.md) shows on
+its wire and accepts in `--allowedTools`, `--disallowedTools` and `--tools`. Programmatic agent
+types from an SDK host are a session-only origin: they are not files, and a plugin reload keeps them.
+
 `tools`, `disallowedTools` and `allowed-tools` take Claude Code's tool names, renamed on load:
 
 | Claude Code | Fontaine |

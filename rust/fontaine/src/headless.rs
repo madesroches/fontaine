@@ -7,6 +7,7 @@ mod goal;
 use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use fontaine_core::RuntimeError;
 use fontaine_core::afk_report::{AfkOutcome, AfkReport, AfkSource};
@@ -54,6 +55,123 @@ pub struct Options {
 /// The exit code of a run that ended because an account's usage window stayed spent.
 pub const EXIT_USAGE_LIMIT: u8 = 3;
 
+/// What the usage-pause observer is: shared with the run's tasks, so it cannot borrow the sink.
+pub(crate) type PauseObserver = Arc<dyn Fn(&PauseEvent) + Send + Sync>;
+
+/// Where the run's events go. `HeadlessV1Sink` writes the `headless-v1` schema; the Claude Agent
+/// SDK surface writes its own messages. Every emission site of a run goes through one of these.
+pub(crate) trait EventSink: Send {
+    /// The session has started and no message has been read yet.
+    fn session_start(&mut self, runtime: &AgentRuntime, data_dir: &Path);
+    /// A message was read and its turn is about to run.
+    fn turn_start(&mut self, _runtime: &AgentRuntime, _data_dir: &Path) {}
+    fn event(&mut self, session_id: &str, event: &SessionEvent);
+    /// One evaluation of a `/goal`.
+    fn goal_evaluation(
+        &mut self,
+        _session_id: &str,
+        _judgment: Option<fontaine_core::goal::Judgment>,
+        _reason: &str,
+        _evaluations: u32,
+    ) {
+    }
+    /// Whether `result` wants the usage windows of the accounts, which cost a request each.
+    fn wants_account_usage(&self) -> bool;
+    fn result(&mut self, result: &ResultInfo<'_>);
+    /// What the usage-pause observer calls; it is shared with the run's tasks, so it cannot be a
+    /// borrow of the sink.
+    fn usage_observer(&self, session_id: &str) -> Option<PauseObserver>;
+    /// The input could not be read. The run ends after this.
+    fn input_failed(&mut self, _session_id: &str, _message: &str) {}
+}
+
+/// What a turn's result is built from.
+pub(crate) struct ResultInfo<'a> {
+    pub runtime: &'a AgentRuntime,
+    pub session_id: &'a str,
+    pub outcome: &'a Outcome,
+    pub usage: &'a Usage,
+    goal: Option<&'a goal::GoalReport>,
+    pub account_usage: &'a [Value],
+    afk: Option<&'a AfkReport>,
+    pub usage_limit: Option<&'a Value>,
+    /// The host interrupted the turn.
+    pub interrupted: bool,
+}
+
+/// Where the run's user messages come from.
+pub(crate) trait InputSource {
+    /// Whether no further message can follow. A stream of lines cannot say before it ends.
+    fn is_exhausted(&self) -> bool;
+    /// The next user message, `None` at the end of input. An error is a usage error. Between
+    /// messages the runtime is idle, so a source may act on it here.
+    fn next(
+        &mut self,
+        runtime: &mut AgentRuntime,
+    ) -> impl std::future::Future<Output = Result<Option<String>, String>>;
+    /// A message is already waiting, so notification turns hold back.
+    fn pending(&self) -> bool {
+        false
+    }
+    /// The exit code of a run whose input could not be read.
+    fn failure_code(&self) -> u8 {
+        2
+    }
+}
+
+/// Stops the turn that is running. Set by the surface that owns the input, cleared when the
+/// next message starts.
+#[derive(Clone, Default)]
+pub(crate) struct Cancel {
+    inner: Arc<CancelInner>,
+}
+
+#[derive(Default)]
+struct CancelInner {
+    set: std::sync::atomic::AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+impl Cancel {
+    pub(crate) fn trigger(&self) {
+        self.inner
+            .set
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.wake.notify_waiters();
+    }
+
+    pub(crate) fn reset(&self) {
+        self.inner
+            .set
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_set(&self) -> bool {
+        self.inner.set.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let woken = self.inner.wake.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if self.is_set() {
+                return;
+            }
+            woken.await;
+        }
+    }
+}
+
+/// What the loop that runs one message needs besides the runtime.
+pub(crate) struct Ctx<'a> {
+    pub options: &'a Options,
+    pub sink: &'a mut dyn EventSink,
+    pub cancel: &'a Cancel,
+    /// Whether a message is already waiting, so no notification turn starts.
+    pub pending: &'a dyn Fn() -> bool,
+}
+
 fn emit_line(value: &Value) {
     let mut out = std::io::stdout().lock();
     // A closed pipe is the consumer's decision; the run's exit code is unaffected.
@@ -70,19 +188,130 @@ fn event(kind: &str, session_id: &str, mut fields: Value) -> Value {
     fields
 }
 
+/// Writes the `headless-v1` schema, byte for byte.
+pub(crate) struct HeadlessV1Sink {
+    stream: bool,
+    include_partial_messages: bool,
+}
+
+impl HeadlessV1Sink {
+    pub(crate) fn new(options: &Options) -> HeadlessV1Sink {
+        HeadlessV1Sink {
+            stream: options.output_format == OutputFormat::StreamJson,
+            include_partial_messages: options.include_partial_messages,
+        }
+    }
+
+    fn emit(&self, value: Value) {
+        if self.stream {
+            emit_line(&value);
+        }
+    }
+}
+
+impl EventSink for HeadlessV1Sink {
+    fn session_start(&mut self, runtime: &AgentRuntime, data_dir: &Path) {
+        self.emit(init_event(runtime, data_dir));
+    }
+
+    fn event(&mut self, sid: &str, event_in: &SessionEvent) {
+        match event_in {
+            SessionEvent::AssistantDelta(text) => {
+                if self.include_partial_messages {
+                    self.emit(event("assistant_delta", sid, json!({ "text": text })));
+                }
+            }
+            SessionEvent::Assistant(text) => {
+                self.emit(event("assistant", sid, json!({ "text": text })));
+            }
+            // Not in the closed stream-json schema; text output prints no reasoning either.
+            SessionEvent::ReasoningDelta(_) | SessionEvent::Reasoning(_) => {}
+            SessionEvent::ToolCall { id, tool, args } => self.emit(event(
+                "tool_call",
+                sid,
+                json!({ "tool_use_id": id, "tool": tool, "args": args }),
+            )),
+            SessionEvent::Decision(record) => self.emit(gate_decision_event(sid, record)),
+            SessionEvent::ToolResult {
+                id,
+                tool,
+                success,
+                text,
+            } => self.emit(event(
+                "tool_result",
+                sid,
+                json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
+            )),
+            SessionEvent::ToolPreview { .. } => {}
+            SessionEvent::Usage { usage, calls_tool } => self.emit(event(
+                "model_call",
+                sid,
+                json!({
+                    "input_tokens": usage.input_tokens.unwrap_or(0),
+                    "output_tokens": usage.output_tokens.unwrap_or(0),
+                    "cache_read_input_tokens": usage.cached_input_tokens.unwrap_or(0),
+                    "cache_creation_input_tokens": usage.cache_creation_input_tokens.unwrap_or(0),
+                    "calls_tool": calls_tool,
+                }),
+            )),
+        }
+    }
+
+    fn goal_evaluation(
+        &mut self,
+        session_id: &str,
+        judgment: Option<fontaine_core::goal::Judgment>,
+        reason: &str,
+        evaluations: u32,
+    ) {
+        if self.stream {
+            emit_line(&goal::evaluation_event(
+                session_id,
+                judgment,
+                reason,
+                evaluations,
+            ));
+        }
+    }
+
+    fn wants_account_usage(&self) -> bool {
+        self.stream
+    }
+
+    fn result(&mut self, info: &ResultInfo<'_>) {
+        if self.stream {
+            emit_line(&result_event(
+                info.session_id,
+                info.outcome,
+                info.usage,
+                info.goal,
+                info.account_usage,
+                info.afk,
+                info.usage_limit,
+            ));
+        }
+    }
+
+    fn usage_observer(&self, session_id: &str) -> Option<PauseObserver> {
+        if !self.stream {
+            return None;
+        }
+        let id = session_id.to_string();
+        Some(Arc::new(move |pause| emit_line(&usage_event(&id, pause))))
+    }
+}
+
 enum Input {
     Single(Option<String>),
     Lines(tokio::io::Lines<BufReader<tokio::io::Stdin>>),
 }
 
-impl Input {
-    /// Whether no further message can follow. A stream of lines cannot say before it ends.
+impl InputSource for Input {
     fn is_exhausted(&self) -> bool {
         matches!(self, Input::Single(None))
     }
 
-    /// The next user message, `None` at the end of input. An error is a usage error.
-    async fn next(&mut self) -> Result<Option<String>, String> {
+    async fn next(&mut self, _runtime: &mut AgentRuntime) -> Result<Option<String>, String> {
         match self {
             Input::Single(prompt) => Ok(prompt.take()),
             Input::Lines(lines) => loop {
@@ -226,7 +455,7 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
 
 /// What the main model has cost, with the summarizer that keeps its context in bounds and the
 /// advisor it consults.
-fn main_usage(runtime: &AgentRuntime) -> Bucket {
+pub(crate) fn main_usage(runtime: &AgentRuntime) -> Bucket {
     let ledger = runtime.state.usage_ledger();
     let mut main = ledger.bucket(UsageSource::Main);
     main.merge(&ledger.bucket(UsageSource::Compaction));
@@ -235,7 +464,7 @@ fn main_usage(runtime: &AgentRuntime) -> Bucket {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Subtype {
+pub(crate) enum Subtype {
     Success,
     MaxTurns,
     MaxBudget,
@@ -244,7 +473,7 @@ enum Subtype {
 }
 
 impl Subtype {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Subtype::Success => "success",
             Subtype::MaxTurns => "error_max_turns",
@@ -255,19 +484,19 @@ impl Subtype {
     }
 }
 
-struct Outcome {
-    subtype: Subtype,
-    text: String,
-    structured: Option<Value>,
-    error: Option<String>,
-    started: std::time::Instant,
+pub(crate) struct Outcome {
+    pub(crate) subtype: Subtype,
+    pub(crate) text: String,
+    pub(crate) structured: Option<Value>,
+    pub(crate) error: Option<String>,
+    pub(crate) started: std::time::Instant,
     /// Every call the pipeline denied during the turn.
-    denials: Vec<Value>,
+    pub(crate) denials: Vec<Value>,
 }
 
 /// Session spend: the main model, the guardian, the goal evaluator and the subagents' models.
 /// Null only when none is priced.
-fn session_cost(
+pub(crate) fn session_cost(
     main: Option<f64>,
     guardian: Option<f64>,
     goal: Option<f64>,
@@ -292,15 +521,15 @@ fn spent(runtime: &AgentRuntime) -> Option<f64> {
 }
 
 /// What each model of the session has cost.
-struct Usage {
-    main: Bucket,
-    guardian: Bucket,
-    goal: Bucket,
-    subagents: Bucket,
+pub(crate) struct Usage {
+    pub(crate) main: Bucket,
+    pub(crate) guardian: Bucket,
+    pub(crate) goal: Bucket,
+    pub(crate) subagents: Bucket,
 }
 
 impl Usage {
-    fn of(runtime: &AgentRuntime) -> Usage {
+    pub(crate) fn of(runtime: &AgentRuntime) -> Usage {
         Usage {
             main: main_usage(runtime),
             guardian: runtime.state.guardian_usage(),
@@ -443,7 +672,7 @@ fn result_event(
     event("result", session_id, fields)
 }
 
-fn epoch_secs(at: Option<std::time::SystemTime>) -> Option<u64> {
+pub(crate) fn epoch_secs(at: Option<std::time::SystemTime>) -> Option<u64> {
     at.and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
 }
@@ -577,14 +806,12 @@ fn with_hook_context(runtime: &AgentRuntime, text: String) -> String {
 /// run.
 async fn run_one(
     runtime: &mut AgentRuntime,
-    options: &Options,
+    ctx: &mut Ctx<'_>,
     text: String,
-    stream_events: bool,
 ) -> (Outcome, Option<String>) {
     let mut fell = None;
     let mut tried = Tried::default();
-    let (mut outcome, mut note) =
-        run_attempt(runtime, options, text, stream_events, &mut fell).await;
+    let (mut outcome, mut note) = run_attempt(runtime, ctx, text, &mut fell).await;
     while let Some(failure) = fell.take() {
         if runtime
             .fall_through(failure.class.unwrap_or("quota"), &mut tried)
@@ -606,14 +833,8 @@ async fn run_one(
             .await
             {
                 tried = Tried::default();
-                let (next, next_note) = run_attempt(
-                    runtime,
-                    options,
-                    RETRY_NOTE.to_string(),
-                    stream_events,
-                    &mut fell,
-                )
-                .await;
+                let (next, next_note) =
+                    run_attempt(runtime, ctx, RETRY_NOTE.to_string(), &mut fell).await;
                 outcome = merge(outcome, next);
                 note = next_note;
                 continue;
@@ -628,14 +849,7 @@ async fn run_one(
             runtime.turn_ended(&TurnOutcome::Failed(failure)).await;
             break;
         }
-        let (next, next_note) = run_attempt(
-            runtime,
-            options,
-            RETRY_NOTE.to_string(),
-            stream_events,
-            &mut fell,
-        )
-        .await;
+        let (next, next_note) = run_attempt(runtime, ctx, RETRY_NOTE.to_string(), &mut fell).await;
         outcome = merge(outcome, next);
         note = next_note;
     }
@@ -646,38 +860,21 @@ async fn run_one(
 /// `fell` for the caller to answer.
 async fn run_attempt(
     runtime: &AgentRuntime,
-    options: &Options,
+    ctx: &mut Ctx<'_>,
     text: String,
-    stream_events: bool,
     fell: &mut Option<TurnFailure>,
 ) -> (Outcome, Option<String>) {
+    let options = ctx.options;
+    let cancel = ctx.cancel.clone();
+    let sink = &mut *ctx.sink;
     // After the compaction that may have preceded this run, so the notes it queued are in.
     let text = with_hook_context(runtime, text);
     let started = std::time::Instant::now();
     let sid = runtime.session.id.as_str();
     let mut denials: Vec<Value> = Vec::new();
-    let emit = |value: Value| {
-        if stream_events {
-            emit_line(&value);
-        }
-    };
     let mut on_event = |event_in: SessionEvent| -> Flow {
+        sink.event(sid, &event_in);
         match event_in {
-            SessionEvent::AssistantDelta(text) => {
-                if options.include_partial_messages {
-                    emit(event("assistant_delta", sid, json!({ "text": text })));
-                }
-            }
-            SessionEvent::Assistant(text) => {
-                emit(event("assistant", sid, json!({ "text": text })));
-            }
-            // Not in the closed stream-json schema; text output prints no reasoning either.
-            SessionEvent::ReasoningDelta(_) | SessionEvent::Reasoning(_) => {}
-            SessionEvent::ToolCall { id, tool, args } => emit(event(
-                "tool_call",
-                sid,
-                json!({ "tool_use_id": id, "tool": tool, "args": args }),
-            )),
             SessionEvent::Decision(record) => {
                 if record.decision == Decision::Deny {
                     denials.push(json!({
@@ -687,31 +884,8 @@ async fn run_attempt(
                         "explanation": record.explanation,
                     }));
                 }
-                emit(gate_decision_event(sid, &record));
             }
-            SessionEvent::ToolResult {
-                id,
-                tool,
-                success,
-                text,
-            } => emit(event(
-                "tool_result",
-                sid,
-                json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
-            )),
-            SessionEvent::ToolPreview { .. } => {}
-            SessionEvent::Usage { usage, calls_tool } => {
-                emit(event(
-                    "model_call",
-                    sid,
-                    json!({
-                        "input_tokens": usage.input_tokens.unwrap_or(0),
-                        "output_tokens": usage.output_tokens.unwrap_or(0),
-                        "cache_read_input_tokens": usage.cached_input_tokens.unwrap_or(0),
-                        "cache_creation_input_tokens": usage.cache_creation_input_tokens.unwrap_or(0),
-                        "calls_tool": calls_tool,
-                    }),
-                ));
+            SessionEvent::Usage { calls_tool, .. } => {
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool
@@ -721,6 +895,7 @@ async fn run_attempt(
                     return Flow::Stop;
                 }
             }
+            _ => {}
         }
         Flow::Continue
     };
@@ -770,11 +945,24 @@ async fn run_attempt(
         &mut on_event,
     );
     // The stop comes first: a stopped session gets no further tool-capable model turn.
+    // A host's interrupt drops the turn the same way, which kills its foreground children through
+    // their drop guards.
+    let mut interrupted = false;
     let turn = tokio::select! {
         biased;
         Ok(()) = stops.changed() => None,
+        () = cancel.cancelled() => {
+            interrupted = true;
+            None
+        }
         outcome = turn => Some(outcome),
     };
+    if interrupted {
+        runtime
+            .keep_unsettled_turn(Unsettled::User, Some(fallback))
+            .await;
+        return (interrupted_outcome(started, denials), None);
+    }
     // A stop cuts the turn short: the run is dropped when the signal wins the poll, and when
     // the run wins it the stop has denied its next dispatch as a Cancelled error the recovery
     // hook kept. An answer that landed in the same poll settled and is kept as it is.
@@ -890,7 +1078,11 @@ enum News {
 
 /// Waits until a subagent has news for the main conversation, the budget is spent, or
 /// no subagent is left running.
-async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> News {
+async fn wait_for_news(
+    runtime: &AgentRuntime,
+    over_cap: &dyn Fn() -> bool,
+    host_waiting: &dyn Fn() -> bool,
+) -> News {
     let tree = runtime.state.agents().clone();
     let mut stops = runtime.state.afk_stop_signal();
     loop {
@@ -903,6 +1095,11 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
         // Blocked: no notification turn starts. The children's reports are dropped with the
         // run, which kills what is left.
         if runtime.unattended_blocked().is_some() {
+            return News::Done;
+        }
+        // A host's message goes before any notification turn; the children keep running and
+        // their reports wait for the next quiet moment.
+        if host_waiting() {
             return News::Done;
         }
         if let Some(prompt) = runtime.notification_prompt().await {
@@ -932,6 +1129,23 @@ fn over_cap(runtime: &AgentRuntime, options: &Options) -> bool {
         (options.max_budget_usd, spent(runtime)),
         (Some(cap), Some(spent)) if spent > cap
     )
+}
+
+#[cfg(test)]
+pub(crate) fn interrupted_for_tests() -> Outcome {
+    interrupted_outcome(std::time::Instant::now(), Vec::new())
+}
+
+/// A turn the host cut short.
+fn interrupted_outcome(started: std::time::Instant, denials: Vec<Value>) -> Outcome {
+    Outcome {
+        subtype: Subtype::Execution,
+        text: String::new(),
+        structured: None,
+        error: Some("the turn was interrupted".to_string()),
+        started,
+        denials,
+    }
 }
 
 fn budget_stop() -> Outcome {
@@ -1042,18 +1256,13 @@ fn merge(earlier: Outcome, mut next: Outcome) -> Outcome {
 }
 
 /// One turn, started once `stop_before_call` finds nothing to stop it.
-async fn guarded_turn(
-    runtime: &mut AgentRuntime,
-    options: &Options,
-    stream_events: bool,
-    prompt: String,
-) -> Outcome {
-    if let Some(stop) = stop_before_call(runtime, options, Some(&prompt)).await {
+async fn guarded_turn(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, prompt: String) -> Outcome {
+    if let Some(stop) = stop_before_call(runtime, ctx.options, Some(&prompt)).await {
         runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
         return stop;
     }
-    let (outcome, note) = run_one(runtime, options, prompt, stream_events).await;
-    let outcome = continue_on_stop(runtime, options, stream_events, outcome, note).await;
+    let (outcome, note) = run_one(runtime, ctx, prompt).await;
+    let outcome = continue_on_stop(runtime, ctx, outcome, note).await;
     runtime.goal_turn_ended(Some(&goal::turn_end(&outcome)));
     outcome
 }
@@ -1062,16 +1271,15 @@ async fn guarded_turn(
 /// budget check and compaction a turn of its own gets.
 async fn continue_on_stop(
     runtime: &mut AgentRuntime,
-    options: &Options,
-    stream_events: bool,
+    ctx: &mut Ctx<'_>,
     mut outcome: Outcome,
     mut note: Option<String>,
 ) -> Outcome {
     while let Some(prompt) = note.take() {
-        if let Some(stop) = stop_before_call(runtime, options, Some(&prompt)).await {
+        if let Some(stop) = stop_before_call(runtime, ctx.options, Some(&prompt)).await {
             return merge(outcome, stop);
         }
-        let (next, again) = run_one(runtime, options, prompt, stream_events).await;
+        let (next, again) = run_one(runtime, ctx, prompt).await;
         outcome = merge(outcome, next);
         note = again;
     }
@@ -1081,22 +1289,22 @@ async fn continue_on_stop(
 /// Subagents still running when the answer comes are waited for: their reports
 /// reach the main conversation as notifications, each a turn of its own, until none is running.
 /// A run stopped by a limit kills them and drops their reports.
-async fn settle(
-    runtime: &mut AgentRuntime,
-    options: &Options,
-    stream_events: bool,
-    mut outcome: Outcome,
-) -> Outcome {
+async fn settle(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, mut outcome: Outcome) -> Outcome {
     while outcome.subtype == Subtype::Success {
-        match wait_for_news(runtime, &|| over_cap(runtime, options)).await {
+        let options = ctx.options;
+        match wait_for_news(runtime, &|| over_cap(runtime, options), &|| {
+            (ctx.pending)() || ctx.cancel.is_set()
+        })
+        .await
+        {
             News::Prompt(prompt) => {
                 // A turn an earlier fold failed to keep goes before this one; the record
                 // run_one writes must not be read as this turn's fallback first.
                 runtime
                     .keep_unsettled_turn(Unsettled::SessionEnded, None)
                     .await;
-                let (next, note) = run_one(runtime, options, prompt, stream_events).await;
-                let next = continue_on_stop(runtime, options, stream_events, next, note).await;
+                let (next, note) = run_one(runtime, ctx, prompt).await;
+                let next = continue_on_stop(runtime, ctx, next, note).await;
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
             }
@@ -1129,12 +1337,8 @@ struct Handled {
 
 /// One user message. `/goal <condition>` keeps running turns after the first until the
 /// evaluator finds the condition met, or the goal ends or pauses.
-async fn handle_message(
-    runtime: &mut AgentRuntime,
-    options: &Options,
-    stream_events: bool,
-    text: String,
-) -> Handled {
+async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: String) -> Handled {
+    let options = ctx.options;
     let session_id = runtime.session.id.clone();
     // A stream-json line can be written before the previous reply arrives, so only the one
     // text prompt is known to follow what the user saw.
@@ -1241,8 +1445,8 @@ async fn handle_message(
         }
     };
     runtime.goal_user_prompt();
-    let outcome = guarded_turn(runtime, options, stream_events, prompt).await;
-    let mut outcome = settle(runtime, options, stream_events, outcome).await;
+    let outcome = guarded_turn(runtime, ctx, prompt).await;
+    let mut outcome = settle(runtime, ctx, outcome).await;
     let mut ended = None;
     while involved && outcome.subtype == Subtype::Success {
         // Blocked or stopped: no goal turn starts. The goal is paused with the reason below.
@@ -1260,19 +1464,17 @@ async fn handle_message(
         let Some(applied) = runtime.evaluate_goal(&pending).await else {
             break;
         };
-        if stream_events {
-            emit_line(&goal::evaluation_event(
-                &session_id,
-                applied.judgment,
-                &applied.reason,
-                applied.evaluations,
-            ));
-        }
+        ctx.sink.goal_evaluation(
+            &session_id,
+            applied.judgment,
+            &applied.reason,
+            applied.evaluations,
+        );
         match applied.step {
             Step::Continue(next) => {
                 let prompt = runtime.goal_prompt(&next).await;
-                let turn = guarded_turn(runtime, options, stream_events, prompt).await;
-                outcome = settle(runtime, options, stream_events, merge(outcome, turn)).await;
+                let turn = guarded_turn(runtime, ctx, prompt).await;
+                outcome = settle(runtime, ctx, merge(outcome, turn)).await;
             }
             Step::Done { event, summary } => {
                 ended = Some(goal::Ended {
@@ -1348,30 +1550,46 @@ async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
 /// account has nobody signed in: a run that consults the guardian then stops before it starts,
 /// since every call would be denied.
 pub async fn run(
-    options: Options,
+    mut options: Options,
     mut runtime: AgentRuntime,
     data_dir: &Path,
     guardian_login: Option<(String, ExternalLogin)>,
 ) -> u8 {
-    let code = run_session(options, &mut runtime, data_dir, guardian_login).await;
-    // One exit point, so an input error ends the session for the hooks too.
-    runtime.fire_session_end("other").await;
-    code
-}
-
-async fn run_session(
-    mut options: Options,
-    runtime: &mut AgentRuntime,
-    data_dir: &Path,
-    guardian_login: Option<(String, ExternalLogin)>,
-) -> u8 {
-    let mut input = match open_input(&mut options).await {
+    let input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
             eprintln!("fontaine: {message}");
             return 2;
         }
     };
+    let mut sink = HeadlessV1Sink::new(&options);
+    let cancel = Cancel::default();
+    let code = run_session(
+        options,
+        &mut runtime,
+        data_dir,
+        guardian_login,
+        input,
+        &mut sink,
+        &cancel,
+    )
+    .await;
+    // One exit point, so an input error ends the session for the hooks too.
+    runtime.fire_session_end("other").await;
+    code
+}
+
+/// The session loop both surfaces share: one turn per user message, until the input ends or a
+/// message fails.
+pub(crate) async fn run_session<I: InputSource>(
+    options: Options,
+    runtime: &mut AgentRuntime,
+    data_dir: &Path,
+    guardian_login: Option<(String, ExternalLogin)>,
+    mut input: I,
+    sink: &mut dyn EventSink,
+    cancel: &Cancel,
+) -> u8 {
     if let Some((account, login)) = guardian_login
         && matches!(
             runtime.start_mode(),
@@ -1388,10 +1606,7 @@ async fn run_session(
     let session_id = runtime.session.id.clone();
     runtime.record_session_start().await;
     announce(runtime);
-    let stream_events = options.output_format == OutputFormat::StreamJson;
-    if stream_events {
-        emit_line(&init_event(runtime, data_dir));
-    }
+    sink.session_start(runtime, data_dir);
     let headless = &runtime.config.headless;
     runtime.state.set_usage_wait(UsageWait {
         cap: Some(
@@ -1402,14 +1617,8 @@ async fn run_session(
         afk_cap: None,
         exit: options.on_usage_limit.unwrap_or(headless.on_usage_limit) == OnUsageLimit::Exit,
     });
-    if stream_events {
-        let id = session_id.clone();
-        runtime
-            .state
-            .usage_pause()
-            .observe(std::sync::Arc::new(move |pause| {
-                emit_line(&usage_event(&id, pause));
-            }));
+    if let Some(observer) = sink.usage_observer(&session_id) {
+        runtime.state.usage_pause().observe(observer);
     }
 
     let mut last: Option<Handled> = None;
@@ -1419,18 +1628,29 @@ async fn run_session(
     let mut last_usage_limit: Option<Value> = None;
     let mut usage_warned = HashSet::new();
     loop {
-        let text = match input.next().await {
+        let text = match input.next(&mut *runtime).await {
             Ok(Some(text)) => text,
             Ok(None) => break,
             Err(message) => {
                 eprintln!("fontaine: {message}");
+                sink.input_failed(&session_id, &message);
                 runtime.jobs().terminate_all().await;
                 runtime.lsp().shutdown_all().await;
-                return 2;
+                return input.failure_code();
             }
         };
+        sink.turn_start(runtime, data_dir);
         let mut handled = match runtime.refresh_before_turn() {
-            Ok(()) => handle_message(runtime, &options, stream_events, text).await,
+            Ok(()) => {
+                let pending = || input.pending();
+                let mut ctx = Ctx {
+                    options: &options,
+                    sink: &mut *sink,
+                    cancel,
+                    pending: &pending,
+                };
+                handle_message(runtime, &mut ctx, text).await
+            }
             Err(e) => Handled {
                 outcome: Outcome {
                     subtype: Subtype::Execution,
@@ -1467,7 +1687,9 @@ async fn run_session(
             );
         }
         let usage_limit = usage_limit.map(|(object, ..)| object);
-        let failed = handled.outcome.subtype != Subtype::Success;
+        // A host's interrupt is not a failure of the run: the next message goes on.
+        let interrupted = cancel.is_set();
+        let failed = handled.outcome.subtype != Subtype::Success && !interrupted;
         // A goal that ended impossible or paused did not finish the task, even when the turn
         // itself answered. A failed turn already says why.
         goal_failure = handled
@@ -1496,18 +1718,22 @@ async fn run_session(
             runtime.jobs().terminate_all().await;
             runtime.lsp().shutdown_all().await;
         }
-        if stream_events {
-            let account_usage = account_usage(runtime, &mut usage_warned).await;
-            emit_line(&result_event(
-                &session_id,
-                outcome,
-                &Usage::of(runtime),
-                handled.goal.as_ref(),
-                &account_usage,
-                handled.afk.as_ref(),
-                usage_limit.as_ref(),
-            ));
-        }
+        let account_usage = if sink.wants_account_usage() {
+            account_usage(runtime, &mut usage_warned).await
+        } else {
+            Vec::new()
+        };
+        sink.result(&ResultInfo {
+            runtime,
+            session_id: &session_id,
+            outcome,
+            usage: &Usage::of(runtime),
+            goal: handled.goal.as_ref(),
+            account_usage: &account_usage,
+            afk: handled.afk.as_ref(),
+            usage_limit: usage_limit.as_ref(),
+            interrupted,
+        });
         last = Some(handled);
         last_usage_limit = usage_limit.clone();
         if usage_limit.is_some() {

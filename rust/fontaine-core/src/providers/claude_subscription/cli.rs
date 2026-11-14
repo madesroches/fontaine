@@ -939,84 +939,7 @@ async fn drain_stderr(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<V
     }
 }
 
-/// Why a read produced no line.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ReadFail {
-    Idle,
-    TooLong,
-    Io,
-}
-
-/// Splits a byte stream into lines, however it was chunked: `\n` or `\r\n` ends a line, and a
-/// line longer than the cap is an error rather than unbounded memory.
-#[derive(Debug)]
-pub(crate) struct LineBuffer {
-    pending: Vec<u8>,
-    cap: usize,
-}
-
-impl LineBuffer {
-    pub fn new(cap: usize) -> Self {
-        LineBuffer {
-            pending: Vec::new(),
-            cap,
-        }
-    }
-
-    /// Appends `chunk` and returns the lines it completed.
-    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, ReadFail> {
-        let mut lines = Vec::new();
-        for part in chunk.split_inclusive(|b| *b == b'\n') {
-            self.pending.extend_from_slice(part);
-            if part.last() == Some(&b'\n') {
-                let mut line = std::mem::take(&mut self.pending);
-                line.pop();
-                if line.last() == Some(&b'\r') {
-                    line.pop();
-                }
-                if line.len() > self.cap {
-                    return Err(ReadFail::TooLong);
-                }
-                if !line.is_empty() {
-                    lines.push(line);
-                }
-            } else if self.pending.len() > self.cap {
-                return Err(ReadFail::TooLong);
-            }
-        }
-        Ok(lines)
-    }
-
-    /// The final line when the stream ended without a newline.
-    pub fn finish(&mut self) -> Option<Vec<u8>> {
-        let mut line = std::mem::take(&mut self.pending);
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        (!line.is_empty()).then_some(line)
-    }
-}
-
-/// The longest stdout line accepted.
-pub(crate) const LINE_CAP: usize = 16 * 1024 * 1024;
-
-pub(crate) struct LineReader {
-    pub(crate) inner: ChildStdout,
-    buffer: LineBuffer,
-    ready: std::collections::VecDeque<Vec<u8>>,
-    ended: bool,
-}
-
-impl LineReader {
-    fn new(stdout: ChildStdout) -> Self {
-        LineReader {
-            inner: stdout,
-            buffer: LineBuffer::new(LINE_CAP),
-            ready: Default::default(),
-            ended: false,
-        }
-    }
-}
+pub(crate) use crate::line_reader::{LineReader, ReadFail};
 
 /// A running CLI process, its pipes and its working directory. Dropping it, whether by
 /// cancellation, a timeout, a failure or normal completion, kills the whole process tree and
@@ -1025,7 +948,7 @@ pub(crate) struct CliChild {
     child: Option<Child>,
     pid: Option<u32>,
     stdin: Option<ChildStdin>,
-    stdout: LineReader,
+    stdout: LineReader<ChildStdout>,
     stderr: Arc<Mutex<Vec<u8>>>,
     drain: Option<tokio::task::JoinHandle<()>>,
     // Dropped after the process is signalled, so the directory outlives the CLI's use of it.
@@ -1132,22 +1055,7 @@ impl CliChild {
 
     /// The next stdout line; `None` at the end of the stream. `idle` bounds the wait.
     pub async fn next_line(&mut self, idle: Duration) -> Result<Option<Vec<u8>>, ReadFail> {
-        let reader = &mut self.stdout;
-        loop {
-            if let Some(line) = reader.ready.pop_front() {
-                return Ok(Some(line));
-            }
-            if reader.ended {
-                return Ok(reader.buffer.finish());
-            }
-            let mut chunk = vec![0u8; 16 * 1024];
-            match tokio::time::timeout(idle, reader.inner.read(&mut chunk)).await {
-                Err(_) => return Err(ReadFail::Idle),
-                Ok(Err(_)) => return Err(ReadFail::Io),
-                Ok(Ok(0)) => reader.ended = true,
-                Ok(Ok(n)) => reader.ready.extend(reader.buffer.push(&chunk[..n])?),
-            }
-        }
+        self.stdout.next_line(idle).await
     }
 
     /// The exit status when the process has already ended.
@@ -1255,23 +1163,6 @@ mod tests {
         assert_eq!(parse_version("claude 2.1.318"), None);
         assert_eq!(parse_version(""), None);
         assert!((2, 1, 317) < MIN_VERSION && (2, 1, 318) >= MIN_VERSION);
-    }
-
-    #[test]
-    fn lines_split_across_chunks_and_crlf() {
-        let mut buffer = LineBuffer::new(64);
-        assert!(buffer.push(b"{\"a\":").unwrap().is_empty());
-        assert_eq!(
-            buffer.push(b"1}\r\n{\"b\":2}\n\n{\"c\"").unwrap(),
-            vec![b"{\"a\":1}".to_vec(), b"{\"b\":2}".to_vec()]
-        );
-        assert_eq!(buffer.finish(), Some(b"{\"c\"".to_vec()));
-    }
-
-    #[test]
-    fn an_overlong_line_is_refused() {
-        let mut buffer = LineBuffer::new(8);
-        assert_eq!(buffer.push(b"0123456789"), Err(ReadFail::TooLong));
     }
 
     #[test]

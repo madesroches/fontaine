@@ -445,6 +445,128 @@ fn agent_from(
     }))
 }
 
+/// Maps one agent a host program defined for the session (a JSON object) into an agent type. It
+/// follows the rules of a repository's agent file: it runs on the session model or on a role the
+/// user defined, at the session's effort, never looser than `default` or `dontAsk`, and with tools
+/// its parent has. A field this cannot honor is an error naming the agent and the field, never
+/// silently dropped.
+pub fn agent_from_definition(
+    name: &str,
+    definition: &serde_json::Value,
+    servers: &[String],
+    is_role: &dyn Fn(&str) -> bool,
+) -> Result<AgentType, String> {
+    let fail = |message: String| format!("agent `{name}`: {message}");
+    if !valid_name(name) {
+        return Err(fail(
+            "not an agent name: use letters, digits, `-` and `_`".to_string(),
+        ));
+    }
+    let object = definition
+        .as_object()
+        .ok_or_else(|| fail("the definition is not an object".to_string()))?;
+    let empty = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Bool(flag) => !flag,
+        serde_json::Value::String(text) => text.is_empty(),
+        serde_json::Value::Array(items) => items.is_empty(),
+        serde_json::Value::Object(map) => map.is_empty(),
+        serde_json::Value::Number(_) => false,
+    };
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match object.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(fail(format!("`{key}` must be a string"))),
+        }
+    };
+    for (key, value) in object {
+        let known = matches!(
+            key.as_str(),
+            "description"
+                | "prompt"
+                | "tools"
+                | "disallowedTools"
+                | "model"
+                | "effort"
+                | "permissionMode"
+        );
+        if !known && !empty(value) {
+            return Err(fail(format!(
+                "`{key}` is not supported: Fontaine runs a host-defined agent only with a description, prompt, tools, disallowedTools, a model role and `permissionMode: dontAsk`"
+            )));
+        }
+    }
+    if object.get("effort").is_some_and(|effort| !empty(effort)) {
+        return Err(fail(
+            "`effort` is not supported: the agent runs at the session's level".to_string(),
+        ));
+    }
+    let model = match text("model")?.as_deref().map(str::trim) {
+        None | Some("" | "inherit") => None,
+        Some(role) if is_role(role) => Some(ModelSpec::Named(role.to_string())),
+        Some(other) => {
+            return Err(fail(format!(
+                "`model` `{other}` is not a model role you defined: leave it out or write `inherit` to run on the session model"
+            )));
+        }
+    };
+    let mode = match text("permissionMode")?.as_deref().map(str::trim) {
+        None | Some("" | "default") => ModeSetting::Manual,
+        Some("dontAsk") => ModeSetting::DontAsk,
+        Some(other) => {
+            return Err(fail(format!(
+                "`permissionMode` `{other}` is not supported: only `default` and `dontAsk` are, so an agent never runs looser than the session"
+            )));
+        }
+    };
+    let list = |key: &str| -> Result<Option<Vec<String>>, String> {
+        match object.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .ok_or_else(|| fail(format!("`{key}` must hold strings")))
+                        .and_then(|entry| {
+                            map_tool_entry(entry).map_err(|e| fail(format!("`{key}`: {e}")))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some),
+            Some(_) => Err(fail(format!("`{key}` must be a list"))),
+        }
+    };
+    let tools = list("tools")?;
+    let disallowed = list("disallowedTools")?.unwrap_or_default();
+    if let Some(entry) = tools
+        .iter()
+        .flatten()
+        .find(|entry| !names_a_known_tool(entry, servers))
+    {
+        return Err(fail(format!(
+            "`tools` names `{entry}`, which the session does not have: a host-defined agent can only use tools its parent has"
+        )));
+    }
+    let prompt = text("prompt")?.filter(|prompt| !prompt.trim().is_empty());
+    let description = text("description")?
+        .filter(|description| !description.trim().is_empty())
+        .or_else(|| prompt.as_deref().map(first_line))
+        .unwrap_or_default();
+    Ok(AgentType {
+        name: name.to_string(),
+        description,
+        prompt: prompt.map(|prompt| prompt.trim().to_string()),
+        tools,
+        disallowed,
+        model,
+        mode,
+        effort: None,
+        origin: TypeOrigin::Session,
+        inherits_context: false,
+    })
+}
+
 fn tightened_label(scope: Scope) -> &'static str {
     match scope {
         Scope::Project => "a project agent file",
@@ -869,5 +991,94 @@ mod tests {
             map_tool_list(&doc, "disallowedTools").unwrap().unwrap(),
             ["shell", "write"]
         );
+    }
+
+    fn session_agent(name: &str, definition: serde_json::Value) -> Result<AgentType, String> {
+        agent_from_definition(name, &definition, &["srv".to_string()], &|role| {
+            role == "fast"
+        })
+    }
+
+    #[test]
+    fn a_host_defined_agent_runs_on_the_session_model_or_a_role_never_an_endpoint() {
+        let base = |model: Option<&str>| {
+            let mut definition = serde_json::json!({
+                "description": "reviews", "prompt": "Review it.", "tools": ["Read", "mcp__srv__lookup"],
+                "disallowedTools": ["Bash(rm *)"],
+            });
+            if let Some(model) = model {
+                definition["model"] = serde_json::json!(model);
+            }
+            definition
+        };
+        for model in [None, Some("inherit")] {
+            let agent = session_agent("reviewer", base(model)).unwrap();
+            assert_eq!(agent.model, None);
+            assert_eq!(agent.origin, TypeOrigin::Session);
+            assert!(!agent.accepts_model_override());
+            assert_eq!(
+                agent.tools.as_deref(),
+                Some(&["read".to_string(), "mcp__srv__lookup".to_string()][..])
+            );
+            assert_eq!(agent.disallowed, ["shell(rm *)"]);
+            assert_eq!(agent.mode, ModeSetting::Manual);
+        }
+        let agent = session_agent("reviewer", base(Some("fast"))).unwrap();
+        assert_eq!(agent.model, Some(ModelSpec::Named("fast".into())));
+        for other in ["sonnet", "acct/model", "fast,other"] {
+            let error = session_agent("reviewer", base(Some(other))).unwrap_err();
+            assert!(
+                error.contains("`reviewer`") && error.contains("model"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_defined_agent_refuses_effort_modes_and_fields_it_cannot_honor() {
+        let with = |key: &str, value: serde_json::Value| {
+            let mut definition = serde_json::json!({"description": "d", "prompt": "p"});
+            definition[key] = value;
+            session_agent("helper", definition)
+        };
+        let error = with("effort", serde_json::json!("high")).unwrap_err();
+        assert!(
+            error.contains("`helper`") && error.contains("effort"),
+            "{error}"
+        );
+        for mode in ["inherit", "acceptEdits", "bypassPermissions", "plan"] {
+            let error = with("permissionMode", serde_json::json!(mode)).unwrap_err();
+            assert!(error.contains("permissionMode"), "{mode}: {error}");
+        }
+        assert_eq!(
+            with("permissionMode", serde_json::json!("dontAsk"))
+                .unwrap()
+                .mode,
+            ModeSetting::DontAsk
+        );
+        assert!(with("permissionMode", serde_json::json!("default")).is_ok());
+        for (key, value) in [
+            ("mcpServers", serde_json::json!({"a": {}})),
+            ("skills", serde_json::json!(["x"])),
+            ("maxTurns", serde_json::json!(5)),
+            ("initialPrompt", serde_json::json!("go")),
+            ("background", serde_json::json!(true)),
+            ("memory", serde_json::json!("project")),
+            ("hooks", serde_json::json!({"PreToolUse": []})),
+            ("surprise", serde_json::json!("x")),
+        ] {
+            let error = with(key, value.clone()).unwrap_err();
+            assert!(
+                error.contains("`helper`") && error.contains(key),
+                "{key}: {error}"
+            );
+        }
+        // The empty value of a field is not a setting.
+        assert!(with("skills", serde_json::json!([])).is_ok());
+        assert!(with("mcpServers", serde_json::json!({})).is_ok());
+        // A tool the session has not got cannot be named.
+        let error = with("tools", serde_json::json!(["mcp__missing__tool"])).unwrap_err();
+        assert!(error.contains("mcp__missing__tool"), "{error}");
+        assert!(session_agent("bad name", serde_json::json!({})).is_err());
     }
 }

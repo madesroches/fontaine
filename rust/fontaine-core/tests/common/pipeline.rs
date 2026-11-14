@@ -150,6 +150,8 @@ pub struct Options {
     pub settings: String,
     pub mode: PermissionMode,
     pub headless: bool,
+    /// Overrides `headless` when set.
+    pub human: Option<fontaine_core::permissions::HumanChannel>,
     pub allow_extra: Vec<String>,
     pub home: Option<PathBuf>,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
@@ -175,6 +177,7 @@ impl Options {
             settings: String::new(),
             mode,
             headless: false,
+            human: None,
             allow_extra: Vec::new(),
             home: None,
             hooks: Vec::new(),
@@ -211,6 +214,11 @@ impl Options {
 
     pub fn headless(mut self) -> Options {
         self.headless = true;
+        self
+    }
+
+    pub fn human(mut self, human: fontaine_core::permissions::HumanChannel) -> Options {
+        self.human = Some(human);
         self
     }
 
@@ -304,7 +312,11 @@ impl Rig {
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
             approver: gate_approver,
-            headless: options.headless,
+            human: options.human.unwrap_or(if options.headless {
+                fontaine_core::permissions::HumanChannel::Absent
+            } else {
+                fontaine_core::permissions::HumanChannel::Present
+            }),
             hooks: options.hooks,
             denied_hooks: options.denied_hooks,
             plugin_hooks: options.plugin_hooks,

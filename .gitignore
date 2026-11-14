@@ -27,3 +27,5 @@ __pycache__/
 # Documentation site output
 /_site/
 /docs/book/
+node_modules/
+.venv/

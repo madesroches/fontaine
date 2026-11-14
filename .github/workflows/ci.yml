@@ -645,3 +645,52 @@ jobs:
       - name: Eval pipeline run (no guardian)
         if: needs.changes.outputs.code == 'true'
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
+
+  # The unmodified Claude Agent SDKs driving `fontaine` against a scripted wiremock model. The pinned
+  # packages come from the registries; no provider key is involved.
+  sdk-compat:
+    name: sdk-compat
+    needs: changes
+    runs-on: ubuntu-latest
+    env:
+      FONTAINE_SDK_COMPAT: required
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        if: needs.changes.outputs.code == 'true'
+        working-directory: .
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install the pinned toolchain
+        if: needs.changes.outputs.code == 'true'
+        run: rustup toolchain install
+
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.code == 'true'
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install the TypeScript SDK
+        if: needs.changes.outputs.code == 'true'
+        working-directory: rust/fontaine/tests/sdk_compat/ts
+        run: npm ci
+
+      - name: Install the Python SDK
+        if: needs.changes.outputs.code == 'true'
+        working-directory: rust/fontaine/tests/sdk_compat/py
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --require-hashes -r requirements.txt
+
+      - name: SDK conformance
+        if: needs.changes.outputs.code == 'true'
+        run: cargo test -p fontaine --test claude_sdk_compat -- --nocapture

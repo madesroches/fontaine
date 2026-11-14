@@ -1,0 +1,2 @@
+{"request_id":"dcmvpigihd9","type":"control_request","request":{"subtype":"initialize","systemPrompt":[""]}}
+{"type":"user","session_id":"","message":{"role":"user","content":[{"type":"text","text":"run the shell command: echo hi"}]},"parent_tool_use_id":null}

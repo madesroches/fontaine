@@ -1,0 +1,4 @@
+{"request_id":"vfcjccfrchs","type":"control_request","request":{"subtype":"initialize","systemPrompt":[""]}}
+{"type":"user","message":{"role":"user","content":"run this exact shell command: python3 -c \"import time; time.sleep(25)\""},"parent_tool_use_id":null}
+{"request_id":"fet50yrwur","type":"control_request","request":{"subtype":"interrupt"}}
+{"type":"user","message":{"role":"user","content":"say done"},"parent_tool_use_id":null}

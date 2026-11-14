@@ -540,9 +540,13 @@ impl AgentRuntime {
             warnings: &mut warnings,
         })
         .map_err(|e| e.to_string())?;
-        let (types, type_warnings) =
-            setup::build_agent_types(&config, &extensions, &self.setup.roles)
-                .map_err(|e| chain(&e))?;
+        let (types, type_warnings) = setup::build_agent_types_with(
+            &config,
+            &extensions,
+            &self.setup.roles,
+            &self.setup.session_agents,
+        )
+        .map_err(|e| chain(&e))?;
         warnings.extend(type_warnings.into_iter().map(|notice| notice.headline));
         let layer = user_hooks::build_layer(
             &config,

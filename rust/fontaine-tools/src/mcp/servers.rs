@@ -48,8 +48,21 @@ const TARGET: &str = "fontaine::telemetry";
 /// its own.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Opens the in-process pipe to an MCP server that lives in the host program driving the
+/// session, rather than in a process or at a URL Fontaine can reach.
+pub trait SdkTransportFactory: Send + Sync {
+    /// The client end of a newline-delimited JSON-RPC stream to the host's server `server`; the
+    /// factory owns the other end and forwards what arrives on it.
+    fn open(&self, server: &str) -> Result<tokio::io::DuplexStream, String>;
+}
+
 #[derive(Clone)]
 pub enum Transport {
+    /// A server that lives in the host program. Its tools register like any MCP tool: they are
+    /// `Arbitrary`, cross the full gate and their results are untrusted.
+    Sdk {
+        factory: Arc<dyn SdkTransportFactory>,
+    },
     Stdio {
         command: String,
         args: Vec<String>,
@@ -78,6 +91,7 @@ pub enum Transport {
 impl fmt::Debug for Transport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Transport::Sdk { .. } => f.debug_struct("Sdk").finish_non_exhaustive(),
             Transport::Stdio {
                 command,
                 args,
@@ -116,6 +130,7 @@ pub struct ServerSpec {
 impl ServerSpec {
     pub fn kind(&self) -> &'static str {
         match self.transport {
+            Transport::Sdk { .. } => "sdk",
             Transport::Stdio { .. } => "stdio",
             Transport::Http { .. } => "http",
         }
@@ -861,6 +876,12 @@ where
     S: ManagedToolSink + Send + Sync + 'static,
 {
     match &spec.transport {
+        Transport::Sdk { factory } => {
+            let stream = factory
+                .open(&spec.name)
+                .map_err(|why| McpError::new(&spec.name, McpErrorKind::Permanent, why, None))?;
+            serve(&spec.name, spec.kind(), stream, sink, options, None).await
+        }
         Transport::Stdio {
             command,
             args,

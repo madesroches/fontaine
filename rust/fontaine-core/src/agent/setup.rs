@@ -304,6 +304,17 @@ pub fn build_agent_types(
     extensions: &Extensions,
     roles: &Roles,
 ) -> Result<(AgentTypes, Vec<Notice>), RuntimeError> {
+    build_agent_types_with(config, extensions, roles, &[])
+}
+
+/// [`build_agent_types`] with the agents a host program defined for the session, which replace a
+/// type of the same name from any file.
+pub fn build_agent_types_with(
+    config: &Config,
+    extensions: &Extensions,
+    roles: &Roles,
+    session: &[AgentType],
+) -> Result<(AgentTypes, Vec<Notice>), RuntimeError> {
     let mut types = AgentTypes::builtin();
     let mut warnings = Vec::new();
     if config.agents.teams {
@@ -367,6 +378,10 @@ pub fn build_agent_types(
         }
         types.insert(agent);
     }
+    for agent in session {
+        check_type_roles(agent, roles)?;
+        types.insert(agent.clone());
+    }
     Ok((types, warnings))
 }
 
@@ -388,7 +403,12 @@ pub(super) fn session_agent_types(
 ) -> Result<Arc<Live<AgentTypes>>, RuntimeError> {
     let roles = Roles::from_config(&setup.config)
         .map_err(|e| RuntimeError::caused("invalid model roles", e))?;
-    let (types, warnings) = build_agent_types(&setup.config, &setup.extensions, &roles)?;
+    let (types, warnings) = build_agent_types_with(
+        &setup.config,
+        &setup.extensions,
+        &roles,
+        &setup.session_agents,
+    )?;
     setup.startup_warnings.extend(warnings);
     Ok(Arc::new(Live::new(types)))
 }
@@ -802,6 +822,13 @@ pub(super) fn permission_pipeline(
         HookLayer::Frozen,
     )
     .map_err(|e| RuntimeError::caused("invalid [[hooks]] settings", e))?;
+    // The host's hooks join the frozen ones; they are never trusted to allow, so they tighten.
+    for callback in &setup.callback_hooks {
+        hooks.add(
+            callback.event,
+            user_hooks::UserHook::callback(callback, deps),
+        );
+    }
     let teams = setup.config.agents.teams;
     for warning in hooks.warnings(teams) {
         setup.approver.warn(&warning);
@@ -832,7 +859,7 @@ pub(super) fn permission_pipeline(
     let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver: setup.approver.clone(),
-        headless: setup.headless,
+        human: setup.human_channel,
         hooks: hooks.pre,
         denied_hooks: hooks.denied,
         plugin_hooks: plugins.clone(),
@@ -941,6 +968,9 @@ pub(super) fn retained(
         confirm_project_servers: setup.confirm_project_servers,
         scheduling: setup.scheduling,
         headless: setup.headless,
+        session_agents: setup.session_agents.clone(),
+        host_mcp: setup.host_mcp.clone(),
+        root_tools: setup.root_tools.clone(),
         env: setup.env.clone(),
         searxng: Arc::default(),
         jobs: Arc::default(),

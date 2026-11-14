@@ -187,6 +187,15 @@ the guardian request that raced it is still pending, the record also carries
 projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,
 `guardian.dropped_model` and `guardian.dropped_priced`; see [Telemetry](telemetry.md#metrics).
 
+## A host as the human channel
+
+In [Agent SDK mode](agent-sdk.md) a `canUseTool` callback is the human channel. It is asked only
+where the terminal UI would show an approval prompt, so after the hooks, the floor, the rules, the
+mode and the guardian; a floor or guardian denial never reaches it. It never offers Allow-always, so
+a host cannot persist a rule: an answer can add session allow rules and change the mode, nothing
+else. A changed input is judged again from the start. Each decision's audit record names the
+channel (`human_channel`), next to the unchanged `headless` flag.
+
 ## Background jobs and monitors
 
 `shell` is judged when it is called; a command that later moves to the background, or that was

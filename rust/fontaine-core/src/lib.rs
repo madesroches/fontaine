@@ -34,6 +34,7 @@ pub mod goal;
 pub mod instructions;
 pub mod keybindings;
 pub mod ledger;
+pub mod line_reader;
 pub mod managed_search;
 pub mod mcp_auth;
 pub mod mcp_config;

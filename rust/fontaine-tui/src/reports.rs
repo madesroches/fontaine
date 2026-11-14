@@ -522,6 +522,7 @@ fn afk_outcome_words(report: &AfkReport) -> String {
         fontaine_core::afk_report::AfkSource::Cli => "the session start",
         fontaine_core::afk_report::AfkSource::Cycle => "Shift+Tab",
         fontaine_core::afk_report::AfkSource::Plan => "/plan",
+        fontaine_core::afk_report::AfkSource::Sdk => "the host program",
     };
     let span = match (report.stretch.ended_ts_ms, report.stretch.started_ts_ms) {
         (Some(end), start) => format!(", lasted {}s", end.saturating_sub(start) / 1000),

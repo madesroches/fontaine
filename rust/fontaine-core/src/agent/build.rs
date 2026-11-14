@@ -320,6 +320,13 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
     })
     .map_err(RuntimeError::new)?;
     for tool in registered {
+        // `tool_search` serves the MCP tools, which this does not restrict.
+        if let Some(only) = &p.setup.root_tools
+            && tool.name != fontaine_tools::mcp::TOOL_SEARCH
+            && !only.iter().any(|name| name == tool.name)
+        {
+            continue;
+        }
         if tool.name == "shell" {
             p.skills.set_shell(tool.tool.clone());
         }

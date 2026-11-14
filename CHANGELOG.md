@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Claude Agent SDK compatibility (#582): an unmodified TypeScript or Python Agent SDK application can
+  use `fontaine` as its Claude Code executable. SDK mode is selected by the SDK's own command line
+  (stream-json in and out, `--verbose`, no `-p`) and serves Claude-shaped messages and control
+  requests; `headless-v1` is unchanged. A `canUseTool` callback is a human channel reached only after
+  the hooks, floor, rules, mode and guardian, never offers Allow-always, and a changed input is judged
+  again from the start. SDK MCP servers register as `arbitrary` tools, hook callbacks can only tighten,
+  and flags Fontaine does not implement exit 2 naming the flag. See `docs/agent-sdk.md`.
 - A built-in `reviewer` agent type (#616): the `explore` tools plus `shell` limited to review
   commands (`git diff`, `gh pr view`, `cargo clippy`, `cargo test`, …), with no edit tools and a
   prompt that says to report findings, not fix them.

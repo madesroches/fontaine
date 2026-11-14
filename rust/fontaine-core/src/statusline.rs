@@ -518,6 +518,7 @@ mod tests {
             guardian_dropped_priced: None,
             permission_mode: "auto".into(),
             headless: false,
+            human_channel: "present".into(),
             explanation: None,
             afk: false,
             converted: None,

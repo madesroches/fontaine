@@ -390,6 +390,20 @@ floor order is unchanged, and a plugin hook's `allow` and `retry` still never co
 loaded this way does not run its `session_start` hooks, since that event already happened in this
 session; they run at the next session. See [Plugins](plugins.md#in-the-terminal-ui).
 
+## SDK callback hooks
+
+An application using [Agent SDK mode](agent-sdk.md) registers hooks as callbacks in `initialize`.
+Fontaine runs one by sending `hook_callback` with the JSON a command hook gets on stdin, and reads
+the reply as a command hook's output. A Claude matcher such as `Write|Edit` is split on `|`, each
+name mapped to a Fontaine tool; a name that cannot be mapped fails `initialize`, and an empty or
+`*` matcher runs for every call. The timeout is the matcher's, or the command-hook default. When a
+callback fails or times out, `onFailure: block` denies the call, with a reason that says so;
+otherwise it is a non-blocking error.
+
+Callbacks only tighten, like a repository's hooks: `deny`, `ask` and `updatedInput` count, and an
+`allow` is ignored, unlike Claude Code's PreToolUse `allow`. Events with no equivalent here fail
+`initialize`, naming the event. A callback cannot be declared in a settings file.
+
 ## What is not built
 
 - **Events:** `PermissionRequest` (an `allow` there would answer the human prompt, a second way to

@@ -888,3 +888,79 @@ async fn a_call_still_running_when_the_connection_closes_ends_with_an_error() {
         .unwrap();
     assert!(result.is_err(), "{result:?}");
 }
+
+/// Opens an in-process server of `double` as the host program's own, over the pipe an SDK server
+/// uses: one stream both ways.
+struct HostServers {
+    double: Double,
+}
+
+impl fontaine_tools::mcp::SdkTransportFactory for HostServers {
+    fn open(&self, _server: &str) -> Result<tokio::io::DuplexStream, String> {
+        let (client, server) = tokio::io::duplex(8192);
+        let double = self.double.clone();
+        tokio::spawn(async move {
+            let running = double.serve(server).await.expect("server start");
+            let _ = running.waiting().await;
+        });
+        Ok(client)
+    }
+}
+
+#[tokio::test]
+async fn a_host_program_server_registers_arbitrary_and_every_call_crosses_the_gate() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![marked(echo_tool())]);
+    let calls = double.calls.clone();
+    let spec = ServerSpec {
+        name: "host".to_string(),
+        transport: Transport::Sdk {
+            factory: std::sync::Arc::new(HostServers { double }),
+        },
+    };
+    assert_eq!(spec.kind(), "sdk");
+    let connected = connect(
+        &spec,
+        handle.clone(),
+        &options(gate.clone()),
+        &Default::default(),
+        &|_| None,
+    )
+    .await
+    .expect("the host server connects");
+    assert_eq!(names(&handle), ["mcp__host__echo"]);
+    call(&handle, "mcp__host__echo", r#"{"a":1}"#)
+        .await
+        .unwrap();
+    let seen = gate.calls();
+    assert_eq!(seen.len(), 1);
+    // Whatever the server declares, the host's tool is as unknown as any other MCP tool.
+    assert_eq!(seen[0].risk, RiskClass::Arbitrary);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+
+    // A denied call never reaches the host's server.
+    let denied = Gate::new(false);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![echo_tool()]);
+    let refused = double.calls.clone();
+    let spec = ServerSpec {
+        name: "host".to_string(),
+        transport: Transport::Sdk {
+            factory: std::sync::Arc::new(HostServers { double }),
+        },
+    };
+    let second = connect(
+        &spec,
+        handle.clone(),
+        &options(denied),
+        &Default::default(),
+        &|_| None,
+    )
+    .await
+    .expect("connects");
+    assert!(call(&handle, "mcp__host__echo", "{}").await.is_err());
+    assert!(refused.lock().unwrap().is_empty());
+    connected.connection.close().await;
+    second.connection.close().await;
+}
