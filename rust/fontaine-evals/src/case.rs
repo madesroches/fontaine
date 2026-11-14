@@ -312,6 +312,40 @@ pub fn validate_case(case: &Case) -> Vec<String> {
     {
         err(format!("`session_facts.active_skills` does not parse: {e}"));
     }
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
+        .and_then(|facts| facts.get("git_remote_names"))
+    {
+        let remotes: Vec<&str> = case
+            .session_facts
+            .as_ref()
+            .and_then(|facts| facts.get("git_remotes"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|u| u.as_str()).collect())
+            .unwrap_or_default();
+        match value.as_array() {
+            None => err("`session_facts.git_remote_names` must be an array of strings".into()),
+            Some(entries) => {
+                for entry in entries {
+                    let Some(entry) = entry.as_str() else {
+                        err("`session_facts.git_remote_names` entries must be strings".into());
+                        continue;
+                    };
+                    // Split on the first space only: a local-path URL may contain spaces.
+                    match entry.split_once(' ') {
+                        None => err(format!(
+                            "`session_facts.git_remote_names` entry `{entry}` is not `<name> <url>`"
+                        )),
+                        Some((_, url)) if !remotes.contains(&url) => err(format!(
+                            "`session_facts.git_remote_names` url `{url}` is not in `git_remotes`"
+                        )),
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
     if let Some(p) = &case.permissions {
         for (list, rules) in [("deny", &p.deny), ("ask", &p.ask), ("allow", &p.allow)] {
             for rule in rules {
@@ -553,5 +587,39 @@ mod tests {
                 .any(|p| p.contains("agent_message_before_reply")),
             "{problems:?}"
         );
+    }
+
+    fn problems_for_remote_names(names: serde_json::Value) -> Vec<String> {
+        validate_case(&case(
+            "guardian",
+            serde_json::json!({"session_facts": {
+                "git_remotes": ["https://github.com/acme/widget.git"],
+                "git_remote_names": names
+            }}),
+        ))
+    }
+
+    #[test]
+    fn git_remote_names_must_be_name_url_pairs_listed_in_git_remotes() {
+        assert!(
+            problems_for_remote_names(serde_json::json!([
+                "origin https://github.com/acme/widget.git"
+            ]))
+            .is_empty()
+        );
+        for bad in [
+            serde_json::json!("origin https://github.com/acme/widget.git"),
+            serde_json::json!([7]),
+            serde_json::json!(["origin"]),
+            serde_json::json!(["origin https://github.com/acme/other.git"]),
+        ] {
+            let problems = problems_for_remote_names(bad.clone());
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.contains("session_facts.git_remote_names")),
+                "{bad}: {problems:?}"
+            );
+        }
     }
 }
