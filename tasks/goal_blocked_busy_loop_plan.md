@@ -17,11 +17,11 @@ counting as progress. A *not met* verdict gets a `waiting_on_user` flag that pau
 
 - `SessionGoal` (`rust/fontaine-core/src/goal.rs`) holds `ActiveGoal { pending, paused, made_call,
   calls_seen, stretch: Stretch { turns, idle_verdicts, spend_base }, .. }`.
-  - `after_turn` (`goal.rs:542`) sets `made_call` when the ledger's root-agent action count grew
-    (`root_actions`, `goal.rs:433`). It counts every action, whatever the tool.
+  - `after_turn` (`goal.rs:543`) sets `made_call` when the ledger's root-agent action count grew
+    (`root_actions`, `goal.rs:449`). It counts every action, whatever the tool.
   - `next_step(agents_running)` (`goal.rs:611`) returns `Pending` when `pending && !paused &&
     !agents_running`.
-  - `not_met` (`goal.rs:684`) resets `idle_verdicts` on `made_call` and pauses at
+  - `not_met` (`goal.rs:679`) resets `idle_verdicts` on `made_call` and pauses at
     `NO_PROGRESS_LIMIT` (8), then checks `max_turns` and `max_cost_usd`.
   - `user_prompt` (`goal.rs:592`) clears the pause and starts a fresh stretch.
 - `AgentRuntime::next_goal_step` (`rust/fontaine-core/src/agent/goal.rs:470`) passes only
@@ -62,7 +62,9 @@ counting as progress. A *not met* verdict gets a `waiting_on_user` flag that pau
 `fontaine-tools::jobs::Jobs` gains `pub fn running_background(&self) -> Vec<JobInfo>`, the jobs
 for which `counts()` holds. `AgentRuntime` gains `fn background_work(&self) -> Vec<String>`: one
 line per running subagent (`agent <id>`, from `running_ids()`) and per running job. A job's line is
-`monitor <id>: <description>` or `shell <id>: <command>`, each cut to 200 characters.
+`monitor <id>: <description>` or `shell <id>: <command>`, each cut to 200 characters. `JobInfo`
+gains `description: Option<String>` (the monitor's, which `Monitor.description` holds privately),
+filled in `snapshot` and `running_background`.
 
 `ActiveGoal` gains `wait: Option<Wait>`, and `Stretch` gains `idle_checkins: u32`:
 
@@ -70,8 +72,8 @@ line per running subagent (`agent <id>`, from `running_ids()`) and per running j
 struct Wait { since: Instant, checkins: u32 }   // since = deferral start, then last check-in
 ```
 
-`next_step` becomes `take_step(&self, work: &[String], now: Instant, idle: bool) -> Option<Due>`,
-which may update the wait:
+`next_step` becomes `take_step(&self, work: &[String], now: Instant, idle: bool, caps: &GoalCaps)
+-> Option<Due>`, which may update the wait. `caps` carries the check-in interval and `max_turns`:
 
 ```rust
 pub enum Due {
@@ -90,8 +92,8 @@ The rules, in order:
      work that stopped without reporting; the not-met turn that follows is Claude Code's "continue
      toward the goal". The wait is cleared.
    - Otherwise the result is `None`.
-3. With work running, a `pending` goal with no wait starts one at `now`. Without `pending` and
-   without a wait, the result is `None`.
+3. With work running, a `pending` goal with no wait starts one at `now` (normally `after_turn`
+   already did; see below). Without `pending` and without a wait, the result is `None`.
 4. The check-in interval is `checkin × min(2^checkins, 4)`, from `[goal] checkin_minutes`. A
    check-in is due when `now ≥ since + interval`. `checkin_minutes = 0` means never due.
 5. When a check-in is due:
@@ -103,7 +105,12 @@ The rules, in order:
    - On a `CheckIn`, `checkins` goes up by one and `since = now`.
 6. Otherwise the result is `None`. A deferred `pending` stays set.
 
-`checkin_wait(&self, work_running: bool, now: Instant, respect_idle_cap: bool) ->
+`after_turn` gains a `work_running: bool` and a `now: Instant` parameter: when it sets `pending` while
+work runs, it starts the wait at once, so the wait exists before the first `take_step`. Headless's
+`settle` blocks in `wait_for_news` before any `take_step`, and without this an untimed monitor would
+never reach a check-in. `goal_turn_ended` passes `!background_work().is_empty()`.
+
+`checkin_wait(&self, work_running: bool, now: Instant, respect_idle_cap: bool, caps: &GoalCaps) ->
 Option<Duration>` returns the time until the next check-in falls due (zero when due). It returns
 `None` when there is no wait, check-ins are off, or (with `respect_idle_cap`) the idle cap is used
 up. The idle loops use it to wake.
@@ -122,21 +129,24 @@ When `last_idle` is set, the note adds "idle check-ins are paused until the user
 The list is the model's own commands and agent ids, not tool output, so it skips the result
 pipeline. The condition goes through as written, as in `goal_prompt_text`.
 
-`AgentRuntime::next_goal_step(idle: bool) -> Option<Due>` passes `background_work()` and
-`Instant::now()` with the config's check-in minutes. It also exposes
-`goal_checkin_wait(respect_idle_cap)`. A single `GoalCaps` gains `checkin: Option<Duration>`, so
-`take_step` and `not_met` read one caps struct.
+`AgentRuntime::next_goal_step(idle: bool) -> Option<Due>` passes `background_work()`,
+`Instant::now()` and `GoalCaps::from(&self.config.goal)`. It also exposes
+`goal_checkin_wait(respect_idle_cap)`. `GoalCaps` gains `checkin: Option<Duration>`, so `take_step`,
+`checkin_wait` and `not_met` read one caps struct.
 
 - **TUI** (`ui/goal.rs`, `ui/mod.rs`): `goal_step` calls `next_goal_step(true)`.
   - `Evaluate` behaves as today.
   - `CheckIn` shows `goal: checking on background work` and runs a goal turn with the check-in
-    prompt, through the `goal_turn` path with a different prompt.
+    prompt. `goal_turn` (`ui/turn.rs`) takes the prompt `String` instead of a `Continue`: the
+    evaluate path passes `runtime.goal_prompt(&next).await`, the check-in path
+    `runtime.checkin_prompt(&checkin)`.
   - `IdleExhausted` does nothing.
   - `Ui::run` adds `runtime.goal_checkin_wait(true)` to `soonest_tick`, so an idle check-in wakes
     the parked loop.
 - **Headless** (`headless.rs`): `wait_for_news` gains `goal: bool`. When set, it:
   - keeps waiting while `runtime.jobs()` has running background work, not only subagents;
-  - returns `Done` when `goal_checkin_wait(false)` is `Some(0)`;
+  - returns `Done` when `goal_checkin_wait(false)` is `Some(0)`. A wait started in `after_turn` makes
+    this reachable before any `take_step`;
   - folds the check-in wait into its sleep (capped at its 100 ms poll as today).
 
   `settle` passes `involved` from `handle_message`. The goal loop calls `next_goal_step(true)`:
@@ -184,13 +194,15 @@ validation next to `max_turns`'s.
 
 ## Implementation Steps
 
-1. `fontaine-tools/src/jobs.rs`: `Jobs::running_background()`, with a unit test that a foreground
+1. `fontaine-tools/src/jobs.rs`: `Jobs::running_background()` and `JobInfo.description`, with a unit test that a foreground
    job is excluded and a monitor and a promoted job are included.
 2. `fontaine-core/src/config.rs`: `checkin_minutes` in `GoalSection`/`Goal`, validation and
-   default; extend the `config_scope.rs:671` table test row if needed.
+   default, and the `[goal]` merge (~`config.rs:3407`); a `goal.checkin_minutes` row in
+   `fontaine-core/src/config_catalog.rs` next to the rows at `:580-584`; extend the
+   `config_scope.rs:671` table test row if needed.
 3. `fontaine-core/src/goal.rs`:
    - `Wait`, `idle_checkins`, `Due`, `CheckIn`, `take_step`, `checkin_wait`, `IDLE_CHECKINS`,
-     `GoalCaps.checkin`;
+     `GoalCaps.checkin`, `after_turn(end, work_running, now)`;
    - `progress_actions`;
    - `GoalVerdict.waiting_on_user`;
    - `PauseReason::{WaitingOnUser(String), BackgroundWait}` with `Display`;
@@ -199,23 +211,27 @@ validation next to `max_turns`'s.
 5. `fontaine-core/src/agent/goal.rs`: `background_work`, `next_goal_step(idle)`,
    `goal_checkin_wait`, `checkin_prompt`; ledger `GoalEvent::Paused` with the reason for the two
    new pauses.
-6. `fontaine-tui/src/ui/goal.rs`, `ui/mod.rs`: `Due` handling, the check-in turn and notice, and
+6. `fontaine-tui/src/ui/goal.rs`, `ui/mod.rs`, `ui/turn.rs`: `Due` handling, `goal_turn` taking a prompt, the check-in turn and notice, and
    the tick.
 7. `fontaine/src/headless.rs`: `wait_for_news(goal)`, the check-in turn and `IdleExhausted` → pause.
-8. Update the existing `next_step` call sites in `fontaine-core/tests/goal.rs`.
+8. Update the existing `next_step` call sites in `fontaine-core/tests/goal.rs` and its
+   `runtime.next_goal_step()` callers (lines 973, 1067, 1120, 1126, 1277, 1280, 1324), and the
+   `after_turn` callers for the new parameters.
 9. Docs (below) and the Decisions lines in `tasks/fontaine_harness_plan.md` (Agents subsection,
    at its end).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/jobs.rs`
-- `rust/fontaine-core/src/config.rs`
+- `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/config_catalog.rs`
 - `rust/fontaine-core/src/goal.rs`
 - `rust/fontaine-core/src/agent/goal.rs`
 - `rust/fontaine-core/prompts/goal_evaluator.md`
 - `rust/fontaine-core/tests/goal.rs`
-- `rust/fontaine-tui/src/ui/goal.rs`, `rust/fontaine-tui/src/ui/mod.rs`
-- `rust/fontaine/src/headless.rs`, `rust/fontaine/tests/goal_headless.rs`
+- `rust/fontaine-tui/src/ui/goal.rs`, `rust/fontaine-tui/src/ui/mod.rs`,
+  `rust/fontaine-tui/src/ui/turn.rs`
+- `rust/fontaine/src/headless.rs`, `rust/fontaine/tests/goal_headless.rs`,
+  `rust/fontaine/tests/background_jobs.rs`
 - `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`
 - `tasks/fontaine_harness_plan.md`
 
@@ -226,10 +242,6 @@ validation next to `max_turns`'s.
   met*, which is true.
 - **Repeated-reason detection** (issue's fix 2, second option) needs a fuzzy similarity threshold.
   That is nondeterministic in practice and hard to test. The flag covers the same case explicitly.
-- **Classifying shell polls as read-only** would need reading shell arguments for progress, which
-  is regex-adjacent. The pre-classifier is a permission tool, not a progress meter.
-- **Headless pauses after the idle cap** instead of waiting forever. A `-p` run has no user to
-  send the next prompt, so an untimed monitor would otherwise hang the run.
 
 ## Decisions
 
@@ -257,11 +269,17 @@ validation next to `max_turns`'s.
 
 - `docs/tui.md` "Goals":
   - a **Background work** paragraph on deferral, check-ins, the idle cap and `checkin_minutes`;
+  - the existing line that only subagents make the goal wait (`tui.md:1265`) extended to background
+    jobs, or folded into that paragraph;
   - the no-progress bullet reworded ("8 verdicts in a row after turns that made no call other
     than reads and monitor starts");
   - a new pause bullet for the evaluator finding it waits for you.
-- `docs/headless.md` "Goals": headless waits for background jobs while a goal runs, delivers
-  check-ins while waiting, and pauses after the third.
+- `docs/headless.md`:
+  - "Goals": headless waits for background jobs while a goal runs, delivers check-ins while
+    waiting, and pauses after the third. Both new pause reasons (waiting for you; background wait)
+    join the pause list at `headless.md:114-115`.
+  - `headless.md:164` "Background jobs are not waited for" gets an exception while a goal is
+    active.
 - `docs/configuration.md` `[goal]`: the `checkin_minutes` row and the reworded no-progress note.
 
 ## Testing Strategy
@@ -281,7 +299,8 @@ Unit tests (`rust/fontaine-core/tests/goal.rs`, `SessionGoal` with an injected `
 - **Regression for #648:** `not_met` with `waiting_on_user` pauses with `WaitingOnUser`, takes
   no turn and is recorded. With `met` the flag is ignored.
 - Evaluator: a mock answer with and without `waiting_on_user` parses (default `false`).
-- Runtime: a monitor job started with `Jobs` on a long-sleeping process makes
+- Runtime (in `rust/fontaine-core/tests/goal.rs`, following the job-start pattern of
+  `rust/fontaine-core/tests/scanner.rs:277-295`): a monitor job started with `Jobs` on a long-sleeping process makes
   `next_goal_step(true)` return `None` after an answered turn, and a check-in prompt lists it as
   `monitor <id>: …`. This uses a real child process and pins the #648 path where a monitor didn't
   defer.
@@ -290,8 +309,12 @@ Unit tests (`rust/fontaine-core/tests/goal.rs`, `SessionGoal` with an injected `
 Integration (`rust/fontaine/tests/goal_headless.rs`, deterministic models through `fontaine -p`):
 
 - A goal whose evaluator answers `not_met` with `waiting_on_user` exits 1. It prints `fontaine:
-  goal paused: it is waiting for you …`, and exactly one goal turn ran.
-- A goal run with a background shell job still running waits for its end note before evaluating.
+  goal paused: it is waiting for you …`, and no goal turn ran after the set turn (two model
+  requests: the set turn and the evaluator).
+- In `rust/fontaine/tests/background_jobs.rs` (Linux-only, with its existing routed-endpoint
+  infrastructure): a goal run with a background shell job still running waits for its end note
+  before evaluating. The job must outlive the answer, so the test holds it past the
+  `NotificationStage` drain edge (`background_jobs.rs:44-50`).
 
 ## Open Questions
 
