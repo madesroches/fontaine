@@ -294,8 +294,8 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 - A `shell` allow rule matches only one simple command whose words are all literal and whose words
   equal the rule (or start with it, for a trailing ` *`). One leading `cd <dir> &&` is tolerated
   when `<dir>` is a literal path inside the workspace roots: the rule then judges the command after
-  it. Other chains, pipes, redirections, substitutions, globs and variables never match. Per-subcommand rules as Claude Code has them are
-  not offered.
+  it. Other chains, pipes, redirections, substitutions, globs and variables never match.
+  Per-subcommand rules as Claude Code has them are not offered.
 - Path deny and ask rules match the path as written and the resolved path, so a symlink into a
   denied path is denied. Path allow rules match only the resolved path, so an allow on a symlinked
   alias does not apply.
