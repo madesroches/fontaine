@@ -63,7 +63,7 @@ Modules:
   Parse errors are typed (`TicketError`) because the CLI maps them to messages.
 - `inbox.rs` — `RemoteInbox`, the server side state: the secret (stored only as a SHA-256 hash
   in memory), expiry, `consumed` flag, per-node bad-attempt counters, and a
-  `seen: HashMap<(node, message_id), Response>` holding the stored original `Accepted` response for retry idempotency, cleared when a newer ticket revokes the live secret, so a late retry gets `BadTicket`. `Delivery` trait (implemented by the
+  `seen: HashMap<(node, message_id), Response>` holding the stored original `Accepted` response for retry idempotency, cleared, together with the old secret hash (consumed or not), whenever any new ticket is minted, so a late retry gets `BadTicket`. `Delivery` trait (implemented by the
   TUI host): `fn accept(&self, from: Sender, message_id: String, text: String) -> Result<(),
   DeliveryError>` with `DeliveryError = Full | Closed`, and `fn on_reject(&self, reason: Reason,
   node: Sender)` so rejected requests reach the host's audit.
@@ -87,19 +87,19 @@ relays; documented metadata exposure) or `disabled` (direct connections only). T
   a late retry gets `Expired`/`BadTicket` (documented). `Reused` applies only to a different
   `message_id` on a consumed, still-live secret. Further messages need a new ticket
   (`/remote-inbox ticket`), which is what "one-shot" means.
-- `/remote-inbox ticket` mints a new ticket and revokes the previous unconsumed one (a single
-  live secret). After consumption or expiry the endpoint stays up until `off` or session end and
+- `/remote-inbox ticket` mints a new ticket and revokes the previous one, consumed or not (a single
+  live secret); minting any ticket clears `seen` and the old secret hash. After consumption or expiry the endpoint stays up until `off` or session end and
   the status indicator shows "inbox: no live ticket".
 - Checks run in this order: secret, then expiry, then reuse, so a wrong secret learns nothing
   about the ticket's state. Comparison is constant-time. After 5 bad attempts the server stops
   accepting from that remote node id for 30 s (per node, not global, so a stranger cannot lock
-  out the legitimate sender).
+  out the legitimate sender). The per-node map is bounded: entries expire after the 30 s window and the map is capped.
 - Expiry is checked on the server clock (injectable for tests).
 - The endpoint is per session and is torn down on exit, `/clear`, `--resume` switch and
   `/remote-inbox off`, so a stale ticket cannot reach a later session (the endpoint key is minted
   fresh per enable, never persisted).
 - Ticket secrecy: the ticket and the output of `/remote-inbox on|ticket` are shown once through a transient display path that is not recorded (not `transcript.notice`, which reaches `/export`, `/transcript` and scrollback) and never written to the ledger, audit log, prompt history, transcript export or
-  telemetry. A remote `/remote-inbox ticket` is refused with a message, since the sender cannot
+  telemetry. A remote `/remote-inbox ticket` or `on` is refused with a message, since the sender cannot
   read local output anyway. `fontaine send <ticket>` exposes the ticket to shell history and the
   process list; the CLI therefore also reads it from stdin (`--ticket-stdin`) or the
   `FONTAINE_TICKET` env var, documented.
@@ -120,9 +120,9 @@ each is its own submission carrying its remote identity. `Steering::retract()` r
 entries in arrival order as separate submissions (`end_of_turn` today returns a single `EndOfTurn`; its return type changes to carry both the restore text and the remote submissions, e.g. a pair or a new variant), including after an interrupted or failed turn:
 the post-interrupt drain point is the `end_of_turn` call in `converse`/`harness_turn_tail`, which
 submits the remote entries even when the typed ones go to `EndOfTurn::RestoreToInput`. Only the
-restore-to-draft paths (`EndOfTurn::RestoreToInput`, `edit_queued` in `ui/mod.rs`, `serve_queued`
+restore-to-draft paths (`EndOfTurn::RestoreToInput`, `restore_block` in `ui/turn.rs`, `edit_queued` in `ui/mod.rs`, `serve_queued`
 in `ui/commands/context.rs`) filter remote entries out and re-queue them in `Steering` instead of
-restoring them, so remote text never enters the human's input. `queued()`/display mark remote
+restoring them, so remote text never enters the human's input. `restore_block` restores the raws of all `pending` submissions, so remote submissions in `pending` are never restored to the draft: on interruption or failure they are re-queued into `Steering`, and the `Break` paths that drop `pending` re-queue them too, or audit-drop them if the session is ending. `queued()`/display mark remote
 entries as remote, and remote lines are never added to local prompt history.
 
 `/clear` and a resume switch call a new `Steering::drain_remote` (not `retract`) at their two call
@@ -130,6 +130,7 @@ sites, before endpoint teardown and before the idle drain: it DROPs already-acce
 entries still queued, so they are never delivered across a context boundary; each gets an audit
 drop record and a transcript notice (the sender's `accepted` meant queued, documented).
 
+- **Wake-up**: the idle `Input` wake-up is edge-triggered, so the idle loop also checks `Steering` for deliverable remote entries before awaiting input and after each modal/dialog/`serve_queued` exit (level-triggered, like the `has_notifications` check); modal and dialog loops that decline an entry leave it queued for that check.
 - **Dispatch**: a remote line runs through the same dispatch as a typed line. While idle it
   arrives through a new `Input` variant (wake-up only, carries no text, see above) with a single injection point that
   delivers the line to whichever loop is awaiting input, without touching the input buffer, draft or
@@ -140,8 +141,7 @@ drop record and a transcript notice (the sender's `accepted` meant queued, docum
   when its trimmed, case-insensitive text exactly equals one of that dialog's option labels or hotkey
   letters (the same options a local user could pick). `accept` always enqueues and acks "queued"; the cap applies at enqueue only. When the dialog
   consumes a matching line, the injection point takes that entry out of `Steering`.
-  Only remote lines accepted after the dialog opened can answer it; entries already queued in
-  `Steering` when it opens stay ordinary queued messages. Anything else stays queued as a normal
+  Only remote lines accepted after the dialog opened can answer it: `Steering` stamps each entry with a sequence number and the dialog records the watermark at open; entries at or below it stay ordinary queued messages. While a dialog is open, steer does not deliver dialog-eligible entries into a tool result (they are held for the dialog). When a dialog consumes a line, the host writes a `remote_inbox` audit record (rule `dialog_answer`) with node id, message id and dialog kind. Anything else stays queued as a normal
   message behind the dialog, and the dialog stays pending. Mid-turn, plain messages
   ride the next tool result (wrapped with a one-line provenance header
   `[Remote message from <short node id>]`); slash, skill and `!` lines are queued as
@@ -182,7 +182,7 @@ drop record and a transcript notice (the sender's `accepted` meant queued, docum
   Registered in `fontaine-tui/src/commands.rs` (`Command` variant, `parse_command`, `BUILTINS`,
   `main_only`, `runs_mid_turn`: it is in the immediate-UI set; its handler is synchronous and spawns the async endpoint start as a task (update the `runs_mid_turn` doc comment in `commands.rs`, which says handlers touch only UI state); remote slash lines follow the same `runs_mid_turn` rules as typed ones, so the immediate set runs immediately; the `commands.rs` test
   `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` needs updating; a remote
-  `/remote-inbox off` and `status` are allowed, only `ticket` is refused) with a `dispatch_command` arm in `fontaine-tui/src/ui/mod.rs` and
+  `/remote-inbox off` and `status` are allowed, `ticket` and `on` are refused; `on` while already enabled is a no-op that shows status) with a `dispatch_command` arm in `fontaine-tui/src/ui/mod.rs` and
   an entry in the `docs/tui.md` command list and help. Never enabled by config or project scope;
   no key enables the inbox. Headless runs cannot enable it, and `Delivery` is implemented by
   the TUI only.
@@ -272,9 +272,8 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
   `ci.yml` step set, and the Decisions entry at the end of the correct subject subsection),
   `docs/remote-inbox.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/agents.md`,
   `docs/tui.md` (command list and help), `docs/guardian.md`, `docs/afk.md`, `docs/terminal.md`,
-  `docs/configuration.md` (`[remote] relay`, user-scope-only)
-  and `docs/tui.md` (each describes the `/guardian-disable` terminal confirmation; say it may be
-  remote), `tasks/fontaine_harness_plan.md` Decisions line ~744-745 (the `/guardian-disable` deviation), `SECURITY.md` (describes the guardian-disable
+  `docs/configuration.md` (`[remote] relay`, user-scope-only); the `/guardian-disable` docs
+  (`tui.md`, `guardian.md`, `afk.md`, `terminal.md`) say the confirmation may be remote, `tasks/fontaine_harness_plan.md` Decisions line ~744-745 (the `/guardian-disable` deviation), `SECURITY.md` (describes the guardian-disable
   confirmation), `CHANGELOG.md`
 
 ## Trade-offs
@@ -313,6 +312,9 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - 2026-11-14: AFK: a remote line answers an open dialog only when its trimmed, case-insensitive text equals an option label or hotkey letter; otherwise it is queued behind the dialog, which stays pending; one injection point serves every awaiting input loop.
 - 2026-11-14: AFK: on `/clear` and resume switch, already-accepted remote entries still queued in `Steering` are dropped, never delivered across a context boundary, each with an audit drop record and a transcript notice (the sender's `accepted` meant queued); this is a separate drop (`Steering::drain_remote`), not a `retract()` caller.
 - 2026-11-14: AFK: only remote lines accepted after a dialog opened can answer it; entries already queued in `Steering` when it opens stay ordinary queued messages (a mid-turn `y` never approves a later dialog).
+- 2026-11-14: AFK: `restore_block` never restores remote submissions in `pending` to the draft; on interruption/failure they are re-queued into `Steering`, and `Break` paths that drop `pending` re-queue them, or audit-drop them if the session is ending.
+- 2026-11-14: AFK: the idle wake-up is level-triggered: the idle loop checks `Steering` for deliverable remote entries before awaiting input and after every modal/dialog/`serve_queued` exit; loops that decline an entry leave it queued for that check.
+- 2026-11-14: AFK: remote `/remote-inbox on` is refused like `ticket`; any new ticket clears `seen` and the old secret hash; the per-node lockout map expires entries after 30 s and is capped; a dialog-consumed remote line is audited as `remote_inbox` rule `dialog_answer`; post-open eligibility is a `Steering` sequence watermark and dialog-eligible entries are held while a dialog is open.
 - 2026-11-14: AFK: relay mode is the user-scope-only key `[remote] relay` (`default` = n0 relays, `disabled` = direct only), default `default`; it never enables the inbox.
 
 ## Documentation
