@@ -36,7 +36,7 @@ wiring, not a wire change.
 | `trigger_tokens` | `trigger: {type: "input_tokens", value}` | `100000` |
 | `keep` | `keep: {type: "tool_uses", value}`, newest tool uses kept | `3` |
 | `clear_at_least_tokens` | `clear_at_least: {type: "input_tokens", value}`: skip a clearing that frees less, since each clearing invalidates the cached prefix | `20000` |
-| `exclude_tools` | tool names whose results are never cleared | unset: `["board_show", "board_update", "memory"]` (state-carrying tools in `fontaine-tools/src/descriptor.rs`); `[]`: none. MCP entries use the full `mcp__<server>__<tool>` name |
+| `exclude_tools` | tool names whose results are never cleared | unset: `["board_show", "board_update", "memory", "todo_write"]` (state-carrying tools in `fontaine-tools/src/descriptor.rs`); `[]`: none. MCP entries use the full `mcp__<server>__<tool>` name |
 
 `trigger` and `keep` are the API defaults; `clear_at_least_tokens = 20000` is Fontaine's choice.
 `clear_tool_inputs` is left unset (API default: inputs kept). No `clear_thinking_20251015` edit is
@@ -54,16 +54,18 @@ edit object; it is the unit-tested seam. `AccountClient` gains
 `fn provider_options(&self) -> Option<ProviderOptions>` (default `None`); `anthropic::Connected`
 returns `AnthropicOptions::default().context_management(ContextManagement::new(vec![edit]))` when
 enabled. Because rig does not send the beta header, `connect` calls
-`config.with_beta("context-management-2025-06-27")` when enabled; that client config is shared by
-`completion` and `guardian_completion`, so the guardian also carries the header, harmless without
-the body field. `finish_builder` (main agent) and `build_child_agent` (subagent) attach it with
-`provider_option`/`provider_options`; `guardian_completion` and every side call never get it.
+`config.with_beta(CONTEXT_MANAGEMENT_BETA)` (rig's constant, rig-core `providers/anthropic/extension.rs`)
+when enabled; that client config is shared by every completion from the account, so the
+`anthropic-beta` header rides on all of them (main, subagents, guardian, side calls), harmless
+without the body field. `finish_builder` (main agent) and `build_child_agent` (subagent) attach it with
+`provider_option`/`provider_options`; only the main agent and subagents get `context_management`
+in the body; `guardian_completion` and every side call never do.
 
 ## Implementation Steps
 1. `rust/fontaine-core/src/config.rs`: `ContextEditing` struct, `Account.context_editing`,
    `Account::new`, `check_account` rules (the struct derives `JsonSchema`).
 2. `providers/mod.rs`: `Provider::accepts_context_editing` (default false), `AccountClient::provider_options`, and a `ModelHandle` accessor forwarding it (`models.rs` keeps `client` private).
-3. `providers/anthropic.rs`: accept the key; `connect` calls `with_beta("context-management-2025-06-27")` when enabled; `Connected` stores the edit and implements `provider_options`.
+3. `providers/anthropic.rs`: accept the key; `connect` calls `with_beta(CONTEXT_MANAGEMENT_BETA)` (rig's constant, not a repeated literal) when enabled; `Connected` stores the edit and implements `provider_options`.
 4. New `providers/context_editing.rs`: `edit_json`, defaults, exclude-tool default resolution.
 5. `agent/build.rs` `finish_builder` (main agent) and `child_runner.rs` `build_child_agent` (subagent): attach the model's provider options; a child gets the option only through its own account.
 6. Docs (below), `CHANGELOG.md`, and a Decisions line in the master plan.
@@ -102,7 +104,7 @@ the body field. `finish_builder` (main agent) and `build_child_agent` (subagent)
   through the built agent (or a `fontaine -p` run), not `completion.call` directly, since the option
   is attached at the agent builders. With `enabled`, the Messages request body carries
   `context_management.edits[0]` with the expected fields and the `anthropic-beta` header holds
-  `context-management-2025-06-27`; disabled sends neither. Separately assert that
+  `context-management-2025-06-27` (the literal appears only here, as the expected value); disabled sends neither. Separately assert that
   `guardian_completion` sends no `context_management` in the body.
 - Run `fontaine-evals cache-bench` once manually with it on and off for the measurement the
   issue asks for; record the result in the PR (not a merge gate).
