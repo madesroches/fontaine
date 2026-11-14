@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use fontaine_tools::descriptor::{Specifier, find, is_shell_class};
 use fontaine_tools::names::{is_builtin, is_mcp};
-use fontaine_tools::preclassify::{ShellAnalysis, analyze, program_name, raw_mentions_word};
+use fontaine_tools::preclassify::{
+    Environment, ShellAnalysis, analyze, program_name, raw_mentions_word,
+};
 use fontaine_tools::scope::{Scope, glob_target};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::Value;
@@ -466,12 +468,24 @@ fn shell_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
     };
     let analysis = analyze(command);
     if posture == Posture::Allow {
-        return analysis.simple.as_ref().is_some_and(|argv| {
+        let matches_rule = |argv: &Vec<String>| {
             if spec.wildcard {
                 argv.starts_with(&spec.words)
             } else {
                 *argv == spec.words
             }
+        };
+        if analysis.simple.as_ref().is_some_and(matches_rule) {
+            return true;
+        }
+        // Models habitually prefix `cd <repo> &&`; the cd stays inside the roots, so the rule
+        // judges the command after it.
+        return analysis.after_cd.as_ref().is_some_and(|after| {
+            let env = Environment {
+                scope: call.scope,
+                cwd: string_arg(call.args, "cwd"),
+            };
+            env.contains_dir(&after.dir) && matches_rule(&after.argv)
         });
     }
     prefix_anywhere(&analysis, &spec.words) || cannot_tell(&analysis, command, &spec.words)

@@ -218,7 +218,7 @@ and `sudo git push -f` hit `deny shell(git push)`),
 and a command that fails to parse, or puts a substitution or variable in command position, matches every
 deny/ask `shell` rule whose first word appears in it (the critical-path posture). A `shell` allow rule
 matches only a command the Tier-0.5 parser accepts as one simple command (no chaining, pipes,
-redirections, substitution, globs) whose argument words are all literal and whose argv matches; a non-literal word never matches; anything else falls through. Path deny/ask
+redirections, substitution, globs), optionally after one leading `cd <literal dir> &&` whose dir is inside the roots, whose argument words are all literal and whose argv matches; a non-literal word never matches; anything else falls through. Path deny/ask
 rules match the given path and the resolved path; path allow rules match the resolved path only.
 
 **Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask,

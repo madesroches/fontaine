@@ -184,6 +184,11 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A `shell` allow rule (a user rule, an agent type's `shell(...)` entry such as the `reviewer`'s,
+  a skill grant or a hook allow) now also matches one leading `cd <dir> &&` whose directory is
+  inside the workspace roots, judging the command after it (#635). `cd <repo> && gh issue view 627`
+  was refused for the `reviewer`; `;`, `||`, a second command, a redirect or a `cd` outside the
+  roots still do not match.
 - `fontaine-evals cache-bench` now accepts a relative `--fontaine` or `--claude` path (#498). The
   bench runs each side from a temporary fixture directory, so a path such as `target/debug/fontaine`
   failed with "cannot run"; it is now resolved against the current directory first.

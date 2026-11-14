@@ -1076,7 +1076,7 @@ impl PermissionPipeline {
                     tracing::debug!(hook = %id, "a project hook's allow is ignored");
                 }
                 // Like an allow rule, it acts only where its matcher would match as an allow rule
-                // does: exactly one simple command, not a chain.
+                // does: exactly one simple command (after at most one workspace `cd <dir> &&`), not a chain.
                 Some(HookPermission::Allow) if covers(&args, Posture::Allow) => {
                     let narrow = rule
                         .as_ref()
