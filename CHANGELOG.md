@@ -8,6 +8,8 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP large-result warning (#539): a tool or resource result over 10,000 tokens that is still under
+  the output limit now raises a warning naming the tool and its size, as Claude Code does.
 - Cache-write lifetime split (#631): when an Anthropic reply splits its cache writes into 5-minute
   and 1-hour tokens, the usage ledger keeps both, `/cost` adds `write 5m` and `write 1h` columns
   (only when a split was reported), and telemetry gains `cacheWrite5m` and `cacheWrite1h` token
