@@ -989,6 +989,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-05: AFK (#431): No `AgentRuntime::set_mode`: callers use `runtime.state.set_mode` (as `/plan` already does), `review_afk_stop` drops its rebuild, and `refresh_before_turn` is the only AFK-driven prompt rebuild site; a forwarding wrapper and a second rebuild site add nothing the pre-turn refresh does not already cover.
 - 2026-11-07: `/bug` (#462): `draft_bug_report` gets a new `Tier::BugDraft` (never guardian-judged after the floor) and `/bug` submissions are audited under a new `Tier::BugReport` (tool label `bug`); the draft tool only writes a redacted file to the data dir, so it is a sixth never-guardian-judged exception rather than a coordination tool, and submission stays user-only.
 - 2026-11-13: (#582) `HumanChannel::Delegate`: a host-delegated approver never offers Allow-always and cannot persist rules beyond the session.
+- 2026-11-14: (#635) An allow-posture `shell` match tolerates one leading in-roots `cd <literal> &&`; `;`, `||`, `&`, `|` and a second `cd` stay unmatched; reason: models habitually prefix `cd <repo>`.
 
 ### Project
 
