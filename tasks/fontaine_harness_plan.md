@@ -852,6 +852,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-13: (#582) Valid Claude flags Fontaine does not implement are classed unsupported and exit 2.
 - 2026-11-13: (#582) An empty SDK system prompt keeps Fontaine's base prompt, unlike Claude Code's no-preset meaning, because the base layer carries the roots, scratch and denial guidance.
 - 2026-11-13: (#582) SDK `set_model` is applied between turns, since switching the model rebuilds the agent and needs the idle runtime; sent during a turn it is answered when the turn ends. A prompt the floor forces (protected path, critical deletion) or a rule asks for reaches the `canUseTool` delegate as it would reach a person, with no session allow offered; only a floor deny, a guardian deny and a fail-closed guardian never reach it.
+- 2026-11-14: (#428) A `--afk` stream-json run that ends at input EOF emits the assessed `afk` object once, as a new `afk_report` event after the last `result` (`schema_version` stays 1: additive, as `usage_paused` was); none follows when an earlier `result` already carried the assessed report. Reason: the one-per-run assessment runs after the last `result`, so no streamed line carried it.
 
 ### MCP
 

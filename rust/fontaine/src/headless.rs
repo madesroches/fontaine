@@ -81,6 +81,9 @@ pub(crate) trait EventSink: Send {
     /// What the usage-pause observer calls; it is shared with the run's tasks, so it cannot be a
     /// borrow of the sink.
     fn usage_observer(&self, session_id: &str) -> Option<PauseObserver>;
+    /// The assessed report of a stream that ended after its last `result`, which could only say
+    /// the assessment was pending.
+    fn afk_report(&mut self, _session_id: &str, _report: &AfkReport) {}
     /// The input could not be read. The run ends after this.
     fn input_failed(&mut self, _session_id: &str, _message: &str) {}
 }
@@ -295,6 +298,14 @@ impl EventSink for HeadlessV1Sink {
                 info.usage_limit,
             ));
         }
+    }
+
+    fn afk_report(&mut self, session_id: &str, report: &AfkReport) {
+        self.emit(event(
+            "afk_report",
+            session_id,
+            json!({ "afk": afk::result_object(report) }),
+        ));
     }
 
     fn usage_observer(&self, session_id: &str) -> Option<PauseObserver> {
@@ -1755,6 +1766,7 @@ pub(crate) async fn run_session<I: InputSource>(
         && let Some(last) = last.as_mut()
         && let Some(report) = final_afk_report(runtime).await
     {
+        sink.afk_report(&session_id, &report);
         last.afk = Some(report);
     }
     // The run was the AFK stretch: close it in the ledger.
