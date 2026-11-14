@@ -417,6 +417,14 @@ async fn there_is_no_bypass_mode() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn there_is_no_plan_mode() {
+    let s = Sandbox::new();
+    let out = s.run(&["-p", "--permission-mode", "plan", "hi"]).await;
+    assert_eq!(out.code, Some(2));
+    assert!(out.stderr.contains("plan"), "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_prompt_with_stream_json_input_is_a_usage_error() {
     let s = Sandbox::new();
     let out = s
