@@ -170,6 +170,39 @@ fn shell_allow_never_matches_a_compound_command() {
 }
 
 #[test]
+fn shell_allow_tolerates_one_workspace_cd_prefix() {
+    let f = Fixture::new();
+    let work = f.world.work.to_string_lossy().replace('\\', "/");
+    let outside = f
+        .world
+        .work
+        .parent()
+        .expect("the work dir has a parent")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let rule = "shell(gh issue view *)";
+    let allow = |command: &str| f.hit(rule, "shell", shell(command), Posture::Allow);
+    assert!(allow(&format!("cd '{work}' && gh issue view 627")));
+    assert!(allow("cd sub/dir && gh issue view 627"));
+    assert!(!allow(&format!("cd '{outside}' && gh issue view 627")));
+    assert!(!allow(&format!("cd '{work}' && gh issue view 1 && rm x")));
+    assert!(!allow(&format!("cd '{work}' && rm x")));
+    assert!(!allow(&format!("cd '{work}'; gh issue view 1")));
+    assert!(!allow(&format!("cd '{work}' || gh issue view 1")));
+
+    // A cwd outside the roots gives a relative cd no tolerance.
+    let args = json!({"command": "cd sub && gh issue view 1", "cwd": outside});
+    assert!(!f.hit(rule, "shell", args, Posture::Allow));
+
+    // Deny and ask already match anywhere in a compound command.
+    let command = format!("cd '{work}' && rm x");
+    for posture in [Posture::Deny, Posture::Ask] {
+        assert!(f.hit("shell(rm *)", "shell", shell(&command), posture));
+        assert!(!f.hit("shell(gh *)", "shell", shell(&command), posture));
+    }
+}
+
+#[test]
 fn path_rules_match_the_resolved_path_and_symlinks_cannot_dodge_a_deny() {
     let f = Fixture::new();
     let work = &f.world.work;

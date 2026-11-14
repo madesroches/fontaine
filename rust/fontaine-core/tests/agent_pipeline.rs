@@ -205,8 +205,8 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
         &rig.check("read", json!({"path": "private.txt"})).await
     ));
 
-    // The built-in reviewer's entries: listed commands pass, chains, redirections, plain
-    // `cargo fmt` and unlisted commands are refused.
+    // The built-in reviewer's entries: listed commands pass, chains (except one leading
+    // workspace `cd <dir> &&`), redirections, plain `cargo fmt` and unlisted commands are refused.
     let reviewer = fontaine_agents::registry::AgentTypes::builtin()
         .get("reviewer")
         .unwrap()
@@ -228,7 +228,27 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
     assert!(allowed(
         &rig.check_as(&id, "shell", shell("git diff HEAD~1")).await
     ));
-    for command in ["git diff && rm x", "git diff > x", "cargo fmt", "git push"] {
+    let root = rig.work().to_string_lossy().replace('\\', "/");
+    // `gh` is not on the fast path, so it may still be asked about; what matters is that the
+    // child's restriction no longer refuses it.
+    rig.check_as(
+        &id,
+        "shell",
+        shell(&format!("cd '{root}' && gh issue view 627")),
+    )
+    .await;
+    assert_ne!(
+        rig.audit().last().unwrap().rule.as_deref(),
+        Some("agent tools")
+    );
+    let cd_rm = format!("cd '{root}' && rm -rf x");
+    for command in [
+        "git diff && rm x",
+        "git diff > x",
+        "cargo fmt",
+        "git push",
+        cd_rm.as_str(),
+    ] {
         assert!(
             !allowed(&rig.check_as(&id, "shell", shell(command)).await),
             "{command}"

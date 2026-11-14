@@ -44,6 +44,12 @@ impl SimpleCommand {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CdPrefixed {
+    pub dir: String,
+    pub argv: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ShellAnalysis {
     /// False when the parser rejected the text.
@@ -55,6 +61,9 @@ pub struct ShellAnalysis {
     /// redirection, no assignment prefix, no background marker, no substitution, and every word
     /// literal.
     pub simple: Option<Vec<String>>,
+    /// The text is exactly `cd <literal dir> && <one simple command>`; allow rules may match the
+    /// command after the `cd`.
+    pub after_cd: Option<CdPrefixed>,
     /// A runner's command-line argument held more than one simple command (`bash -c 'a; b'`).
     pub nested_chain: bool,
     /// Some construct was not followed (arithmetic, a parameter expansion that may hold a
@@ -108,8 +117,10 @@ fn analyze_at(command: &str, depth: usize) -> ShellAnalysis {
     };
     walk.program(&program);
     analysis.simple = simple_of(&program);
+    analysis.after_cd = cd_prefixed_of(&program);
     if analysis.nested_chain {
         analysis.simple = None;
+        analysis.after_cd = None;
     }
     analysis
 }
@@ -499,16 +510,47 @@ fn has_brace_pattern(raw: &str) -> bool {
 }
 
 fn simple_of(program: &Program) -> Option<Vec<String>> {
+    let and_or = sole_and_or(program)?;
+    if !and_or.additional.is_empty() {
+        return None;
+    }
+    simple_argv(&and_or.first)
+}
+
+/// `cd <dir> && <one simple command>` and nothing else, so an allow rule can look past the `cd`.
+fn cd_prefixed_of(program: &Program) -> Option<CdPrefixed> {
+    let and_or = sole_and_or(program)?;
+    let [brush_parser::ast::AndOr::And(rest)] = and_or.additional.as_slice() else {
+        return None;
+    };
+    let cd = simple_argv(&and_or.first)?;
+    let [name, dir] = cd.as_slice() else {
+        return None;
+    };
+    if name != "cd" || dir.is_empty() || dir.starts_with('-') {
+        return None;
+    }
+    Some(CdPrefixed {
+        dir: dir.clone(),
+        argv: simple_argv(rest)?,
+    })
+}
+
+/// The one `&&`/`||` list of a program made of a single foreground, unbackgrounded list.
+fn sole_and_or(program: &Program) -> Option<&AndOrList> {
     let [list] = program.complete_commands.as_slice() else {
         return None;
     };
     let [item] = list.0.as_slice() else {
         return None;
     };
-    if !matches!(item.1, SeparatorOperator::Sequence) || !item.0.additional.is_empty() {
+    if !matches!(item.1, SeparatorOperator::Sequence) {
         return None;
     }
-    let pipeline = &item.0.first;
+    Some(&item.0)
+}
+
+fn simple_argv(pipeline: &brush_parser::ast::Pipeline) -> Option<Vec<String>> {
     if pipeline.bang || pipeline.timed.is_some() {
         return None;
     }
@@ -565,6 +607,12 @@ impl Environment<'_> {
             None => Some(self.scope.primary().to_path_buf()),
             Some(cwd) => self.scope.find(cwd).ok().map(|(_, path)| path),
         }
+    }
+
+    /// Whether `text`, resolved against the working directory, lies inside a root. The target
+    /// need not exist.
+    pub fn contains_dir(&self, text: &str) -> bool {
+        self.base().is_some_and(|base| self.in_scope(&base, text))
     }
 
     fn in_scope(&self, base: &Path, text: &str) -> bool {
@@ -1297,6 +1345,41 @@ mod tests {
             "if true; then ls; fi",
         ] {
             assert_eq!(analyze(text).simple, None, "{text}");
+        }
+    }
+
+    #[test]
+    fn only_a_literal_cd_and_one_simple_command_is_cd_prefixed() {
+        for (text, dir, argv) in [
+            ("cd /x && git status", "/x", vec!["git", "status"]),
+            ("cd x && git status -s", "x", vec!["git", "status", "-s"]),
+        ] {
+            let found = analyze(text).after_cd.expect(text);
+            assert_eq!(found.dir, dir, "{text}");
+            assert_eq!(found.argv, argv, "{text}");
+        }
+        for text in [
+            "cd - && a",
+            "cd -P x && a",
+            "cd && a",
+            "cd a b && a",
+            "cd $X && a",
+            "cd ~ && a",
+            "cd * && a",
+            "cd x; git status",
+            "cd x || git status",
+            "cd x && a && b",
+            "cd x && a | b",
+            "cd x && a > f",
+            "cd x && A=1 a",
+            "cd x && $(a)",
+            "cd x & a",
+            "cd x && cd y && a",
+            "cd x > f && a",
+            "cd x && bash -c 'a; b'",
+            "git status",
+        ] {
+            assert_eq!(analyze(text).after_cd, None, "{text}");
         }
     }
 
