@@ -42,10 +42,11 @@ Core (`fontaine-core`):
   `unreachable_what` and the tracing match in `ask`; `prompt()` handles an empty question (no question is
   asked for this purpose, the transcript is the input), and the 10 s timeout is set via `with_timeout`.
 - The transcript for this purpose excludes tool results: only user and assistant text and tool call names,
-  so the call never sees more than the user and assistant did in the visible conversation. `blocks_of`
-  (`agent/goal.rs` ~775-790) already omits tool results and reduces tool-call arguments to names for
-  `/btw`; a flag on the transcript builder must reach it rather than a second renderer. A test pins the
-  argument stripping.
+  so the call never sees more than the user and assistant did in the visible conversation. `blocks_of`,
+  `render_transcript` and `transcript_of` currently include both tool results (`[Tool result] name\n<text>`)
+  and tool-call arguments (`[Tool call] name {args JSON}`), which `/btw` relies on. The new purpose adds a
+  flag on the transcript builder that reaches `blocks_of` (no second renderer): it drops tool results and
+  reduces calls to their names. `/btw` keeps its current output. A test pins the argument stripping.
 - New `UsageSource::PromptSuggestion` (`usage_ledger.rs`, added last because `index()` is `self as usize`;
   `UsageSource::ALL` grows to 8; the fixed-size `[Bucket; 7]` sites become 8: `usage_ledger.rs` :135
   (`Mutex<[Bucket; 7]>`) and :160 (`snapshot()`), `reports.rs` :758 (`UsageReport.by_source`) and its test
@@ -67,8 +68,8 @@ Core (`fontaine-core`):
   plan; last turn did not finish normally (error, interrupt); fewer than 1 completed turn; the previous
   suggestion was shown and left unused three times in a row (back-off, reset when one is accepted); the
   usage gate is paused; headless runs and child agents never ask. The TUI owns the streak, turn count,
-  last outcome and enabled flag and passes them in `Inputs`. `usage_gate_idle()` waits, so a non-blocking
-  gate-paused accessor is added to `gate.rs` and the check skips when paused. `billed` is passed to
+  last outcome and enabled flag and passes them in `Inputs`. `usage_gate_idle()` waits, so the prepare step
+  calls the existing non-blocking `state.usage_pause().is_paused()` and skips when paused. `billed` is passed to
   `SideQuestion::new` as `/btw` does.
 - Output cleaning (pure function, unit-tested): trim, strip surrounding quotes and a leading "You:"/"User:",
   take the first line, reject empty, longer than 200 chars, starting with `/` or `!` (a suggestion must not
@@ -127,7 +128,7 @@ of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The l
    `config.rs`, catalog rows; update `editable_rows_are_exactly_the_preference_set` and the defaults test in
    `config_catalog.rs`, and `fontaine-core/tests/config.rs`.
 2. `fontaine-core`: `Purpose::PromptSuggestion`, tool-result-free transcript rendering, output cleaning,
-   `should_suggest`, `UsageSource::PromptSuggestion`, the gate-paused accessor, and the prepare/run split
+   `should_suggest`, `UsageSource::PromptSuggestion`, and the prepare/run split
    of `suggest_prompt`.
 3. `fontaine-tui`: `History::completion`; `App` state for suggestion and completion; key handling in
    `app.rs`; `/cost` row in `reports.rs`.
@@ -162,6 +163,8 @@ of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The l
 - 2026-11-13: AFK (#620): model-based autocomplete of text being typed is not implemented; file a follow-up issue.
 - 2026-11-13: Deviation from Claude Code (#620): history ghost-text completion is added (Claude Code has none); recorded in the
   master plan's TUI Decisions with the feature.
+- 2026-11-13: AFK (#620): the transcript flag drops tool results and reduces tool calls to names for the suggestion purpose only; `blocks_of` includes both today, so `/btw` output stays unchanged (the earlier claim that it already omitted them was wrong).
+- 2026-11-13: AFK (#620): no new gate accessor; the prepare step uses the existing public `SessionState::usage_pause().is_paused()`, which does not block.
 
 ## Documentation
 
