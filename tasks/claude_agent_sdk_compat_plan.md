@@ -393,7 +393,8 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   lifted to a shared module) and routes it: a `user` message goes to the input queue, a
   `control_request` to `control.rs`, a `control_response` resolves the pending outbound request
   by `request_id`, and a `control_cancel_request` aborts the matching inbound handler. A
-  malformed or unknown-type line ends the run with `result.subtype =
+  `keep_alive` line is ignored, as in Claude Code. `update_environment_variables` is
+  unsupported and, like any other malformed or unknown-type line, ends the run with `result.subtype =
   error_during_execution`, a stderr reason and exit 1. One writer task owns stdout, so messages
   and control frames never interleave mid-line.
 - **Startup read.** The runtime is built before `headless::run` opens stdin, but callback hooks,
