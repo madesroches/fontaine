@@ -13,6 +13,18 @@ use crate::theme::Theme;
 /// Keys typed ahead must not answer a prompt that appears under them.
 pub(crate) const ANSWER_GRACE: Duration = Duration::from_millis(400);
 
+/// What a remote line may say to answer a y/n confirmation.
+pub(crate) const REMOTE_ANSWERS: [&str; 4] = ["y", "yes", "n", "no"];
+
+/// A remote line's answer to a y/n confirmation: its option words, trimmed, ignoring case.
+pub(crate) fn answer_text(text: &str) -> Option<bool> {
+    match text.trim().to_lowercase().as_str() {
+        "y" | "yes" => Some(true),
+        "n" | "no" => Some(false),
+        _ => None,
+    }
+}
+
 pub enum Block {
     Text(String),
     Bold(String),

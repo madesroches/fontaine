@@ -450,6 +450,8 @@ impl World {
     {
         self.runs.set(self.runs.get() + 1);
         let (keys, rx) = unbounded_channel();
+        let mut options = options;
+        options.wake.get_or_insert_with(|| keys.downgrade());
         let screen = Rc::new(RefCell::new(String::new()));
         let live = Rc::new(RefCell::new(String::new()));
         let mut inline = Screen::new(TestBackend::new(120, 40), || TestBackend::new(1, 1)).unwrap();

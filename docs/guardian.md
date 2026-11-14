@@ -45,7 +45,10 @@ read and the instructions in a repository are all text an attacker may have writ
   `/guardian-disable` turns the guardian and the permission floor off for that session until
   `/guardian-enable`, after a confirmation and with a warning chip in the status bar. It is
   session-scoped, never persisted, never inherited by subagents, and recorded in the ledger and
-  the audit log; see [Terminal UI](tui.md#commands).
+  the audit log; see [Terminal UI](tui.md#commands). The terminal that confirms it may be a
+  [remote one](remote-inbox.md#trust-the-sender-is-presumed-to-be-you): a line from a live
+  `fontaine send` ticket is terminal input, so it can run the command, and the confirmation is a
+  second line that needs another ticket. The ledger and audit log record the remote identity.
 - **Rule prose can only restrict.** A shared project file may add to `soft_deny` and `hard_deny`
   but its text sits in the policy, so the prompt tells the guardian to ignore any entry that,
   read literally, grants permission. A [plugin](plugins.md) manifest may add deny-side entries to

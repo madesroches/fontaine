@@ -31,6 +31,7 @@ pub mod plugin_prompt;
 pub mod provider_dialog;
 pub mod question;
 pub mod recent;
+mod remote;
 pub mod reports;
 pub mod resume_picker;
 pub mod rewind;
@@ -43,6 +44,7 @@ pub mod skill_trust_prompt;
 pub mod spinner;
 pub mod statusbar;
 pub mod theme;
+pub mod ticket_prompt;
 pub mod todo_panel;
 pub mod transcript;
 pub mod transcript_view;
@@ -373,6 +375,16 @@ struct Ui<R> {
     launcher: ui::Launcher,
     /// Set by `/resume` and `/branch`: the session the caller starts once this one has ended.
     switch: Option<SessionTarget>,
+    /// Where the remote inbox's network tasks wake the loop; `None` where nothing can.
+    wake: Option<tokio::sync::mpsc::WeakUnboundedSender<Input>>,
+    /// The remote inbox: off, starting, or live for this session.
+    remote: ui::RemoteState,
+    /// The identity of the remote line being run, so everything it records carries it.
+    current_remote: Option<fontaine_core::ledger::RemoteSender>,
+    /// The remote line that answered the confirmation now being handled.
+    remote_confirm: Option<fontaine_core::ledger::RemoteSender>,
+    /// What the open remote-answerable dialog holds in the steering queue.
+    dialog_guard: Option<ui::DialogHold>,
     /// One poller per role, main first: the two accounts can differ.
     quota: [fontaine_core::quota::QuotaPoller; 2],
     quota_rx: [tokio::sync::watch::Receiver<fontaine_core::quota::QuotaSnapshot>; 2],
@@ -432,7 +444,11 @@ pub async fn drive(
     options: DriveOptions,
 ) -> Result<DriveOutcome, String> {
     let Notices { startup, feed } = notices;
-    let DriveOptions { budget, on_quit } = options;
+    let DriveOptions {
+        budget,
+        on_quit,
+        wake,
+    } = options;
     let (tx, prompts) = unbounded_channel();
     let feed_tx = tx.clone();
     let warn_tx = tx.clone();
@@ -529,6 +545,11 @@ pub async fn drive(
         suspend,
         launcher,
         switch: None,
+        wake,
+        remote: ui::RemoteState::Off,
+        current_remote: None,
+        remote_confirm: None,
+        dialog_guard: None,
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
@@ -620,6 +641,9 @@ pub async fn drive(
     if let Some(forwarder) = &forwarder {
         forwarder.abort();
     }
+    // The inbox goes down with the session, so a ticket cannot reach a later one; lines still
+    // queued are dropped, never delivered across the boundary.
+    ui.remote_shutdown(&runtime, "the session ended").await;
     if ui.switch.is_some() {
         // The hooks hear of the end before what runs for the session is stopped.
         runtime.fire_session_end("resume").await;
@@ -783,6 +807,7 @@ pub async fn run(
     };
 
     let (tx, rx) = unbounded_channel();
+    let wake = tx.downgrade();
     let stop = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(ReaderPause::default());
     let reader = {
@@ -870,6 +895,7 @@ pub async fn run(
         DriveOptions {
             budget: FINAL_SHUTDOWN_BUDGET,
             on_quit: Some(Box::new(on_quit)),
+            wake: Some(wake),
         },
     )
     .await;

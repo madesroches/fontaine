@@ -259,6 +259,7 @@ async fn the_guardian_takes_its_intent_from_the_roots_human_messages_only() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, Auto);
     rig.state.append(Record::UserMessage {
+        remote: None,
         origin: Default::default(),
         text: "Summarize the repository".to_string(),
         attachments: Vec::new(),
@@ -301,6 +302,7 @@ async fn a_message_typed_to_an_agent_is_intent_for_it_and_its_descendants_only()
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, Auto);
     rig.state.append(Record::UserMessage {
+        remote: None,
         origin: Default::default(),
         text: "Summarize the repository".to_string(),
         attachments: Vec::new(),
@@ -313,6 +315,7 @@ async fn a_message_typed_to_an_agent_is_intent_for_it_and_its_descendants_only()
         .reserve(&a, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     rig.state.append(Record::UserMessage {
+        remote: None,
         origin: Default::default(),
         text: "Count the lines in a.txt".to_string(),
         attachments: Vec::new(),

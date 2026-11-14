@@ -16,4 +16,5 @@ tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+iroh = { workspace = true, features = ["test-utils"] }
 tokio.workspace = true

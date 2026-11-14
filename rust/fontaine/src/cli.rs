@@ -168,6 +168,20 @@ pub enum Command {
     Mcp(McpArgs),
     /// Update this installation to the newest build on the channel it was installed from
     Update,
+    /// Send one message to a live session that enabled `/remote-inbox`
+    Send(SendArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SendArgs {
+    /// `TICKET TEXT`, or just `TEXT` when the ticket comes from `--ticket-stdin` or
+    /// `FONTAINE_TICKET`. A text of `-` is read from stdin
+    #[arg(value_name = "TICKET TEXT", num_args = 1..=2, required = true)]
+    pub words: Vec<String>,
+    /// Read the ticket from stdin instead of the command line, which shell history and the
+    /// process list would keep. Cannot be combined with a text of `-`
+    #[arg(long)]
+    pub ticket_stdin: bool,
 }
 
 #[derive(Args, Debug, Clone)]

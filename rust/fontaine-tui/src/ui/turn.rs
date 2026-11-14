@@ -11,11 +11,11 @@ use fontaine_core::audit::Decision;
 use fontaine_core::config::HookEvent;
 use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
-use fontaine_core::ledger::{MessageOrigin, Record};
+use fontaine_core::ledger::{MessageOrigin, Record, RemoteSender};
 use fontaine_core::model_roles::Tried;
 use fontaine_core::quota::UsageRole;
 use fontaine_core::schedule::{Fired, Kind};
-use fontaine_core::steering::Queued;
+use fontaine_core::steering::{Queued, Retracted};
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     Attachment, AttachmentMedia, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome,
@@ -50,8 +50,12 @@ pub(crate) enum Serve {
 pub(crate) enum EndOfTurn {
     /// The agent answered without another tool result: run what was queued, in order.
     Submit(Vec<Submission>),
-    /// The turn did not complete: give it all back so nothing the human typed is sent unseen.
-    RestoreToInput(String),
+    /// The turn did not complete: give what the human typed back so nothing of it is sent unseen.
+    /// What arrived from the remote inbox never enters the input; it goes back in the queue to
+    /// run next, in its place.
+    RestoreToInput(String, Vec<Retracted>),
+    /// The session is leaving: remote entries are dropped, typed ones are not replayed.
+    Closed(Vec<Retracted>),
     Nothing,
 }
 
@@ -79,6 +83,38 @@ pub(crate) enum Submission {
     /// appended, as at idle. It never waits behind another submission: a dispatcher hands it
     /// back to the loop, which front-pushes it.
     Expanded { text: String, prompt: String },
+    /// A line from the remote inbox. It is never grouped with typed lines and never reaches the
+    /// input box; it runs as the entry it carries, with its sender recorded.
+    Remote(Box<RemoteLine>),
+}
+
+/// A queued remote entry on its way to running.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemoteLine {
+    pub from: RemoteSender,
+    /// Where it arrived among everything queued, kept if it goes back in the queue.
+    pub seq: u64,
+    pub entry: Queued,
+}
+
+impl RemoteLine {
+    fn into_submission(self) -> (RemoteSender, Submission) {
+        let submission = match self.entry {
+            Queued::Message(text) => Submission::Message(text),
+            Queued::Skill {
+                raw,
+                name,
+                argument,
+            } => Submission::Skill {
+                raw,
+                name,
+                argument,
+            },
+            Queued::Command(raw) => Submission::Command(raw),
+            Queued::Shell(raw) => Submission::Shell(raw),
+        };
+        (self.from, submission)
+    }
 }
 
 impl Submission {
@@ -91,6 +127,23 @@ impl Submission {
             Submission::Command(raw) => raw,
             Submission::Shell(raw) => raw,
             Submission::Expanded { text, .. } => text,
+            Submission::Remote(line) => line.entry.raw(),
+        }
+    }
+
+    pub(crate) fn is_remote(&self) -> bool {
+        matches!(self, Submission::Remote(_))
+    }
+
+    /// The queue entry this was, if it came from the remote inbox.
+    pub(crate) fn into_remote(self) -> Option<Retracted> {
+        match self {
+            Submission::Remote(line) => Some(Retracted {
+                seq: line.seq,
+                remote: Some(line.from),
+                entry: line.entry,
+            }),
+            _ => None,
         }
     }
 }
@@ -168,37 +221,64 @@ pub(crate) fn front_push(pending: &mut VecDeque<Submission>, submission: Submiss
 /// front-to-back, then the newly retracted raws. Restoring prepends the unsubmitted draft, so
 /// it stays last.
 pub(crate) fn restore_block(pending: &VecDeque<Submission>, retracted: &str) -> String {
-    let mut raws: Vec<&str> = pending.iter().map(Submission::raw).collect();
+    // A remote line is never the human's draft.
+    let mut raws: Vec<&str> = pending
+        .iter()
+        .filter(|submission| !submission.is_remote())
+        .map(Submission::raw)
+        .collect();
     if !retracted.is_empty() {
         raws.push(retracted);
     }
     raws.join("\n\n")
 }
 
-pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<Queued>) -> EndOfTurn {
+pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<Retracted>) -> EndOfTurn {
     if retracted.is_empty() {
         return EndOfTurn::Nothing;
     }
     match end {
         TurnEnd::Finished(TurnOutcome::Answer(_)) => EndOfTurn::Submit(group(retracted)),
         TurnEnd::Finished(_) | TurnEnd::Interrupted | TurnEnd::Stopped => {
+            let (remote, typed): (Vec<Retracted>, Vec<Retracted>) =
+                retracted.into_iter().partition(|r| r.remote.is_some());
             EndOfTurn::RestoreToInput(
-                retracted
+                typed
                     .iter()
-                    .map(|entry| entry.raw())
+                    .map(Retracted::raw)
                     .collect::<Vec<_>>()
                     .join("\n\n"),
+                remote,
             )
         }
-        TurnEnd::InputClosed => EndOfTurn::Nothing,
+        TurnEnd::InputClosed => {
+            let remote: Vec<Retracted> = retracted
+                .into_iter()
+                .filter(|r| r.remote.is_some())
+                .collect();
+            if remote.is_empty() {
+                EndOfTurn::Nothing
+            } else {
+                EndOfTurn::Closed(remote)
+            }
+        }
     }
 }
 
-/// Groups retracted entries into submissions: consecutive messages join into one, and each
-/// skill, command or shell line is a submission of its own, keeping the typed order.
-fn group(entries: Vec<Queued>) -> Vec<Submission> {
+/// Groups retracted entries into submissions: consecutive typed messages join into one, and each
+/// skill, command or shell line, and every remote entry, is a submission of its own, keeping the
+/// arrival order.
+pub(crate) fn group(entries: Vec<Retracted>) -> Vec<Submission> {
     let mut submissions: Vec<Submission> = Vec::new();
-    for entry in entries {
+    for Retracted { seq, remote, entry } in entries {
+        if let Some(from) = remote {
+            submissions.push(Submission::Remote(Box::new(RemoteLine {
+                from,
+                seq,
+                entry,
+            })));
+            continue;
+        }
         match entry {
             Queued::Message(text) => match submissions.last_mut() {
                 Some(Submission::Message(joined)) => {
@@ -346,11 +426,31 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 )
                 .await
             }
-            EndOfTurn::RestoreToInput(back) => {
-                self.app.restore_to_input(&back);
+            EndOfTurn::RestoreToInput(back, remote) => {
+                self.settle_restore(runtime, &back, remote);
                 Continue(())
             }
+            EndOfTurn::Closed(dropped) => {
+                self.drop_remote_entries(runtime, dropped, "the session ended before they ran");
+                Break(())
+            }
             EndOfTurn::Nothing => Continue(()),
+        }
+    }
+
+    /// Gives typed text back to the input and puts remote entries back in the queue, where the
+    /// idle loop runs them next: they never become part of the draft.
+    pub(crate) fn settle_restore(
+        &mut self,
+        runtime: &AgentRuntime,
+        text: &str,
+        remote: Vec<Retracted>,
+    ) {
+        for entry in remote {
+            runtime.steering.requeue(entry);
+        }
+        if !text.is_empty() {
+            self.app.restore_to_input(text);
         }
     }
 
@@ -524,6 +624,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // Recorded before the skill's commands run so the guardian judging them has
         // this turn's intent in the ledger.
         runtime.append(Record::UserMessage {
+            remote: self.current_remote.clone(),
             origin: Default::default(),
             text: raw.to_string(),
             attachments: Vec::new(),
@@ -575,6 +676,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.set_running(true);
         // Recorded before the fetch so the guardian judging the turn has this intent.
         runtime.append(Record::UserMessage {
+            remote: self.current_remote.clone(),
             origin: Default::default(),
             text: raw.to_string(),
             attachments: Vec::new(),
@@ -644,15 +746,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if runtime.state.afk().stopped.is_none() {
             return false;
         }
-        self.refuse_stopped(raw);
+        self.refuse_stopped(runtime, raw);
         true
     }
 
-    fn refuse_stopped(&mut self, raw: &str) {
+    /// Refuses a line while a stop stands. A typed line goes back to the input; a remote one is
+    /// dropped with an audit record instead, since the sender was already told it was queued and
+    /// its text must never land in the human's draft.
+    fn refuse_stopped(&mut self, runtime: &AgentRuntime, raw: &str) {
         self.app
             .transcript
             .error("the session is stopped (AFK temperature ceiling); run /afk review");
-        self.app.restore_to_input(raw);
+        match self.current_remote.clone() {
+            Some(from) => self.audit_remote_drop(
+                runtime,
+                &from,
+                "the session was stopped by the AFK temperature ceiling",
+            ),
+            None => self.app.restore_to_input(raw),
+        }
     }
 
     /// Runs the submissions in `pending`, one at a time, in order. A turn submission runs the
@@ -665,12 +777,43 @@ impl<R: FnMut(&mut App)> Ui<R> {
         &mut self,
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
-        mut pending: VecDeque<Submission>,
+        pending: VecDeque<Submission>,
+        first_origin: MessageOrigin,
+    ) -> std::ops::ControlFlow<()> {
+        let mut pending = pending;
+        // Boxed: this future is recursive through the dispatchers and large.
+        let flow =
+            Box::pin(self.converse_loop(runtime, launch_dir, &mut pending, first_origin)).await;
+        self.current_remote = None;
+        if flow.is_break() {
+            // The session is ending or switching: remote lines still waiting never run.
+            let dropped: Vec<Retracted> = pending
+                .drain(..)
+                .filter_map(Submission::into_remote)
+                .collect();
+            self.drop_remote_entries(runtime, dropped, "the session ended before they ran");
+        }
+        flow
+    }
+
+    async fn converse_loop(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        launch_dir: &Path,
+        pending: &mut VecDeque<Submission>,
         first_origin: MessageOrigin,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         let mut first = Some(first_origin);
         while let Some(submission) = pending.pop_front() {
+            let (submission, remote) = match submission {
+                Submission::Remote(line) => {
+                    let (from, submission) = line.into_submission();
+                    (submission, Some(from))
+                }
+                other => (other, None),
+            };
+            self.current_remote = remote;
             // Only an idle-prompt submission was typed after the previous answer was on screen;
             // queued input was typed while a turn ran, before its reply was shown.
             let origin = first.take().unwrap_or(MessageOrigin::Other);
@@ -688,13 +831,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Submission::Skill { .. }
                 )
             {
-                self.refuse_stopped(submission.raw());
+                self.refuse_stopped(runtime, submission.raw());
                 continue;
             }
             runtime.steering.set_delivery_hold(!pending.is_empty());
+            let has_typed_pending = pending.iter().any(|s| !s.is_remote());
             let end = match submission {
                 Submission::Message(text) => {
-                    self.app.transcript.user(text.clone());
+                    self.show_user_line(&text);
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
@@ -712,7 +856,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 }
                 Submission::Attached { text, attachments } => {
-                    self.app.transcript.user(text.clone());
+                    self.show_user_line(&text);
                     let mut files = Vec::new();
                     for pending in attachments {
                         let label = pending.label.clone();
@@ -777,7 +921,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             return Break(());
                         }
                         Continue(SkillRun::Prompt(prompt)) => {
-                            front_push(&mut pending, Submission::Expanded { text: raw, prompt });
+                            front_push(pending, Submission::Expanded { text: raw, prompt });
                         }
                         Continue(SkillRun::Spent) => {}
                     }
@@ -788,7 +932,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         continue;
                     };
                     match self
-                        .dispatch_command(runtime, launch_dir, command, &raw, !pending.is_empty())
+                        .dispatch_command(runtime, launch_dir, command, &raw, has_typed_pending)
                         .await
                     {
                         Break(()) => {
@@ -797,14 +941,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         }
                         Continue(CommandOutcome::Done) => {}
                         Continue(CommandOutcome::AwaitingModal) => {
-                            if self.serve_modal(runtime, &pending).await.is_break() {
+                            if self.serve_modal(runtime, pending).await.is_break() {
                                 runtime.steering.set_delivery_hold(false);
                                 return Break(());
                             }
                         }
-                        Continue(CommandOutcome::Turn(sub)) => front_push(&mut pending, sub),
+                        Continue(CommandOutcome::Turn(sub)) => front_push(pending, sub),
                     }
                     continue;
+                }
+                Submission::Remote(_) => {
+                    unreachable!("a remote line was unwrapped at the top of the loop")
                 }
                 Submission::Shell(raw) => {
                     let command = raw.strip_prefix('!').map(str::trim).unwrap_or_default();
@@ -821,11 +968,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             match end_of_turn(&end, runtime.steering.retract()) {
                 EndOfTurn::Submit(submissions) => pending.extend(submissions),
-                EndOfTurn::RestoreToInput(back) => {
+                EndOfTurn::RestoreToInput(back, remote) => {
                     runtime.steering.set_delivery_hold(false);
-                    let block = restore_block(&pending, &back);
-                    self.app.restore_to_input(&block);
+                    let block = restore_block(pending, &back);
+                    // Remote lines still waiting go back where they arrived, never to the draft.
+                    let waiting: Vec<Retracted> = pending
+                        .drain(..)
+                        .filter_map(Submission::into_remote)
+                        .collect();
+                    self.settle_restore(
+                        runtime,
+                        &block,
+                        waiting.into_iter().chain(remote).collect(),
+                    );
                     return Continue(());
+                }
+                EndOfTurn::Closed(dropped) => {
+                    runtime.steering.set_delivery_hold(false);
+                    self.drop_remote_entries(runtime, dropped, "the session ended before they ran");
+                    return Break(());
                 }
                 EndOfTurn::Nothing => {}
             }
@@ -865,7 +1026,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.apply_pick(runtime, purpose, &reference).await
                 }
                 Action::ResumeSession(id) => {
-                    if !pending.is_empty() {
+                    if pending.iter().any(|s| !s.is_remote()) {
                         self.refuse_switch("/resume");
                         return Continue(());
                     }
@@ -917,6 +1078,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::PluginApprove(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_)
+                | Action::CopyTicket
                 | Action::CancelWakeup => {}
             }
         }
@@ -1100,6 +1262,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(typed) = human {
             let labels: Vec<String> = attachments.iter().map(|a| a.label.clone()).collect();
             runtime.append(Record::UserMessage {
+                remote: self.current_remote.clone(),
                 origin,
                 text: typed.to_string(),
                 attachments: labels,
@@ -1302,6 +1465,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::PluginApprove(_)
                         | Action::SetupReview(_)
                         | Action::SetupComposition(_)
+                        | Action::CopyTicket
                         | Action::CancelWakeup => {}
                     },
                 },
@@ -1444,6 +1608,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             PromptGate::Proceed { .. } => Ok(true),
             PromptGate::Blocked(message) => {
                 self.app.transcript.error(message);
+                if let Some(from) = self.current_remote.clone() {
+                    self.audit_remote_drop(runtime, &from, "a prompt-submit hook blocked it");
+                }
                 Ok(false)
             }
         }
@@ -1451,10 +1618,22 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// Shows queued messages where the agent received them.
     fn show_delivered(&mut self, runtime: &AgentRuntime) {
-        for text in runtime.steering.take_delivered() {
+        for message in runtime.steering.take_delivered_lines() {
             // The user spoke into the turn, so a paused goal resumes.
             runtime.goal_user_prompt();
-            self.app.transcript.user(text);
+            match message.remote {
+                Some(from) => self.app.transcript.remote_user(message.text, &from),
+                None => self.app.transcript.user(message.text),
+            }
+        }
+    }
+
+    /// Shows the line that starts a turn, marked with its sender when it came from the remote
+    /// inbox.
+    fn show_user_line(&mut self, text: &str) {
+        match &self.current_remote {
+            Some(from) => self.app.transcript.remote_user(text.to_string(), from),
+            None => self.app.transcript.user(text.to_string()),
         }
     }
 

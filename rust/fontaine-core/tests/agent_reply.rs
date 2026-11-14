@@ -124,6 +124,7 @@ fn say(
     agent: Option<&str>,
 ) {
     built.runtime.state.append(Record::UserMessage {
+        remote: None,
         origin,
         text: text.into(),
         attachments: Vec::new(),

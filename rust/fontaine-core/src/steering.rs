@@ -1,6 +1,9 @@
 //! Messages the human types while the agent works. They wait in a queue until the root agent's
 //! next tool result, which carries them to the model; only then do they enter the ledger, so the
 //! guardian never judges a call by words the model has not read.
+//!
+//! Lines from the remote inbox share the queue, tagged with their sender, so there is one arrival
+//! order and one delivery path.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +16,10 @@ use rig_core::error::ErrorReport;
 use rig_core::tool::ToolOutput;
 
 use crate::gate::SessionState;
-use crate::ledger::Record;
+use crate::ledger::{Record, RemoteSender};
+
+/// Remote entries that may wait in the queue at once.
+pub const MAX_REMOTE_QUEUED: usize = 16;
 
 /// One queued input: a plain message, a skill invocation as typed, or a built-in command
 /// or `!` shell line as typed. Only plain messages can be steered into a running turn;
@@ -47,15 +53,64 @@ impl Queued {
     }
 }
 
+/// A queued entry taken out of the queue, with where it came from and its arrival position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Retracted {
+    /// Arrival order across typed and remote entries; a re-queue keeps it.
+    pub seq: u64,
+    /// `None` for what the human typed.
+    pub remote: Option<RemoteSender>,
+    pub entry: Queued,
+}
+
+impl Retracted {
+    pub fn raw(&self) -> &str {
+        self.entry.raw()
+    }
+}
+
+/// A queued line as the queue display shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedLine {
+    pub raw: String,
+    pub remote: Option<RemoteSender>,
+}
+
+/// A message the root read with a tool result, for the transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveredMessage {
+    pub text: String,
+    pub remote: Option<RemoteSender>,
+}
+
+/// The remote cap was reached; the caller tells the sender to retry later.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RemoteFull;
+
 #[derive(Clone, Default)]
 pub struct Steering {
     inner: Arc<Mutex<SteeringState>>,
 }
 
+struct Slot {
+    seq: u64,
+    remote: Option<RemoteSender>,
+    entry: Queued,
+}
+
+struct DialogState {
+    id: u64,
+    /// The sequence number the next entry gets when the dialog opens: remote entries from here
+    /// on arrived after it and are the only ones that can answer it.
+    opened_at: u64,
+    /// The answers it takes, trimmed and lowercased.
+    options: Vec<String>,
+}
+
 #[derive(Default)]
 struct SteeringState {
-    queued: Vec<Queued>,
-    delivered: Vec<String>,
+    queued: Vec<Slot>,
+    delivered: Vec<DeliveredMessage>,
     /// While held, nothing is delivered: replay keeps typed order across queued entries
     /// that already left the queue.
     hold: bool,
@@ -64,6 +119,9 @@ struct SteeringState {
     announced: usize,
     /// What the human typed in a subagent's view, by agent.
     agents: HashMap<String, AgentQueue>,
+    next_seq: u64,
+    dialogs: Vec<DialogState>,
+    next_dialog: u64,
 }
 
 #[derive(Default)]
@@ -72,14 +130,79 @@ struct AgentQueue {
     delivered: Vec<String>,
 }
 
+/// Keeps a dialog's hold on newer remote entries; dropping it releases the hold.
+pub struct DialogGuard {
+    steering: Steering,
+    id: u64,
+}
+
+impl Drop for DialogGuard {
+    fn drop(&mut self) {
+        self.steering.state().dialogs.retain(|d| d.id != self.id);
+    }
+}
+
+fn normalize(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+impl SteeringState {
+    /// A remote entry that arrived after a dialog opened waits for that dialog: it may be its
+    /// answer, and either way it is not delivered while the dialog is open.
+    fn held(&self, slot: &Slot) -> bool {
+        slot.remote.is_some() && self.dialogs.iter().any(|d| slot.seq >= d.opened_at)
+    }
+
+    fn deliverable_head(&self, slot: &Slot) -> bool {
+        matches!(slot.entry, Queued::Message(_)) && !self.held(slot)
+    }
+
+    fn push(&mut self, remote: Option<RemoteSender>, entry: Queued) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.queued.push(Slot { seq, remote, entry });
+        seq
+    }
+
+    fn remove_at(&mut self, index: usize) -> Slot {
+        if index < self.announced {
+            self.announced -= 1;
+        }
+        self.queued.remove(index)
+    }
+
+    fn remote_count(&self) -> usize {
+        self.queued.iter().filter(|s| s.remote.is_some()).count()
+    }
+}
+
+fn retracted(slot: Slot) -> Retracted {
+    Retracted {
+        seq: slot.seq,
+        remote: slot.remote,
+        entry: slot.entry,
+    }
+}
+
 impl Steering {
     fn state(&self) -> std::sync::MutexGuard<'_, SteeringState> {
-        // Both buffers change only by `mem::take` and `extend`, so a panic cannot leave one half-updated.
+        // Every change is one structural edit (a push, a remove, a take), so a panic cannot
+        // leave the queue half-updated.
         lock_recovering(&self.inner)
     }
 
     pub fn queue(&self, entry: Queued) {
-        self.state().queued.push(entry);
+        self.state().push(None, entry);
+    }
+
+    /// Queues a line from the remote inbox. The cap is enforced here, under the queue's lock,
+    /// so two senders cannot both take the last place.
+    pub fn queue_remote(&self, from: RemoteSender, entry: Queued) -> Result<u64, RemoteFull> {
+        let mut state = self.state();
+        if state.remote_count() >= MAX_REMOTE_QUEUED {
+            return Err(RemoteFull);
+        }
+        Ok(state.push(Some(from), entry))
     }
 
     /// The entries that have not reached the model yet, as typed, oldest first.
@@ -87,15 +210,134 @@ impl Steering {
         self.state()
             .queued
             .iter()
-            .map(|entry| entry.raw().to_string())
+            .map(|slot| slot.entry.raw().to_string())
             .collect()
     }
 
-    /// Takes everything not yet delivered, as typed.
-    pub fn retract(&self) -> Vec<Queued> {
+    /// `queued` with each entry's remote sender, for the queue display.
+    pub fn queued_entries(&self) -> Vec<QueuedLine> {
+        self.state()
+            .queued
+            .iter()
+            .map(|slot| QueuedLine {
+                raw: slot.entry.raw().to_string(),
+                remote: slot.remote.clone(),
+            })
+            .collect()
+    }
+
+    /// Takes everything not yet delivered, with each entry's origin and position.
+    pub fn retract(&self) -> Vec<Retracted> {
         let mut state = self.state();
         state.announced = 0;
         std::mem::take(&mut state.queued)
+            .into_iter()
+            .map(retracted)
+            .collect()
+    }
+
+    /// Takes what the human typed and leaves remote entries queued, in place: only typed text
+    /// may go back into the input.
+    pub fn retract_typed(&self) -> Vec<Queued> {
+        let mut state = self.state();
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < state.queued.len() {
+            if state.queued[index].remote.is_none() {
+                taken.push(state.remove_at(index).entry);
+            } else {
+                index += 1;
+            }
+        }
+        taken
+    }
+
+    /// Whether anything the human typed waits in the queue.
+    pub fn has_typed(&self) -> bool {
+        self.state().queued.iter().any(|slot| slot.remote.is_none())
+    }
+
+    /// Takes every remote entry, as `/clear` and a session switch drop them: they are never
+    /// delivered across a context boundary.
+    pub fn drain_remote(&self) -> Vec<Retracted> {
+        let mut state = self.state();
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < state.queued.len() {
+            if state.queued[index].remote.is_some() {
+                taken.push(retracted(state.remove_at(index)));
+            } else {
+                index += 1;
+            }
+        }
+        taken
+    }
+
+    /// Puts an entry back where its sequence number belongs, so a re-queue neither reorders the
+    /// line nor lets an old entry pose as a newer one.
+    pub fn requeue(&self, entry: Retracted) {
+        let mut state = self.state();
+        let index = state
+            .queued
+            .iter()
+            .position(|slot| slot.seq > entry.seq)
+            .unwrap_or(state.queued.len());
+        if index < state.announced {
+            // The entry was never told about; everything from it on is announced afresh.
+            state.announced = index;
+        }
+        state.queued.insert(
+            index,
+            Slot {
+                seq: entry.seq,
+                remote: entry.remote,
+                entry: entry.entry,
+            },
+        );
+    }
+
+    /// Whether a remote entry waits that no open dialog holds: at an idle prompt it starts work.
+    pub fn has_remote_ready(&self) -> bool {
+        let state = self.state();
+        state
+            .queued
+            .iter()
+            .any(|slot| slot.remote.is_some() && !state.held(slot))
+    }
+
+    /// Registers a dialog that remote lines may answer. Only lines that arrive after this call
+    /// can answer it; they are held while it is open. `options` are the labels and hotkeys it
+    /// accepts.
+    pub fn open_dialog(&self, options: &[String]) -> DialogGuard {
+        let mut state = self.state();
+        let id = state.next_dialog;
+        state.next_dialog += 1;
+        let opened_at = state.next_seq;
+        state.dialogs.push(DialogState {
+            id,
+            opened_at,
+            options: options.iter().map(|o| normalize(o)).collect(),
+        });
+        drop(state);
+        DialogGuard {
+            steering: self.clone(),
+            id,
+        }
+    }
+
+    /// Takes the oldest remote message that arrived after `guard`'s dialog opened and equals one
+    /// of its options, trimmed and ignoring case.
+    pub fn take_dialog_answer(&self, guard: &DialogGuard) -> Option<Retracted> {
+        let mut state = self.state();
+        let dialog = state.dialogs.iter().find(|d| d.id == guard.id)?;
+        let opened_at = dialog.opened_at;
+        let options = dialog.options.clone();
+        let index = state.queued.iter().position(|slot| {
+            slot.remote.is_some()
+                && slot.seq >= opened_at
+                && matches!(&slot.entry, Queued::Message(text) if options.contains(&normalize(text)))
+        })?;
+        Some(retracted(state.remove_at(index)))
     }
 
     /// Holds or releases replay delivery: while held, the hook leaves the whole queue
@@ -108,7 +350,11 @@ impl Steering {
     /// held.
     pub fn has_deliverable_message(&self) -> bool {
         let state = self.state();
-        !state.hold && matches!(state.queued.first(), Some(Queued::Message(_)))
+        !state.hold
+            && state
+                .queued
+                .first()
+                .is_some_and(|s| state.deliverable_head(s))
     }
 
     /// Whether the queue holds a command, skill or shell line the model has not been told about.
@@ -129,9 +375,9 @@ impl Steering {
         let from = unannounced_from(&state)?;
         let names: Vec<String> = state.queued[from..]
             .iter()
-            .filter(|entry| !matches!(entry, Queued::Message(_)))
-            .map(|entry| {
-                let line = crate::session::first_line_cut(entry.raw(), ANNOUNCED_ENTRY_CHARS)
+            .filter(|slot| !matches!(slot.entry, Queued::Message(_)))
+            .map(|slot| {
+                let line = crate::session::first_line_cut(slot.entry.raw(), ANNOUNCED_ENTRY_CHARS)
                     .unwrap_or_default();
                 format!("`{line}`")
             })
@@ -197,6 +443,14 @@ impl Steering {
 
     /// The messages delivered since the last call, oldest first.
     pub fn take_delivered(&self) -> Vec<String> {
+        self.take_delivered_lines()
+            .into_iter()
+            .map(|message| message.text)
+            .collect()
+    }
+
+    /// `take_delivered` with each message's remote sender.
+    pub fn take_delivered_lines(&self) -> Vec<DeliveredMessage> {
         std::mem::take(&mut self.state().delivered)
     }
 }
@@ -209,12 +463,12 @@ fn unannounced_from(state: &SteeringState) -> Option<usize> {
     let leading = state
         .queued
         .iter()
-        .take_while(|entry| matches!(entry, Queued::Message(_)))
+        .take_while(|slot| state.deliverable_head(slot))
         .count();
     let from = leading.max(state.announced);
     state.queued[from.min(state.queued.len())..]
         .iter()
-        .any(|entry| !matches!(entry, Queued::Message(_)))
+        .any(|slot| !matches!(slot.entry, Queued::Message(_)))
         .then_some(from)
 }
 
@@ -235,7 +489,7 @@ impl SteeringHook {
         };
         // One lock from take to delivered, so a retract cannot split the two.
         let mut state = self.steering.state();
-        let messages: Vec<String> = if agent == ROOT_AGENT {
+        let messages: Vec<DeliveredMessage> = if agent == ROOT_AGENT {
             if state.queued.is_empty() || state.hold {
                 return OutcomeAction::Proceed;
             }
@@ -245,7 +499,7 @@ impl SteeringHook {
             let leading = state
                 .queued
                 .iter()
-                .take_while(|entry| matches!(entry, Queued::Message(_)))
+                .take_while(|slot| state.deliverable_head(slot))
                 .count();
             if leading == 0 {
                 return OutcomeAction::Proceed;
@@ -254,8 +508,11 @@ impl SteeringHook {
             state
                 .queued
                 .drain(..leading)
-                .map(|entry| match entry {
-                    Queued::Message(text) => text,
+                .map(|slot| match slot.entry {
+                    Queued::Message(text) => DeliveredMessage {
+                        text,
+                        remote: slot.remote,
+                    },
                     // The take above counts message entries only.
                     _ => unreachable!("only message entries are drained"),
                 })
@@ -268,6 +525,9 @@ impl SteeringHook {
                 return OutcomeAction::Proceed;
             }
             std::mem::take(&mut queue.queued)
+                .into_iter()
+                .map(|text| DeliveredMessage { text, remote: None })
+                .collect()
         };
         let target = (agent != ROOT_AGENT).then(|| agent.to_string());
         // The queued messages ride a text view of the result, never the raw parts: base64 has
@@ -276,14 +536,18 @@ impl SteeringHook {
         for message in &messages {
             self.state.append(Record::UserMessage {
                 origin: Default::default(),
-                text: message.clone(),
+                text: message.text.clone(),
                 attachments: Vec::new(),
                 agent: target.clone(),
+                remote: message.remote.clone(),
             });
             text.push_str(
                 "\n\n[The user sent this message while you were working. Address it, then continue:]\n",
             );
-            text.push_str(message);
+            if let Some(remote) = &message.remote {
+                text.push_str(&format!("[Remote message from {}]\n", remote.short_node()));
+            }
+            text.push_str(&message.text);
         }
         match &target {
             None => state.delivered.extend(messages),
@@ -292,7 +556,7 @@ impl SteeringHook {
                 .entry(agent.to_string())
                 .or_default()
                 .delivered
-                .extend(messages),
+                .extend(messages.into_iter().map(|message| message.text)),
         }
         OutcomeAction::Replace(Ok(Answered::ToolResult {
             result: result.clone().with_output(ToolOutput::text(text)),
@@ -375,6 +639,23 @@ mod tests {
             OutcomeAction::Replace(Ok(Answered::ToolResult { result })) => Some(result),
             _ => None,
         }
+    }
+
+    fn entries(steering: &Steering) -> Vec<Queued> {
+        steering.retract().into_iter().map(|r| r.entry).collect()
+    }
+
+    fn sender(n: u32) -> RemoteSender {
+        RemoteSender {
+            node: format!("node{n:0>12}"),
+            message_id: format!("msg-{n}"),
+        }
+    }
+
+    fn remote(steering: &Steering, n: u32, text: &str) {
+        steering
+            .queue_remote(sender(n), Queued::Message(text.into()))
+            .unwrap();
     }
 
     fn skill(raw: &str) -> Queued {
@@ -544,7 +825,7 @@ mod tests {
         let ok = answered(ToolResult::success(ToolOutput::text("done")));
         hook.steer(ROOT_AGENT, &ok);
         steering.queue(Queued::Message("waiting".into()));
-        assert_eq!(steering.retract(), vec![Queued::Message("waiting".into())]);
+        assert_eq!(entries(&steering), vec![Queued::Message("waiting".into())]);
         assert!(steering.retract().is_empty());
         assert_eq!(steering.take_delivered(), vec!["delivered"]);
     }
@@ -566,7 +847,7 @@ mod tests {
         assert_eq!(ledger.view().user_messages, vec!["before"]);
         // The barrier and everything behind it stay queued, typed and in order.
         assert_eq!(
-            steering.retract(),
+            entries(&steering),
             vec![
                 skill("/review 42"),
                 Queued::Message("behind".into()),
@@ -582,7 +863,7 @@ mod tests {
         assert!(matches!(action, OutcomeAction::Proceed));
         assert!(ledger.view().user_messages.is_empty());
         assert_eq!(
-            steering.retract(),
+            entries(&steering),
             vec![
                 Queued::Shell("!echo hi".into()),
                 Queued::Message("behind".into()),
@@ -623,8 +904,8 @@ mod tests {
             vec!["plain", "/review 42", "/rename later", "!echo hi"]
         );
         let retracted = steering.retract();
-        assert_eq!(retracted[1], skill("/review 42"));
-        assert_eq!(retracted[3], Queued::Shell("!echo hi".into()));
+        assert_eq!(retracted[1].entry, skill("/review 42"));
+        assert_eq!(retracted[3].entry, Queued::Shell("!echo hi".into()));
         assert!(steering.retract().is_empty());
     }
 
@@ -695,5 +976,187 @@ mod tests {
         assert_eq!(steering.take_pending_for("agent-1"), vec!["one", "two"]);
         assert!(steering.take_pending_for("agent-1").is_empty());
         assert!(steering.queued_for("agent-1").is_empty());
+    }
+
+    #[test]
+    fn remote_entries_are_capped_in_the_queue_and_marked_in_the_display() {
+        let steering = Steering::default();
+        steering.queue(Queued::Message("typed".into()));
+        for n in 0..MAX_REMOTE_QUEUED as u32 {
+            remote(&steering, n, "r");
+        }
+        assert_eq!(
+            steering.queue_remote(sender(99), Queued::Message("late".into())),
+            Err(RemoteFull)
+        );
+        let lines = steering.queued_entries();
+        assert_eq!(lines.len(), 1 + MAX_REMOTE_QUEUED);
+        assert_eq!(lines[0].remote, None);
+        assert_eq!(lines[1].remote, Some(sender(0)));
+    }
+
+    #[test]
+    fn remote_and_typed_entries_share_one_arrival_order_with_origins_on_retract() {
+        let steering = Steering::default();
+        steering.queue(Queued::Message("a".into()));
+        remote(&steering, 1, "b");
+        steering.queue(Queued::Command("/afk".into()));
+        remote(&steering, 2, "c");
+        let taken = steering.retract();
+        let order: Vec<&str> = taken.iter().map(Retracted::raw).collect();
+        assert_eq!(order, ["a", "b", "/afk", "c"]);
+        assert_eq!(
+            taken.iter().map(|t| t.remote.is_some()).collect::<Vec<_>>(),
+            [false, true, false, true]
+        );
+        assert!(taken.windows(2).all(|w| w[0].seq < w[1].seq));
+    }
+
+    #[test]
+    fn a_remote_message_rides_a_tool_result_verbatim_in_the_ledger_with_a_header_in_the_result() {
+        let (hook, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Message("typed".into()));
+        remote(&steering, 7, "from afar\nsecond line");
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+        let action = hook.steer(ROOT_AGENT, &ok);
+        let text = rewritten(&action).unwrap().output().render();
+        assert!(text.contains("[Remote message from node000000"), "{text}");
+        assert!(text.contains("from afar\nsecond line"), "{text}");
+        assert_eq!(
+            ledger.view().user_messages,
+            vec!["typed", "from afar\nsecond line"]
+        );
+        let delivered = steering.take_delivered_lines();
+        assert_eq!(delivered[0].remote, None);
+        assert_eq!(delivered[1].remote, Some(sender(7)));
+    }
+
+    #[test]
+    fn a_parked_wait_wakes_for_a_remote_message_like_a_typed_one() {
+        let steering = Steering::default();
+        remote(&steering, 1, "wake");
+        assert!(steering.has_deliverable_message());
+        assert!(steering.has_deliverable_message_for(ROOT_AGENT));
+    }
+
+    #[test]
+    fn retract_typed_and_drain_remote_split_the_queue_and_keep_announced_consistent() {
+        let steering = Steering::default();
+        steering.queue(Queued::Command("/afk".into()));
+        remote(&steering, 1, "r1");
+        steering.queue(Queued::Message("t".into()));
+        steering.take_announcement().unwrap();
+        assert_eq!(steering.retract_typed().len(), 2);
+        assert_eq!(steering.queued(), vec!["r1"]);
+        steering.queue(Queued::Command("/new".into()));
+        let notice = steering.take_announcement().expect("a notice");
+        assert!(
+            notice.contains("`/new`") && !notice.contains("/afk"),
+            "{notice}"
+        );
+        let dropped = steering.drain_remote();
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(steering.queued(), vec!["/new"]);
+        assert!(!steering.has_unannounced());
+    }
+
+    #[test]
+    fn a_requeue_goes_back_where_its_sequence_number_belongs() {
+        let steering = Steering::default();
+        remote(&steering, 1, "first");
+        steering.queue(Queued::Message("typed".into()));
+        remote(&steering, 2, "third");
+        let mut taken = steering.retract();
+        let middle = taken.remove(1);
+        for entry in taken {
+            steering.requeue(entry);
+        }
+        steering.requeue(middle);
+        assert_eq!(steering.queued(), vec!["first", "typed", "third"]);
+    }
+
+    #[test]
+    fn announced_follows_a_requeue_before_the_announced_region() {
+        let steering = Steering::default();
+        steering.queue(Queued::Command("/afk".into()));
+        steering.queue(Queued::Command("/new".into()));
+        steering.take_announcement().unwrap();
+        let taken = steering.retract();
+        steering.requeue(taken[1].clone());
+        steering.requeue(taken[0].clone());
+        // The requeued commands were never told about, so they are announced again.
+        assert!(steering.has_unannounced());
+    }
+
+    fn options(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn only_a_remote_line_accepted_after_the_dialog_opened_answers_it() {
+        let steering = Steering::default();
+        remote(&steering, 1, "y");
+        let dialog = steering.open_dialog(&options(&["y", "allow once"]));
+        assert!(steering.take_dialog_answer(&dialog).is_none());
+        steering.queue(Queued::Message("y".into()));
+        assert!(steering.take_dialog_answer(&dialog).is_none());
+        remote(&steering, 2, "  Allow Once ");
+        let answer = steering.take_dialog_answer(&dialog).expect("an answer");
+        assert_eq!(answer.remote, Some(sender(2)));
+        assert_eq!(steering.queued(), vec!["y", "y"]);
+    }
+
+    #[test]
+    fn a_dialog_holds_newer_remote_lines_until_it_closes() {
+        let (hook, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Message("typed".into()));
+        let dialog = steering.open_dialog(&options(&["y"]));
+        remote(&steering, 1, "something else");
+        remote(&steering, 2, "y");
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+        let action = hook.steer(ROOT_AGENT, &ok);
+        let text = rewritten(&action).unwrap().output().render();
+        assert!(
+            text.contains("typed") && !text.contains("something else"),
+            "{text}"
+        );
+        assert!(!steering.has_deliverable_message());
+        assert!(!steering.has_remote_ready());
+        drop(dialog);
+        assert!(steering.has_remote_ready() && steering.has_deliverable_message());
+        let action = hook.steer(ROOT_AGENT, &ok);
+        assert!(
+            rewritten(&action)
+                .unwrap()
+                .output()
+                .render()
+                .contains("something else")
+        );
+        assert_eq!(ledger.view().user_messages.len(), 3);
+    }
+
+    #[test]
+    fn a_dialog_taking_an_entry_keeps_the_announcement_consistent() {
+        let steering = Steering::default();
+        steering.queue(Queued::Command("/afk".into()));
+        let dialog = steering.open_dialog(&options(&["y"]));
+        remote(&steering, 1, "y");
+        steering.take_announcement().unwrap();
+        steering.take_dialog_answer(&dialog).unwrap();
+        assert_eq!(steering.queued(), vec!["/afk"]);
+        assert!(!steering.has_unannounced());
+        steering.queue(Queued::Command("/new".into()));
+        assert!(steering.take_announcement().unwrap().contains("`/new`"));
+    }
+
+    #[test]
+    fn a_remote_command_is_a_barrier_like_a_typed_one() {
+        let steering = Steering::default();
+        steering
+            .queue_remote(sender(1), Queued::Command("/compact".into()))
+            .unwrap();
+        remote(&steering, 2, "behind");
+        assert!(!steering.has_deliverable_message());
+        assert!(steering.has_unannounced());
     }
 }

@@ -265,6 +265,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::OpenRewind | Action::Rewind { .. } => {}
                             Action::Server(_)
                             | Action::None
+                            | Action::CopyTicket
                             | Action::Submit(..)
                             | Action::AttachClipboard
                             | Action::Queue(_)

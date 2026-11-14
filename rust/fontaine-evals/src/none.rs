@@ -117,6 +117,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     }
     for message in said {
         append(Record::UserMessage {
+            remote: None,
             origin: Default::default(),
             text: message,
             attachments: Vec::new(),

@@ -27,6 +27,9 @@ describe what the current build does; each page covers one topic.
 - [Subagents](agents.md): the `agent` and `send_message` tools, asynchronous subagents, agent types
   and agent files, the agent lifecycle (idle, wake, retire, resume), task boards (any agent can own
   one, with `board_show` and `board_update`), the permission-mode rules, budgets, and the agents panel.
+- [The remote inbox](remote-inbox.md): `/remote-inbox` and `fontaine send`, a one-time ticket that lets another
+  terminal or device send one message to a live session over iroh, what "accepted" means, the trust it
+  assumes and the exit codes.
 - [User hooks](hooks.md): the tool, prompt, turn, subagent, compaction, session and notification
   events, the `command`, `http` and `prompt` handlers, their JSON input and output, and what a
   hook can and cannot decide.

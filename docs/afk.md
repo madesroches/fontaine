@@ -47,6 +47,8 @@ call runs before the floor and never prompts, so AFK would convert nothing; ente
 `/guardian-enable` first (the cycle then moves on to `manual`), and `/guardian-disable` is refused
 while AFK is on or a stop waits for a review.
 
+A line from the [remote inbox](remote-inbox.md) is treated exactly like a line you typed: AFK does not hold it, it can change the mode or run `/afk review`, and it resets the stop streak like any prompt. While a stop waits for a review, a remote line that would start a turn is dropped with an audit record, never put back into your input, and a remote `y` or `n` that arrives after the `/afk review` confirmation opens answers it.
+
 A subagent runs at the `auto` rung under AFK, and a child's prompts are converted the same way.
 
 ## What a denial says

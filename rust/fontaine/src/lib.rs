@@ -9,6 +9,7 @@ mod models_cmd;
 mod plugin;
 mod plugin_auto_update;
 pub mod release_signature;
+mod send_cmd;
 pub mod telemetry;
 pub mod update;
 
@@ -346,6 +347,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(code);
         }
     };
+    // Sending needs no config, session or credentials: the ticket is everything.
+    if let Some(cli::Command::Send(args)) = &cli.command {
+        return send_cmd::run(args, &host);
+    }
     if let Err(code) = check_session_flags(&cli) {
         return code;
     }

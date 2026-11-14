@@ -45,6 +45,26 @@ pub enum MessageOrigin {
     Prompt,
 }
 
+/// The authenticated remote sender of a line that arrived through the remote inbox: the peer's
+/// iroh node id and the id the sender gave the message. Absent on every record a person typed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSender {
+    pub node: String,
+    pub message_id: String,
+}
+
+impl RemoteSender {
+    /// The leading characters of the node id, enough to tell senders apart on screen.
+    pub fn short_node(&self) -> &str {
+        let end = self
+            .node
+            .char_indices()
+            .nth(10)
+            .map_or(self.node.len(), |(i, _)| i);
+        &self.node[..end]
+    }
+}
+
 impl MessageOrigin {
     fn is_other(&self) -> bool {
         *self == MessageOrigin::Other
@@ -98,6 +118,10 @@ pub enum Record {
         agent: Option<String>,
         #[serde(default, skip_serializing_if = "MessageOrigin::is_other")]
         origin: MessageOrigin,
+        /// Set when the line arrived through the remote inbox; `text` stays verbatim. It is not
+        /// an origin value because an older build fails to read an unknown one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<RemoteSender>,
     },
     /// The tail of a root turn's final answer, written by the harness. The user's next message
     /// replies to it, which the guardian reads as untrusted data beside that message.
@@ -113,6 +137,9 @@ pub enum Record {
     /// carried into another session; the record itself is kept in this session's ledger.
     GuardianOff {
         off: bool,
+        /// The remote line that confirmed the toggle; absent for a local confirmation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<RemoteSender>,
     },
     /// The human trusted a skill's `allowed-tools` at one version of its file in the TUI. The
     /// CLI's `plugin trust` writes no record.
@@ -1187,6 +1214,7 @@ mod tests {
         for text in ["one", "two"] {
             ledger
                 .append(Record::UserMessage {
+                    remote: None,
                     origin: Default::default(),
                     text: text.into(),
                     attachments: Vec::new(),
@@ -1208,6 +1236,7 @@ mod tests {
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: "three".into(),
                 attachments: Vec::new(),
@@ -1231,6 +1260,7 @@ mod tests {
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: "three".into(),
                 attachments: Vec::new(),
@@ -1306,6 +1336,7 @@ mod tests {
             .unwrap();
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: "before".into(),
                 attachments: Vec::new(),
@@ -1343,6 +1374,7 @@ mod tests {
         ledger.append(Record::ContextCleared {}).unwrap();
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: "after".into(),
                 attachments: Vec::new(),
@@ -1365,6 +1397,7 @@ mod tests {
     fn say(ledger: &Ledger, text: &str) {
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: text.into(),
                 attachments: Vec::new(),
@@ -1540,6 +1573,7 @@ mod tests {
     fn said(ledger: &Ledger, text: &str, agent: Option<&str>) {
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: text.into(),
                 attachments: Vec::new(),
@@ -1594,6 +1628,7 @@ mod tests {
         assert_eq!(
             legacy,
             Record::UserMessage {
+                remote: None,
                 origin: Default::default(),
                 text: "legacy".into(),
                 attachments: Vec::new(),
@@ -1640,6 +1675,7 @@ mod tests {
     fn said_as(ledger: &Ledger, text: &str, origin: MessageOrigin) {
         ledger
             .append(Record::UserMessage {
+                remote: None,
                 origin,
                 text: text.into(),
                 attachments: Vec::new(),
@@ -1962,5 +1998,100 @@ mod tests {
         let reopened = Ledger::open(dir.path()).unwrap();
         assert_eq!(reopened.view().agents[0].ended, None);
         assert_eq!(reopened.view().next_agent, 2);
+    }
+
+    fn remote() -> RemoteSender {
+        RemoteSender {
+            node: "node-1234567890abcdef".into(),
+            message_id: "msg-1".into(),
+        }
+    }
+
+    #[test]
+    fn a_user_message_with_and_without_a_remote_sender_round_trips() {
+        let old = r#"{"kind":"user_message","text":"hi"}"#;
+        let parsed: Record = serde_json::from_str(old).unwrap();
+        assert!(matches!(&parsed, Record::UserMessage { remote: None, text, .. } if text == "hi"));
+        // A record without a sender serializes exactly as before the field existed.
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), old);
+
+        let with = Record::UserMessage {
+            text: "from afar".into(),
+            attachments: Vec::new(),
+            agent: None,
+            origin: MessageOrigin::Other,
+            remote: Some(remote()),
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains(r#""remote":{"node":"node-1234567890abcdef","message_id":"msg-1"}"#));
+        assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), with);
+    }
+
+    #[test]
+    fn an_older_reader_without_the_field_ignores_it() {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Older {
+            UserMessage { text: String },
+            GuardianOff { off: bool },
+        }
+        let record = Record::UserMessage {
+            text: "t".into(),
+            attachments: Vec::new(),
+            agent: None,
+            origin: MessageOrigin::Other,
+            remote: Some(remote()),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Older>(&json).unwrap(),
+            Older::UserMessage { text } if text == "t"
+        ));
+        let off = serde_json::to_string(&Record::GuardianOff {
+            off: true,
+            remote: Some(remote()),
+        })
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Older>(&off).unwrap(),
+            Older::GuardianOff { off: true }
+        ));
+    }
+
+    #[test]
+    fn a_guardian_off_record_with_and_without_a_remote_sender_parses() {
+        let old: Record = serde_json::from_str(r#"{"kind":"guardian_off","off":true}"#).unwrap();
+        assert_eq!(
+            old,
+            Record::GuardianOff {
+                off: true,
+                remote: None
+            }
+        );
+        let new = Record::GuardianOff {
+            off: false,
+            remote: Some(remote()),
+        };
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), new);
+    }
+
+    #[test]
+    fn a_remote_message_enters_the_view_like_any_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "from afar".into(),
+                attachments: Vec::new(),
+                agent: None,
+                origin: MessageOrigin::Other,
+                remote: Some(remote()),
+            })
+            .unwrap();
+        assert_eq!(ledger.view().user_messages, vec!["from afar"]);
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        assert_eq!(reopened.view().user_messages, vec!["from afar"]);
     }
 }

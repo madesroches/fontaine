@@ -16,6 +16,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             return;
         }
         let had_goal = runtime.session.goal().is_active();
+        // The endpoint goes down first so nothing more is accepted, and entries already queued
+        // are dropped: they were meant for the conversation that is going away.
+        let dropped = self.remote_clear(runtime);
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
@@ -37,6 +40,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 );
                 if had_goal {
                     self.app.transcript.notice("the goal was cleared with it");
+                }
+                if dropped > 0 {
+                    self.app.transcript.notice(format!(
+                        "dropped {dropped} queued remote message(s) with it; their senders were told `accepted`, which meant queued"
+                    ));
                 }
             }
             Err(e) => self
@@ -155,7 +163,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 None
             }
         };
-        let queued = runtime.steering.retract();
+        // Remote entries stay queued: only what the human typed goes back to the draft.
+        let queued = runtime.steering.retract_typed();
         if !queued.is_empty() {
             let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
             self.app.restore_to_input(&raws.join("\n\n"));

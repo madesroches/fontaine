@@ -217,6 +217,11 @@ impl Transcript {
         self.entries.push(Entry::User(text));
     }
 
+    /// A message that arrived through the remote inbox, marked with its authenticated sender.
+    pub fn remote_user(&mut self, text: String, from: &fontaine_core::ledger::RemoteSender) {
+        self.user(format!("[remote {}] {text}", from.short_node()));
+    }
+
     /// The one-line marker under a user message that carried an inline file.
     pub fn attached(&mut self, kind: &str, label: &str, size: u64) {
         self.touch();

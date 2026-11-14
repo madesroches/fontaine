@@ -118,7 +118,7 @@ prost = "0.14.4"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "time", "sync", "signal"] }
 uuid = { version = "1.28.0", features = ["v4"] }
 data-encoding = "=2.11.1"
-iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring", "test-utils"] }
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
 libc = "0.2.191"
 
 # Release builds: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds the

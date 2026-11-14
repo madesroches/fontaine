@@ -25,7 +25,7 @@ use crate::afk_report::{AfkSource, AfkStop};
 use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest};
 use crate::config::{PermissionMode, Slot};
 use crate::effort::Effort;
-use crate::ledger::{Ledger, Record};
+use crate::ledger::{Ledger, Record, RemoteSender};
 use crate::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
 };
@@ -60,6 +60,15 @@ pub struct ModeChanged {
     /// The ledger position of the `Afk` record that started the AFK stretch this change ended;
     /// the surface reviews that stretch.
     pub closed_stretch: Option<u64>,
+}
+
+/// The remote lines behind a guardian toggle, when the terminal that issued it was remote.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GuardianToggle<'a> {
+    /// The line that gave the command (`/guardian-disable`).
+    pub requested_by: Option<&'a RemoteSender>,
+    /// The line that answered the confirmation.
+    pub confirmed_by: Option<&'a RemoteSender>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -728,6 +737,16 @@ impl SessionState {
     /// the ledger and the audit log; it is never persisted and never loosens a subagent. Refused
     /// while AFK mode is on or stopped: it would turn off the very denials AFK relies on.
     pub fn set_guardian_off(&self, off: bool) -> Result<(), AfkRefusal> {
+        self.set_guardian_off_by(off, GuardianToggle::default())
+    }
+
+    /// `set_guardian_off` with the identity of any remote line that took part: the line that
+    /// confirmed the toggle is recorded in the ledger, and both lines in the audit entry.
+    pub fn set_guardian_off_by(
+        &self,
+        off: bool,
+        toggle: GuardianToggle<'_>,
+    ) -> Result<(), AfkRefusal> {
         // The AFK lock is taken first here and in `set_mode`, so the two cannot interleave.
         let afk = read(&self.afk, "afk");
         if off {
@@ -743,19 +762,49 @@ impl SessionState {
         if from == off {
             return Ok(());
         }
-        self.append(Record::GuardianOff { off });
+        self.append(Record::GuardianOff {
+            off,
+            remote: toggle.confirmed_by.cloned(),
+        });
+        let mut explanation = String::from(if off {
+            "guardian disabled"
+        } else {
+            "guardian enabled"
+        });
+        if let Some(by) = toggle.requested_by {
+            explanation.push_str(&format!(
+                "; requested by remote line {} ({})",
+                by.node, by.message_id
+            ));
+        }
+        if let Some(by) = toggle.confirmed_by {
+            explanation.push_str(&format!(
+                "; confirmed by remote line {} ({})",
+                by.node, by.message_id
+            ));
+        }
         self.record_session_event(
             "guardian",
             serde_json::json!({ "off": off }),
             Tier::GuardianOff,
             if off { "guardian_off" } else { "guardian_on" },
-            if off {
-                "guardian disabled"
-            } else {
-                "guardian enabled"
-            },
+            &explanation,
         );
         Ok(())
+    }
+
+    /// An audit entry for the remote inbox: the human enabled or disabled it, minted a ticket,
+    /// or a remote message was accepted, rejected, dropped or answered a dialog. `explanation`
+    /// carries the node id, message id, size and outcome; the ticket and secret never appear.
+    pub fn record_remote_event(&self, rule: &str, explanation: &str, decision: Decision) {
+        self.record_session_event_as(
+            "remote_inbox",
+            serde_json::json!({ "rule": rule }),
+            Tier::Human,
+            rule,
+            explanation,
+            decision,
+        );
     }
 
     /// The AFK state now.

@@ -223,6 +223,8 @@ instruction from you. The sender gets `{"status": "queued"}`. A target whose tur
 killed, ran out of budget or was retired cannot be woken, and the sender gets an error that says
 why and to start a new agent with the context it needs. `send_message` reaches only agents of the same tree, so it is never guardian-judged and never prompts: it runs in every mode at the `coordination` tier, after your deny and ask rules and hooks.
 
+A message from outside the tree is a different channel. [`fontaine send`](remote-inbox.md) delivers a line from another terminal or device to the main conversation as a message from you, not as agent mail, because holding a live ticket is presumed to be you; agent messages stay untrusted data.
+
 Only the main conversation can use `ask_user_question`. The built-in types do not have it, and a
 type that names it (or that names no tools, and so inherits every tool of its parent) is accepted
 but refused when called, with the "unavailable" result, so a subagent can never put a

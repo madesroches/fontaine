@@ -74,6 +74,7 @@ impl QuestionSource for HumanQuestions {
                     .collect();
                 if !lines.is_empty() {
                     self.state.append(Record::UserMessage {
+                        remote: None,
                         origin: MessageOrigin::Dialog,
                         text: lines.join("\n"),
                         attachments: Vec::new(),

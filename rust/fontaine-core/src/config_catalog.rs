@@ -648,6 +648,11 @@ pub const KEYS: &[KeyRow] = &[
         .drafts
         .as_str()
         .to_string()),
+    row!("remote.relay", Scalar, |c, _| c
+        .remote
+        .relay
+        .as_str()
+        .to_string()),
     row!("telemetry.enabled", Scalar, |c, _| c
         .telemetry
         .enabled

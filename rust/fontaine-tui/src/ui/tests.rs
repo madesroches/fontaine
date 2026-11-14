@@ -7,7 +7,7 @@ use fontaine_core::agent::{Delivered, MessageRefusal};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::notice::Severity;
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
-use fontaine_core::steering::Queued;
+use fontaine_core::steering::{Queued, Retracted};
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{SessionEvent, TurnOutcome};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -108,6 +108,11 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
         switch: None,
+        wake: None,
+        remote: crate::ui::RemoteState::Off,
+        current_remote: None,
+        remote_confirm: None,
+        dialog_guard: None,
         quit_budget: crate::FINAL_SHUTDOWN_BUDGET,
         on_quit: None,
         quit_started: None,
@@ -145,11 +150,36 @@ fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
     (Prompt::Ask(Box::new(request), reply), answer)
 }
 
-fn messages(texts: &[&str]) -> Vec<Queued> {
-    texts
-        .iter()
-        .map(|text| Queued::Message((*text).to_string()))
+fn typed(entries: Vec<Queued>) -> Vec<Retracted> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(seq, entry)| Retracted {
+            seq: seq as u64,
+            remote: None,
+            entry,
+        })
         .collect()
+}
+
+fn messages(texts: &[&str]) -> Vec<Retracted> {
+    typed(
+        texts
+            .iter()
+            .map(|text| Queued::Message((*text).to_string()))
+            .collect(),
+    )
+}
+
+fn remote_entry(seq: u64, text: &str) -> Retracted {
+    Retracted {
+        seq,
+        remote: Some(fontaine_core::ledger::RemoteSender {
+            node: "node-abcdef0123456789".into(),
+            message_id: format!("msg-{seq}"),
+        }),
+        entry: Queued::Message(text.into()),
+    }
 }
 
 fn skill(raw: &str) -> Queued {
@@ -180,7 +210,7 @@ fn queued_messages_go_back_when_the_turn_did_not_complete() {
     ] {
         assert_eq!(
             end_of_turn(&end, messages(&["one", "two"])),
-            EndOfTurn::RestoreToInput("one\n\ntwo".into())
+            EndOfTurn::RestoreToInput("one\n\ntwo".into(), Vec::new())
         );
     }
 }
@@ -197,7 +227,7 @@ fn skills_commands_and_shell_lines_are_submissions_of_their_own_in_typed_order()
         Queued::Message("three".into()),
     ];
     assert_eq!(
-        end_of_turn(&end, entries),
+        end_of_turn(&end, typed(entries)),
         EndOfTurn::Submit(vec![
             Submission::Message("one".into()),
             Submission::Skill {
@@ -227,8 +257,11 @@ fn a_restore_joins_every_entrys_raw_as_typed() {
         TurnEnd::Finished(TurnOutcome::Failed("x".into())),
     ] {
         assert_eq!(
-            end_of_turn(&end, entries.clone()),
-            EndOfTurn::RestoreToInput("/review 42\n\nplain\n\n/rename later\n\n!echo hi".into())
+            end_of_turn(&end, typed(entries.clone())),
+            EndOfTurn::RestoreToInput(
+                "/review 42\n\nplain\n\n/rename later\n\n!echo hi".into(),
+                Vec::new()
+            )
         );
     }
 }
@@ -281,6 +314,68 @@ fn the_front_push_puts_either_dispatcher_handoff_ahead_of_pending() {
         assert_eq!(pending.front(), Some(&handoff));
         assert_eq!(pending.len(), 3);
     }
+}
+
+#[test]
+fn a_remote_entry_is_its_own_submission_and_never_joins_typed_messages() {
+    let end = TurnEnd::Finished(TurnOutcome::Answer("done".into()));
+    let mut entries = messages(&["one"]);
+    entries.push(remote_entry(5, "far away"));
+    entries.extend(typed(vec![Queued::Message("two".into())]));
+    let EndOfTurn::Submit(submissions) = end_of_turn(&end, entries) else {
+        panic!("an answer submits");
+    };
+    assert_eq!(submissions.len(), 3);
+    assert_eq!(submissions[0], Submission::Message("one".into()));
+    assert!(matches!(&submissions[1], Submission::Remote(line) if line.seq == 5));
+    assert_eq!(submissions[2], Submission::Message("two".into()));
+}
+
+#[test]
+fn a_failed_turn_restores_typed_text_and_hands_remote_entries_back_to_the_queue() {
+    let mut entries = messages(&["typed"]);
+    entries.push(remote_entry(7, "remote text"));
+    for end in [
+        TurnEnd::Interrupted,
+        TurnEnd::Stopped,
+        TurnEnd::Finished(TurnOutcome::Failed("boom".into())),
+    ] {
+        let EndOfTurn::RestoreToInput(text, remote) = end_of_turn(&end, entries.clone()) else {
+            panic!("a turn that did not complete restores");
+        };
+        assert_eq!(text, "typed");
+        assert_eq!(remote.len(), 1);
+        assert_eq!(remote[0].seq, 7);
+    }
+}
+
+#[test]
+fn remote_entries_are_dropped_not_replayed_when_the_input_closes() {
+    let entries = vec![remote_entry(1, "x")];
+    assert!(matches!(
+        end_of_turn(&TurnEnd::InputClosed, entries),
+        EndOfTurn::Closed(dropped) if dropped.len() == 1
+    ));
+    assert_eq!(
+        end_of_turn(&TurnEnd::InputClosed, messages(&["typed"])),
+        EndOfTurn::Nothing
+    );
+}
+
+#[test]
+fn a_restore_block_never_holds_a_remote_submission() {
+    let remote = remote_entry(3, "secret remote text").clone();
+    let pending = VecDeque::from(vec![
+        Submission::Message("typed".into()),
+        Submission::Remote(Box::new(super::turn::RemoteLine {
+            from: remote.remote.clone().unwrap(),
+            seq: remote.seq,
+            entry: remote.entry.clone(),
+        })),
+    ]);
+    let block = restore_block(&pending, "newer");
+    assert_eq!(block, "typed\n\nnewer");
+    assert!(!block.contains("secret"));
 }
 
 #[test]

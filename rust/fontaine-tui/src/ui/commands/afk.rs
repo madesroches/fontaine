@@ -122,7 +122,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.afk_review_prompt = None;
                 return ControlFlow::Continue(());
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::AfkReview(true) => {
                     let was_afk = runtime.state.afk_on();
                     if runtime.review_afk_stop() {

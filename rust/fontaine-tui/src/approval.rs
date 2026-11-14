@@ -137,6 +137,38 @@ impl Approval {
         }
     }
 
+    /// What a remote line may say to answer: each offered choice's label and hotkey, and `n`.
+    pub(crate) fn remote_options(&self) -> Vec<String> {
+        let mut options = vec!["n".to_string()];
+        for choice in &self.choices {
+            options.push(choice.label().to_string());
+            options.push(choice.key().to_string());
+        }
+        options
+    }
+
+    /// The answer a remote line gives, if it names an offered choice. A denial carries no reason:
+    /// a remote line cannot open the reason field. While the reason is being typed the prompt is
+    /// the person's, and nothing answers it.
+    pub(crate) fn answer_text(&mut self, text: &str) -> Option<Answer> {
+        if self.feedback.is_some() {
+            return None;
+        }
+        let said = text.trim().to_lowercase();
+        if said == "n" || said == Choice::Deny.label() {
+            return Some(Answer::Deny { feedback: None });
+        }
+        let choice = self
+            .choices
+            .iter()
+            .copied()
+            .find(|c| c.label() == said || c.key().to_string() == said)?;
+        match choice {
+            Choice::Deny => Some(Answer::Deny { feedback: None }),
+            other => self.answer_for(other),
+        }
+    }
+
     /// Handles a key; an answer comes back once the human has given one.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Answer> {
         self.handle_key_at(key, Instant::now())

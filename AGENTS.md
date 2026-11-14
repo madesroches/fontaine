@@ -48,6 +48,7 @@ all tests pass:
 - **The deterministic floor (`deny → ask → critical-path → protected-path`) gates EVERY mode** — no mode,
   flag, or verdict reaches past it. No regex matching on tool arguments anywhere. The one
   deliberate exception is `/guardian-disable`: after an explicit confirmation in the terminal UI
+  (the terminal may be a remote one: a line from a live `/remote-inbox` ticket is terminal input)
   it turns the guardian and the floor off for the current session only, until `/guardian-enable`,
   as a development escape hatch; it is blocked in headless runs, is not inherited by subagents,
   and every toggle is recorded in the ledger and the audit log. The record of this deviation
@@ -81,7 +82,8 @@ all tests pass:
   `SECURITY.md`, `.gitignore`, `.ignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
-  `fontaine-guardian`, `fontaine-agents`, `fontaine-tui`, `fontaine-evals`, `fontaine-testkit`
+  `fontaine-guardian`, `fontaine-agents`, `fontaine-tui`, `fontaine-remote` (iroh transport for
+  `fontaine send` and `/remote-inbox`; core-free), `fontaine-evals`, `fontaine-testkit`
   (dev-only test helpers).
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.
