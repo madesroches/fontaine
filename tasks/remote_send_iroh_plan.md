@@ -317,6 +317,8 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - 2026-11-14: AFK: `/clear`, `/resume` and `/branch` (the common session-switch point) tear the endpoint down first (`accept` returns `Closed`; the user re-runs `/remote-inbox on`), then `drain_remote`; the secret is consumed only on `Accepted`; remaining remote entries are audit-dropped at session end.
 - 2026-11-14: AFK: a hook-dropped remote message is audit-only: `accepted` means queued and the secret is consumed at `Accepted`, so a hook drop never un-consumes it.
 - 2026-11-14: AFK: relay mode is the user-scope-only key `[remote] relay` (`default` = n0 relays, `disabled` = direct only), default `default`; it never enables the inbox.
+- 2026-11-14: AFK: pin the newest stable iroh release that passes `cargo deny` and builds on Linux, macOS and Windows at implementation time, exact-pinned like the other pre-1.0 families.
+- 2026-11-14: AFK: `--resume` never re-enables the inbox; it is always an explicit `/remote-inbox on`.
 
 ## Documentation
 
@@ -363,5 +365,4 @@ Real-network qualification catches NAT/relay behavior a loopback test cannot; it
 
 ## Open Questions
 
-- Which iroh version to pin? Resolve against the iroh release current at implementation.
-- Should `--resume` of a session offer to re-enable? Default: no, always explicit.
+None.
