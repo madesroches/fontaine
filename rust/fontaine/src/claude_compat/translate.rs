@@ -526,7 +526,7 @@ impl EventSink for ClaudeSink {
             tools,
             mcp_servers,
             model,
-            permission_mode: runtime.state.mode().as_str().to_string(),
+            permission_mode: super::control::mode_name(runtime.state.mode()).to_string(),
             slash_commands: Vec::new(),
             api_key_source: "none",
             claude_code_version: CLAUDE_CODE_PROTOCOL_VERSION,

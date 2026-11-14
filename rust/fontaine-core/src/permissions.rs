@@ -2825,6 +2825,10 @@ impl PermissionPipeline {
                 self.approved(cx, Tier::Human, if saved { "always" } else { "session" });
                 GateDecision::Allow { args }
             }
+            Answer::AllowUpdated { grants, .. } if !offers.session && !grants.is_empty() => {
+                self.deny_answer(cx, "no session allow was offered for this prompt")
+                    .await
+            }
             Answer::AllowUpdated {
                 args: None,
                 grants,

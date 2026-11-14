@@ -84,7 +84,7 @@ pub fn build(
                     value
                         .as_f64()
                         .filter(|secs| secs.is_finite() && *secs > 0.0)
-                        .map(Duration::from_secs_f64)
+                        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
                         .ok_or_else(|| format!("a `{name}` hook has an unusable `timeout`"))?,
                 ),
             };
@@ -170,6 +170,13 @@ mod tests {
                 .all(|h| h.timeout == Some(Duration::from_secs(5)) && !h.fails_closed)
         );
         assert!(hooks.iter().all(|h| h.event == HookEvent::PreToolUse));
+    }
+
+    #[test]
+    fn a_timeout_too_large_for_a_duration_is_an_error_not_a_panic() {
+        let error = built(json!({"PreToolUse": [{"hookCallbackIds": ["a"], "timeout": 1e300}]}))
+            .unwrap_err();
+        assert!(error.contains("timeout"), "{error}");
     }
 
     #[test]

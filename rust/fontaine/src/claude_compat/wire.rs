@@ -507,7 +507,7 @@ mod tests {
                 tools: Vec::new(),
                 mcp_servers: Vec::new(),
                 model: "m".into(),
-                permission_mode: "manual".into(),
+                permission_mode: "default".into(),
                 slash_commands: Vec::new(),
                 api_key_source: "none",
                 claude_code_version: "2.1.325",

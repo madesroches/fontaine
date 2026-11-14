@@ -234,6 +234,27 @@ async fn session_allows_and_a_mode_apply_from_the_next_call_and_only_once_the_an
 }
 
 #[tokio::test]
+async fn a_grant_on_a_prompt_that_offered_no_session_allow_denies_the_answer() {
+    let rig = delegate(Manual);
+    let path = rig.world.config.join("settings.toml");
+    rig.approver.answer(Answer::AllowUpdated {
+        args: None,
+        grants: vec![parse_rule("advisor").unwrap()],
+        mode: None,
+    });
+    let decision = rig
+        .check("write", write_args(&path.to_string_lossy(), "x"))
+        .await;
+    assert!(!allowed(&decision), "{decision:?}");
+    assert!(!rig.approver.last_request().offers.session);
+    // No grant was applied: the next call prompts again.
+    rig.approver.answer(Answer::Deny { feedback: None });
+    let before = rig.approver.asked();
+    rig.check("advisor", json!({"question": "q"})).await;
+    assert_eq!(rig.approver.asked(), before + 1);
+}
+
+#[tokio::test]
 async fn a_mode_the_host_may_not_enter_denies_the_answer_and_applies_no_grant() {
     let rig = delegate(Manual);
     rig.approver.answer(Answer::AllowUpdated {

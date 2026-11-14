@@ -249,8 +249,28 @@ pub fn read_initialize(
     Ok(init)
 }
 
-fn mode_name(mode: PermissionMode) -> &'static str {
-    mode.as_str()
+/// The spelling the SDK's `PermissionMode` type uses; `afk` is Fontaine's own.
+pub(super) fn mode_name(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Manual => "default",
+        other => other.as_str(),
+    }
+}
+
+/// Fails the run closed if the `initialize` handler panics or is aborted before it answers, so
+/// the runtime does not wait on it for ever.
+struct InitializeGuard<'a> {
+    router: &'a Router,
+    done: bool,
+}
+
+impl Drop for InitializeGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.router
+                .end_input(Some("the `initialize` request was not handled".to_string()));
+        }
+    }
 }
 
 impl Control {
@@ -392,12 +412,19 @@ impl ControlHandler for Control {
             shared: self.shared.clone(),
         };
         Box::pin(async move {
+            let is_initialize =
+                request.get("subtype").and_then(Value::as_str) == Some("initialize");
+            let mut guard = InitializeGuard {
+                router: &router,
+                done: !is_initialize,
+            };
             let answer = this.serve(&router, &request).await;
             match answer {
                 Ok(response) => router.respond_ok(&request_id, response),
                 Err(why) => router.respond_err(&request_id, &why),
             }
-            if request.get("subtype").and_then(Value::as_str) == Some("initialize") {
+            if is_initialize {
+                guard.done = true;
                 router.initialized();
             }
         })
@@ -434,6 +461,12 @@ mod tests {
             &facts(),
             &(Arc::new(Never) as Arc<dyn HookTransport>),
         )
+    }
+
+    #[test]
+    fn the_manual_mode_is_spelled_default_on_the_wire() {
+        assert_eq!(mode_name(PermissionMode::Manual), "default");
+        assert_eq!(mode_name(PermissionMode::Afk), "afk");
     }
 
     #[test]

@@ -74,6 +74,8 @@ struct Inbox {
     commands: VecDeque<Command>,
     turn_active: bool,
     eof: bool,
+    /// SIGTERM or SIGINT came: nothing more runs, whatever is still queued or steered.
+    shutdown: bool,
     failed: Option<String>,
     /// The first user message or the end of input came, so nothing more is awaited before the
     /// runtime is built.
@@ -222,7 +224,7 @@ impl Router {
     }
 
     /// The turn is over for good: the host is gone or the input is unusable.
-    fn end_input(&self, failure: Option<String>) {
+    pub(super) fn end_input(&self, failure: Option<String>) {
         {
             let mut inbox = lock(&self.inbox, "router inbox");
             inbox.eof = true;
@@ -325,6 +327,9 @@ impl Router {
                 if std::mem::replace(&mut inbox.turn_active, false) {
                     self.idle.notify_waiters();
                 }
+                if inbox.shutdown {
+                    return Next::Eof;
+                }
                 let steering = lock(&self.steering, "router steering").clone();
                 if let Some(steering) = steering {
                     let undelivered: Vec<String> = steering
@@ -376,7 +381,11 @@ impl Router {
     /// SIGTERM or SIGINT: the turn stops as an interrupt stops it, nothing queued runs, and the
     /// input ends, so the run tears down its jobs and subagents and exits.
     pub fn shut_down(&self) {
-        lock(&self.inbox, "router inbox").queue.clear();
+        {
+            let mut inbox = lock(&self.inbox, "router inbox");
+            inbox.queue.clear();
+            inbox.shutdown = true;
+        }
         self.cancel.trigger();
         self.end_input(None);
     }
@@ -675,6 +684,25 @@ mod tests {
         .unwrap();
         assert!(steering.queued().is_empty());
         assert!(matches!(rig.router.next().await, Next::Message(t) if t == "second"));
+    }
+
+    #[tokio::test]
+    async fn after_shutdown_a_steered_message_never_starts_a_turn() {
+        let mut rig = rig();
+        let steering = Steering::default();
+        rig.router.attach(steering.clone(), true);
+        say(&mut rig.host_in, user("first")).await;
+        assert!(matches!(rig.router.next().await, Next::Message(_)));
+        say(&mut rig.host_in, user("late")).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while steering.queued().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        rig.router.shut_down();
+        assert!(matches!(rig.router.next().await, Next::Eof));
     }
 
     #[tokio::test]
