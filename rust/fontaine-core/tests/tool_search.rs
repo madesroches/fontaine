@@ -27,6 +27,11 @@ impl Respond for JsonRpc {
         };
         let tool = |name: &str, description: &str| json!({"name": name, "description": description, "inputSchema": {"type": "object"}});
         match body["method"].as_str() {
+            Some("server/discover") => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "Method not found"},
+            })),
             Some("initialize") => reply(json!({
                 "protocolVersion": body["params"]["protocolVersion"],
                 "capabilities": {"tools": {}},

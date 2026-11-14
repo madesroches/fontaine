@@ -65,6 +65,7 @@ pub struct GuardedSink<S> {
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
     muted: Arc<AtomicBool>,
+    listed: Arc<Notify>,
     deferral: Deferral,
     connection: u64,
 }
@@ -81,6 +82,9 @@ pub(crate) struct Shared {
     /// Set when the server is being unloaded: a later `list_changed` refresh must not register
     /// the tools again.
     pub(crate) muted: Arc<AtomicBool>,
+    /// Woken, with a stored permit, each time the sink commits a tool list, empty ones included;
+    /// connect waits on the first.
+    pub(crate) listed: Arc<Notify>,
     /// This connection's token in the session's deferral registry.
     pub(crate) connection: u64,
 }
@@ -105,6 +109,7 @@ impl<S> GuardedSink<S> {
             tool_count: shared.tool_count.clone(),
             tool_names: shared.tool_names.clone(),
             muted: shared.muted.clone(),
+            listed: shared.listed.clone(),
             deferral: options.deferral.clone(),
             connection: shared.connection,
         }
@@ -215,7 +220,9 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
     fn add_managed_tools(&self, tools: Vec<DynamicTool>) -> HashMap<String, ManagedToolToken> {
         let wrapped = self.wrap_all(tools);
         self.record(&wrapped);
-        self.inner.add_managed_tools(wrapped)
+        let tokens = self.inner.add_managed_tools(wrapped);
+        self.listed.notify_one();
+        tokens
     }
 
     fn reconcile_managed_tools(
@@ -228,7 +235,9 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
         }
         let wrapped = self.wrap_all(tools);
         self.record(&wrapped);
-        self.inner.reconcile_managed_tools(expected, wrapped)
+        let tokens = self.inner.reconcile_managed_tools(expected, wrapped);
+        self.listed.notify_one();
+        tokens
     }
 }
 

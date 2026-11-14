@@ -56,6 +56,12 @@ fn serve(
                         "serverInfo": {"name": "hand", "version": "1"},
                     }),
                 ),
+                "server/discover" => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32601, "message": "Method not found"},
+                })
+                .to_string(),
                 "tools/list" => reply(
                     id,
                     json!({"tools": [{

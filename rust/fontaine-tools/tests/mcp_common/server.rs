@@ -199,6 +199,12 @@ impl ServerHandler for Double {
         .with_server_info(Implementation::new("double", "0.1.0"))
     }
 
+    /// A legacy server: it does not know `server/discover`, so the client falls back to
+    /// `initialize` and the older request form of elicitation.
+    async fn discover(&self, _: RequestContext<RoleServer>) -> Result<DiscoverResult, ErrorData> {
+        Err(ErrorData::method_not_found::<DiscoverRequestMethod>())
+    }
+
     async fn list_resources(
         &self,
         _: Option<PaginatedRequestParams>,
