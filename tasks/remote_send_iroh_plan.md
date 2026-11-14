@@ -83,7 +83,9 @@ relays; documented metadata exposure) or `disabled` (direct connections only). T
   ticket = one line. The secret is one-time: the first successful request *consumes* it and
   binds the sender's iroh node id as the authenticated sender. Retries by the same node id with
   the same `message_id` return the original `Accepted` (lost-ack case, exactly-once queueing);
-  any other request with the used secret → `Reused`. Further messages need a new ticket
+  this is only idempotent while the ticket is live: after expiry, or revocation by a newer ticket,
+  a late retry gets `Expired`/`BadTicket` (documented). `Reused` applies only to a different
+  `message_id` on a consumed, still-live secret. Further messages need a new ticket
   (`/remote-inbox ticket`), which is what "one-shot" means.
 - `/remote-inbox ticket` mints a new ticket and revokes the previous unconsumed one (a single
   live secret). After consumption or expiry the endpoint stays up until `off` or session end and
@@ -115,7 +117,10 @@ deliverable-message check. Bounds: 16 queued remote entries and 8 KiB per messag
 wake-up that makes the loop drain Steering's remote entries through typed dispatch, so ordering and
 bound have one owner. Remote entries are never merged by `group()` (`ui/turn.rs`) with typed ones:
 each is its own submission carrying its remote identity. Every `Steering::retract()` caller
-(end of turn, `edit_queued`, `/clear`, goal) leaves remote entries in place; they are submitted in
+(end of turn, `edit_queued`, goal) leaves remote entries in place, but `/clear` and a resume switch
+DROP already-accepted remote entries still queued: they are never delivered across a context
+boundary, each gets an audit drop record and a transcript notice (the sender's `accepted` meant
+queued, documented). Otherwise they are submitted in
 order after the turn, including after an interrupted or failed one, and `queued()`/display mark them
 as remote. Two differences from typed
 entries, both enforced in `steering.rs`: restore-to-draft on interruption/failure skips remote
@@ -123,14 +128,16 @@ entries (they stay queued or are redelivered, never inserted into the human's in
 lines are never added to local prompt history.
 
 - **Dispatch**: a remote line runs through the same dispatch as a typed line. While idle it
-  arrives through a new `Input` variant (wake-up only, see above) with a single injection point that
+  arrives through a new `Input` variant (wake-up only, carries no text, see above) with a single injection point that
   delivers the line to whichever loop is awaiting input, without touching the input buffer, draft or
   cursor. In scope: the idle prompt and every input loop in `ui/turn.rs` and `ui/mod.rs` that awaits
   input: the approval selector, `ask_user_question`, the `/guardian-disable` confirmation and the AFK
   review dialog.
 - **Dialog mapping**: a remote line answers an open approval, question or confirmation dialog only
   when its trimmed, case-insensitive text exactly equals one of that dialog's option labels or hotkey
-  letters (the same options a local user could pick). Anything else is queued as a normal message
+  letters (the same options a local user could pick). A line the dialog takes is consumed by the injection point: it is not queued,
+  does not count against the 16-entry cap, and its ack is sent when the dialog takes it.
+  Anything else is queued as a normal message
   behind the dialog, and the dialog stays pending. Mid-turn, plain messages
   ride the next tool result (wrapped with a one-line provenance header
   `[Remote message from <short node id>]`); slash, skill and `!` lines are queued as
@@ -168,7 +175,9 @@ lines are never added to local prompt history.
 
 - `/remote-inbox [on|off|status|ticket]` slash command, interactive TUI only and `main_only`.
   Registered in `fontaine-tui/src/commands.rs` (`Command` variant, `parse_command`, `BUILTINS`,
-  `main_only`, `runs_mid_turn`) with a `dispatch_command` arm in `fontaine-tui/src/ui/mod.rs` and
+  `main_only`, `runs_mid_turn`: it is in the immediate-UI set, so the `commands.rs` test
+  `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` needs updating; a remote
+  `/remote-inbox off` and `status` are allowed, only `ticket` is refused) with a `dispatch_command` arm in `fontaine-tui/src/ui/mod.rs` and
   an entry in the `docs/tui.md` command list and help. Never enabled by config or project scope;
   no key enables the inbox. Headless runs cannot enable it, and `Delivery` is implemented by
   the TUI only.
@@ -199,7 +208,7 @@ on a lost ack with the same id. It needs no config, session or provider credenti
 
 - **Audit**: `fontaine-remote` reports through the host callbacks (`Delivery::accept` /
   `on_reject`); the TUI host calls a new public `SessionState` entry point built on
-  `record_session_event` (`gate.rs`) that writes a `DecisionRecord` (`audit.rs`) with tool
+  `record_session_event_as` (`gate.rs`), taking a `Decision` (rejects and drops are `Deny`), that writes a `DecisionRecord` (`audit.rs`) with tool
   `remote_inbox`, a distinct rule per event, and node id, message id, size and outcome in the record's `explanation` text:
   `record_session_event_as` stores only `args_digest` of its args and hardcodes `ROOT_AGENT`, which
   is the intended agent id here; there is no audit schema change.
@@ -234,8 +243,8 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 2. `fontaine-core`: origin on `Queued` entries (skip on draft restore and history), `remote`
    field on `Record::UserMessage` plus the struct-literal sweep, optional origin on
    `GuardianOff`, public audit entry point.
-3. `fontaine-tui`: `Delivery` impl over `Steering`; new `Input` variant for an already-submitted
-   line; thread remote identity through `converse`/`Submission`/`turn`/`show_delivered`; hook run.
+3. `fontaine-tui`: `Delivery` impl over `Steering`; new `Input` variant that is wake-up only and carries no text
+   (the line stays in `Steering`); thread remote identity through `converse`/`Submission`/`turn`/`show_delivered`; hook run.
 4. `/remote-inbox` command (`commands.rs`, `dispatch_command`), status indicator, teardown on
    clear/switch/quit.
 5. `fontaine send` CLI.
@@ -249,7 +258,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - `rust/Cargo.toml`, `rust/deny.toml`, `rust/fontaine/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`
 - `rust/fontaine-remote/**` (new)
 - `rust/fontaine-core/src/{steering.rs,ledger.rs,audit.rs,gate.rs}`, the `Record::UserMessage` literal
-  sites (section 6), and the guardian's intent reader for `MessageOrigin`
+  sites (section 6)
 - `rust/fontaine-tui/src/{app.rs,commands.rs}`, `rust/fontaine-tui/src/ui/{mod.rs,turn.rs}`
 - `rust/fontaine/src/cli.rs`, `send_cmd.rs` (new), `main.rs`
 - `AGENTS.md` (project layout crate list; both places the terminal-confirmation wording for
@@ -292,6 +301,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 - 2026-11-14: AFK: a remote line refused by `refuse_if_stopped`/`refuse_stopped` is never restored to the human's input; it shows a transcript error and writes an audit drop record.
 - 2026-11-14: AFK: an idle remote line is recorded with `MessageOrigin::Other`, never `Prompt`, so `reply_before_last` does not bind it to a reply the sender never saw.
 - 2026-11-14: AFK: a remote line answers an open dialog only when its trimmed, case-insensitive text equals an option label or hotkey letter; otherwise it is queued behind the dialog, which stays pending; one injection point serves every awaiting input loop.
+- 2026-11-14: AFK: on `/clear` and resume switch, already-accepted remote entries still queued in `Steering` are dropped, never delivered across a context boundary, each with an audit drop record and a transcript notice (the sender's `accepted` meant queued); this overrides "remote entries survive every `retract()` caller" for those two callers only.
 - 2026-11-14: AFK: relay mode is the user-scope-only key `[remote] relay` (`default` = n0 relays, `disabled` = direct only), default `default`; it never enables the inbox.
 
 ## Documentation
@@ -317,7 +327,7 @@ audited and ledgered with remote origin; remote `/remote-inbox ticket` is refuse
 never appears in ledger, audit or history; prompt-submit hook block is audited; remote lines are
 not held while AFK is blocked and reset the stop streak; the first remote line may become the
 session name/`first_prompt`; audit records for accept, reject, enable, disable and hook-dropped
-message; teardown on `off`, `/clear` and resume; sending to a torn-down endpoint (the issue's "unknown sessions" case) is the connection-failure/`Closed` path, exit 4.
+message; teardown on `off`, `/clear` and resume; accepted remote entries still queued are dropped on `/clear` and resume switch with an audit drop record and transcript notice, and survive the other `retract()` callers; a lost-ack retry within the live ticket window returns the original `Accepted` once, a late retry after expiry or revocation gets `Expired`/`BadTicket`; sending to a torn-down endpoint (the issue's "unknown sessions" case) is the connection-failure/`Closed` path, exit 4.
 
 Back-compat: an old `UserMessage` line parses; a new line with `remote` parses; an older-shaped
 reader (struct without the field) ignores it; `GuardianOff` likewise.
