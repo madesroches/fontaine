@@ -161,7 +161,7 @@ fn accents(theme: &Theme) -> Vec<Color> {
         theme.user,
         theme.success,
         theme.heading,
-        theme.mode_plan,
+        theme.accent,
         theme.shell,
     ] {
         if !out.contains(&color) {

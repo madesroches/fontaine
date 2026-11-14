@@ -115,7 +115,7 @@ The bar shows the permission mode, the directory the shell is in with the git br
 hint rendered from the effective [keybindings](#remapping-the-keys). With [vim input
 mode](#vim-input-mode) on, the bar also shows `vim:insert` or `vim:normal` after the mode. The
 mode labels are `manual`,
-`⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `⏵⏵⏵ AFK mode on` ([AFK mode](afk.md)) and
+`⏵⏵ accept edits on`, `⏵⏵ auto mode on`, `⏵⏵⏵ AFK mode on` ([AFK mode](afk.md)) and
 `dontAsk`. ` AFK STOPPED ` (reversed) shows while a temperature stop waits for `/afk review`, next to
 the guardian-off chip.
 
@@ -185,7 +185,7 @@ data, plus Fontaine extensions:
 | `session_id` | The session id |
 | `version` | The Fontaine version |
 | `effort.level` | The reasoning effort, when set |
-| `mode` | `manual`, `acceptEdits`, `plan`, `auto`, `afk` or `dontAsk` |
+| `mode` | `manual`, `acceptEdits`, `auto`, `afk` or `dontAsk` |
 | `guardian.model` | The live guardian's label, or `null` when unavailable |
 | `guardian.off` | Whether the guardian is disabled for this session |
 | `afk.on`, `afk.stopped` | Whether [AFK mode](afk.md) is on, and whether the temperature ceiling has stopped the session |
@@ -252,7 +252,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-V or Alt-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Windows Terminal and conhost take Ctrl+V as their own paste action, so the text arrives as keystrokes and the key event never reaches Fontaine (see [Pasting](#pasting)); Alt+V is the alternative there. A dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. With no list open, it accepts the dimmed [suggestion or history completion](#prompt-suggestions-and-history-completion) when one is shown. |
 | Right | Moves the cursor right. At the end of the input, or in an empty one, it accepts the dimmed suggestion or history completion when one is shown, like Tab. Ctrl-Right and Alt-Right still move by word. |
-| Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, plan, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
+| Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
@@ -448,7 +448,7 @@ be sent or copied until you accept it, and it is clipped to the row so the box n
 - **Prompt suggestions** are off by default; `[tui] prompt_suggestions = true` turns them on. When a
   turn has ended, the main model is asked, on a background task, for the message you are most
   likely to type next, and it is shown dimmed in the empty input. Starting a new turn, quitting or
-  `/clear` drops the call. It is skipped in `plan` mode, after a turn that failed or was
+  `/clear` drops the call. It is skipped after a turn that failed or was
   interrupted, before the first answered turn, while a [usage window](#usage-windows-spent) is
   paused, in [AFK](afk.md), after a turn that a scheduled task, `/loop`, a notification or a goal
   started, and after three suggestions in a row that you did not use (accepting one starts the
@@ -735,7 +735,6 @@ error: an export never overwrites.
 | `/model [<account>/<model>\|<role>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, which may also be a [role](configuration.md#modelsroles) name or a comma-separated list, switches the live session to that model (the role's first entry) and makes the list the session's, rebuilds the agent on it with the conversation kept, and saves what you typed as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The switch is for this session only, and the notice names the key to edit, when you type a list, `$main`, or a role that reaches `main`, and when `main` under `[models.roles]` or a list in `[model] model` is set in any settings scope. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. The session's [`/effort`](#commands) level is kept and checked against the new model; one it cannot take is dropped with a warning. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). While the guardian is off it adds that these rules are not being enforced. |
-| `/plan [<description>]` | Switches to plan mode, as Shift+Tab does (out of AFK it reviews the stretch). With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
 | `/plugin [install <name>@<marketplace> \| uninstall <name> \| update [<name>\|all] \| enable <name> \| disable <name> \| marketplace (add <url-or-path> [--name <name>] \| list \| update [<name>] \| remove <name>)]` | Without an argument, lists the installed plugins like `/plugins`, and runs immediately. The other forms wait for the turn to end and are refused while subagents are running. `install` and an `update` that changes the executable surface open a confirmation listing every hook command, MCP and LSP server and skill `!` line the plugin would run, with its fingerprint (`y` approves and records it, `n` leaves nothing behind); an install then asks, per skill that declares `allowed-tools`, whether to honour them, as `/skills trust` does (declining leaves that skill untrusted); each plugin change then loads, reloads or unloads the plugin in this session. The `marketplace` forms register, list, update and remove [marketplaces](plugins.md#marketplaces) with the same effect as the `fontaine plugin marketplace` commands. See [Plugins](plugins.md#in-the-terminal-ui). |
 | `/plugins` | Lists the installed [plugins](plugins.md): name, marketplace, pinned short sha, enabled or disabled, and their loaded component counts. Registered marketplaces are listed by `/plugin marketplace list`; the [auto-update](plugins.md#auto-update) pass stages revisions in the background, whose held revisions `fontaine plugin list` marks, and `/reload-plugins` applies them. |
 | `/reload-plugins` | Applies plugin and skill changes to this session without losing the conversation: staged plugin updates are swapped in, skills, agents and output styles are re-read from your user and project directories and from plugins, and each plugin's MCP servers, hooks, rules and guardian additions are loaded, reloaded or unloaded as they differ. Waits for the turn to end and is refused while subagents are running. The system prompt is rebuilt only if what the model sees changed. See [Reloading](extensions.md#reloading). |
@@ -1324,8 +1323,7 @@ conversation:
 
 Built-in commands that only show or set something run as usual against the main conversation, and
 their notices appear in the view. Commands that act on or change the main conversation (`/btw`,
-`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/effort`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
-with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
+`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/effort`, `/goal`, `/loop`, `/init`, and `/output-style` with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
 and the text stays in the input. `/expand` and `/copy` act on the transcript on screen. Ctrl-C
 interrupts the main turn, which keeps running while you look at an agent; Esc does not.
 

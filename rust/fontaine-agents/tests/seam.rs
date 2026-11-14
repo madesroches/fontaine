@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fontaine_agents::budget::{Budget, Spend};
-use fontaine_agents::mode::{Ladder, RootMode};
+use fontaine_agents::mode::Ladder;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{
@@ -261,7 +261,7 @@ struct Rig {
     send: SendMessageTool,
 }
 
-fn rig_with(limits: Limits, types: AgentTypes, root_mode: RootMode) -> Rig {
+fn rig_with(limits: Limits, types: AgentTypes, root_mode: Ladder) -> Rig {
     let tree = Arc::new(AgentTree::new(limits, 1));
     tree.set_root_mode(move || root_mode);
     tree.set_root_tools(|| {
@@ -315,7 +315,7 @@ fn rig() -> Rig {
             ..Limits::default()
         },
         AgentTypes::builtin(),
-        RootMode::Ladder(Ladder::Auto),
+        Ladder::Auto,
     )
 }
 
@@ -450,7 +450,7 @@ async fn a_toolset_never_exceeds_the_parents() {
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
-    let rig = rig_with(tree_limits, types, RootMode::Ladder(Ladder::Manual));
+    let rig = rig_with(tree_limits, types, Ladder::Manual);
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&rig, args("wide", "x")).await.unwrap();
     assert_eq!(rig.runner.spawned()[0].tools, ["shell"]);
@@ -471,16 +471,12 @@ async fn an_explicit_mode_is_never_looser_than_the_parents() {
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
-    let strict = rig_with(
-        Limits::default(),
-        types.clone(),
-        RootMode::Ladder(Ladder::DontAsk),
-    );
+    let strict = rig_with(Limits::default(), types.clone(), Ladder::DontAsk);
     *strict.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&strict, args("careful", "x")).await.unwrap();
     assert_eq!(strict.runner.spawned()[0].mode, Ladder::DontAsk);
 
-    let loose = rig_with(Limits::default(), types, RootMode::Ladder(Ladder::Auto));
+    let loose = rig_with(Limits::default(), types, Ladder::Auto);
     *loose.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&loose, args("careful", "x")).await.unwrap();
     assert_eq!(loose.runner.spawned()[0].mode, Ladder::Manual);
@@ -561,7 +557,7 @@ async fn an_invalid_model_and_a_model_on_a_project_type_are_error_results() {
         origin: TypeOrigin::ProjectFile("repo-reviewer.md".into()),
         inherits_context: false,
     });
-    let rig = rig_with(Limits::default(), types, RootMode::Ladder(Ladder::Manual));
+    let rig = rig_with(Limits::default(), types, Ladder::Manual);
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
 
     let mut bad = args("explore", "x");
@@ -599,7 +595,7 @@ async fn a_spawn_past_max_parallel_starts_nothing_and_says_not_to_retry() {
             ..Limits::default()
         },
         AgentTypes::builtin(),
-        RootMode::Ladder(Ladder::Manual),
+        Ladder::Manual,
     );
     let started = spawn(&rig, args("explore", "first")).await.unwrap();
     assert!(started.contains("agent-1"), "{started}");
@@ -735,7 +731,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
             ..Limits::default()
         },
         types,
-        RootMode::Ladder(Ladder::Manual),
+        Ladder::Manual,
     );
     spawn(&rig, args("nester", "layer one")).await.unwrap();
 
@@ -1060,7 +1056,7 @@ async fn a_configured_type_named_fork_replaces_the_built_in_and_loses_the_capabi
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
-    let rig = rig_with(Limits::default(), types, RootMode::Ladder(Ladder::Manual));
+    let rig = rig_with(Limits::default(), types, Ladder::Manual);
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&rig, args("fork", "x")).await.unwrap();
     assert!(!rig.runner.spawned()[0].inherits_context);
@@ -1138,7 +1134,7 @@ async fn a_nested_parent_waits_for_its_own_child_and_stays_alive() {
             ..Limits::default()
         },
         types,
-        RootMode::Ladder(Ladder::Auto),
+        Ladder::Auto,
     );
     spawn(&rig, args("lead", "coordinate")).await.unwrap();
     rig.agent
@@ -1214,7 +1210,7 @@ async fn a_refused_automatic_resume_hands_the_refusal_and_the_text_to_the_child(
             ..Limits::default()
         },
         AgentTypes::builtin(),
-        RootMode::Ladder(Ladder::Auto),
+        Ladder::Auto,
     );
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
     *rig.runner.missed.lock().unwrap() = vec!["too late".into()];
@@ -1334,7 +1330,7 @@ fn team_rig_with(limits: Limits, headless: bool) -> TeamRig {
     let mut types = AgentTypes::builtin();
     types.enable_teams();
     types.insert(lead_type());
-    let rig = rig_with(limits, types, RootMode::Ladder(Ladder::Auto));
+    let rig = rig_with(limits, types, Ladder::Auto);
     rig.tree.set_root_tools(|| {
         [
             "read",
@@ -2581,7 +2577,7 @@ async fn job_cancel_seam_kills_an_owned_child_and_its_descendants_and_refuses_ot
             ..Limits::default()
         },
         types,
-        RootMode::Ladder(Ladder::Auto),
+        Ladder::Auto,
     );
     spawn(&rig, args("lead", "coordinate")).await.unwrap();
     spawn(&rig, args("explore", "sibling")).await.unwrap();

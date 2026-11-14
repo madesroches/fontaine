@@ -306,7 +306,7 @@ fn a_suggestion_is_asked_for_only_when_nothing_says_to_skip() {
             ..inputs()
         },
         SuggestionInputs {
-            mode: PermissionMode::Plan,
+            mode: PermissionMode::Afk,
             ..inputs()
         },
         SuggestionInputs {

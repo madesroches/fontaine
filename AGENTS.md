@@ -63,7 +63,7 @@ all tests pass:
   instruction files and `.github/` are excluded, and project scope can only switch them off. And in every mode, an `agent` spawn whose
   Fontaine-computed toolset holds only read-only, non-destructive tools (plus the coordination tools)
   takes the read-only fast path; MCP tools never count as read-only for this. And every other
-  `agent` spawn, after the floor, is never guardian-judged (`spawn`): `auto`/`plan` allow it,
+  `agent` spawn, after the floor, is never guardian-judged (`spawn`): `auto`/`afk` allow it,
   `manual`/`acceptEdits` ask; each call the child makes is still gated. And in every mode, `send_message` and `board_update`,
   after the floor, hooks and rules, are never guardian-judged (`coordination`). And in every mode,
   `draft_bug_report`, after the floor, is never guardian-judged (`bug_draft`): it only writes a

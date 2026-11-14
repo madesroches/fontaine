@@ -48,7 +48,7 @@ describe what the current build does; each page covers one topic.
   `/plugin` and `/reload-plugins` for managing them from a running session.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/effort`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/auto-mode-setup`, `/add-dir`, `/output-style`, `/help`,
-  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plugin`, `/reload-plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
+  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plugin`, `/reload-plugins`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/cost` and `/usage` (token usage and spend by source and by model), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
   `/rename`, `/export` and `/rewind`, `/afk report`, the agents panel and the workspace trust prompt.

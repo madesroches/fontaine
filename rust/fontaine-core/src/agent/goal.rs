@@ -51,7 +51,7 @@ pub struct SuggestionInputs {
 /// call this.
 pub fn should_suggest(inputs: &SuggestionInputs) -> bool {
     inputs.enabled
-        && !matches!(inputs.mode, PermissionMode::Plan | PermissionMode::Afk)
+        && inputs.mode != PermissionMode::Afk
         && !inputs.last_turn_automatic
         && inputs.last_turn_finished
         && inputs.completed_turns >= 1

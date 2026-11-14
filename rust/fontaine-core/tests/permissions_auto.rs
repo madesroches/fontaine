@@ -8,7 +8,7 @@ use common::pipeline::{
     verdict_json,
 };
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::{AcceptEdits, Auto, DontAsk, Manual, Plan};
+use fontaine_core::config::PermissionMode::{AcceptEdits, Auto, DontAsk, Manual};
 use fontaine_core::ledger::Record;
 use fontaine_core::permissions::{Answer, DenyAll, UnavailableChoice};
 use fontaine_core::tier::Tier;
@@ -1421,7 +1421,7 @@ fn coordination_calls() -> [(&'static str, Value); 2] {
 
 #[tokio::test]
 async fn coordination_tools_run_in_every_mode_with_no_verdict_and_no_prompt() {
-    for mode in [Manual, AcceptEdits, Plan, DontAsk, Auto] {
+    for mode in [Manual, AcceptEdits, DontAsk, Auto] {
         for (tool, args) in coordination_calls() {
             let fake = fake_guardian(allow_verdict());
             let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
@@ -1514,7 +1514,7 @@ async fn board_show_takes_the_read_only_fast_path_in_auto() {
 
 #[tokio::test]
 async fn a_deny_rule_on_board_update_wins_in_every_mode() {
-    for mode in [Manual, AcceptEdits, Plan, DontAsk, Auto] {
+    for mode in [Manual, AcceptEdits, DontAsk, Auto] {
         let fake = fake_guardian(allow_verdict());
         let rig = Rig::with(
             Options::new(mode)

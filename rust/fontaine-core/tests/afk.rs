@@ -319,7 +319,7 @@ async fn afk_follows_the_mode_and_is_recorded_in_the_ledger_and_the_audit_log() 
     rig.state.set_mode(Afk, AfkSource::Cycle).unwrap();
     assert!(rig.state.afk_on());
     assert!(rig.state.afk().stretch.is_some());
-    let left = rig.state.set_mode(Auto, AfkSource::Plan).unwrap();
+    let left = rig.state.set_mode(Auto, AfkSource::Command).unwrap();
     assert!(!rig.state.afk_on());
     assert!(rig.state.afk().stretch.is_none());
     let records: Vec<_> = rig
@@ -339,7 +339,7 @@ async fn afk_follows_the_mode_and_is_recorded_in_the_ledger_and_the_audit_log() 
         [
             "afk true Cycle",
             "mode manual>afk",
-            "afk false Plan",
+            "afk false Command",
             "mode afk>auto"
         ]
     );

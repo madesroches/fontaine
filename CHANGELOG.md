@@ -6,6 +6,15 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- Plan mode (#638), a deliberate deviation from Claude Code: `/plan`, the plan stop of the Shift+Tab
+  cycle (now manual → accept edits → auto → AFK), `--permission-mode plan`, `default_mode = "plan"`
+  (a config error naming the valid modes), `plan` from the Claude Agent SDK's
+  `set_permission_mode` (an error, as `bypassPermissions` is), and the `plan` child-agent posture.
+  `plan_block` leaves the audit tiers and the headless schema; older ledgers and audit logs that
+  carry it still read, as `deny_rule`.
+
 ### Added
 
 - Cache-write lifetime split (#631): when an Anthropic reply splits its cache writes into 5-minute
@@ -26,7 +35,7 @@ All notable changes are recorded here. The format follows
   earlier input that extends what you are typing after the cursor, and `[tui] prompt_suggestions`
   (off by default) asks the main model, after a turn, for the message you are likely to type next
   and dims it in the empty input. Tab or Right accepts either; typing dismisses a suggestion. The
-  suggestion call is skipped in plan mode, after an error or interrupt, while a usage window is
+  suggestion call is skipped after an error or interrupt, while a usage window is
   paused, in AFK mode, after an unattended turn and after three unused suggestions (which expire after five more turns), and shows as `suggestions` in `/cost`.
 - A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
   example each. `claude-subscription` is no longer labeled experimental.

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use common::pipeline::{Options, Rig, allowed};
 use fontaine_core::audit::{Decision, args_digest};
-use fontaine_core::config::PermissionMode::{Manual, Plan};
+use fontaine_core::config::PermissionMode::Manual;
 use fontaine_core::permissions::{
     HookDecision, HookError, HookPermission, PreToolUseEvent, PreToolUseHook,
 };
@@ -236,13 +236,6 @@ async fn a_hook_allow_never_passes_the_floor() {
         let record = rig.audit()[before].clone();
         assert_eq!((record.decision, record.tier), (decision, tier));
     }
-    // Nor does it let an edit run in plan mode.
-    let rig = self::rig(Plan, "", allow());
-    let d = rig
-        .check("write", json!({"path": "n.txt", "content": "x"}))
-        .await;
-    assert!(!allowed(&d));
-    assert_eq!(rig.audit()[0].tier, Tier::PlanBlock);
 }
 
 #[tokio::test]

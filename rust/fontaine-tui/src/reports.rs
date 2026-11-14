@@ -521,7 +521,6 @@ fn afk_outcome_words(report: &AfkReport) -> String {
         fontaine_core::afk_report::AfkSource::Command => "/afk",
         fontaine_core::afk_report::AfkSource::Cli => "the session start",
         fontaine_core::afk_report::AfkSource::Cycle => "Shift+Tab",
-        fontaine_core::afk_report::AfkSource::Plan => "/plan",
         fontaine_core::afk_report::AfkSource::Sdk => "the host program",
     };
     let span = match (report.stretch.ended_ts_ms, report.stretch.started_ts_ms) {
@@ -1139,7 +1138,7 @@ mod tests {
             roots,
             scratch: None,
             memory: None,
-            mode: PermissionMode::Plan,
+            mode: PermissionMode::AcceptEdits,
             model: "work/claude",
             guardian_label: "work/haiku",
             guardian_unavailable: None,
@@ -1234,7 +1233,7 @@ mod tests {
         assert!(text.contains("Fontaine 1.2.3 · session s1"), "{text}");
         assert!(text.contains("workspace: /work"), "{text}");
         assert!(text.contains("added roots: /extra"), "{text}");
-        assert!(text.contains("mode: ⏸ plan mode on"), "{text}");
+        assert!(text.contains("mode: ⏵⏵ accept edits on"), "{text}");
         assert!(text.contains("model: work/claude"), "{text}");
         assert!(
             text.contains("guardian: work/haiku (profile full)"),

@@ -958,20 +958,20 @@ impl PermissionPipeline {
         &self.state
     }
 
-    /// The mode this agent's calls are judged under right now, and whether edits are blocked
-    /// for it. The root's is the session mode; a child's is the tighter of its own and its
-    /// parent's, so a child is never looser than its parent and follows it on every call.
-    /// `None` for an agent the tree no longer knows, which has no posture to judge it by.
-    fn posture_of(&self, agent: &str) -> Option<(PermissionMode, bool)> {
+    /// The mode this agent's calls are judged under right now. The root's is the session mode;
+    /// a child's is the tighter of its own and its parent's, so a child is never looser than its
+    /// parent and follows it on every call. `None` for an agent the tree no longer knows, which
+    /// has no posture to judge it by.
+    fn posture_of(&self, agent: &str) -> Option<PermissionMode> {
         if agent == fontaine_tools::gate::ROOT_AGENT {
-            return Some((self.state.mode().rules(), false));
+            return Some(self.state.mode().rules());
         }
         let tree = self.state.agents();
         if !tree.lineage_intact(agent) {
             return None;
         }
         let posture = tree.posture(agent);
-        Some((permission_mode(posture.mode), posture.plan_block))
+        Some(permission_mode(posture.mode))
     }
 
     fn workspace_view(&self) -> (PathBuf, Vec<String>) {
@@ -1103,7 +1103,6 @@ impl PermissionPipeline {
         cx: &CallCtx<'_>,
         hook: &HookOutcome,
         mode: PermissionMode,
-        plan_block: bool,
     ) -> Verdict {
         let scope = self.state.scope();
         let rules = self.state.rules();
@@ -1153,14 +1152,6 @@ impl PermissionPipeline {
                 tier: Tier::DenyRule,
                 rule: Some("agent tools".to_string()),
                 why,
-                converted: None,
-            };
-        }
-        if (mode == PermissionMode::Plan || plan_block) && edit_class {
-            return Verdict::Deny {
-                tier: Tier::PlanBlock,
-                rule: None,
-                why: "plan mode never edits files; leave plan mode to make changes".to_string(),
                 converted: None,
             };
         }
@@ -1484,16 +1475,13 @@ impl PermissionPipeline {
         }
         // Every call the child makes is gated on its own way out and its mode is never looser
         // than the parent's, so judging the spawn's prompt with a model would only repeat that
-        // coverage, at the point the user just asked for the spawn. Plan mode allows it too:
-        // the child inherits the plan block, so it cannot edit.
+        // coverage, at the point the user just asked for the spawn.
         if tool == "agent" {
             return match mode {
-                PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan => {
-                    Verdict::Allow {
-                        tier: Tier::Spawn,
-                        rule: None,
-                    }
-                }
+                PermissionMode::Auto | PermissionMode::Afk => Verdict::Allow {
+                    tier: Tier::Spawn,
+                    rule: None,
+                },
                 PermissionMode::Manual | PermissionMode::AcceptEdits => {
                     self.would_prompt(mode, needs_approval())
                 }
@@ -1513,9 +1501,6 @@ impl PermissionPipeline {
                 converted: None,
             },
             PermissionMode::Manual => self.would_prompt(mode, needs_approval()),
-            // Plan mode never edits (refused above); what is left is consequential, and the
-            // guardian judges it as it does in `auto`.
-            PermissionMode::Plan => Verdict::Guardian,
             PermissionMode::Auto | PermissionMode::Afk => match self.unjudged_edit(call, args) {
                 Some(tier) => Verdict::Allow { tier, rule: None },
                 None => Verdict::Guardian,
@@ -1960,7 +1945,7 @@ impl PermissionPipeline {
     async fn adjudicate_pass(&self, call: &CallView<'_>, redo: Option<&Redo>) -> Pass {
         let started = Instant::now();
         let tool_use_id = self.state.current_call(call.agent);
-        let Some((mode, plan_block)) = self.posture_of(call.agent) else {
+        let Some(mode) = self.posture_of(call.agent) else {
             // Hooks and the guardian never see a caller nobody can identify.
             let cx = CallCtx {
                 call,
@@ -2069,7 +2054,7 @@ impl PermissionPipeline {
             again: Mutex::new(None),
         };
 
-        let decision = match self.evaluate(call, &judged, &cx, &hook, mode, plan_block) {
+        let decision = match self.evaluate(call, &judged, &cx, &hook, mode) {
             Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
             Verdict::Deny {
                 tier,
@@ -3076,7 +3061,7 @@ impl ToolGate for PermissionPipeline {
             tool_name = self.state.telemetry_tool_name(call.tool),
             permission_mode = self
                 .posture_of(call.agent)
-                .map_or(PermissionMode::DontAsk, |(mode, _)| mode)
+                .unwrap_or(PermissionMode::DontAsk)
                 .as_str(),
             tier = tracing::field::Empty,
             decision = tracing::field::Empty,

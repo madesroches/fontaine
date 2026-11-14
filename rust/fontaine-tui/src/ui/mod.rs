@@ -1269,17 +1269,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // The dialog stays open after the log-in it started; replay waits for it.
                 Continue(CommandOutcome::AwaitingModal)
             }
-            Command::Plan(description) => {
-                self.change_mode(runtime, PermissionMode::Plan, AfkSource::Plan)
-                    .expect("only entering AFK mode is refused");
-                self.app.transcript.notice("plan mode on");
-                self.review_afk_exits(runtime).await;
-                if description.is_empty() {
-                    Continue(CommandOutcome::Done)
-                } else {
-                    Continue(CommandOutcome::Turn(Submission::Message(description)))
-                }
-            }
             Command::Goal(argument) => match parse_goal_arg(&argument) {
                 GoalArg::Status => {
                     let status = runtime.session.goal().status(runtime.tree_spend());

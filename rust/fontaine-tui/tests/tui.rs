@@ -126,8 +126,6 @@ async fn shift_tab_cycles_the_mode_and_the_status_bar_follows() {
         idle(&ui).await;
         assert!(ui.screen().contains("manual"));
         ui.press(KeyCode::BackTab);
-        ui.wait_for("⏸ plan mode on").await;
-        ui.press(KeyCode::BackTab);
         ui.wait_for("⏵⏵ accept edits on").await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("⏵⏵ auto mode on").await;
@@ -137,7 +135,6 @@ async fn shift_tab_cycles_the_mode_and_the_status_bar_follows() {
         ui.wait_until("manual again", |s| {
             let bar = s.lines().last().unwrap_or("");
             bar.contains("manual")
-                && !bar.contains("plan mode on")
                 && !bar.contains("accept edits")
                 && !bar.contains("auto mode on")
                 && !bar.contains("AFK mode on")
@@ -499,7 +496,7 @@ async fn starting_in_auto_lists_the_allow_rules_it_sets_aside_and_shift_tab_leav
         })
         .await;
         // Cycling back into auto lists them again.
-        for _ in 0..3 {
+        for _ in 0..2 {
             ui.press(KeyCode::BackTab);
         }
         ui.wait_for("auto mode on").await;
@@ -1498,43 +1495,6 @@ async fn a_command_moved_to_the_background_wakes_an_idle_interface_when_it_ends(
         requests[2]
     );
     assert!(requests[2].contains("agents or background jobs you started have news"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn plan_enters_plan_mode_and_a_description_is_sent_in_that_mode() {
-    let w = World::new(vec![
-        tool_turn(
-            "c1",
-            "write",
-            json!({"path": "notes.txt", "content": "hello"}),
-        ),
-        text_turn("planned"),
-    ]);
-    w.run(|ui| async move {
-        idle(&ui).await;
-        ui.send("/plan");
-        ui.wait_for("plan mode on").await;
-        ui.wait_for("⏸ plan mode on").await;
-        ui.press(KeyCode::BackTab);
-        ui.wait_for("⏵⏵ accept edits on").await;
-        ui.press(KeyCode::BackTab);
-        ui.wait_for("⏵⏵ auto mode on").await;
-        ui.press(KeyCode::BackTab);
-        ui.wait_for("⏵⏵⏵ AFK mode on").await;
-        ui.press(KeyCode::BackTab);
-        ui.wait_until("manual", |s| {
-            let bar = s.lines().last().unwrap_or("");
-            bar.contains("manual") && !bar.contains("AFK mode on")
-        })
-        .await;
-        ui.send("/plan do x");
-        ui.wait_for("planned").await;
-        // Plan mode's rules handled the write; manual mode would have asked.
-        assert!(!ui.screen().contains("Allow write?"), "{}", ui.screen());
-    })
-    .await;
-    assert!(w.requests()[0].contains("do x"));
-    assert!(!w.work.join("notes.txt").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

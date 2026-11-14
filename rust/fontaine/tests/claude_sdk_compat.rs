@@ -544,7 +544,7 @@ async fn controls_change_mode_and_model_and_refuse_the_rest(lang: Lang) {
         report["set_mode_accept_edits"].get("ok").is_some(),
         "{report}"
     );
-    assert!(report["set_mode_plan"].get("ok").is_some(), "{report}");
+    assert!(report["set_mode_plan"].get("error").is_some(), "{report}");
     assert!(report["set_mode_bypass"].get("error").is_some(), "{report}");
     assert!(report["set_model"].get("ok").is_some(), "{report}");
     assert!(

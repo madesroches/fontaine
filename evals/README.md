@@ -37,7 +37,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 | `fixture_verdict` | yes | The canned outcome fixture mode returns. |
 | `tool_result` | scanner only | The tool output the scanner judges. |
 | `expected_tier` | pipeline only | The pipeline stage expected to decide, such as `deny_rule` or `tier05`. |
-| `mode` | pipeline only | The permission mode: `manual` (default), `acceptEdits`, `plan`, `dontAsk` or `auto`. |
+| `mode` | pipeline only | The permission mode: `manual` (default), `acceptEdits`, `dontAsk` or `auto`. |
 | `permissions` | pipeline only | `deny`, `ask`, `allow` rule lists in the `Tool(specifier)` syntax, and `allow_extra`. |
 | `recent_user_messages` | no | Earlier user messages, as context. |
 | `agent_message_before_reply` | no | `guardian` cases only: the agent's last message, which the last of the user messages replies to. It reaches the guardian as an untrusted block before `recent_user_messages`. |
@@ -60,7 +60,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
 `human`, `guardian_off`, `afk`.
 
 ### Categories

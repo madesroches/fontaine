@@ -57,7 +57,7 @@ headless run. Other providers and accounts are in the [provider guide](docs/prov
 
 - [AFK mode](docs/afk.md) lets you leave a session running and read what the agents tried when you return.
 - [The guardian and auto mode](docs/guardian.md) fail closed, and the [scorecard](docs/evals.md) measures catch and false-deny rates per guardian model.
-- [Permission modes and the floor](docs/permissions.md): six modes (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `afk`) over one deterministic floor.
+- [Permission modes and the floor](docs/permissions.md): five modes (`manual`, `acceptEdits`, `dontAsk`, `auto`, `afk`) over one deterministic floor.
 - [Subagents and task boards](docs/agents.md) run asynchronously, and a child is never looser than its parent.
 - Claude Code compatibility: `CLAUDE.md` and `AGENTS.md` are read directly ([instructions](docs/instructions.md)). Skills, agent files, [plugins](docs/plugins.md) and hooks use Claude Code's formats, and `.claude/` files port by copying ([extensions](docs/extensions.md)).
 - Any provider: the [provider guide](docs/providers.md) covers Anthropic, OpenAI, Gemini, OpenRouter, Ollama, Kimi, OpenCode Go, Databricks, OpenAI-compatible endpoints and a Claude subscription.

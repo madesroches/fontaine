@@ -746,7 +746,7 @@ impl AgentRuntime {
         &self.state
     }
 
-    /// The permission mode now, which Shift+Tab, `/plan` and the guardian prompts can change.
+    /// The permission mode now, which Shift+Tab and the guardian prompts can change.
     pub fn mode(&self) -> PermissionMode {
         self.state.mode()
     }

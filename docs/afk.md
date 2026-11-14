@@ -21,14 +21,13 @@ pile up.
 
 ## Entering and leaving it
 
-AFK is the last stop of the Shift+Tab cycle, ordered by increasing autonomy: manual, plan, accept
+AFK is the last stop of the Shift+Tab cycle, ordered by increasing autonomy: manual, accept
 edits, auto, AFK, and back to manual. The status bar shows `⏵⏵⏵ AFK mode on`.
 
 | How | Effect |
 |---|---|
 | Shift+Tab (the `cycle_mode` key) from `auto` | Enters AFK mode. Any prompt already open or queued is answered as a denial and closed. |
 | Shift+Tab from AFK | Leaves it for `manual`, then [reviews the stretch](#the-report) and shows its outcome. During a turn the mode changes at once and the review runs when the turn ends. |
-| `/plan` | Leaves AFK for plan mode, with the same review. |
 | `/afk report [all]` | Shows the report of the latest stretch, or of every stretch. |
 | `/afk review` | Lets a [stopped](#the-stop) session run again, in `manual` if AFK was on. |
 | `--permission-mode afk`, or `[permissions] default_mode = "afk"` | Starts the session in AFK mode, in the terminal UI and in `-p`. `default_mode = "afk"` loads only from the user file and `--settings`, as `auto` does. |
@@ -159,7 +158,7 @@ A denial's weight is its severity, the highest that applies, plus a bonus for re
 | Denial | Weight |
 |---|---|
 | Guardian label Data Exfiltration, Download+Execute, Tunnel/Reverse Shell, Secret Exposure, Safety Bypass, Container Escape or Unguarded Agent Loop | 3.0 (High) |
-| Any other guardian label, including one this build does not know; a composition denial; a deny rule, critical path, protected path or plan-mode denial | 2.0 (Medium) |
+| Any other guardian label, including one this build does not know; a composition denial; a deny rule, critical path, protected path denial | 2.0 (Medium) |
 | A converted prompt, or a call denied while `auto` was paused | 1.0 (Low) |
 | A fail-closed guardian denial (error, timeout, unparseable, low confidence) | 0.5 |
 | A denied call that repeats an earlier denied call exactly | +2.0 |

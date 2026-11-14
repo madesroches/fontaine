@@ -3,7 +3,7 @@ mod common;
 use common::pipeline::{Options, Rig, allowed};
 use common::{World, no_env};
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::{DontAsk, Manual, Plan};
+use fontaine_core::config::PermissionMode::{DontAsk, Manual};
 use fontaine_core::config::{CliRules, ConfigError, LoadParams, load};
 use fontaine_core::permission_rules::{
     CallContext, Posture, Rule, is_broad_code_execution, matches, parse_rule, propose,
@@ -413,19 +413,13 @@ async fn an_allow_rule_never_passes_the_floor() {
         assert!(!allowed(&d), "{tool} {tier}");
         assert_eq!(rig.audit().last().unwrap().tier, tier);
     }
-    let rig = Rig::with(Options::new(Plan).settings(settings));
-    let d = rig
-        .check("write", json!({"path": "n.txt", "content": "x"}))
-        .await;
-    assert!(!allowed(&d));
-    assert_eq!(rig.audit().last().unwrap().tier, Tier::PlanBlock);
 }
 
 #[tokio::test]
 async fn an_allow_rule_pre_approves_in_dont_ask_and_skips_the_prompt_in_manual() {
     let settings =
         "[permissions]\nallow = [\"shell(touch x)\", \"webfetch(domain:example.com)\"]\n";
-    for mode in [Manual, DontAsk, Plan] {
+    for mode in [Manual, DontAsk] {
         let rig = Rig::with(Options::new(mode).settings(settings));
         let d = rig.check("shell", shell("touch x")).await;
         assert!(allowed(&d), "{mode:?}");

@@ -213,8 +213,6 @@ pub enum PermissionMode {
     Manual,
     #[serde(rename = "acceptEdits")]
     AcceptEdits,
-    #[serde(rename = "plan")]
-    Plan,
     #[serde(rename = "dontAsk")]
     DontAsk,
     #[serde(rename = "auto")]
@@ -230,7 +228,6 @@ impl PermissionMode {
         match self {
             PermissionMode::Manual => "manual",
             PermissionMode::AcceptEdits => "acceptEdits",
-            PermissionMode::Plan => "plan",
             PermissionMode::DontAsk => "dontAsk",
             PermissionMode::Auto => "auto",
             PermissionMode::Afk => "afk",

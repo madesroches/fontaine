@@ -206,7 +206,6 @@ fn mode_announcement(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Manual => "[manual mode on]",
         PermissionMode::AcceptEdits => "[accept edits on]",
-        PermissionMode::Plan => "[plan mode on]",
         PermissionMode::Auto => "[auto mode on]",
         PermissionMode::Afk => "[AFK mode on]",
         PermissionMode::DontAsk => "[dontAsk mode on]",
@@ -1216,8 +1215,10 @@ mod tests {
     fn a_mode_change_is_announced_once_and_the_first_render_is_silent() {
         let mut rig = Rig::new();
         rig.render();
-        rig.app.mode = PermissionMode::Plan;
-        assert_eq!(rig.render(), "\r\x1b[2K[plan mode on]\r\n> ");
+        rig.app.mode = PermissionMode::Manual;
+        assert_eq!(rig.render(), "");
+        rig.app.mode = PermissionMode::DontAsk;
+        assert_eq!(rig.render(), "\r\x1b[2K[dontAsk mode on]\r\n> ");
         assert_eq!(rig.render(), "");
         rig.app.mode = PermissionMode::AcceptEdits;
         assert!(rig.render().contains("[accept edits on]"));

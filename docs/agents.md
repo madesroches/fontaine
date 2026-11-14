@@ -193,15 +193,11 @@ The mode is not fixed when the subagent starts. On every call it is the tighter 
 own mode and its parent's mode *at that moment*, so if you cycle the session from `auto` to
 `manual` while a subagent works, its next call asks you.
 
-`plan` is not on the ladder. While the parent is in `plan`, **every edit by any subagent is
-blocked**, and the rest of its calls are judged as `manual` at most: an `auto` or `acceptEdits`
-subagent drops to `manual` for non-edit calls. This follows the parent mid-run, too.
-
 ## Every call is gated
 
 A subagent's tool calls go through the same [permission pipeline](permissions.md) as the main
 conversation's, with the same hooks, rules, pre-classifier and guardian. Starting a subagent is a
-pipeline request of its own: the `agent` call is an `arbitrary` call, so `manual` and `acceptEdits` ask, `auto` and `plan`
+pipeline request of its own: the `agent` call is an `arbitrary` call, so `manual` and `acceptEdits` ask, `auto`
 allow it at the `spawn` tier without a guardian call, and a rule like `agent(worker)` in `deny`
 or `ask` works. A bare `agent` allow rule is one of the broad rules `auto` sets aside, though
 that changes nothing for spawns.

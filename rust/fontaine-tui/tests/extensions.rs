@@ -533,35 +533,6 @@ async fn an_immediate_command_runs_mid_turn_and_never_queues() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plan_command_queued_mid_turn_enters_plan_mode_and_sends_its_description() {
-    let w = World::new(vec![
-        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
-        text_turn("answer"),
-        text_turn("planned reply"),
-    ])
-    .with_config(ALLOW_SLEEP);
-    w.run(|ui| async move {
-        ui.send("start");
-        ui.wait_for("• shell sleep 1").await;
-        ui.send("/plan do x");
-        ui.wait_for("queued: /plan do x").await;
-        ui.wait_for("answer").await;
-        // Plan mode turns on as the command executes, after the turn.
-        ui.wait_for("plan mode on").await;
-        ui.wait_for("planned reply").await;
-        idle(&ui).await;
-    })
-    .await;
-    let requests = w.requests();
-    assert_eq!(requests.len(), 3, "{requests:?}");
-    assert!(requests[2].contains("do x"), "{}", requests[2]);
-    assert!(!requests[2].contains("/plan do x"), "{}", requests[2]);
-    let ledger = w.ledger_text();
-    assert_eq!(ledger.matches("\"text\":\"do x\"").count(), 1, "{ledger}");
-    assert!(!ledger.contains("/plan do x"), "{ledger}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_bang_command_typed_mid_turn_runs_after_it_and_reaches_the_next_message() {
     let w = World::new(vec![
         tool_turn("c1", "shell", json!({"command": "sleep 1"})),

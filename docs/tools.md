@@ -76,7 +76,7 @@ outside every root, is outside the fast path.
 Inside a root the label is still not enough for a credential file: a read of one leaves the fast
 path, for the file tools (`read`, `grep`, `lsp`) and for pre-classified shell reads alike. The
 call is then asked about in `manual` and `acceptEdits`, denied in `dontAsk` and headless runs, and
-judged by the guardian in `auto` and `plan` (which may still allow it). The names, matched on the
+judged by the guardian in `auto` (which may still allow it). The names, matched on the
 final path component and always ignoring case: `.env`, `.env.*` (except `.env.example`,
 `.env.sample` and `.env.template`), `*.env`, `.netrc`, `_netrc`, `.npmrc`, `.pypirc`,
 `.git-credentials`, `.pgpass`, the SSH private keys `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`
@@ -90,7 +90,7 @@ enforced by Fontaine and each call the child makes is gated on its own. A child 
 
 That is not a denial for the four read-only tools. An out-of-root `read`, `ls`, `glob` or `grep`
 call goes through the [ordinary permission pipeline](permissions.md#the-pipeline): it asks in the
-interactive modes, the guardian decides in `auto` and `plan`, and it is denied in `dontAsk` and in
+interactive modes, the guardian decides in `auto`, and it is denied in `dontAsk` and in
 headless runs unless an allow rule or hook already covers it. After the hooks, the target is
 resolved once to its absolute path — symlinks followed — and the approval prompt, the guardian
 and the execution all use that resolved form. Once the gate allows the call, it runs on one
@@ -106,7 +106,7 @@ denied (see [Guardian](guardian.md)).
 
 The write tools adjudicate the same way, and are allowed far less readily. A `write`, `edit` or
 `notebook_edit` naming a path outside every root also goes through the ordinary pipeline — it
-asks in `manual` and `acceptEdits`, is plan-blocked in `plan`, is denied in `dontAsk` and in
+asks in `manual` and `acceptEdits`, is denied in `dontAsk` and in
 headless runs unless an allow rule or hook already covers it, and is judged by the guardian in
 `auto`. In `auto` it is allowed only when your own messages (what you typed, and what you picked in a question dialog) asked for that write: the
 default guardian policy denies an un-asked write outside the workspace roots, wherever the
@@ -601,7 +601,6 @@ the raw store writes it replaces:
 |---|---|
 | `manual`, `acceptEdits` | Asks you. |
 | `auto` | Goes to the guardian, which sees the topic file and the index as the touched paths. |
-| `plan` | Denied: plan mode never writes. |
 | `dontAsk`, headless | Denied. |
 
 There is no fast path, and an `allow` rule does not approve the call: the store is

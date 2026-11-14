@@ -7,7 +7,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 Unit tests use `rig_core::test_utils` deterministic completion models — no live APIs. The full test specs live in each phase plan's "Tests owned by this phase"; this section lists the properties and their owners.
 
 - **model wiring**: config → rig provider mapping, one `wiremock` smoke test per provider wire format — [Phase 1](../completed/phases/phase1_model_headless.md).
-- **permission pipeline**: mode × risk-class matrix; the floor gates every mode; plan-mode branch 9; audit schema — [Phase 3](../completed/phases/phase3_pipeline_tui.md), `auto` legs [Phase 4](../completed/phases/phase4_guardian.md).
+- **permission pipeline**: mode × risk-class matrix; the floor gates every mode; audit schema — [Phase 3](../completed/phases/phase3_pipeline_tui.md), `auto` legs [Phase 4](../completed/phases/phase4_guardian.md).
 - **Tier 0.5 pre-classifier**: fail-through soundness on the golden adversarial set below — [Phase 3](../completed/phases/phase3_pipeline_tui.md), counting-guardian form [Phase 4](../completed/phases/phase4_guardian.md).
 - **guardian**: every non-verdict outcome fails closed; cache, loop breaker, prompt snapshots, redaction, minimal profile — [Phase 4](../completed/phases/phase4_guardian.md).
 - **tools**: scope validator, rig tool configuration, exact registered set, risk class on every tool (choke point) — [Phase 2](../completed/phases/phase2_runtime_tools.md), extended [Phase 5](../completed/phases/phase5_extensibility.md).
@@ -79,7 +79,7 @@ as a subagent report carrying injection text). In `fixture` mode every kind scor
 (schema and scoring-logic check); live modes route `guardian` cases to the guardian model,
 `pipeline` cases through the pipeline with that guardian, and `scanner` cases to the configured
 scanner. `--guardian fixture` is offline and deterministic — it is the
-CI step (schema validation + scoring); `--guardian none` is offline too: it routes `kind = pipeline` cases through the real `PermissionPipeline` for the non-auto modes (manual / acceptEdits / plan / dontAsk), skips `auto` cases and does not run `guardian` or `scanner` cases; `--guardian live:<account>/<model>` is the manual/nightly mode.
+CI step (schema validation + scoring); `--guardian none` is offline too: it routes `kind = pipeline` cases through the real `PermissionPipeline` for the non-auto modes (manual / acceptEdits / dontAsk), skips `auto` cases and does not run `guardian` or `scanner` cases; `--guardian live:<account>/<model>` is the manual/nightly mode.
 
 Runner CLI (the one contract; every runner path is relative to the invocation dir `rust/`; Phase 0 step 2 builds the skeleton, Phase 3 step 3 `none` mode and the baseline subcommands, Phase 4 steps 4–5 the live modes and
 `report.rs`):

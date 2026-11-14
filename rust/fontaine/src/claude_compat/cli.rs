@@ -500,7 +500,6 @@ pub fn parse_mode(text: &str) -> Result<PermissionMode, String> {
     match text {
         "default" | "manual" => Ok(PermissionMode::Manual),
         "acceptEdits" => Ok(PermissionMode::AcceptEdits),
-        "plan" => Ok(PermissionMode::Plan),
         "dontAsk" => Ok(PermissionMode::DontAsk),
         "auto" => Ok(PermissionMode::Auto),
         "afk" => Ok(PermissionMode::Afk),
@@ -1014,6 +1013,8 @@ mod tests {
         assert_eq!(parse_mode("default"), Ok(PermissionMode::Manual));
         assert_eq!(parse_mode("afk"), Ok(PermissionMode::Afk));
         assert!(parse_mode("bypassPermissions").is_err());
+        let plan = parse_mode("plan").unwrap_err();
+        assert!(plan.contains("`plan`"), "{plan}");
     }
 
     #[test]

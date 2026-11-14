@@ -6,8 +6,7 @@ answers **allow**, **deny** (with a reason the agent sees) or **escalate** (ask 
 only part of Fontaine that uses judgment, so everything around it is written to keep that judgment
 from being the only thing standing between a model and your machine.
 
-A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
-mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
+A call reaches the guardian in `auto` mode. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
 rules, critical paths, protected-path handling), the read-only fast path (which includes a spawn of
 an agent type that can only read, and excludes reads of secret files such as `.env`), every other `agent` spawn, the coordination tools (`send_message` and `board_update`) and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
@@ -187,7 +186,7 @@ variable is not marked.
 
 An `agent` call is never shown to the guardian. A spawn delegates a prompt to a child whose every
 call goes through the whole pipeline on its own, guardian included, and whose mode is never looser
-than its parent's, so judging the prompt would only repeat that coverage. `auto` and `plan` allow
+than its parent's, so judging the prompt would only repeat that coverage. `auto` allows
 the spawn (`tier = spawn`) after the deny and ask rules and hooks; `manual` and `acceptEdits` ask
 you (see [the pipeline](permissions.md#the-pipeline)).
 
@@ -231,7 +230,7 @@ The shipped lists, and how to extend them, are in [`[auto_mode]`](configuration.
 ### Reading outside the workspace
 
 The four read-only file tools may name a path outside every workspace root; each such call
-reaches the guardian like any other unapproved call in `auto` and `plan` (it is never skipped,
+reaches the guardian like any other unapproved call in `auto` (it is never skipped,
 and it never earns the read-only fast path). The shipped `allow` list treats inspecting source
 code, headers, build files, installed dependency source and installed skill definitions
 (including `SKILL.md`) as routine wherever they sit — a Cargo registry cache, `/usr/include`, a
@@ -246,7 +245,7 @@ the resolved path in the prompt.
 ### Writing outside the workspace
 
 The write tools (`write`, `edit`, `notebook_edit`) may also name a path outside every workspace
-root, and that call reaches the guardian in `auto` and `plan` like any other unapproved call. A
+root, and that call reaches the guardian in `auto` like any other unapproved call. A
 write out of the roots is consequential wherever the target sits — shell rc files,
 `~/.ssh/authorized_keys`, cron entries — so the shipped `soft_deny` list denies an **un-asked**
 write outside the workspace roots under the `Safety Bypass` label, alongside the persistence
