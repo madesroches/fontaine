@@ -35,11 +35,15 @@ deliberate deviation from Claude Code, which has plan mode.
 - **Tests** that exercise it: `fontaine-core/tests/{permissions,permissions_auto,agent_pipeline,
   audit_telemetry,hook_slot,permission_rules,choke_point,config,native_search,runtime_state,
   side_question,trusted_skills,afk}.rs`, `fontaine/tests/{exit_code,headless_smoke,pipeline_headless,
-  claude_sdk_compat}.rs` plus the SDK fixtures under `tests/fixtures/claude_sdk/` and
-  `tests/sdk_compat/{py,ts}/controls.*`, `fontaine-evals/tests/none_mode.rs`, and
+  claude_sdk_compat}.rs`, `fontaine-evals/tests/none_mode.rs`, and
   `fontaine-tui/{src/app.rs,src/ui/tests.rs,tests/{afk,extensions,tui}.rs}`.
 - **Docs and schemas**: `docs/{afk,agents,checkpoints,configuration,guardian,headless,index,memory,
-  permissions,terminal,tools,tui}.md`, `docs/schemas/headless-v1.schema.json` (`plan_block` tier,
+  permissions,terminal,tools,tui}.md`, `README.md:60` ("six modes (`manual`, `acceptEdits`, `plan`, ...)";
+  the count becomes five), `docs/hooks.md:102` (the `permission_mode` values), `docs/evals.md:265`
+  ("is plan-blocked in `plan`"), `evals/README.md:40` (mode list) and `evals/README.md:63`
+  (`plan_block` tier), `tasks/design/config.md:119` (the "under a `plan` parent child edits are
+  blocked" note), `AGENTS.md:66` (`auto`/`plan` allow the `agent` spawn),
+  `docs/schemas/headless-v1.schema.json` (`plan_block` tier,
   `plan` in the `permission_mode` enum), `tasks/design/permissions.md` (step 9 and the tier list) and
   the master plan's `## Decisions` lines that describe plan behavior.
 
@@ -57,9 +61,10 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 - **Claude-compat** (`claude_compat/cli.rs::parse_mode`): `"plan"` falls to the `other` arm,
   `` `plan` is not a permission mode ``, for both `--permission-mode` and the SDK's
   `set_permission_mode`. Claude's SDK hosts may still send `plan`; they get an error, as they already
-  do for `bypassPermissions`. Update the SDK fixtures and `controls.{py,mjs}` so `set_mode_plan`
-  expects an error, or drop that step if the fixture is a recorded Claude baseline that must not be
-  edited (check how the fixture is produced before touching it).
+  do for `bypassPermissions`. `tests/fixtures/claude_sdk/controls.*` is a recorded Claude Code baseline
+  and `tests/sdk_compat/{py,ts}/controls.*` only record attempts: leave both unchanged and flip the
+  `set_mode_plan` assertion in `claude_sdk_compat.rs`
+  (`controls_change_mode_and_model_and_refuse_the_rest`, `report["set_mode_plan"].get("ok")`) to expect `error`.
 - **Pipeline**: delete the edit block, the `plan_block` argument (so `posture_of` returns only the
   mode) and the `Plan` arms; `Spawn` allows `Auto | Afk`, and the mode match loses `Plan`.
 - **Agents**: with no root posture other than the ladder, `RootMode` and `Posture::plan_block`
@@ -69,23 +74,18 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
   simplify only what is left empty.
 - **`Tier::PlanBlock`**: remove it, drop it from `Tier::ALL` (now 21), `as_str`, the AFK severity
   list and the headless schema's tier enum. The audit log, ledger and `gate_decision` events of
-  sessions written before this change may contain `"plan_block"`; before removing the variant,
-  grep for every place a `Tier` is *read back* (it derives `Deserialize`). If a persisted record
-  can be deserialized on resume or by a report command, keep a read-side shim
-  (`#[serde(alias)]` onto the nearest variant is not right for a tier, so instead make the reader
-  tolerant of an unknown tier) rather than breaking old sessions. If nothing reads tiers back, no shim.
-- **`AfkSource::Plan`**: serialized as `"plan"` in the ledger. Remove the variant and add
-  `#[serde(alias = "plan")]` to `Command`, so an old ledger still resumes. Check that the AFK
-  events are read back before deciding the alias is needed; if they are not, no alias.
-- **Resume**: grep how the session mode persists. If a resumed session can restore `plan`, it must
-  fall back (to `manual`, the conservative choice) with a startup warning through `Approver::warn`.
+  sessions written before this change may contain `"plan_block"`, and both are read back: `Ledger::open` parses every line as `Entry` (`Action { tier: Option<Tier> }`)
+  and fails on an unparseable line, and `AuditLog::read` deserializes the non-optional
+  `DecisionRecord.tier` (used by `/bug` on a resumed session). Both readers need a shim for an old
+  `"plan_block"`; the mechanism is settled by the Open Question below.
+- **`AfkSource::Plan`**: serialized as `"plan"` in the ledger, which is read back on resume. Remove
+  the variant and add `#[serde(alias = "plan")]` to `Command`.
+- **Resume**: a resume does not restore the mode, and `Record::ModeChange` stores plain strings, so
+  no fallback or warning is needed.
 - **TUI**: remove `Command::Plan`, its catalog row and handler, so `/plan` becomes an unknown
   command like any other. Remove the `⏸ plan mode on` label, the plan color from the theme struct and
   its six values, the linear-mode label and the `/plan` entry in the AFK report source labels. The
   cycle becomes manual, accept edits, auto, AFK.
-- **Docs and Decisions**: rewrite each doc sentence that describes the current behavior without it;
-  do not leave "plan mode was removed" notes in `docs/` (describe current behavior only). The history
-  goes to CHANGELOG and the plan's Decisions.
 
 ## Implementation Steps
 
@@ -104,15 +104,19 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
    `permissions.rs`/`permissions_auto.rs` (`MODES` arrays) lose `Plan`; the `(Plan, …)` rows go.
    `tui/tests/extensions.rs` uses `/plan do x` only as an example of a queued built-in command: move it
    to another built-in that takes a description. `exit_code.rs` `a_valid_settings_overlay_is_accepted`
-   switches its example mode to `manual`; add a test next to it that `default_mode = "plan"` exits 2
-   naming the key. The eval `none_mode.rs` `plan-write` case and `pipeline_headless.rs` plan row go.
+   switches its example mode to `manual`; the `default_mode = "plan"` case in
+   `fontaine-core/tests/config.rs` (~959-979) flips to assert an error naming the key. The eval `none_mode.rs` `plan-write` case and `pipeline_headless.rs` plan row go.
 7. **Schemas and fixtures.** Update `docs/schemas/headless-v1.schema.json` (tier and
-   `permission_mode` enums) and the SDK `controls` fixtures/scripts as above; the headless schema
-   test must stay green.
+   `permission_mode` enums); the headless schema test must stay green. Leave the SDK `controls`
+   fixtures/scripts unchanged and flip the `set_mode_plan` assertion in `claude_sdk_compat.rs:547`
+   to expect `error`.
 8. **Docs.** Update the pages listed under Current State, in each case by rewriting the sentence or
    row; `tui.md` loses the `/plan` row and the cycle text, `agents.md` loses the "`plan` is not on the
    ladder" paragraph, `memory.md` and `tools.md` lose the `plan` row of the mode table, `guardian.md`
-   and `permissions.md` stop naming plan as a guardian mode. Update `tasks/design/permissions.md`
+   and `permissions.md` stop naming plan as a guardian mode. Also rewrite the `README.md:60` mode list
+   (six becomes five), `docs/hooks.md:102`, `docs/evals.md:265`, `evals/README.md:40` and `:63`, and
+   `tasks/design/config.md:119`. Edit `AGENTS.md:66` to `auto`/`afk` (the spawn-allow wording in the
+   fast-path invariant). Update `tasks/design/permissions.md`
    (step 9 and the tier list) to current behavior.
 9. **Decisions and changelog.** One dated line in the master plan's `## Decisions` (see below) at the
    end of the permissions subsection, and a CHANGELOG entry under unreleased: plan mode, `/plan`,
@@ -121,9 +125,8 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 
 ## Files to Modify
 
-See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
-and `tasks/design/permissions.md`. Close the follow-on `AGENTS.md` mention check: `AGENTS.md` names
-`plan` only as the tracking plan, not the mode, so it needs no edit.
+See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`,
+`tasks/design/permissions.md` and `AGENTS.md`.
 
 ## Trade-offs
 
@@ -147,8 +150,7 @@ and `tasks/design/permissions.md`. Close the follow-on `AGENTS.md` mention check
 
 ## Documentation
 
-Every page listed under Current State and `tasks/design/permissions.md`; docs describe current
-behavior only (no "removed in" notes), per the repo's docs rule.
+See Implementation Steps 8.
 
 ## Testing Strategy
 
@@ -156,11 +158,12 @@ Everything here is unit or integration level; no live API and no manual step is 
 
 - `cargo test` across the workspace after the deletions; the choke-point and tier-completeness tests
   (`Tier::ALL`) stay green with 21 tiers.
-- `a_valid_settings_overlay_is_accepted` on `manual`; new tests that `default_mode = "plan"`, `--permission-mode plan`
+- `a_valid_settings_overlay_is_accepted` on `manual`; the `tests/config.rs` `default_mode = "plan"`
+  case asserts an error naming the key; new tests that `--permission-mode plan`
   and the compat `parse_mode("plan")` fail with an error naming `plan`.
 - `statusbar.rs` test that the cycle is manual → accept edits → auto → AFK → manual.
-- If the ledger or audit readers needed a shim, a test that a record with `"plan"` / `"plan_block"`
-  still loads.
+- Shim tests: a ledger with `"plan"` (`AfkSource`) and `"plan_block"` (`Tier`) still opens, and an
+  audit log record with tier `"plan_block"` still reads.
 - The permission matrices keep their remaining modes, so the deterministic-floor and edit-class
   coverage of `manual`, `acceptEdits`, `dontAsk`, `auto` and `afk` is unchanged.
 - Gates from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
@@ -170,8 +173,6 @@ Everything here is unit or integration level; no live API and no manual step is 
 
 ## Open Questions
 
-- Whether `Tier` records and `AfkSource` are read back from disk (decides the two read-side shims).
-  The implementer settles this by grep before removing the variants; both answers are covered above.
-- Whether `tests/fixtures/claude_sdk/controls.*` is a recorded Claude Code baseline (leave it and adjust
-  the assertion) or a Fontaine-generated report (regenerate it). Settle by reading how the fixture is
-  produced.
+- Which mechanism reads an old `plan_block` tier back (the audit log's `DecisionRecord.tier` is not
+  optional, the ledger's is `Option<Tier>`), and what severity an old plan-block denial gets in
+  `afk_report::severity_weight`.
