@@ -1493,7 +1493,9 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
         }
         let Some(due) = runtime.next_goal_step(true) else {
             // Evaluation is still deferred behind work this run does not wait for.
-            if runtime.goal_deferred() {
+            // The wait also ends when the host has a message queued or interrupted; that is not
+            // a reason to pause.
+            if runtime.goal_deferred() && !(ctx.pending)() && !ctx.cancel.is_set() {
                 runtime.pause_goal(PauseReason::BackgroundWait);
             }
             break;

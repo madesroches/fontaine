@@ -490,7 +490,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// A turn on a goal the evaluator found not met yet, or a check-in on background work.
-    /// `prompt` is a harness note, never the user speaking; what the human queued meanwhile is handled as after a scheduled turn.
+    /// `prompt` is a harness note, never the user speaking;
+    /// what the human queued meanwhile is handled as after a scheduled turn.
     pub(crate) async fn goal_turn(
         &mut self,
         runtime: &mut AgentRuntime,
