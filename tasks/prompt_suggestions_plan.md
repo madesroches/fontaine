@@ -47,15 +47,22 @@ Core (`fontaine-core`):
   `/btw`; a flag on the transcript builder must reach it rather than a second renderer. A test pins the
   argument stripping.
 - New `UsageSource::PromptSuggestion` (`usage_ledger.rs`, added last because `index()` is `self as usize`;
-  `UsageSource::ALL` grows to 8; a `/cost` row in `fontaine-tui/src/reports.rs` in `ALL` order; the row
+  `UsageSource::ALL` grows to 8; the fixed-size `[Bucket; 7]` sites become 8: `usage_ledger.rs` :135
+  (`Mutex<[Bucket; 7]>`) and :160 (`snapshot()`), `reports.rs` :758 (`UsageReport.by_source`) and its test
+  at :1642; a `/cost` row in `fontaine-tui/src/reports.rs` in `ALL` order, which also needs the new row
+  in the hard-coded `shown` list at :767-776; the row
   order in `docs/tui.md` ~817 follows) so the spend is visible, separate from `/btw`. Debited to the root
   like a compaction, including a billed but unusable answer.
 - `AgentRuntime` is not `Clone` and `Ui::run` holds `&mut AgentRuntime`, so a spawned task cannot borrow
-  it. The core is split in two next to `ask_side_question` in `agent/goal.rs`: a synchronous
+  it. The core is split in two next to `ask_side_question` in `agent/goal.rs`: an async
   `prepare_prompt_suggestion(&Inputs)` that runs the skip checks and returns `None` when one holds,
-  otherwise owned values (the conversation snapshot, a clone of `models.main.completion`, the
-  `Arc<SessionState>`, `billed`); and a `run` step on those owned values that makes the call, cleans the
-  output, and debits the ledger via `state.record_usage`. The spawned task calls `run`.
+  otherwise loads the conversation from the session store with `load_async`, as `ask_side_question`
+  does (no in-memory accessor exists), renders the tool-result-free transcript text, and returns owned
+  values (that text, a clone of `models.main.completion`, the `Arc<SessionState>`, `billed`); and a `run`
+  step on those owned values that makes the call, cleans the output, and debits the ledger via
+  `state.record_usage`. The spawned task owns those values and calls `run`.
+- `Inputs` is a plain struct in `fontaine-core`, next to the suggestion code in `agent/goal.rs`, with
+  fields: enabled flag, permission mode, last-turn outcome, completed-turn count, unused streak.
 - Skip conditions (pure function `should_suggest(&Inputs)`, unit-tested): feature off; permission mode is
   plan; last turn did not finish normally (error, interrupt); fewer than 1 completed turn; the previous
   suggestion was shown and left unused three times in a row (back-off, reset when one is accepted); the
@@ -71,8 +78,8 @@ Core (`fontaine-core`):
   `Record::UserMessage`; the `/` and `!` rejection plus the second Enter are the safeguard.
 
 TUI (`fontaine-tui`):
-- After a turn ends and the idle input loop starts, `Ui` spawns one task that owns what it needs (a clone of
-  the main completion model and a snapshot of the conversation text), so the model call does not block the
+- After a turn ends and the idle input loop starts, `Ui` awaits `prepare_prompt_suggestion` (a short store read) and spawns one
+  task that owns the prepared values (transcript text, model clone, `Arc<SessionState>`, `billed`), so the model call does not block the
   idle input loop, and delivers its result over a channel polled in that loop, the way `statusline_task` is
   handled. The task is aborted when the user submits, starts a new turn, switches session, or quits
   (`request_quit`), so the turn is never slowed or delayed by it.
@@ -124,7 +131,7 @@ of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The l
    of `suggest_prompt`.
 3. `fontaine-tui`: `History::completion`; `App` state for suggestion and completion; key handling in
    `app.rs`; `/cost` row in `reports.rs`.
-4. `fontaine-tui`: call prepare synchronously, spawn `run`, abort and poll the task in `ui/mod.rs` and
+4. `fontaine-tui`: await prepare, spawn `run`, abort and poll the task in `ui/mod.rs` and
    `ui/turn.rs`; back-off counter and `Inputs` state.
 5. `fontaine-tui`: ghost rendering in `view.rs`.
 6. Docs and CHANGELOG.
@@ -132,8 +139,10 @@ of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The l
 ## Files to Modify
 
 - `rust/fontaine-core/src/{config.rs,config_catalog.rs,side_question.rs,goal.rs,usage_ledger.rs}`,
-  `rust/fontaine-core/src/agent/goal.rs`
-- `rust/fontaine-tui/src/{app.rs,history.rs,view.rs,reports.rs}`,
+  `rust/fontaine-core/src/agent/goal.rs`,
+  `rust/fontaine-core/tests/{config.rs,side_question.rs}`
+- `rust/fontaine-tui/src/{app.rs,history.rs,view.rs,reports.rs,lib.rs}` (`lib.rs`: `Ui`/`App` fields and the
+  task handle, like `statusline_task` at ~391),
   `rust/fontaine-tui/src/ui/{mod.rs,turn.rs}`
 - `docs/tui.md` (settings sample, keys table, `/cost` row order), `docs/configuration.md` (`[tui]` table and
   TOML example), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
