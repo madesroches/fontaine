@@ -155,7 +155,7 @@ impl fmt::Display for PauseReason {
                 write!(f, "the goal's tokens passed {}", compact_count(*n))
             }
             PauseReason::DurationCap(cap) => {
-                write!(f, "the stretch ran longer than {}", duration_text(*cap))
+                write!(f, "the stretch ran longer than {}", limit_text(*cap))
             }
             PauseReason::NoProgress(n) => {
                 write!(
@@ -221,6 +221,17 @@ pub fn duration_text(elapsed: Duration) -> String {
         format!("{}m", secs / 60)
     } else {
         format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    }
+}
+
+/// Like `duration_text`, but keeps the seconds of a limit that is not a whole minute, so the
+/// message never names a smaller limit than the configured one.
+fn limit_text(cap: Duration) -> String {
+    let secs = cap.as_secs();
+    if secs < 60 || secs.is_multiple_of(60) {
+        duration_text(cap)
+    } else {
+        format!("{} {:02}s", duration_text(cap), secs % 60)
     }
 }
 

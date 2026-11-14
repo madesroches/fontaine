@@ -475,7 +475,7 @@ fn the_token_cap_fires_for_an_unpriced_model_and_resets_with_a_user_prompt() {
 }
 
 #[test]
-fn the_token_cap_counts_unpriced_tokens_of_a_tree_total() {
+fn the_token_cap_is_measured_on_the_stretchs_input_and_output_tokens_unpriced() {
     let f = Fixture::new();
     let goal = f.goal();
     let caps = GoalCaps {
@@ -559,6 +559,34 @@ fn usage_pause_time_inside_the_stretch_does_not_count_toward_the_duration_cap() 
 }
 
 #[test]
+fn usage_pause_time_from_before_the_stretch_counts_for_nothing_toward_the_duration_cap() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_duration: Some(Duration::from_millis(100)),
+        ..CAPS
+    };
+    goal.set("done", Spend::default(), Duration::from_secs(5))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let applied = goal
+        .apply(
+            verdict(Judgment::NotMet, "more to do"),
+            Spend::default(),
+            Duration::from_secs(5),
+            &caps,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        applied.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(100)))
+    );
+}
+
+#[test]
 fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
     let f = Fixture::new();
     let goal = f.goal();
@@ -619,6 +647,10 @@ fn the_new_pause_reasons_read_as_sentences() {
     assert_eq!(
         PauseReason::DurationCap(Duration::from_secs(7_200)).to_string(),
         "the stretch ran longer than 2h 00m"
+    );
+    assert_eq!(
+        PauseReason::DurationCap(Duration::from_secs(90)).to_string(),
+        "the stretch ran longer than 1m 30s"
     );
 }
 

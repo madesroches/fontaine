@@ -38,11 +38,14 @@ the same evaluation boundary as the other caps, pausing the goal with a specific
 - `PauseReason`: add `TokenCap(u64)` ("the goal's tokens passed 500.0k", via `compact_count`) and
   `DurationCap(Duration)` ("the stretch ran longer than 2h 00m", via `duration_text`; the clock is per stretch while status shows goal-wide elapsed). Not `Impossible`,
   no new headless outcome, no new exit code.
-- `Stretch`: add `started: Instant`, set wherever the stretch is created (`fresh`, `user_prompt`) so
-  tokens, duration, turns and cost all reset at the same boundaries.
+- `Stretch`: add `started: Instant` and `paused_base: Duration` (the cumulative usage-pause time at
+  stretch start), set wherever the stretch is created (`fresh`, `user_prompt`) so tokens, duration,
+  turns and cost all reset at the same boundaries.
 - `not_met()`: after the cost check, test tokens with `Budget { tokens: Some(cap), cost_usd: None }
   .exhausted(&spent, false)` (no `priced` guard: it is the point) and duration with
-  `stretch.started.elapsed() > cap` (strict, matching `Budget::exhausted`'s `spent > cap`). Order of precedence: no-progress, turns, cost, tokens, duration.
+  `active_time > cap` (strict, matching `Budget::exhausted`'s `spent > cap`), where `active_time =
+  stretch.started.elapsed()` less the usage-pause time accrued inside the stretch (`paused_now -
+  paused_base`, saturating; pause time from before the stretch counts for nothing). Order of precedence: no-progress, turns, cost, tokens, duration.
   Like the other caps it fires on the "not met" boundary only; a met/impossible verdict ends the goal
   regardless. This is not hard cancellation: an in-flight model call or tool wait is not interrupted,
   so a stretch may overrun the duration by one turn plus one evaluation.
@@ -96,6 +99,8 @@ Unit tests in `fontaine-core/tests/goal.rs`, following the existing cost-cap tes
   including guardian/evaluator/subagent tokens via `spend_since`.
 - Duration cap fires once the stretch's `started` is strictly older than the cap (use a tiny cap,
   e.g. 1 s, with a sleep, or a test-only constructor), and does not fire at or below it.
+- Usage-pause time accrued inside the stretch is subtracted from the duration; with `paused_base ==
+  paused_now` nothing is subtracted, however large the pause total.
 - Both reset on `user_prompt`: a paused goal continues under a fresh stretch.
 - Pause leaves goal set; ordering vs. turn/cost caps; unset caps change nothing.
 - `PauseReason` display strings.
