@@ -164,8 +164,8 @@ claude_compat/
                 ignore unknown fields (no `deny_unknown_fields`)
   router.rs     stdin demux task + single stdout writer task; outbound request ids,
                 pending map, cancel, EOF fail-closed
-  translate.rs  SessionEvent -> wire messages (tool-name mapping, parent_tool_use_id,
-                Anthropic stream_event synthesis, usage/modelUsage/result mapping)
+  translate.rs  SessionEvent -> wire messages (tool-name mapping, Anthropic stream_event
+                synthesis, usage/modelUsage/result mapping)
   approver.rs   SdkApprover: Approver over can_use_tool / AskUserQuestion
   hooks.rs      callback hook handler (initialize.hooks -> hook_callback)
   mcp.rs        SDK MCP servers: an rmcp IntoTransport tunnelled over mcp_message
@@ -223,8 +223,8 @@ budgets, `settle` and teardown are reused as they are.
   matrix. It describes the protocol level served, so the SDKs' feature gates read it correctly.
   `fontaine_version` reports the real binary version.
 - **`assistant`** carries `message: {id, type:"message", role:"assistant", model, content,
-  stop_reason, usage}`, `parent_tool_use_id` (the spawning `agent` call's id for subagent
-  output, otherwise null), `session_id` and `uuid`. Content blocks are `text` and `tool_use`.
+  stop_reason, usage}`, `parent_tool_use_id` (always null: only root messages are streamed),
+  `session_id` and `uuid`. Content blocks are `text` and `tool_use`.
   Reasoning stays out, as the 2026-10-31 decision already says.
 - **`user`** carries `tool_result` blocks (`tool_use_id`, `content`, `is_error`) with the same
   attribution. Replayed user prompts are not echoed (no `--replay-user-messages` in the
@@ -237,9 +237,12 @@ budgets, `settle` and teardown are reused as they are.
 - **`system/permission_denied`** goes out for each gate deny, as Claude does. Each one also
   lands in `result.permission_denials[{tool_name, tool_use_id, tool_input}]`. Fontaine's
   `gate_decision` has no Claude equivalent and is not emitted.
-- **Subagents.** A spawn's `tool_use` uses the `Agent` name. The child's messages carry
-  `parent_tool_use_id`. Background spawns emit `system/task_started` / `task_notification` with
-  the fields the Python parser requires.
+- **Subagents.** A spawn's `tool_use` uses the `Agent` name, and its `tool_result` carries the
+  child's answer under that call's id. A child call that reaches the delegate carries the
+  child's `agent_id` in `can_use_tool`. The child's own messages are not streamed and no
+  `system/task_*` messages are emitted (no core seam is added: the agent event sink stays
+  uninstalled, as in `headless-v1`); a background child's completion arrives as the existing
+  notification turn. The matrix marks child-message streaming and `task_*` unsupported.
 - **`result`** carries `subtype` (Claude's: `success`, `error_max_turns`,
   `error_max_budget_usd`, `error_during_execution`, `error_max_structured_output_retries`, plus
   Fontaine's `error_usage_limit`, which the SDKs pass through), `is_error`, `duration_ms`,
@@ -302,13 +305,14 @@ ruleContent}], behavior:"allow", destination:"session"}`.
 | `allow`, `updatedInput` equal to the sent input, no `updatedPermissions` | `AllowOnce` |
 | `allow` with `updatedInput` absent, no `updatedPermissions` | `AllowOnce` (absent is treated as equal to the sent input; unknown extra keys such as `toolUseID` and `decisionClassification` are tolerated) |
 | `allow` + `updatedPermissions` = addRules/allow/`session` naming the proposed rule | `AllowSession` (existing grant path) |
-| `allow` + `updatedPermissions` naming an accepted session allow rule other than the proposed one | `AllowOnce` plus those session grants |
-| `allow` + `updatedInput` different from the sent input | `AllowModified(args)` → re-adjudication (below) |
+| `allow` + any other accepted `updatedPermissions` (session allows other than the proposed one, `setMode`) | `AllowUpdated { args: None, grants, mode }` |
+| `allow` + `updatedInput` different from the sent input | `AllowUpdated { args: Some(args), grants, mode }` → re-adjudication (below) |
 | `deny` (`message`, `interrupt?`) | `Deny{feedback: message}`; `interrupt:true` also cancels the turn (§7) |
 | error response, malformed JSON, unknown `behavior`, cancelled, EOF/disconnect | `Deny`, fail-closed, reason logged to the audit |
 
-**Modified input.** `Answer` gains `AllowModified { args: Value, grant: Option<Rule> }`, where `grant` is the
-session allow from `updatedPermissions`, applied only if the re-run allows. `ask_human` does not
+**Modified input.** `Answer` gains `AllowUpdated { args: Option<Value>, grants: Vec<Rule>,
+mode: Option<PermissionMode> }`: the session allows and the `setMode` from
+`updatedPermissions`, and the new args when they changed. With `args: Some`, `ask_human` does not
 allow it directly: its and `prompt_or_ask`'s return types change to carry a `Readjudicate(args)`
 outcome, and `adjudicate` restarts from the top (hooks included) with the new args through an
 owned call view, after the same normalization as any model call. The restart records the
@@ -320,16 +324,22 @@ that changes the args a second time is denied.
 equivalent to the host's own `set_permission_mode` control (bypass still refused):
 
 - `addRules` with `behavior: "allow"` and destination `session` or `cliArg`, for rules that
-  `map_tool_entry` accepts. These become session grants (`RuleSource::Session`) and still sit
-  below the floor.
-- `addRules` with `deny` / `ask` at any destination. These tighten, as session rules (Fontaine
-  does not write the host's choice into config files).
-- `setMode` → the same path as the `set_permission_mode` control (§7).
+  `map_tool_entry` accepts. These become session grants (`RuleSource::Session`, the existing
+  `SessionState::grant` and ledger `Record::Grant`) and still sit below the floor.
+- `setMode` → the same `set_mode` path as the `set_permission_mode` control (§6, §7).
 - Anything else fails the whole answer closed (Deny), with the reason in the deny feedback and
-  the audit: an allow rule at `userSettings` / `projectSettings` / `localSettings`,
+  the audit: `addRules` with `deny` / `ask` (Fontaine has no session deny/ask state that a resume
+  restores), an allow rule at `userSettings` / `projectSettings` / `localSettings`,
   `replaceRules`, `removeRules`, `addDirectories` or `removeDirectories`. The suggestions
-  Fontaine sends only ever target `session`, so a host that echoes suggestions back never hits
-  this.
+  Fontaine sends only ever target `session` allows, so a host that echoes suggestions back never
+  hits this.
+
+The whole list is validated before anything is applied. The answer decides the current call;
+the updates hold from the next call, as an "allow session" grant does, so a `setMode` never
+re-decides the call it came with. Without new args they are applied once the answer resolves,
+before the call runs: `setMode` first, and if `set_mode` refuses it the answer becomes a Deny
+and no grant is applied; then the grants. With new args they are applied only if the re-run
+allows.
 
 **Questions.** `SdkApprover::ask_user` sends `can_use_tool` with
 `tool_name: "AskUserQuestion"` and `input: {questions}` (Fontaine's `Question` already has
@@ -350,8 +360,12 @@ closed.
 - **`--permission-mode` / `set_permission_mode`.** `default`→`manual`, `acceptEdits`,
   `plan`, `dontAsk`, `auto`. Fontaine's `afk` is accepted under its own name.
   `bypassPermissions` and `--allow-dangerously-skip-permissions` exit 2 at the CLI, or return a
-  control error at runtime: there is no bypass mode. A runtime change goes through
-  `gate.rs set_mode` (ledger record, AFK refusals) and answers with an error when refused.
+  control error at runtime: there is no bypass mode. A runtime change (`set_permission_mode` or
+  a `setMode` update) goes through `gate.rs set_mode` (ledger record, AFK refusals) with a new
+  `AfkSource::Sdk` (`afk_report.rs`), and answers with an error when refused. `afk` is entered
+  only at startup (`--permission-mode afk`, recorded as `AfkSource::Cli`): a runtime request to
+  enter it is refused before `set_mode`, since AFK is entered only by the user's own flag or key
+  press. Leaving `afk` at runtime is allowed, as `set_mode` never refuses it.
   Running subagents keep the mode they were spawned with (the existing invariant), and new
   spawns inherit the new one.
 - **Model.** `--model` / `set_model` take a Fontaine model reference or role (Claude aliases such
@@ -371,8 +385,13 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   Claude's JSON settings schema is not Fontaine's.
 - **`--system-prompt` / `--append-system-prompt`** map to Fontaine's existing flags.
   `--system-prompt-file` reads the file. The TS SDK sends the same values as `initialize`
-  `systemPrompt` / `appendSystemPrompt` (§7), which map onto the same options; empty and absent
-  handling is decided in Decisions.
+  `systemPrompt` / `appendSystemPrompt` (§7), which map onto the same options. An empty or
+  whitespace-only value (the Python default `--system-prompt ""`, the TS default `[""]`, an empty
+  file) is treated as absent, so Fontaine's base prompt (roots, scratch, tool and denial
+  guidance, AFK text) stays; a non-empty value replaces the base layer as `--system-prompt` does
+  today. The TS array form joins its non-empty entries with a blank line, and is absent when
+  none is left. When both argv and `initialize` set a non-empty value for the same option,
+  `initialize` gets an error response naming it.
 - **`--mcp-config <json|path>`** (repeatable): `stdio` / `http` servers map to Fontaine
   `[mcp.servers]` entries at CLI scope. `sse` entries are unsupported (exit 2; Fontaine's http
   transport is streamable HTTP). `sdk` servers are covered in §8 (the TS SDK declares them in `initialize`, §7). `--strict-mcp-config` sets an
@@ -428,7 +447,10 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   does.
 - **Streaming input while a turn runs.** A user message that arrives mid-turn goes to the root's
   `Steering` queue (`steering.rs:51`, hooked up in headless, which has none today) and is delivered at the next tool result, as in the TUI.
-  If the turn ends first, it becomes the next turn. Ordering: input-queue order is arrival
+  If the turn ends first, it becomes the next turn. The Step 1 capture is binding here: if it
+  shows Claude Code delivering mid-turn messages only at turn end, SDK mode does not hook up
+  steering and queues every mid-turn message as the next turn (`headless-v1` keeps its own
+  behaviour), and the steering Trade-offs line is updated to match. Ordering: input-queue order is arrival
   order. Background notifications (`settle`) run only when the input queue is empty, so a host
   message is never starved by notification turns. Control requests are handled concurrently
   with turns, and never wait behind one.
@@ -462,25 +484,40 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   `HandlerKind` (which deserializes from TOML `type`), so a callback is not declarable from
   config. `AgentSetup` gains an input for callback hooks, feeding both the pipeline's
   pre-hooks (frozen in `PipelineParams.hooks`) and `LifecycleHooks`, which are built before the
-  runtime is shared. Callback hooks are registered at Fontaine's CLI scope
-  (`Slot::Cli`, user trust), so a callback hook's `allow` is a trusted hook allow after the
-  floor (`Tier::Hook`), which skips `canUseTool` and, for narrow matchers in auto, the guardian,
-  as a PreToolUse allow does in Claude Code. `initialize.hooks` matchers use Claude syntax (`"Bash"`, `"Write|Edit"`) while Fontaine hook
+  runtime is shared. Callback hooks are registered at Fontaine's CLI scope (`Slot::Cli`) without
+  user trust, so they are tighten-only like project hooks (`can_allow` is false): `deny` and
+  `ask` count, `updatedInput` rewrites the args the rest of the pipeline judges, and an `allow`
+  is ignored (logged), so it never skips the mode, `canUseTool` or the guardian. This differs
+  from Claude Code, where a PreToolUse allow skips the permission prompt; the matrix marks it.
+  `initialize.hooks` matchers use Claude syntax (`"Bash"`, `"Write|Edit"`) while Fontaine hook
   matchers go through `parse_rule`, where an unparsed matcher runs for every call with a non-narrow
   allow. So each matcher is split on `|` and each alternative is mapped through `map_tool_entry`
   into one callback hook; an alternative that cannot be mapped fails `initialize` with an error
-  naming it; an empty or `*` matcher stays deliberately broad (its allow is non-narrow).
+  naming it; an empty or `*` matcher stays deliberately broad (it runs for every call).
   Timeout is the matcher's `timeout`, or the
   command-hook default. An error or timeout follows `onFailure`: `block` makes a PreToolUse
   deny, and `continue` or absent gives command-hook non-blocking-error semantics. The callback constructor sets the existing `fails_closed`
-  (`PreToolUseHook::fails_closed`, `UserHook.fails_closed`) from `onFailure: block`. A hook's output
+  (`PreToolUseHook::fails_closed`, `UserHook.fails_closed`) from `onFailure: block`. The
+  fail-closed denial's reason comes from the hook instead of the fixed Git Bash text in
+  `fail_closed_denial` (`permissions.rs:308`): the PowerShell command hook keeps today's
+  wording, and a callback hook says it was blocked by its `onFailure: block` setting, with the
+  failure appended. A hook's output
   is data, never a human answer. Events with no Fontaine equivalent get an `initialize` error
   naming the event.
 - **Programmatic agents** (`initialize.agents`, `--agents` is not a flag the SDK sends) are
   mapped from the JSON definition into agent types by a new function in `extensions.rs` (today
   it maps only frontmatter files), under a new explicit session origin on `TypeOrigin` only (`fontaine-agents/src/registry.rs`;
   the extension `Scope` is shared with skills and styles and gains no variant). The
-  toolset, model and effort restrictions that apply to tightened scopes apply to them. Tool
+  toolset, model, effort and mode restrictions that apply to tightened scopes apply to them,
+  and the session origin refuses per-call model overrides (`accepts_model_override` is false).
+  `description`, `prompt`, `tools` and `disallowedTools` map directly. `model` absent or
+  `inherit` runs on the session model; a name matching a configured role uses that role; any
+  other value (a Claude alias with no such role, an endpoint, a list) is an error. `effort`
+  set is an error. `permissionMode` absent or `default` maps to manual, `dontAsk` to dontAsk,
+  and any other value (`inherit` included) is an error. Any other field (`mcpServers`,
+  `skills`, `maxTurns`, `initialPrompt`, `background`, `memory`, `hooks`, unknown keys) set to
+  a non-empty value is an error. Every error is an `initialize` error response naming the agent
+  and the field; nothing is dropped silently. Tool
   lists go through `map_tool_entry` and cannot exceed the parent's toolset. `AgentSetup` gains a
   session-agents input, kept across plugin reload (which overwrites the live agent-type cell).
 
@@ -514,7 +551,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    Every existing headless test must stay green and unmodified.
 4. `fontaine-core/src/permissions.rs` and `fontaine-core/src/agent.rs`: `PipelineParams.headless:
    bool` → `HumanChannel`, fed from a new `AgentSetup.human_channel` (`AgentSetup.headless` stays). Add
-   `Answer::AllowModified`, the `Readjudicate(args)` return of `ask_human` / `prompt_or_ask` and
+   `Answer::AllowUpdated`, the `Readjudicate(args)` return of `ask_human` / `prompt_or_ask` and
    the restart in `adjudicate`. Add `human_channel` to `DecisionRecord` (`audit.rs`; `tier.rs`
    if a tier is needed) and carry it into the ledger and spans. Update the callers this breaks in
    the same step: `fontaine-evals/src/none.rs` (~:165), `fontaine-core/tests/common/pipeline.rs`
@@ -524,7 +561,9 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    `fontaine-core/tests/common/runtime.rs:454`, `fontaine-tui/tests/common/mod.rs:374` and
    `fontaine-tui/src/ui/tests.rs:865`.
 5. `fontaine-core/src/user_hooks.rs`: add `Handler::Callback` behind a `HookTransport` trait,
-   built by a constructor that bypasses `HandlerKind` and sets `fails_closed` from `onFailure`.
+   built by a constructor that bypasses `HandlerKind`, sets `fails_closed` from `onFailure` and
+   leaves `user_trust` false. `fontaine-core/src/permissions.rs`: the fail-closed denial reason
+   comes from the hook (`PreToolUseHook` supplies it), not from `fail_closed_denial`'s fixed text.
 6. `fontaine-tools/src/mcp/servers.rs` and `fontaine-core/src/agent/mcp*.rs`: add
    `Transport::Sdk`, a public transport-factory trait, a non-Config spec source, and routing in
    `ServerConnector` via `connect_transport`.
@@ -585,7 +624,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 - `rust/fontaine/src/{lib.rs,headless.rs}`, `rust/fontaine-core/src/{extensions.rs,agent.rs}`
 - `rust/fontaine/src/claude_compat/` (new: `mod.rs`, `cli.rs`, `wire.rs`, `router.rs`,
   `translate.rs`, `approver.rs`, `hooks.rs`, `mcp.rs`, `control.rs`)
-- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `ledger.rs`, `audit.rs`,
+- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `ledger.rs`, `audit.rs`, `afk_report.rs`,
   `user_hooks.rs`, `agent/mcp.rs`, `agent/mcp_supervisor.rs`, `agent/setup.rs`,
   `agent/build.rs`, `agent/models.rs`, `agent/reload.rs`, `statusline.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (LineReader moved out), `rust/fontaine-core/src/line_reader.rs` (new)
@@ -596,7 +635,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
   `rust/fontaine-evals/src/none.rs`
 - `rust/fontaine/tests/claude_sdk_compat.rs`, `rust/fontaine/tests/sdk_compat/**`,
   `rust/fontaine/tests/fixtures/claude_sdk/**`
-- `rust/fontaine-core/tests/` (`audit_telemetry.rs`, `common/pipeline.rs`, `common/runtime.rs`, pipeline tests for `Delegate` and `AllowModified`)
+- `rust/fontaine-core/tests/` (`audit_telemetry.rs`, `common/pipeline.rs`, `common/runtime.rs`, pipeline tests for `Delegate` and `AllowUpdated`)
 - `rust/fontaine-tools/tests/mcp_registration.rs`
 - `evals/claude_sdk/capture.sh`
 - `.github/workflows/ci.yml`, `.gitignore`, `.ignore`
@@ -637,8 +676,8 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 - 2026-11-13: `claude_code_version` in SDK-mode `init`/`initialize` reports the conformance
   baseline's Claude Code protocol version; `fontaine_version` carries the real one.
 - 2026-11-13: The `canUseTool` delegate is reached only from `ask_human`, never offers
-  `AllowAlways`, and accepts `updatedPermissions` only as session allows or tightenings;
-  anything looser fails the answer closed.
+  `AllowAlways`, and accepts `updatedPermissions` only as session allows or `setMode`;
+  anything else fails the answer closed.
 - 2026-11-13: Modified input restarts `adjudicate`; a second modification is denied.
 - 2026-11-13: `can_use_tool` and question requests have no timeout (as a TUI prompt); hook
   callbacks use the matcher or command-hook timeout.
@@ -646,6 +685,14 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 - 2026-11-13: Valid Claude flags Fontaine does not implement are classed unsupported and exit 2.
 - 2026-11-13: SDK mode keeps `AgentSetup.headless = true`; only the pipeline's human channel
   becomes Delegate.
+- AFK: 2026-11-13: An empty or whitespace-only system prompt (Python `--system-prompt ""`, TS `[""]`) is treated as absent and keeps Fontaine's base prompt, unlike Claude Code's "no preset" meaning, because the base layer carries the roots, scratch and denial guidance; the TS array joins its non-empty entries with a blank line, and argv plus `initialize` both non-empty is an `initialize` error.
+- AFK: 2026-11-13: `updatedPermissions` accepts only session allow `addRules` that `map_tool_entry` maps plus `setMode`, carried by `Answer::AllowUpdated { args, grants, mode }`; deny/ask `addRules` fail the answer closed (no session deny/ask state or ledger posture is added); the list is validated whole, the answer decides the current call and the updates hold from the next one (`setMode` first, a refused one denies with no grant applied; with new args, only after the re-run allows).
+- AFK: 2026-11-13: SDK callback hooks are tighten-only (CLI slot without user trust, `can_allow` false): deny, ask and `updatedInput` count, an `allow` is ignored, unlike Claude Code's PreToolUse allow, so no host callback skips the mode, `canUseTool` or the guardian.
+- AFK: 2026-11-13: Runtime SDK mode changes (`set_permission_mode`, `setMode`) record a new `AfkSource::Sdk`; entering `afk` at runtime is refused (only `--permission-mode afk` at startup, `AfkSource::Cli`), leaving it is allowed.
+- AFK: 2026-11-13: No subagent event seam: SDK mode streams root messages only (`parent_tool_use_id` always null, no `system/task_*`); subagent attribution is the `Agent` `tool_use` and its result plus `agent_id` on a child's `can_use_tool`, and child streaming is marked unsupported in the matrix.
+- AFK: 2026-11-13: `initialize.agents` map as a tightened scope with per-call model overrides refused: `model` absent/`inherit` → session model, a configured role → that role, anything else, any `effort`, a `permissionMode` other than `default`/`dontAsk`, or any other non-empty field (`mcpServers`, `skills`, `maxTurns`, unknown keys…) is an `initialize` error naming the agent and field.
+- AFK: 2026-11-13: The fail-closed hook denial's reason comes from the hook: a failed `onFailure: block` callback hook says it was blocked by `onFailure: block` (tested); the PowerShell command hook keeps the Git Bash wording.
+- AFK: 2026-11-13: Mid-turn input keeps the steering design, but the Step 1 `claude` capture is binding: if it shows turn-end delivery, SDK mode queues mid-turn messages as the next turn instead and the steering Trade-offs line is updated.
 
 Master-plan lines to add (`### Headless` unless noted):
 - "(#582, supersedes the 2026-10-21 no-external-approval-delegate line) Claude Agent SDK mode
@@ -662,6 +709,11 @@ Master-plan lines to add (`### Headless` unless noted):
   files are not read, and `--settings` other than `{}` exits 2."
 - `### Permissions`: "(#582) `HumanChannel::Delegate`: a host-delegated approver never offers
   Allow-always and cannot persist rules beyond the session."
+- `### Extensibility`: "(#582) SDK callback hooks are tighten-only: their `allow` is ignored,
+  unlike Claude Code's PreToolUse allow, so a host callback never skips the mode, `canUseTool`
+  or the guardian."
+- `### Headless`: "(#582) An empty SDK system prompt keeps Fontaine's base prompt, unlike Claude
+  Code's no-preset meaning, because the base layer carries the roots, scratch and denial guidance."
 
 ## Documentation
 
@@ -693,17 +745,29 @@ Master-plan lines to add (`### Headless` unless noted):
   `bypassPermissions` rejected; the matrix renders to the docs table.
 - `wire.rs`: serde round-trip of every message and control shape against the checked-in
   `claude` baseline fixtures (same keys, same types for the fields the SDKs read).
-- `translate.rs`: `SessionEvent` sequences → expected messages (tool-name mapping, subagent
-  `parent_tool_use_id`, `stream_event` synthesis, `result` subtypes, usage/modelUsage, unpriced
+- `translate.rs`: `SessionEvent` sequences → expected messages (tool-name mapping,
+  `parent_tool_use_id` always null, `stream_event` synthesis, `result` subtypes, usage/modelUsage, unpriced
   → `total_cost_usd: null`, denials in both places).
 - `approver.rs`: the response-mapping table row by row; `updatedPermissions` acceptance and
-  rejection per type and destination; suggestions only at `session`; error, malformed, cancel
+  rejection per type and destination (deny/ask `addRules` fail the answer closed); several
+  session allows and a `setMode` applied together; a refused `setMode` (entering `afk`) denies
+  the answer with no grant applied; suggestions only at `session`; error, malformed, cancel
   and EOF → Deny / `Unavailable`.
 - `user_hooks.rs` (beside `a_timed_out_command_hook_loses_its_whole_tree`): the callback
   constructor sets `fails_closed` from `onFailure`; a transport timeout or error maps to
-  `HookError::Failed` (`fontaine-core/tests/hook_slot.rs:273` already covers fail-closed denial).
+  `HookError::Failed` (`fontaine-core/tests/hook_slot.rs:273` already covers fail-closed denial
+  and keeps pinning the PowerShell wording); a failed or timed-out `onFailure: block` callback
+  hook denies with a reason naming `onFailure: block`, asserted; a callback hook's `allow` is
+  ignored and the call still reaches the mode and the delegate.
 - `hooks.rs`: matcher mapping: `Write|Edit` → two callback hooks via `map_tool_entry`, an
   unmappable alternative fails `initialize` naming it, empty and `*` stay broad.
+- `extensions.rs`: the agent-definition mapping: `model` absent/`inherit`/configured role
+  accepted, other models, `effort`, `permissionMode` other than `default`/`dontAsk` and any
+  other non-empty field fail `initialize` naming the agent and field.
+- `cli.rs` / `control.rs`: empty and whitespace system prompts (argv `""`, TS `[""]`) keep the
+  base prompt; the array form joins non-empty entries; argv and `initialize` both non-empty is
+  an `initialize` error; a runtime request to enter `afk` is refused, leaving it is recorded with
+  `AfkSource::Sdk`.
 - `router.rs`: request-id correlation, cancel, malformed line → error result, EOF with pending
   requests → all fail closed, a control request served while a turn runs, input ordering against
   notification turns.
@@ -711,7 +775,7 @@ Master-plan lines to add (`### Headless` unless noted):
 **Core pipeline tests** (`fontaine-core/tests`, `Scripted` approver with `Delegate`):
 - The delegate is never asked for a floor deny, a protected path, a guardian deny, a guardian
   error or timeout, or an AFK-stopped run, and is asked for a manual-mode Prompt.
-- `AllowModified` whose new args hit a floor deny is denied; one whose new args are out of
+- `AllowUpdated` whose new args hit a floor deny is denied; one whose new args are out of
   scope goes back through scope; one a second time is denied; one that is clean is allowed with
   the new args (the executed args are asserted).
 - Delegate answers are recorded with `human_channel = delegate`; `AllowAlways` is never offered.
@@ -728,11 +792,6 @@ Python consumer programs, deterministic wiremock model, covering the issue's lis
 `canUseTool` allow, deny, modified input, permission update and disconnect; AskUserQuestion; an
 SDK MCP custom tool and a callback hook; interrupt; mode and model controls; malformed input;
 unsupported options (TS: the raised error names the flag; Python: `ProcessError` with exit code 2 and, via its `stderr` callback, the flag named); process shutdown; subagent attribution
-and result/usage shapes. The CI job installs pinned
+(the `Agent` `tool_use` and its result, `agent_id` on a child's `can_use_tool`) and result/usage
+shapes. The CI job installs pinned
 packages from the registries and contacts no model provider.
-
-## Open Questions
-
-- Whether Claude Code delivers mid-turn user messages at the next tool boundary or only at turn
-  end. The early baseline capture (Step 1) settles it before `control.rs` is written. The plan assumes the
-  tool-boundary delivery described in §7.
