@@ -41,7 +41,7 @@ use crate::context::{self, ContextError, ContextUsage};
 use crate::extensions::Extensions;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
-use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes_of};
+use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remote_names_of, git_remotes_of};
 use crate::memory;
 use crate::model_roles::{RoleChains, Roles};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
@@ -834,15 +834,17 @@ impl AgentRuntime {
         let roots = self.roots();
         let scanned = self.indexed_roots();
         let (data_dir, primary) = (self.setup.data_dir.clone(), self.primary_root());
-        let (index, git_remotes, stored) = tokio::task::spawn_blocking(move || {
-            let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
-            let remotes = git_remotes_of(&scanned);
-            // File I/O only: setup is an explicit command, never a step of session start.
-            let stored = project_env::load(&data_dir, &primary);
-            (index, remotes, stored)
-        })
-        .await
-        .unwrap_or_default();
+        let (index, git_remotes, git_remote_names, stored) =
+            tokio::task::spawn_blocking(move || {
+                let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
+                let remotes = git_remotes_of(&scanned);
+                let names = git_remote_names_of(&scanned);
+                // File I/O only: setup is an explicit command, never a step of session start.
+                let stored = project_env::load(&data_dir, &primary);
+                (index, remotes, names, stored)
+            })
+            .await
+            .unwrap_or_default();
         let (project_environment, setup_notice) =
             self.project_environment_at_start(stored, &git_remotes);
         self.set_files(index.completion_paths());
@@ -859,6 +861,7 @@ impl AgentRuntime {
                 .collect(),
             workspace_trust: if trusted { "trusted" } else { "untrusted" }.to_string(),
             git_remotes,
+            git_remote_names,
             env_keys: tools::subprocess_env(&self.config)
                 .into_iter()
                 .map(|(name, _)| name.to_string_lossy().into_owned())

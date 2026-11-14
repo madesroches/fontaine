@@ -34,6 +34,7 @@ fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
             workspace_roots: vec![w.work.display().to_string()],
             workspace_trust: "trusted".into(),
             git_remotes: Vec::new(),
+            git_remote_names: None,
             env_keys: Vec::new(),
             headless: false,
             project_executables: false,

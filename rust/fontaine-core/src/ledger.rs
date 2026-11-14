@@ -60,6 +60,10 @@ pub enum Record {
         workspace_roots: Vec<String>,
         workspace_trust: String,
         git_remotes: Vec<String>,
+        /// Each remote as `<git name> <fetch url>`; `None` when the remotes were not read completely or
+        /// the ledger predates the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_remote_names: Option<Vec<String>>,
         /// Names of the `[env]` overrides every subprocess gets; never their values.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
@@ -394,6 +398,8 @@ pub struct LedgerView {
     pub workspace_roots: Vec<String>,
     pub workspace_trust: String,
     pub git_remotes: Vec<String>,
+    /// `<git name> <fetch url>` per remote; `None` when the session start did not record them.
+    pub git_remote_names: Option<Vec<String>>,
     pub env_keys: Vec<String>,
     pub project_environment: Option<ProjectEnvironment>,
     index: HashSet<String>,
@@ -447,6 +453,7 @@ impl Default for LedgerView {
             workspace_roots: Vec::new(),
             workspace_trust: String::new(),
             git_remotes: Vec::new(),
+            git_remote_names: None,
             env_keys: Vec::new(),
             project_environment: None,
             index: HashSet::new(),
@@ -619,6 +626,7 @@ impl LedgerView {
                 workspace_roots,
                 workspace_trust,
                 git_remotes,
+                git_remote_names,
                 env_keys,
                 project_environment,
                 ..
@@ -626,6 +634,7 @@ impl LedgerView {
                 self.workspace_roots = workspace_roots.clone();
                 self.workspace_trust = workspace_trust.clone();
                 self.git_remotes = git_remotes.clone();
+                self.git_remote_names = git_remote_names.clone();
                 self.env_keys = env_keys.clone();
                 // Assigned even when absent, so a resume after the file is gone clears it.
                 self.project_environment = project_environment.clone();
@@ -935,12 +944,12 @@ impl FileIndex {
 }
 
 /// The fetch URLs of the repository around `root`, read from its own config without following
-/// `include` or `includeIf`. None when there is no repository or gix cannot read it; Fontaine
-/// never spawns `git`.
+/// `include` or `includeIf`. Empty when there is no repository or gix cannot read it; Fontaine
+/// never spawns `git`. A remote without a fetch URL is skipped.
 pub fn git_remotes(root: &Path) -> Vec<String> {
     let mut urls: Vec<String> = named_remotes(root)
         .into_iter()
-        .map(|(_, url)| url)
+        .filter_map(|(_, url)| url)
         .collect();
     urls.sort();
     urls.dedup();
@@ -951,26 +960,55 @@ pub fn git_remotes(root: &Path) -> Vec<String> {
 pub fn git_origin(root: &Path) -> Option<String> {
     named_remotes(root)
         .into_iter()
-        .find_map(|(name, url)| (name == "origin").then_some(url))
+        .find_map(|(name, url)| if name == "origin" { url } else { None })
 }
 
-fn named_remotes(root: &Path) -> Vec<(String, String)> {
+fn open_repo(root: &Path) -> Option<gix::Repository> {
     let options = gix::open::Options::isolated().strict_config(true);
-    let Ok(repo) = gix::discover_opts(root, gix::discover::upwards::Options::default(), options)
-    else {
-        return Vec::new();
-    };
+    gix::discover_opts(root, gix::discover::upwards::Options::default(), options).ok()
+}
+
+/// Each remote with its fetch URL, None for one whose URL is missing or unreadable.
+fn named_remotes(root: &Path) -> Vec<(String, Option<String>)> {
+    open_repo(root)
+        .map(|repo| named_remotes_of(&repo))
+        .unwrap_or_default()
+}
+
+fn named_remotes_of(repo: &gix::Repository) -> Vec<(String, Option<String>)> {
     repo.remote_names()
         .iter()
-        .filter_map(|name| {
-            let remote = repo.try_find_remote(name.as_bstr())?.ok()?;
-            let url = remote.url(gix::remote::Direction::Fetch)?;
-            Some((
-                name.to_string(),
-                without_credentials(&url.to_bstring().to_string()),
-            ))
+        .map(|name| {
+            let url = repo
+                .try_find_remote(name.as_bstr())
+                .and_then(Result::ok)
+                .and_then(|remote| {
+                    let url = remote.url(gix::remote::Direction::Fetch)?;
+                    Some(without_credentials(&url.to_bstring().to_string()))
+                });
+            (name.to_string(), url)
         })
         .collect()
+}
+
+/// The remotes of `root` only when they are known completely: a repository whose config gix
+/// reads, with no `include` section (remotes set there are not followed) and a fetch URL on
+/// every remote. The outer None means a repository that could not be read completely; the inner
+/// None means no repository at `root`.
+fn complete_named_remotes(root: &Path) -> Option<Option<Vec<(String, String)>>> {
+    let Some(repo) = open_repo(root) else {
+        return Some(None);
+    };
+    let config = repo.config_snapshot();
+    let file = config.plumbing();
+    if file.sections_by_name("include").is_some() || file.sections_by_name("includeIf").is_some() {
+        return None;
+    }
+    named_remotes_of(&repo)
+        .into_iter()
+        .map(|(name, url)| Some((name, url?)))
+        .collect::<Option<Vec<_>>>()
+        .map(Some)
 }
 
 /// The remotes of every root, sorted and deduplicated: what a session records at start.
@@ -979,6 +1017,31 @@ pub fn git_remotes_of(roots: &[PathBuf]) -> Vec<String> {
     remotes.sort();
     remotes.dedup();
     remotes
+}
+
+/// The remotes of every root as `<git name> <fetch url>`, sorted and deduplicated: what a session
+/// shows the guardian, which judges a call by the git name it uses. A root with no repository
+/// contributes nothing. None when a repository's remotes cannot be read completely (an
+/// unreadable config, an `include` section, a remote without a fetch URL), or when no root has a
+/// repository, so the guardian is not told a gap in what Fontaine knows is "no remotes".
+pub fn git_remote_names_of(roots: &[PathBuf]) -> Option<Vec<String>> {
+    let mut remotes = Vec::new();
+    let mut any_repo = false;
+    for root in roots {
+        let Some(named) = complete_named_remotes(root)? else {
+            continue;
+        };
+        any_repo = true;
+        for (name, url) in named {
+            remotes.push(format!("{name} {url}"));
+        }
+    }
+    if !any_repo {
+        return None;
+    }
+    remotes.sort();
+    remotes.dedup();
+    Some(remotes)
 }
 
 /// `https://user:token@host/x` without its `user:token@`; an scp-style `git@host:x` keeps its
@@ -1014,6 +1077,76 @@ mod tests {
             "git@github.com:org/repo.git"
         );
         assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+
+    #[test]
+    fn a_root_outside_any_repository_records_no_remote_names() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(git_remote_names_of(&[dir.path().to_path_buf()]), None);
+    }
+
+    #[test]
+    fn a_remote_without_a_fetch_url_loses_only_the_complete_name_list() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::create_dir(dir.path().join(".git/objects")).unwrap();
+        std::fs::create_dir(dir.path().join(".git/refs")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[core]\n\trepositoryformatversion = 0\n\
+             [remote \"origin\"]\n\turl = https://github.com/acme/widget.git\n\
+             [remote \"push-only\"]\n\tpushurl = https://github.com/acme/other.git\n",
+        )
+        .unwrap();
+        let root = dir.path();
+        assert_eq!(
+            git_remotes(root),
+            vec!["https://github.com/acme/widget.git".to_string()]
+        );
+        assert_eq!(
+            git_origin(root).as_deref(),
+            Some("https://github.com/acme/widget.git")
+        );
+        assert_eq!(git_remote_names_of(&[root.to_path_buf()]), None);
+    }
+
+    #[test]
+    fn an_include_section_leaves_the_remote_names_unrecorded() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git/objects")).unwrap();
+        std::fs::create_dir(dir.path().join(".git/refs")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[core]\n\trepositoryformatversion = 0\n\
+             [include]\n\tpath = extra.config\n\
+             [remote \"origin\"]\n\turl = https://github.com/acme/widget.git\n",
+        )
+        .unwrap();
+        assert_eq!(git_remote_names_of(&[dir.path().to_path_buf()]), None);
+        assert_eq!(git_remotes(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn a_non_repository_root_does_not_drop_a_repository_roots_names() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git/objects")).unwrap();
+        std::fs::create_dir(repo.path().join(".git/refs")).unwrap();
+        std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            repo.path().join(".git/config"),
+            "[core]\n\trepositoryformatversion = 0\n\
+             [remote \"origin\"]\n\turl = https://github.com/acme/widget.git\n",
+        )
+        .unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        assert_eq!(
+            git_remote_names_of(&[repo.path().to_path_buf(), scratch.path().to_path_buf()]),
+            Some(vec![
+                "origin https://github.com/acme/widget.git".to_string()
+            ])
+        );
     }
 
     fn ledger_with_two_messages(dir: &Path) -> PathBuf {

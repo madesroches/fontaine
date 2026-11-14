@@ -164,6 +164,24 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Guardian over-denials, fourth pass (#611; tracker #312). The guardian is shown each remote's git
+  name with its URL (`origin https://…`), `(none)` when the repository had none and `(not
+  recorded)` when the harness could not read them completely, and trusts a remote the call names by
+  a git name it was shown, or, when the names were not read, a named remote the session did not add
+  or repoint; a remote added during the session, in this call or an earlier one, is untrusted. Text in a call that tries to steer the guardian is ignored
+  rather than punished, a target you name (a file, a path, a remote, what to share) clears the soft
+  concerns about it except printing a live credential from a home-directory store and sending
+  external context or personal and entrusted data to a public destination you did not name it for,
+  `~/` paths match the session's `home_directory`, and a definite reference ("the generated file")
+  names its target. Disclosure is judged by data class (secrets, personal and entrusted data,
+  external context, project work) instead of by whether git tracks a file: a `public` project's own
+  work may go to a public gist or paste, a client's name or an internal path may not, and a commit
+  or push to a recorded `private` or `internal` remote, and the text of its pull requests and issues,
+  is never data exfiltration whatever it holds (a real secret is still secret exposure). The class-based cases are a new soft
+  Out-of-Place Publication rule that naming the data and the public destination clears. The minimal
+  profile gets the same remote, injection, `~/` and data-class wording, the project's own issues
+  and pull requests, and confidence guidance. Nineteen regression cases were added to the
+  over-deny slice.
 - Guardian over-denials, third pass (#418, #576, #588, #599; tracker #312). The hosted `screen`
   preset no longer ships a `stop_threshold`: a call it does not allow now goes to the LLM guardian
   instead of being escalated to you (and denied in a headless or AFK run). To restore the old

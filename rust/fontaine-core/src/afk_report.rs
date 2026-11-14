@@ -980,6 +980,7 @@ mod tests {
                 workspace_roots: Vec::new(),
                 workspace_trust: "trusted".into(),
                 git_remotes: Vec::new(),
+                git_remote_names: None,
                 env_keys: Vec::new(),
                 headless: false,
                 project_executables: false,

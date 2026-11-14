@@ -347,6 +347,7 @@ fn the_ledger_view_keeps_the_latest_value_and_a_new_start_clears_it() {
         workspace_roots: vec!["/w".into()],
         workspace_trust: "trusted".into(),
         git_remotes: vec![URL.into()],
+        git_remote_names: None,
         env_keys: Vec::new(),
         headless: false,
         project_executables: false,

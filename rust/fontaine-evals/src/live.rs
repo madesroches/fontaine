@@ -292,6 +292,9 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
             .unwrap_or("trusted")
             .to_string(),
         git_remotes: string_list(&given, "git_remotes"),
+        git_remote_names: given
+            .get("git_remote_names")
+            .map(|_| string_list(&given, "git_remote_names")),
         memory_dir: given
             .get("memory_dir")
             .and_then(Value::as_str)

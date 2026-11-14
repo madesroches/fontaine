@@ -231,6 +231,8 @@ fn facts(
         workspace_roots: roots,
         workspace_trust: view.workspace_trust.clone(),
         git_remotes: view.git_remotes.clone(),
+        git_remote_names: view.git_remote_names.clone(),
+        home_directory: dirs::home_dir().map(|dir| dir.display().to_string()),
         env_keys: view.env_keys.clone(),
         touched_paths,
         actions_taken: view.actions[from..]
