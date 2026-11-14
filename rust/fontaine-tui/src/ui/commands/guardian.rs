@@ -59,6 +59,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     return ControlFlow::Continue(());
                 }
                 Action::Quit => return ControlFlow::Break(()),
+                Action::CopyTicket => self.copy_ticket(),
                 _ => {}
             }
         }

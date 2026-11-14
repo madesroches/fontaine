@@ -133,7 +133,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// `c` in the ticket dialog. The ticket goes to the clipboard and nowhere else; the notice
     /// names no part of it.
-    fn copy_ticket(&mut self) {
+    pub(crate) fn copy_ticket(&mut self) {
         let Some(ticket) = self
             .app
             .ticket_prompt

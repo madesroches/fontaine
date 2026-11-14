@@ -1,6 +1,6 @@
 //! The dialog that shows a remote-inbox ticket once. The ticket is a bearer credential, so it
 //! lives only here: not in the transcript, the ledger, the history or an export. Dismissing the
-//! dialog wipes it.
+//! dialog removes it from the screen and drops the dialog's own copy.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -76,7 +76,7 @@ impl TicketPrompt {
 
 impl Drop for TicketPrompt {
     fn drop(&mut self) {
-        // Best effort: the credential should not outlive the dialog in this buffer.
+        // Best effort: the dialog's buffer should not keep the credential; copies made elsewhere (clipboard, encode) are not reached.
         self.ticket.clear();
     }
 }

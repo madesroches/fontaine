@@ -141,6 +141,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     return ControlFlow::Continue(());
                 }
                 Action::Quit => return ControlFlow::Break(()),
+                Action::CopyTicket => self.copy_ticket(),
                 _ => {}
             }
         }

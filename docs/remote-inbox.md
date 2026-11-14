@@ -48,14 +48,14 @@ FONTAINE_TICKET="$TICKET" fontaine send "check the build"
 
 A ticket is a bearer credential with a one-time secret. The first request that presents it
 consumes the secret and binds the sender's node id; the secret is consumed only when the message is
-accepted, so a refused attempt (inbox full, message too large, inbox closed) can be retried with
+accepted, so a refused attempt (inbox full, message too large) can be retried with
 the same ticket. After that, sending again needs a new ticket from `/remote-inbox ticket`, which is
 what "one-shot" means. Minting any ticket revokes the previous one, used or not. A message the
 client sent twice because an acknowledgement was lost is queued once; this holds only while the
 ticket is live, so a late retry after expiry or revocation gets `expired` or `bad_ticket`.
 
 The secret is checked before expiry or reuse, so a wrong secret learns nothing about the ticket's state.
-After five bad attempts from one node id the server ignores that node for 30 seconds; other nodes
+After five bad attempts from one node id within 30 seconds the server answers `locked` to that node for 30 seconds; other nodes
 are unaffected.
 
 ## What accepted means
