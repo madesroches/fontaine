@@ -37,6 +37,8 @@ use serde_json::json;
 const CAPS: GoalCaps = GoalCaps {
     max_turns: 50,
     max_cost_usd: None,
+    max_tokens: None,
+    max_duration: None,
 };
 
 struct Fixture {
@@ -366,7 +368,7 @@ fn the_turn_cap_pauses_the_goal_and_a_user_prompt_starts_a_fresh_stretch() {
     let goal = f.goal();
     let caps = GoalCaps {
         max_turns: 3,
-        max_cost_usd: None,
+        ..CAPS
     };
     goal.set("done", Spend::default()).unwrap();
     for _ in 0..3 {
@@ -393,8 +395,8 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     let f = Fixture::new();
     let goal = f.goal();
     let caps = GoalCaps {
-        max_turns: 50,
         max_cost_usd: Some(1.0),
+        ..CAPS
     };
     goal.set("done", spend(0, Some(10.0))).unwrap();
     goal.user_prompt(spend(0, Some(10.0)));
@@ -419,6 +421,155 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     goal.after_turn(Some(&answer()));
     let no_price = not_met(&goal, &caps, spend(5_000_000, None), true);
     assert!(matches!(no_price.step, Step::Continue(_)), "{no_price:?}");
+}
+
+#[test]
+fn the_token_cap_fires_for_an_unpriced_model_and_resets_with_a_user_prompt() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_tokens: Some(1_000),
+        ..CAPS
+    };
+    goal.set("done", spend(500, None)).unwrap();
+
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let at = not_met(&goal, &caps, spend(1_500, None), false);
+    assert!(matches!(at.step, Step::Continue(_)), "{at:?}");
+
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let over = not_met(&goal, &caps, spend(1_501, None), false);
+    assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
+    assert!(goal.is_active(), "the goal stays set");
+    assert!(goal.next_step(false).is_none());
+
+    goal.user_prompt(spend(1_501, None));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let fresh = not_met(&goal, &caps, spend(2_000, None), false);
+    assert!(matches!(fresh.step, Step::Continue(_)), "{fresh:?}");
+}
+
+#[test]
+fn the_token_cap_counts_unpriced_tokens_of_a_tree_total() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_tokens: Some(1_000),
+        ..CAPS
+    };
+    let base = Spend {
+        input_tokens: 100,
+        output_tokens: 50,
+        unpriced_tokens: 20,
+        ..Spend::default()
+    };
+    goal.set("done", base).unwrap();
+    let now = Spend {
+        input_tokens: 800,
+        output_tokens: 400,
+        unpriced_tokens: 220,
+        ..Spend::default()
+    };
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let over = not_met(&goal, &caps, now, false);
+    assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
+}
+
+#[test]
+fn the_duration_cap_fires_only_once_the_stretch_is_older_than_it_and_resets() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_duration: Some(Duration::from_millis(300)),
+        ..CAPS
+    };
+    goal.set("done", Spend::default()).unwrap();
+
+    f.root_call();
+    let under = turn_then_not_met(&goal, &caps);
+    assert!(matches!(under.step, Step::Continue(_)), "{under:?}");
+
+    std::thread::sleep(Duration::from_millis(400));
+    f.root_call();
+    let over = turn_then_not_met(&goal, &caps);
+    assert_eq!(
+        over.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(300)))
+    );
+    assert!(goal.is_active(), "the goal stays set");
+
+    goal.user_prompt(Spend::default());
+    f.root_call();
+    let fresh = turn_then_not_met(&goal, &caps);
+    assert!(matches!(fresh.step, Step::Continue(_)), "{fresh:?}");
+}
+
+#[test]
+fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_turns: 1,
+        max_cost_usd: Some(1.0),
+        max_tokens: Some(10),
+        max_duration: Some(Duration::from_millis(1)),
+    };
+    goal.set("done", Spend::default()).unwrap();
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let first = not_met(&goal, &CAPS, spend(1_000, Some(5.0)), true);
+    assert!(matches!(first.step, Step::Continue(_)), "{first:?}");
+
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let turns = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
+    assert_eq!(turns.step, Step::Pause(PauseReason::TurnCap(1)));
+
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_cost_usd: Some(1.0),
+        ..caps
+    };
+    goal.set("done", Spend::default()).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let cost = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
+    assert_eq!(cost.step, Step::Pause(PauseReason::CostCap(1.0)));
+
+    goal.user_prompt(Spend::default());
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let tokens = not_met(&goal, &caps, spend(1_000, None), true);
+    assert_eq!(tokens.step, Step::Pause(PauseReason::TokenCap(10)));
+
+    goal.user_prompt(Spend::default());
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let duration = not_met(&goal, &caps, Spend::default(), true);
+    assert_eq!(
+        duration.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(1)))
+    );
+}
+
+#[test]
+fn the_new_pause_reasons_read_as_sentences() {
+    assert_eq!(
+        PauseReason::TokenCap(500_000).to_string(),
+        "the goal's tokens passed 500.0k"
+    );
+    assert_eq!(
+        PauseReason::DurationCap(Duration::from_secs(7_200)).to_string(),
+        "the stretch ran longer than 2h 00m"
+    );
 }
 
 #[test]

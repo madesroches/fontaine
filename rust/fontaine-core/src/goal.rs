@@ -60,6 +60,8 @@ pub const REASON_CHARS: usize = 1_000;
 pub struct GoalCaps {
     pub max_turns: u32,
     pub max_cost_usd: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub max_duration: Option<Duration>,
 }
 
 impl From<&config::Goal> for GoalCaps {
@@ -67,6 +69,8 @@ impl From<&config::Goal> for GoalCaps {
         GoalCaps {
             max_turns: goal.max_turns,
             max_cost_usd: goal.max_cost_usd,
+            max_tokens: goal.max_tokens,
+            max_duration: goal.max_duration_secs.map(Duration::from_secs),
         }
     }
 }
@@ -126,6 +130,8 @@ pub fn parse_goal_arg(arg: &str) -> GoalArg {
 pub enum PauseReason {
     TurnCap(u32),
     CostCap(f64),
+    TokenCap(u64),
+    DurationCap(Duration),
     NoProgress(u32),
     TurnFailed(String),
     Interrupted,
@@ -145,6 +151,12 @@ impl fmt::Display for PauseReason {
                 if *n == 1 { "" } else { "s" }
             ),
             PauseReason::CostCap(usd) => write!(f, "the goal's spend passed ${usd:.2}"),
+            PauseReason::TokenCap(n) => {
+                write!(f, "the goal's tokens passed {}", compact_count(*n))
+            }
+            PauseReason::DurationCap(cap) => {
+                write!(f, "the stretch ran longer than {}", duration_text(*cap))
+            }
             PauseReason::NoProgress(n) => {
                 write!(
                     f,
@@ -249,6 +261,7 @@ struct Stretch {
     turns: u32,
     idle_verdicts: u32,
     spend_base: Spend,
+    started: Instant,
 }
 
 #[derive(Default)]
@@ -468,6 +481,7 @@ impl SessionGoal {
                 turns: 0,
                 idle_verdicts: 0,
                 spend_base: base,
+                started: Instant::now(),
             },
             pending: false,
             paused: None,
@@ -602,6 +616,7 @@ impl SessionGoal {
                 turns: 0,
                 idle_verdicts: 0,
                 spend_base: spend_now,
+                started: Instant::now(),
             };
         }
     }
@@ -700,6 +715,17 @@ fn not_met(
             .exhausted(&spent, false)
             .is_some()
         });
+    let over_tokens = caps.max_tokens.is_some_and(|cap| {
+        Budget {
+            tokens: Some(cap),
+            cost_usd: None,
+        }
+        .exhausted(&spent, false)
+        .is_some()
+    });
+    let over_duration = caps
+        .max_duration
+        .is_some_and(|cap| stretch.started.elapsed() > cap);
     let pause = if stretch.idle_verdicts >= NO_PROGRESS_LIMIT {
         Some(PauseReason::NoProgress(NO_PROGRESS_LIMIT))
     } else if stretch.turns >= caps.max_turns {
@@ -707,6 +733,14 @@ fn not_met(
     } else if over_cost {
         Some(PauseReason::CostCap(
             caps.max_cost_usd.expect("over_cost needs a cap"),
+        ))
+    } else if over_tokens {
+        Some(PauseReason::TokenCap(
+            caps.max_tokens.expect("over_tokens needs a cap"),
+        ))
+    } else if over_duration {
+        Some(PauseReason::DurationCap(
+            caps.max_duration.expect("over_duration needs a cap"),
         ))
     } else {
         None
