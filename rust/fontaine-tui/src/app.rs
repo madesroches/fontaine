@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fontaine_core::agent::SUGGESTION_BACKOFF;
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::permissions::{Answer, ApprovalRequest, PauseChoice, UnavailableChoice};
@@ -184,6 +185,9 @@ pub struct AgentView {
 /// Warnings kept for the bug report.
 pub const WARNING_RING: usize = 50;
 
+/// Human turns after which the suggestion back-off expires.
+pub const SUGGESTION_BACKOFF_TURNS: u32 = 5;
+
 /// What a view that cannot run a command tells the human.
 pub const MAIN_ONLY: &str = "switch back to main to run this (↓ then Enter on main)";
 
@@ -344,6 +348,13 @@ pub struct App {
     pub suggestion: Option<String>,
     /// Suggestions dismissed unused since one was last accepted.
     pub unused_suggestions: u32,
+    /// Human turns that ended while the back-off held; it expires after
+    /// `SUGGESTION_BACKOFF_TURNS`.
+    pub backed_off_turns: u32,
+    /// The next turn is started by the harness, not typed by the human.
+    pub automatic_next: bool,
+    /// The turn running or last run was started by the harness.
+    pub automatic_turn: bool,
     /// The suggestion call in flight; dropping it ends the call.
     pub pending_suggestion: Option<PendingSuggestion>,
     /// A turn ended and the next idle moment may ask for a suggestion.
@@ -514,6 +525,9 @@ impl App {
             history_completion: true,
             suggestion: None,
             unused_suggestions: 0,
+            backed_off_turns: 0,
+            automatic_next: false,
+            automatic_turn: false,
             pending_suggestion: None,
             suggestion_due: false,
             last_turn_finished: false,
@@ -639,7 +653,6 @@ impl App {
         self.refresh_slash();
     }
 
-    /// Whether the input is a `!` shell command.
     /// Whether the input is in a state where ghost text may be shown and accepted: the main
     /// conversation's box, nothing open over or beside it, and not vim Normal mode.
     fn ghost_allowed(&self) -> bool {
@@ -695,6 +708,20 @@ impl App {
         self.suggestion_due = false;
         self.completed_turns = 0;
         self.unused_suggestions = 0;
+        self.backed_off_turns = 0;
+    }
+
+    /// A turn ended: while the back-off holds, human turns count toward its expiry, so a
+    /// few ignored suggestions silence the feature for a while and not for the session.
+    pub fn note_turn_settled(&mut self) {
+        if self.automatic_turn || self.unused_suggestions < SUGGESTION_BACKOFF {
+            return;
+        }
+        self.backed_off_turns += 1;
+        if self.backed_off_turns >= SUGGESTION_BACKOFF_TURNS {
+            self.unused_suggestions = 0;
+            self.backed_off_turns = 0;
+        }
     }
 
     /// Tab or Right with nothing else claiming it writes the ghost text into the input.
@@ -712,6 +739,7 @@ impl App {
         };
         if self.suggestion.take().is_some() {
             self.unused_suggestions = 0;
+            self.backed_off_turns = 0;
         }
         for c in ghost.chars() {
             self.input.insert(c);
@@ -720,6 +748,7 @@ impl App {
         true
     }
 
+    /// Whether the input is a `!` shell command.
     pub fn shell_mode(&self) -> bool {
         self.input.first_char() == Some('!')
     }
@@ -1285,7 +1314,12 @@ impl App {
     pub fn set_running(&mut self, running: bool) {
         if running {
             self.pending_suggestion = None;
-            self.dismiss_suggestion();
+            if self.automatic_turn {
+                // Nobody saw it to ignore it.
+                self.suggestion = None;
+            } else {
+                self.dismiss_suggestion();
+            }
         }
         self.running = running;
         self.turn_tokens = Default::default();
@@ -1675,12 +1709,12 @@ impl App {
             self.refresh_slash();
             return action;
         }
+        if key.code == KeyCode::Esc && self.wakeup_pending && !self.running {
+            return Action::CancelWakeup;
+        }
         if key.code == KeyCode::Esc && self.ghost_text().is_some() && self.input.is_empty() {
             self.dismiss_suggestion();
             return Action::None;
-        }
-        if key.code == KeyCode::Esc && self.wakeup_pending && !self.running {
-            return Action::CancelWakeup;
         }
         if key.code == KeyCode::Esc
             && !self.running
@@ -4503,7 +4537,14 @@ mod tests {
         assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
         assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
 
-        // A pending loop wakeup: Esc cancels it, and the second Esc is a first press.
+        // A pending loop wakeup: Esc cancels it even with a suggestion shown.
+        let mut app = self::app();
+        app.wakeup_pending = true;
+        app.suggestion = Some("next".into());
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::CancelWakeup);
+        assert_eq!(app.unused_suggestions, 0);
+        app.suggestion = None;
+        // The second Esc is a first press.
         let mut app = self::app();
         app.wakeup_pending = true;
         assert_eq!(press(&mut app, KeyCode::Esc), Action::CancelWakeup);
@@ -4669,6 +4710,32 @@ mod tests {
             assert!(app.suggestion.is_none());
             app.set_running(false);
             assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn an_automatic_turn_start_does_not_count_the_unseen_suggestion() {
+            let mut app = suggesting("run the tests");
+            app.automatic_turn = true;
+            app.set_running(true);
+            assert!(app.suggestion.is_none());
+            assert_eq!(app.unused_suggestions, 0);
+        }
+
+        #[test]
+        fn the_back_off_expires_after_human_turns_only() {
+            let mut app = app();
+            app.unused_suggestions = SUGGESTION_BACKOFF;
+            app.automatic_turn = true;
+            for _ in 0..SUGGESTION_BACKOFF_TURNS {
+                app.note_turn_settled();
+            }
+            assert_eq!(app.unused_suggestions, SUGGESTION_BACKOFF);
+            app.automatic_turn = false;
+            for _ in 0..SUGGESTION_BACKOFF_TURNS {
+                assert_eq!(app.unused_suggestions, SUGGESTION_BACKOFF);
+                app.note_turn_settled();
+            }
+            assert_eq!(app.unused_suggestions, 0);
         }
 
         #[test]

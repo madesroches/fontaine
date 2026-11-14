@@ -1,5 +1,6 @@
-//! `/btw`, the advisor and the prompt suggestion: one tool-less completion over the conversation rendered as text. Nothing here reads
-//! or writes the saved conversation or the ledger, so a side question leaves no trace in the
+//! `/btw`, the advisor and the prompt suggestion: one tool-less completion over
+//! the conversation rendered as text. Nothing here reads or writes the saved
+//! conversation or the ledger, so a side question leaves no trace in the
 //! model's context or in what the guardian takes as the human's intent.
 
 use std::error::Error;

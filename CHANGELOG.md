@@ -16,7 +16,7 @@ All notable changes are recorded here. The format follows
   (off by default) asks the main model, after a turn, for the message you are likely to type next
   and dims it in the empty input. Tab or Right accepts either; typing dismisses a suggestion. The
   suggestion call is skipped in plan mode, after an error or interrupt, while a usage window is
-  paused and after three unused suggestions, and shows as `suggestions` in `/cost`.
+  paused, in AFK mode, after an unattended turn and after three unused suggestions (which expire after five more turns), and shows as `suggestions` in `/cost`.
 - A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
   example each. `claude-subscription` is no longer labeled experimental.
 - MCP servers that support only protocol 2026-07-28 and reject `initialize` now connect (#613).

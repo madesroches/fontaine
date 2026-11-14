@@ -450,8 +450,9 @@ be sent or copied until you accept it, and it is clipped to the row so the box n
   likely to type next, and it is shown dimmed in the empty input. Starting a new turn, quitting or
   `/clear` drops the call. It is skipped in `plan` mode, after a turn that failed or was
   interrupted, before the first answered turn, while a [usage window](#usage-windows-spent) is
-  paused, and after three suggestions in a row that you did not use (accepting one starts the count
-  again). A suggestion that is empty, longer than 200 characters, a repeat of your last message, or
+  paused, in [AFK](afk.md), after a turn that a scheduled task, `/loop`, a notification or a goal
+  started, and after three suggestions in a row that you did not use (accepting one starts the
+  count again; otherwise it expires after five more turns of yours). A suggestion that is empty, longer than 200 characters, a repeat of your last message, or
   starts with `/` or `!` is dropped, so it never pre-types a command or a shell line.
 
 Tab or Right fills the input with the dimmed text, and Enter then sends it as an ordinary message.

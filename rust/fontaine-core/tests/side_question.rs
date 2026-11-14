@@ -293,6 +293,7 @@ fn inputs() -> SuggestionInputs {
         last_turn_finished: true,
         completed_turns: 1,
         unused_streak: 0,
+        last_turn_automatic: false,
     }
 }
 
@@ -318,6 +319,14 @@ fn a_suggestion_is_asked_for_only_when_nothing_says_to_skip() {
         },
         SuggestionInputs {
             unused_streak: SUGGESTION_BACKOFF,
+            ..inputs()
+        },
+        SuggestionInputs {
+            mode: PermissionMode::Afk,
+            ..inputs()
+        },
+        SuggestionInputs {
+            last_turn_automatic: true,
             ..inputs()
         },
     ];

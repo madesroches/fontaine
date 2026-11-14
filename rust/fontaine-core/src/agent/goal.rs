@@ -28,7 +28,8 @@ use crate::turn::TurnOutcome;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::user_hooks::CompactGate;
 
-/// Unused suggestions in a row after which none is asked for until one is accepted.
+/// Unused suggestions in a row after which none is asked for until one is accepted or enough
+/// human turns have passed.
 pub const SUGGESTION_BACKOFF: u32 = 3;
 
 /// What the surface knows that decides whether a prompt suggestion is asked for.
@@ -41,13 +42,17 @@ pub struct SuggestionInputs {
     pub completed_turns: u32,
     /// Suggestions shown and left unused since the last one was accepted.
     pub unused_streak: u32,
+    /// The last turn was started by the harness (a scheduled task, a `/loop` iteration, a
+    /// notification, a goal step), so nobody is watching for a suggestion.
+    pub last_turn_automatic: bool,
 }
 
 /// Whether a prompt suggestion is worth a model call now. Headless runs and child agents never
 /// call this.
 pub fn should_suggest(inputs: &SuggestionInputs) -> bool {
     inputs.enabled
-        && inputs.mode != PermissionMode::Plan
+        && !matches!(inputs.mode, PermissionMode::Plan | PermissionMode::Afk)
+        && !inputs.last_turn_automatic
         && inputs.last_turn_finished
         && inputs.completed_turns >= 1
         && inputs.unused_streak < SUGGESTION_BACKOFF
