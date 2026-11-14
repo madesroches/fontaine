@@ -6,19 +6,12 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Ui, World, text_turn, tool_turn, verdict};
+use common::{World, text_turn, tool_turn, verdict};
 use fontaine_core::config::PermissionMode;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
 const ALLOW_SCHEDULING: &str = "[permissions]\nallow = [\"cron_create\", \"shell(sleep *)\"]\n";
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 fn every_minute(prompt: &str, recurring: bool) -> serde_json::Value {
     json!({"cron": "* * * * *", "prompt": prompt, "recurring": recurring})
@@ -57,7 +50,7 @@ async fn a_scheduled_turn_is_not_the_user_speaking() {
     w.run(|ui| async move {
         ui.send("check the build in a minute");
         ui.wait_for("it is scheduled").await;
-        idle(&ui).await;
+        ui.idle().await;
         clock.advance(minutes(1) + Duration::from_secs(1));
         ui.wait_for("the schedule ran").await;
         assert!(ui.screen().contains("scheduled: "), "{}", ui.screen());
@@ -120,7 +113,7 @@ async fn a_message_queued_during_a_scheduled_turn_is_not_recorded_as_a_prompt() 
     w.run(|ui| async move {
         ui.send("tick in a minute");
         ui.wait_for("set").await;
-        idle(&ui).await;
+        ui.idle().await;
         clock.advance(minutes(1) + Duration::from_secs(1));
         ui.wait_for("• shell sleep 1").await;
         // A queued skill holds steering delivery, so the message waits for its own turn.
@@ -128,7 +121,7 @@ async fn a_message_queued_during_a_scheduled_turn_is_not_recorded_as_a_prompt() 
         ui.wait_for("queued: /review 42").await;
         ui.send("typed before the answer was shown");
         ui.wait_for("queued answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let record = w
@@ -154,7 +147,7 @@ async fn a_task_that_comes_due_mid_turn_waits_and_then_fires_once() {
     w.run(|ui| async move {
         ui.send("tick every minute");
         ui.wait_for("set").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("sleep a little");
         ui.wait_for("• shell sleep 1").await;
         // Three missed runs while the turn is busy.
@@ -165,7 +158,7 @@ async fn a_task_that_comes_due_mid_turn_waits_and_then_fires_once() {
             screen.find("slept").unwrap() < screen.find("scheduled: ").unwrap(),
             "{screen}"
         );
-        idle(&ui).await;
+        ui.idle().await;
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let screen = ui.screen();
         assert_eq!(count(&screen, "scheduled: "), 1, "{screen}");
@@ -185,14 +178,14 @@ async fn loop_with_an_interval_runs_now_then_on_the_clock_until_stopped() {
     w.run(|ui| async move {
         ui.send("/loop 1m check the build");
         ui.wait_for("first pass").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("every minute"), "{screen}");
         assert!(ui.live().contains("⏱ 1"), "{}", ui.live());
 
         clock.advance(minutes(1) + Duration::from_secs(1));
         ui.wait_for("second pass").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/loop list");
         ui.wait_for("set by you").await;
@@ -260,7 +253,7 @@ async fn esc_at_the_idle_prompt_ends_a_self_paced_loop_that_waits() {
     w.run(|ui| async move {
         ui.send("/loop watch CI");
         ui.wait_for("waiting").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.wait_until("a pending wakeup", |_| ui.live().contains("⏱ 1"))
             .await;
 
@@ -290,13 +283,13 @@ async fn a_self_paced_iteration_that_schedules_nothing_gets_one_more_try_then_en
     w.run(|ui| async move {
         ui.send("/loop watch CI");
         ui.wait_for("trying once more in 20 minutes").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.live().contains("⏱ 1"), "{}", ui.live());
 
         clock.advance(minutes(21));
         ui.wait_for("pass two").await;
         ui.wait_for("has ended").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.live().contains("⏱"), "{}", ui.live());
 
         clock.advance(minutes(60));

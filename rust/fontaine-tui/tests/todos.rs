@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Ui, World, text_turn, tool_turn};
+use common::{World, text_turn, tool_turn};
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use serde_json::json;
 
@@ -14,13 +14,6 @@ fn list() -> serde_json::Value {
     ]})
 }
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_list_shows_collapsed_and_ctrl_t_and_todos_expand_it() {
     let w = World::new(vec![
@@ -30,7 +23,7 @@ async fn a_task_list_shows_collapsed_and_ctrl_t_and_todos_expand_it() {
     w.run(|ui| async move {
         ui.send("plan it");
         ui.wait_for("planned").await;
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         assert!(live.contains("Tasks 1/3 · ▶ write the fix"), "{live}");
         assert!(!live.contains("[~] write the fix"), "{live}");

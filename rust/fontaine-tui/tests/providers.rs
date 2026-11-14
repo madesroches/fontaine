@@ -8,13 +8,6 @@ use common::{Ui, World};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 async fn dialog_open(ui: &Ui) {
     ui.wait_until("the provider dialog", |_| ui.live().contains("providers"))
         .await;
@@ -37,7 +30,7 @@ const WORK: &str = "\n[accounts.work]\nkind = \"anthropic\"\n";
 async fn the_dialog_lists_the_accounts_and_stores_a_key_without_showing_it() {
     let w = World::routed("http://127.0.0.1:9", WORK);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login");
         dialog_open(&ui).await;
         let shown = ui.live();
@@ -94,7 +87,7 @@ async fn an_external_cli_account_checks_the_cli_and_never_asks_for_a_key() {
         format!("\n[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = \"{missing}\"\n");
     let w = World::routed("http://127.0.0.1:9", &account);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login");
         dialog_open(&ui).await;
         let shown = ui.live();
@@ -132,7 +125,7 @@ fn signed_out_claude(scenario: serde_json::Value) -> (World, tempfile::TempDir) 
 async fn accepting_the_offer_runs_the_login_and_checks_again() {
     let (w, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login claude");
         ui.wait_for("is not signed in. Run").await;
         ui.press(KeyCode::Char('y'));
@@ -152,7 +145,7 @@ async fn accepting_the_offer_runs_the_login_and_checks_again() {
 async fn declining_the_offer_starts_no_login() {
     let (w, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login claude");
         ui.wait_for("is not signed in. Run").await;
         ui.press(KeyCode::Char('n'));
@@ -170,7 +163,7 @@ async fn a_login_that_fails_or_changes_nothing_ends_with_one_attempt_and_no_seco
     ] {
         let (w, profile) = signed_out_claude(scenario);
         w.run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/login claude");
             ui.wait_for("is not signed in. Run").await;
             ui.press(KeyCode::Char('y'));
@@ -186,7 +179,7 @@ async fn a_login_that_fails_or_changes_nothing_ends_with_one_attempt_and_no_seco
 async fn a_key_can_be_pasted_into_the_masked_field() {
     let w = World::routed("http://127.0.0.1:9", WORK);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login work");
         ui.wait_for("API key for `work`").await;
         ui.paste("sk-pasted-9\n");
@@ -203,7 +196,7 @@ async fn a_key_can_be_pasted_into_the_masked_field() {
 async fn an_unknown_account_opens_the_list_with_an_error_line() {
     let w = World::routed("http://127.0.0.1:9", WORK);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login nobody");
         ui.wait_for("unknown account `nobody`").await;
         assert!(ui.live().contains("mock, work"), "{}", ui.live());
@@ -233,7 +226,7 @@ async fn an_added_account_is_saved_logged_in_and_offers_its_models() {
     let w = World::routed("http://127.0.0.1:9", "");
     let url = gateway.uri();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login");
         dialog_open(&ui).await;
         ui.press(KeyCode::Char('a'));
@@ -288,7 +281,7 @@ async fn log_out_and_remove_ask_first_and_remove_is_refused_for_the_main_account
     )
     .unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login");
         dialog_open(&ui).await;
         ui.wait_for("key stored").await;
@@ -353,10 +346,10 @@ async fn a_request_made_during_a_notification_turn_is_held_until_the_turn_ends()
         &format!("{OTHER}{WORK}\n[permissions]\nallow = [\"agent\"]\n"),
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("launched").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/login work");
         ui.wait_for("API key for `work`").await;
         ui.wait_for("an agent reported back").await;

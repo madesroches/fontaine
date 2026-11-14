@@ -11,13 +11,6 @@ use fontaine_testkit::example_bin;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 /// The panel has no default key, and `/agents` cannot be typed over an approval prompt, so
 /// these worlds bind one.
 const AGENTS_KEY: &str = "\n[keybindings]\n\"f2\" = \"agents_panel\"\n";
@@ -61,7 +54,7 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
         ),
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         // The child's approval shows who is asking.
         ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
@@ -122,7 +115,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
     .await;
     let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         // Three children ask the human at once; the asks queue rather than overwrite.
         ui.wait_for_prompt("Allow shell (worker-").await;
@@ -210,7 +203,7 @@ async fn a_server_the_repository_defines_does_not_start_when_the_user_declined_t
         w.with_project_settings(&settings)
     };
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         // Nothing asked, nothing started.
         assert!(!ui.screen().contains("Start the MCP server"));
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -227,7 +220,7 @@ async fn mcp_reports_a_declined_project_server_as_left_off() {
     w.run(|ui| async move {
         ui.wait_for_prompt("Start the MCP server `repo`?").await;
         ui.press(KeyCode::Char('n'));
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/mcp");
         ui.wait_for("repo: left off").await;
     })
@@ -253,7 +246,7 @@ async fn a_repository_mcp_json_server_is_approved_at_the_prompt_and_listed_with_
     w.run(|ui| async move {
         ui.wait_for_prompt("Start the MCP server `repo`?").await;
         ui.press(KeyCode::Char('y'));
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/mcp");
         ui.wait_for("repo: connected · 4 tools").await;
     })
@@ -266,7 +259,7 @@ async fn mcp_reports_a_project_server_of_an_untrusted_workspace() {
     let settings = project_server(&w);
     let w = w.with_project_settings(&settings);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/mcp");
         ui.wait_for("repo: not loaded (workspace not trusted)")
             .await;
@@ -285,7 +278,7 @@ async fn a_trusted_root_still_asks_before_each_new_project_server() {
         ui.wait_for_prompt("Start the MCP server `repo`?").await;
         ui.press(KeyCode::Char('n'));
         ui.wait_for("was left off").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(!marker(&w).exists());
@@ -294,7 +287,7 @@ async fn a_trusted_root_still_asks_before_each_new_project_server() {
     w.run(|ui| async move {
         ui.wait_for_prompt("Start the MCP server `repo`?").await;
         ui.press(KeyCode::Char('y'));
-        idle(&ui).await;
+        ui.idle().await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     })
     .await;
@@ -308,7 +301,7 @@ async fn a_trusted_root_still_asks_before_each_new_project_server() {
     // A later session does not ask about the same definition again.
     std::fs::remove_file(marker(&w)).unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("Start the MCP server"));
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     })
@@ -325,7 +318,7 @@ async fn a_trusted_root_still_asks_before_each_new_project_server() {
     w.run(|ui| async move {
         ui.wait_for_prompt("Start the MCP server `repo`?").await;
         ui.press(KeyCode::Char('n'));
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
 }
@@ -340,7 +333,7 @@ async fn a_server_in_the_users_own_settings_starts_without_asking() {
     );
     let w = w.with_config(&config);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("Start the MCP server"));
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     })
@@ -368,10 +361,10 @@ async fn a_hook_the_repository_defines_does_not_run_when_the_user_declined_trust
     let settings = hook_settings(&w, None);
     let w = w.with_project_settings(&settings);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("read it");
         ui.wait_for("done").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(!marker(&w).exists());
@@ -389,7 +382,7 @@ async fn a_trusted_repositorys_hook_runs_but_its_allow_does_not_approve_the_call
     let settings = hook_settings(&w, Some(&allow));
     let w = w.with_project_settings(&settings);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("write it");
         // The hook allowed it and the call still asks.
         ui.wait_for_prompt("Allow write").await;
@@ -408,7 +401,7 @@ async fn a_project_local_server_waits_for_workspace_trust_too() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("settings.local.toml"), project_server(&w)).unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("Start the MCP server"));
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     })
@@ -441,10 +434,10 @@ async fn killing_a_job_row_stops_its_process_and_tells_the_model() {
     );
     let work = w.work.clone();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("job started").await;
-        idle(&ui).await;
+        ui.idle().await;
         open_agents(&ui);
         ui.wait_for("Background jobs").await;
         let screen = ui.screen();
@@ -505,7 +498,7 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
     .await;
     let w = World::routed(&server.uri(), ALLOW_AGENT_AND_SLEEP);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         // The list sits below the status line, `main` first.
         ui.wait_until("the agent list", |s| {
@@ -600,7 +593,7 @@ async fn clear_prunes_an_ended_subagent_from_the_agent_list_at_once() {
     .await;
     let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("launched").await;
         ui.wait_for("worker-1 (agent-1)").await;
@@ -646,7 +639,7 @@ async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
     .await;
     let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
         open_agents(&ui);
@@ -697,7 +690,7 @@ async fn a_joining_subagent_takes_a_turn_on_the_words_typed_into_its_view() {
         &format!("{ALLOW_AGENT}\n[agents.types.lead]\nmodel = \"$main\"\n"),
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_until("both rows", |s| {
             s.contains("agent-1") && s.contains("agent-2")
@@ -756,10 +749,10 @@ async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts()
     .await;
     let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("launched").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/export");
         ui.wait_for("exported the session and 1 subagent transcript to")
             .await;

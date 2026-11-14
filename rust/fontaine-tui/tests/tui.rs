@@ -5,13 +5,6 @@ use common::{Ui, World, text_turn, tool_turn};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn allowing_a_write_runs_the_tool() {
     let w = World::new(vec![
@@ -27,7 +20,7 @@ async fn allowing_a_write_runs_the_tool() {
         ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('y'));
         ui.wait_for("all done").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert_eq!(
@@ -53,7 +46,7 @@ async fn denying_a_write_tells_the_model_and_writes_nothing() {
         ui.wait_for("understood").await;
         let screen = ui.screen();
         assert!(screen.contains("denied"), "{screen}");
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(!w.work.join("notes.txt").exists());
@@ -93,7 +86,7 @@ async fn a_denial_reason_reaches_the_model() {
 async fn guardian_disable_asks_first_and_the_indicator_follows_the_toggle() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/guardian-disable");
         ui.wait_for_live_prompt("Turn the guardian off for this session?")
@@ -123,7 +116,7 @@ async fn guardian_disable_asks_first_and_the_indicator_follows_the_toggle() {
 async fn shift_tab_cycles_the_mode_and_the_status_bar_follows() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("manual"));
         ui.press(KeyCode::BackTab);
         ui.wait_for("⏵⏵ accept edits on").await;
@@ -162,7 +155,7 @@ async fn add_dir_grants_the_next_read_without_a_prompt_and_keeps_the_conversatio
         ui.wait_for("added workspace root").await;
         ui.send("now read it");
         ui.wait_for("read it").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("Allow read?"));
     })
     .await;
@@ -281,7 +274,7 @@ async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() 
         ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("Allow write?"));
         ui.send("are you there");
         ui.wait_for("after").await;
@@ -326,7 +319,7 @@ async fn a_guardian_denial_shows_its_label_and_words_inline() {
     .in_mode(PermissionMode::Auto)
     .with_guardian(vec![verdict("deny", "Safety Bypass", 0.95)]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("auto mode on"), "{}", ui.screen());
         ui.send("do it");
         ui.wait_for("blocked").await;
@@ -358,7 +351,7 @@ async fn denied_lists_a_denial_and_r_lets_the_agent_retry_once_past_the_guardian
     w.run(|ui| async move {
         ui.send("do it");
         ui.wait_for("blocked").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/denied");
         ui.wait_for("Calls the guardian denied").await;
@@ -478,7 +471,7 @@ async fn starting_in_auto_lists_the_allow_rules_it_sets_aside_and_shift_tab_leav
         .with_config("[permissions]\nallow = [\"shell(python *)\", \"shell(npm test)\"]\n")
         .with_guardian(vec![verdict("allow", "allow", 0.9)]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(
             screen.contains("sets aside these broad allow rules"),
@@ -512,7 +505,7 @@ async fn model_switches_the_live_session_and_saves_the_choice() {
         )
         .guardian_follows_main();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model other/second");
         ui.wait_for("model is now other/second").await;
         let screen = ui.screen();
@@ -548,7 +541,7 @@ async fn effort_sets_and_shows_the_session_level_and_model_revalidates_it() {
         )
         .guardian_follows_main();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/effort");
         ui.wait_for("effort: unset").await;
         ui.send("/effort bogus");
@@ -580,7 +573,7 @@ async fn guardian_model_pins_the_guardian_and_saves_the_choice() {
         )
         .with_guardian(vec![verdict("allow", "allow", 0.9)]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/guardian-model");
         ui.wait_until("the picker", |_| ui.live().contains("type to filter"))
             .await;
@@ -612,7 +605,7 @@ async fn picking_the_current_guardian_saves_it() {
         .with_guardian(vec![verdict("allow", "allow", 0.9)]);
     let user_config = w.user_config.clone();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/guardian-model cloud/judge-b");
         ui.wait_for("guardian is now cloud/judge-b").await;
         // The live guardian is now one the settings file does not name, as after a session-only
@@ -733,10 +726,10 @@ async fn finished_replies_stay_in_the_live_area_above_the_input_while_they_fit()
     w.run(|ui| async move {
         ui.send("one");
         ui.wait_for("first reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("two");
         ui.wait_for("second reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         let first = screen.find("first reply").unwrap();
         let second = screen.find("second reply").unwrap();
@@ -757,10 +750,10 @@ async fn clear_erases_the_old_conversation_from_the_screen_and_scrollback() {
     w.run(|ui| async move {
         ui.send("one");
         ui.wait_for("first reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/clear");
         ui.wait_for("cleared the conversation").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(!screen.contains("first reply"), "{screen}");
         assert!(!screen.contains("> one"), "{screen}");
@@ -787,7 +780,7 @@ async fn startup_warnings_open_the_conversation_as_warning_entries() {
         Some("check `permissions.additional_directories`".into()),
     )];
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         let ax = live
             .find("⚠ FONTAINE_AX_SCREEN_READER=x is ignored")
@@ -854,7 +847,7 @@ async fn ascii_glyphs_replace_the_warning_mark_when_asked() {
     w.env = vec![("FONTAINE_ASCII_GLYPHS".into(), "1".into())];
     w.startup = vec![Notice::warning("heads up", None)];
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         assert!(live.contains("* heads up") && !live.contains('⚠'), "{live}");
     })
@@ -881,7 +874,7 @@ async fn a_message_typed_during_a_tool_call_reaches_the_model_in_its_result() {
         ui.wait_for("queued: also check the docs").await;
         assert!(ui.screen().contains("↑ to edit"), "{}", ui.screen());
         ui.wait_for("noted").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("> also check the docs"), "{screen}");
         assert!(!ui.live().contains("queued:"), "{}", ui.live());
@@ -937,7 +930,7 @@ async fn interrupting_a_turn_puts_the_queued_message_back_in_the_input() {
         ui.wait_for("queued: not sent").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         assert!(live.contains("not sent"), "{live}");
         assert!(!live.contains("queued:"), "{live}");
@@ -960,7 +953,7 @@ async fn an_interrupted_turn_stays_in_the_conversation_the_next_prompt_reads() {
         ui.wait_for("• shell sleep 5").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("follow up");
         ui.wait_for("picked it up").await;
     })
@@ -996,7 +989,7 @@ async fn a_turn_interrupted_before_its_first_answer_keeps_its_prompt() {
     let w = World::routed(&server.uri(), "");
     let held = &server;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("first task");
         while held
             .received_requests()
@@ -1008,7 +1001,7 @@ async fn a_turn_interrupted_before_its_first_answer_keeps_its_prompt() {
         }
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("follow up");
         ui.wait_for("picked it up").await;
     })
@@ -1050,7 +1043,7 @@ async fn up_takes_a_queued_message_back_to_edit() {
 async fn a_bang_command_runs_without_a_prompt_and_its_output_reaches_the_next_message() {
     let w = World::new(vec![text_turn("seen it")]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.type_text("!echo hi-from-user");
         ui.wait_for("shell · Enter runs").await;
         ui.press(KeyCode::Enter);
@@ -1097,7 +1090,7 @@ async fn a_bang_command_sees_the_configured_env() {
     let w =
         World::new(vec![text_turn("seen it")]).with_config("[env]\nPROBE = \"probe-value-xyz\"\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.type_text("!printenv PROBE");
         ui.wait_for("shell · Enter runs").await;
         ui.press(KeyCode::Enter);
@@ -1111,12 +1104,12 @@ async fn a_bang_command_sees_the_configured_env() {
 async fn interrupting_a_bang_command_records_it_and_tells_the_agent_nothing() {
     let w = World::new(vec![text_turn("fine")]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("!sleep 5");
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("next");
         ui.wait_for("fine").await;
     })
@@ -1153,7 +1146,7 @@ async fn esc_during_a_queued_bang_run_kills_it_and_the_next_entry_still_runs() {
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
         ui.wait_for("next reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         // The run's raw is spent, not restored to the input.
         assert!(!ui.live().contains("!sleep 30"), "{}", ui.live());
     })
@@ -1169,11 +1162,11 @@ async fn history_persists_across_runs() {
     w.run(|ui| async move {
         ui.send("remember me");
         ui.wait_for("ok").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::Up);
         ui.wait_until("the recalled message", |_| {
             ui.live().contains("remember me")
@@ -1204,7 +1197,7 @@ async fn picker_closed(ui: &Ui) {
 async fn the_model_picker_groups_filters_switches_and_remembers() {
     let w = World::routed("http://127.0.0.1:9", OTHER);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model");
         picker_open(&ui).await;
         let live = ui.live();
@@ -1241,7 +1234,7 @@ async fn escape_closes_the_model_picker_without_switching() {
     let w = World::routed("http://127.0.0.1:9", OTHER);
     let before = std::fs::read_to_string(&w.user_config).unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model");
         picker_open(&ui).await;
         ui.press(KeyCode::Down);
@@ -1287,7 +1280,7 @@ async fn a_failed_account_keeps_its_heading_and_only_failures_are_listed_again()
     );
     let w = World::routed("http://127.0.0.1:9", &extra);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model");
         picker_open(&ui).await;
         let shown = ui.live();
@@ -1328,7 +1321,7 @@ async fn guardian_model_lists_accounts_without_a_models_setting() {
     );
     let w = World::routed("http://127.0.0.1:9", &extra);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/guardian-model");
         picker_open(&ui).await;
         let shown = ui.live();
@@ -1366,7 +1359,7 @@ async fn the_main_account_is_listed_afresh_after_a_switch_to_it() {
     );
     let w = World::routed("http://127.0.0.1:9", &extra);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model");
         picker_open(&ui).await;
         ui.type_text("fresh");
@@ -1412,10 +1405,10 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
     );
     let w = World::routed(&server.uri(), &extra);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("launched").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/model");
         picker_open(&ui).await;
         ui.wait_for("an agent reported back").await;
@@ -1468,10 +1461,10 @@ async fn a_command_moved_to_the_background_wakes_an_idle_interface_when_it_ends(
     .await;
     let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"shell\"]\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("it runs in the background").await;
-        idle(&ui).await;
+        ui.idle().await;
         // The job ends while nothing is running: the notification turn is the interface's own.
         ui.wait_for("a background job reported back").await;
         ui.wait_for("noted the job ended").await;
@@ -1503,7 +1496,7 @@ async fn permissions_shows_the_rules_with_their_scopes() {
         .with_config("[permissions]\ndeny = [\"shell(sudo)\"]\n")
         .with_project_settings("[permissions]\nask = [\"shell(ls)\"]\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/permissions");
         ui.wait_for("/denied lists what the guardian denied").await;
         let screen = ui.screen();
@@ -1517,13 +1510,13 @@ async fn permissions_shows_the_rules_with_their_scopes() {
 async fn copy_sends_the_latest_reply_to_the_clipboard() {
     let w = World::new(vec![text_turn("first reply"), text_turn("second reply")]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("one");
         ui.wait_for("first reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("two");
         ui.wait_for("second reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/copy");
         ui.wait_for("copied reply 1").await;
         assert_eq!(ui.clipboard(), vec!["second reply".to_string()]);
@@ -1541,7 +1534,7 @@ async fn copy_sends_the_latest_reply_to_the_clipboard() {
 async fn status_and_help_report_without_a_turn() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/status");
         ui.wait_for("MCP servers: 0 of 0 connected").await;
         ui.send("/help");
@@ -1578,7 +1571,7 @@ async fn three_exchanges(ui: &Ui) {
     for (i, word) in ["one", "two", "three"].iter().enumerate() {
         ui.send(&format!("ctx-marker {word}"));
         ui.wait_for(&format!("reply {}", i + 1)).await;
-        idle(ui).await;
+        ui.idle().await;
     }
 }
 
@@ -1602,7 +1595,7 @@ async fn compact_clear_and_context_work_on_the_conversation() {
     let server = start(vec![context_route()]).await;
     let w = World::routed_known(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         three_exchanges(&ui).await;
 
         ui.send("/context");
@@ -1615,13 +1608,13 @@ async fn compact_clear_and_context_work_on_the_conversation() {
 
         ui.send("/compact focus on the parser");
         ui.wait_for("compacted the conversation: ~").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/clear");
         ui.wait_for("cleared the conversation").await;
         ui.send("ctx-marker after the clear");
         ui.wait_for("reply 5").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let sent = bodies(&server).await;
@@ -1645,13 +1638,13 @@ async fn text_typed_while_compacting_comes_back_to_the_input() {
     let server = start(vec![route]).await;
     let w = World::routed_known(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         three_exchanges(&ui).await;
         ui.send("/compact");
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         ui.send("typed while compacting");
         ui.wait_for("compacted the conversation: ~").await;
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         assert!(live.contains("typed while compacting"), "{live}");
     })
@@ -1692,7 +1685,7 @@ async fn esc_during_a_queued_compact_aborts_it_and_the_next_entry_still_runs() {
         "\n[permissions]\nallow = [\"shell(sleep *)\"]\n",
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         for (word, reply) in [("one", "reply 1"), ("two", "reply 2"), ("three", "reply 3")] {
             ui.send(&format!("main {word}"));
             ui.wait_for(reply).await;
@@ -1709,7 +1702,7 @@ async fn esc_during_a_queued_compact_aborts_it_and_the_next_entry_still_runs() {
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
         ui.wait_for("after compact reply").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(
             !ui.screen().contains("compacted the conversation"),
             "{}",
@@ -1729,13 +1722,13 @@ async fn esc_interrupts_a_compaction_and_leaves_the_conversation() {
     let server = start(vec![route]).await;
     let w = World::routed_known(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         three_exchanges(&ui).await;
         ui.send("/compact");
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("compacted the conversation"));
     })
     .await;
@@ -1762,17 +1755,17 @@ async fn clear_is_refused_while_a_subagent_runs_and_works_after() {
     let w = World::routed_known(&server.uri(), "\n[permissions]\nallow = [\"agent\"]\n");
     let wr = &w;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("root task");
         ui.wait_for("launched").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/clear");
         ui.wait_for("reports, messages or board reminders to deliver; /clear is refused")
             .await;
         assert!(!wr.ledger_text().contains("context_cleared"));
         assert!(ui.screen().contains("launched"), "{}", ui.screen());
         ui.wait_for("noted the report").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/clear");
         ui.wait_for("cleared the conversation").await;
     })
@@ -1784,7 +1777,7 @@ async fn clear_is_refused_while_a_subagent_runs_and_works_after() {
 async fn clear_with_a_name_and_context_with_a_bad_argument_are_errors() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/clear my old work");
         ui.wait_for("/clear takes no name").await;
         ui.send("/context bogus");
@@ -1798,7 +1791,7 @@ async fn clear_with_a_name_and_context_with_a_bad_argument_are_errors() {
 async fn theme_lists_the_themes_and_marks_the_current_one() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/theme");
         ui.wait_for("dark-ansi (current)").await;
         let screen = ui.screen();
@@ -1829,7 +1822,7 @@ async fn theme_lists_the_themes_and_marks_the_current_one() {
 async fn theme_switches_and_saves_the_choice() {
     let w = World::new(vec![]).with_config("# mine\n[model]\nmodel = \"a/b\"\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/theme light-daltonized");
         ui.wait_for("theme is now light-daltonized (saved to your settings)")
             .await;
@@ -1850,7 +1843,7 @@ async fn theme_switches_and_saves_the_choice() {
 async fn an_unknown_theme_is_an_error_and_changes_nothing() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/theme solarized");
         ui.wait_for("unknown theme `solarized`").await;
         assert!(ui.screen().contains("light-daltonized"));
@@ -1866,7 +1859,7 @@ async fn without_a_user_file_the_theme_applies_for_this_session_only() {
     let mut w = World::new(vec![]);
     w.without_user_config = true;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/theme");
         ui.wait_for("not saved").await;
         ui.send("/theme dark");
@@ -1882,7 +1875,7 @@ async fn without_a_user_file_the_theme_applies_for_this_session_only() {
 async fn the_configured_theme_is_the_one_in_force() {
     let w = World::new(vec![]).with_config("[tui]\ntheme = \"light\"\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/theme");
         ui.wait_for("light (current)").await;
     })
@@ -1943,7 +1936,7 @@ async fn a_turn_with_an_approval_reads_as_labelled_lines_in_screen_reader_mode()
 async fn config_changes_the_theme_now_and_writes_the_user_file() {
     let w = World::new(vec![]).with_config("# mine\n[model]\nmodel = \"a/b\"\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/config");
         ui.wait_for("Settings").await;
         let screen = ui.screen();
@@ -1973,7 +1966,7 @@ async fn config_never_writes_a_project_file_when_a_higher_scope_sets_the_key() {
     let project_before = std::fs::read(&project).unwrap();
     let cli_before = std::fs::read(w.settings_file.as_ref().unwrap()).unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/settings");
         ui.wait_for("Settings").await;
         ui.type_text("context.autocompact");
@@ -2003,7 +1996,7 @@ async fn config_never_writes_a_project_file_when_a_higher_scope_sets_the_key() {
 async fn config_keeps_a_next_launch_value_across_reopening_and_resets_with_delete() {
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/config");
         ui.wait_for("Settings").await;
         ui.type_text("schedule.enabled");
@@ -2026,7 +2019,7 @@ async fn config_without_a_user_file_says_nothing_was_saved() {
     let mut w = World::new(vec![]);
     w.without_user_config = true;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/config");
         ui.wait_for("Settings").await;
         ui.press(KeyCode::Enter);
@@ -2071,7 +2064,7 @@ async fn memory_lists_the_instruction_files_and_opens_one_after_creating_it() {
     std::fs::write(w.work.join("CLAUDE.md"), "project rules\n").unwrap();
     let project = w.work.join("FONTAINE.md");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/memory");
         ui.wait_for("instruction files").await;
         let screen = ui.screen();
@@ -2093,10 +2086,10 @@ async fn init_sends_a_hidden_prompt_naming_the_target_and_records_the_intent() {
     let w = World::new(vec![text_turn("written")]);
     let target = w.work.join("FONTAINE.md");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/init");
         ui.wait_for("written").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests().join("\n");
@@ -2121,10 +2114,10 @@ async fn init_improves_an_existing_instruction_file_instead_of_creating_one() {
     std::fs::write(w.work.join("AGENTS.md"), "existing\n").unwrap();
     let target = w.work.join("AGENTS.md");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/init");
         ui.wait_for("improved").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests().join("\n");
@@ -2143,7 +2136,7 @@ async fn auto_mode_setup_stores_the_facts_and_applies_them_to_the_session() {
     // The workspace is not in `trust.toml`, so the model scan is skipped and no model is asked.
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/auto-mode-setup");
         // The report line carries the stored path, so a long temp dir wraps the phrase across rows,
         // even mid-word.
@@ -2181,7 +2174,7 @@ async fn the_setup_warning_shows_on_an_auto_start_and_on_the_first_switch_into_a
 
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(
             !ui.screen()
                 .contains("doesn't know this project's environment")
@@ -2207,10 +2200,10 @@ async fn btw_answers_without_entering_the_conversation_or_the_ledger() {
     .await;
     let w = World::routed_known(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("btw-marker first message");
         ui.wait_for("reply 1").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/btw what was SIDE-QUESTION about?");
         ui.wait_for("SIDE-ANSWER about the first message").await;
@@ -2219,11 +2212,11 @@ async fn btw_answers_without_entering_the_conversation_or_the_ledger() {
             screen.contains("btw: what was SIDE-QUESTION about?"),
             "{screen}"
         );
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("btw-marker second message");
         ui.wait_for("reply 2").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = bodies(&server).await;
@@ -2249,10 +2242,10 @@ async fn btw_without_a_question_is_a_usage_error() {
     let server = start(vec![]).await;
     let w = World::routed_known(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/btw ");
         ui.wait_for("usage: /btw <question>").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(bodies(&server).await.is_empty());
@@ -2269,12 +2262,12 @@ async fn recap_after_a_turn_lists_the_message_and_the_allowed_write() {
         text_turn("all done"),
     ]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("make a note");
         ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('y'));
         ui.wait_for("all done").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/recap");
         ui.wait_for("Session recap").await;
@@ -2301,10 +2294,10 @@ async fn cost_lists_the_guardian_row_with_the_calls_the_guardian_made() {
     .in_mode(PermissionMode::Auto)
     .with_guardian(vec![verdict("deny", "Safety Bypass", 0.95)]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("do it");
         ui.wait_for("blocked").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/usage");
         ui.wait_for("Session usage").await;
@@ -2340,7 +2333,7 @@ async fn skills_trust_asks_first_and_records_the_digest_in_the_file_and_the_ledg
     .unwrap();
     let record = w.config_dir.join("skill-trust.toml");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/skills trust mine");
         ui.wait_for_live_prompt("Honour the allowed-tools of mine?")
