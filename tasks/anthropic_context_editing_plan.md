@@ -53,44 +53,33 @@ A pure function `context_editing::edit_json(&ContextEditing) -> serde_json::Valu
 edit object; it is the unit-tested seam. `AccountClient` gains
 `fn provider_options(&self) -> Option<ProviderOptions>` (default `None`); `anthropic::Connected`
 returns `AnthropicOptions::default().context_management(ContextManagement::new(vec![edit]))` when
-enabled. The agent build for the main agent and subagents attaches it with
+enabled. `finish_builder` (main agent) and `build_child_agent` (subagent) attach it with
 `provider_option`/`provider_options`; `guardian_completion` and every side call (side questions,
 compaction summaries, scanner, goal checks) never get it: a guardian prompt is small and a cleared
 result would change what it judges.
 
-### Subagents and models
-The option is read from the account of the model in use, so a mid-session `/model` switch to a
-non-anthropic account sends nothing, and a child inherits it only through its own account. Nothing
-about the guardian, floor or modes changes: the edit is on the model request, not on tool gating.
-
 ## Implementation Steps
 1. `rust/fontaine-core/src/config.rs`: `ContextEditing` struct, `Account.context_editing`,
-   `Account::new`, catalog/schema/known-keys lists, `check_account` rules.
-2. `providers/mod.rs`: `Provider::accepts_context_editing` (default false), `AccountClient::provider_options`.
+   `Account::new`, `check_account` rules (the struct derives `JsonSchema`).
+2. `providers/mod.rs`: `Provider::accepts_context_editing` (default false), `AccountClient::provider_options`, and a `ModelHandle` accessor forwarding it (`models.rs` keeps `client` private).
 3. `providers/anthropic.rs`: accept the key; `Connected` stores the edit and implements `provider_options`.
 4. New `providers/context_editing.rs` (or beside `anthropic.rs`): `edit_json`, defaults, exclude-tool default resolution.
-5. `agent/build.rs` (main and subagent builders): attach the account's provider options.
-6. `fontaine-core/src/config_catalog.rs` and the settings dialog/schema if keys are listed there.
-7. Docs (below), `CHANGELOG.md`, and a Decisions line in the master plan.
+5. `agent/build.rs` `finish_builder` (main agent) and `child_runner.rs` `build_child_agent` (subagent): attach the model's provider options; a child gets the option only through its own account.
+6. Docs (below), `CHANGELOG.md`, and a Decisions line in the master plan.
 
 ## Files to Modify
-- `rust/fontaine-core/src/config.rs`, `config_catalog.rs`
-- `rust/fontaine-core/src/providers/mod.rs`, `anthropic.rs` (+ new module)
-- `rust/fontaine-core/src/agent/build.rs`
+- `rust/fontaine-core/src/config.rs`
+- `rust/fontaine-core/src/providers/mod.rs`, `anthropic.rs` (+ new module), `models.rs`
+- `rust/fontaine-core/src/agent/build.rs`, `rust/fontaine-core/src/child_runner.rs`
 - `docs/configuration.md`, `docs/providers.md`, `docs/architecture.md` (cache section)
 - `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, Providers)
-
-## Trade-offs
-- **Default off.** Net cache cost against saved input is unmeasured (the issue's "Not measured"),
-  every clearing is a cache miss, and the retry-without fallback (#169) is not built, so a gateway
-  that rejects the beta would fail turns. Same stance as `cache_ttl = "1h"`.
-- **Raw JSON edit rather than a client-side prune.** The server keeps the client history intact, so
-  `/rewind`, checkpoints and exports are unaffected; a client prune would mutate history (#161).
-- **Per-account, not `[model]`.** The feature exists only on the Anthropic wire, like `cache_ttl`.
 
 ## Decisions
 - No `clear_thinking_20251015` edit is ever sent (it invalidates the cache without `keep: "all"`).
 - The guardian and side calls never carry `context_management`.
+- Default off: net cache cost is unmeasured and the #169 fallback is not built.
+- Raw JSON edit server-side rather than a client prune: client history stays intact.
+- Per-account rather than `[model]`: it exists only on the Anthropic wire.
 
 ## Documentation
 - `docs/configuration.md` `[accounts.<name>]` table: the `context_editing` keys, defaults, the cache
@@ -114,4 +103,3 @@ about the guardian, floor or modes changes: the edit is on the model request, no
 ## Open Questions
 - `applied_edits` in the response is not parsed by rig, so what was cleared is not visible; surface
   it (a follow-up issue) once rig exposes it.
-- Pairing with a pre-summary prune (#161) and `count_tokens` previews is out of scope here.
