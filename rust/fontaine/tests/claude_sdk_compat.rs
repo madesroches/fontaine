@@ -708,6 +708,36 @@ async fn a_failed_turn_leaves_the_session_open_and_end_of_input_exits_zero() {
 }
 
 #[tokio::test]
+async fn a_subagent_can_still_spawn_after_a_failed_turn() {
+    let (_endpoint, s) = sandbox(vec![
+        shell("echo hi"),
+        Turn::tool(
+            "c1",
+            "agent",
+            json!({"agent_type": "helper", "prompt": "say hi"}),
+        ),
+        Turn::text("child done"),
+        Turn::text("after"),
+    ])
+    .await;
+    let input = format!("{}{}", user_line("first"), user_line("second"));
+    let out = s.run_with_stdin(&SDK_ARGS, &input).await;
+    assert_eq!(
+        results(&out.stdout).len(),
+        2,
+        "{}\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("the session is ending"),
+        "{}\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+#[tokio::test]
 async fn end_of_input_with_no_message_exits_zero() {
     let (_endpoint, s) = sandbox(vec![Turn::text("never")]).await;
     let out = s.run_with_stdin(&SDK_ARGS, "").await;

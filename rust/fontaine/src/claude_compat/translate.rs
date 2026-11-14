@@ -32,7 +32,9 @@ pub fn wire_name(tool: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Last {
     Nothing,
-    /// The model was producing its answer or had just finished it as text.
+    /// The model was streaming text that has not finished.
+    Streaming,
+    /// The model finished its answer as text.
     Text,
     /// A model call asked for tools and they have not all answered.
     Tools,
@@ -60,6 +62,8 @@ pub struct Translator {
     unanswered: usize,
     denials: Vec<Value>,
     last: Last,
+    /// The last finished assistant text of the turn, for an interrupted turn's result.
+    last_text: String,
     last_stop: Option<&'static str>,
     started: Instant,
     out: Vec<Value>,
@@ -112,6 +116,7 @@ impl Translator {
             unanswered: 0,
             denials: Vec::new(),
             last: Last::Nothing,
+            last_text: String::new(),
             last_stop: None,
             started: Instant::now(),
             out: Vec::new(),
@@ -124,6 +129,7 @@ impl Translator {
         self.model = model.to_string();
         self.started = Instant::now();
         self.last = Last::Nothing;
+        self.last_text.clear();
         self.last_stop = None;
         self.open = None;
         self.ended = None;
@@ -229,7 +235,7 @@ impl Translator {
     fn event(&mut self, event: &SessionEvent) {
         match event {
             SessionEvent::AssistantDelta(text) => {
-                self.last = Last::Text;
+                self.last = Last::Streaming;
                 if self.partial {
                     let index = match self.open_message().text_block {
                         Some(index) => index,
@@ -247,6 +253,7 @@ impl Translator {
             }
             SessionEvent::Assistant(text) => {
                 self.last = Last::Text;
+                self.last_text.clone_from(text);
                 if self.partial {
                     let index = match self.open_message().text_block.take() {
                         Some(index) => index,
@@ -472,6 +479,8 @@ impl ClaudeSink {
             num_turns: usage.main.calls,
             result: if finish.is_error {
                 String::new()
+            } else if info.outcome.text.is_empty() && info.interrupted {
+                self.translator.last_text.clone()
             } else {
                 info.outcome.text.clone()
             },
@@ -830,9 +839,16 @@ mod tests {
         let mut t = Translator::new(false);
         t.begin("sid", "m");
         t.event(&SessionEvent::AssistantDelta("par".into()));
-        // Streaming text that never finished is an answer in progress.
+        // Streaming text that never finished is an aborted stream.
         let finish = finish_of(&t, &outcome, true);
-        assert_eq!(finish.subtype, "success");
+        assert_eq!(finish.subtype, "error_during_execution");
+        assert_eq!(finish.terminal, Some("aborted_streaming"));
+
+        t.event(&SessionEvent::Assistant("par".into()));
+        assert_eq!(t.last_text, "par");
+        assert_eq!(finish_of(&t, &outcome, true).subtype, "success");
+        t.begin("sid", "m");
+        assert_eq!(t.last_text, "");
     }
 
     #[test]

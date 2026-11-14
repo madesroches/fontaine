@@ -1717,7 +1717,8 @@ pub(crate) async fn run_session<I: InputSource>(
         if afk_failure.is_some() {
             goal_failure = goal_failure.or(afk_failure);
         }
-        if failed {
+        // A long-lived session keeps reading after a failed turn: kill_all latches shutdown.
+        if failed && !input.long_lived() {
             runtime.state.agents().kill_all();
             runtime.state.agents().settled(KILL_SETTLE).await;
             runtime.jobs().terminate_all().await;
