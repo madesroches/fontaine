@@ -34,7 +34,7 @@ use crate::preview::DiffPreview;
 use crate::project_env::{self, ProjectEnvironment};
 use crate::tier::Tier;
 use crate::turn::SessionEvent;
-use crate::usage_ledger::{Bucket, Served, UsageLedger, UsageSource};
+use crate::usage_ledger::{Bucket, CacheWrites, Served, UsageLedger, UsageSource};
 use crate::usage_limit::UsageLimit;
 use crate::usage_pause::{PauseEnd, PauseEvent, PauseInfo, UsagePause, describe_reset};
 
@@ -1294,21 +1294,46 @@ impl SessionState {
         sent_request: bool,
         served: &Served,
     ) {
-        self.record_usage_answered(source, agent, usage, sent_request, sent_request, served);
+        self.record_usage_split(source, agent, usage, None, sent_request, served);
+    }
+
+    /// [`record_usage`](Self::record_usage) for a call whose reply split its cache writes by
+    /// lifetime.
+    pub fn record_usage_split(
+        &self,
+        source: UsageSource,
+        agent: &str,
+        usage: &Usage,
+        writes: Option<CacheWrites>,
+        sent_request: bool,
+        served: &Served,
+    ) {
+        self.record_usage_answered(
+            source,
+            agent,
+            usage,
+            writes,
+            sent_request,
+            sent_request,
+            served,
+        );
     }
 
     /// [`record_usage`](Self::record_usage) for a request that may have failed: only one the
     /// provider `answered` proves the window open.
+    #[allow(clippy::too_many_arguments)] // each is an independent input of one ledger entry
     fn record_usage_answered(
         &self,
         source: UsageSource,
         agent: &str,
         usage: &Usage,
+        writes: Option<CacheWrites>,
         sent_request: bool,
         answered: bool,
         served: &Served,
     ) {
-        self.usage.record(source, usage, sent_request, served);
+        self.usage
+            .record(source, usage, writes, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
         // Only the paused account's own answer proves its window open, whoever held the probe.
         // A call whose account is unknown proves nothing.
@@ -1348,6 +1373,7 @@ impl SessionState {
             UsageSource::Guardian,
             agent,
             usage,
+            None,
             sent_request,
             sent_request && answered,
             served,
@@ -1363,7 +1389,15 @@ impl SessionState {
         answered: bool,
         served: &Served,
     ) {
-        self.record_usage_answered(UsageSource::Guardian, agent, usage, true, answered, served);
+        self.record_usage_answered(
+            UsageSource::Guardian,
+            agent,
+            usage,
+            None,
+            true,
+            answered,
+            served,
+        );
     }
 
     /// What the guardian has cost across the whole tree.
@@ -1375,7 +1409,15 @@ impl SessionState {
     /// reads includes them.
     /// `answered` is false when the provider gave no response.
     pub fn add_goal_usage(&self, usage: &Usage, answered: bool, served: &Served) {
-        self.record_usage_answered(UsageSource::Goal, ROOT_AGENT, usage, true, answered, served);
+        self.record_usage_answered(
+            UsageSource::Goal,
+            ROOT_AGENT,
+            usage,
+            None,
+            true,
+            answered,
+            served,
+        );
     }
 
     /// What goal evaluations have cost this session, which outlives the goal.

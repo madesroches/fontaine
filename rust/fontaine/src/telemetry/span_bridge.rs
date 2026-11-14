@@ -274,6 +274,77 @@ pub fn cost_usd(provider: &str, model: &str, usage: &Usage) -> Option<f64> {
     resolved.spec.pricing?.cost(usage).map(|cost| cost.total)
 }
 
+impl<E: Export> SpanBridge<E> {
+    fn tool_decision(&self, fields: &[(String, String)]) {
+        // The guardian's part of the decision: how long it took, and why it failed closed.
+        if let Some(latency) = count(fields, "guardian.latency_ms") {
+            let attrs = ["guardian.model", "guardian.profile", "guardian.cache_hit"]
+                .into_iter()
+                .zip(["model", "profile", "cache_hit"])
+                .filter_map(|(field, name)| Some((name, lookup(fields, field)?.to_string())))
+                .collect();
+            self.export.metric(Metric {
+                name: "fontaine.guardian.latency",
+                unit: "ms",
+                value: MetricValue::Int(latency),
+                attrs,
+            });
+        }
+        if let Some(outcome) = lookup(fields, "screen.outcome") {
+            self.export.metric(Metric {
+                name: "fontaine.screen.count",
+                unit: "{call}",
+                value: MetricValue::Int(1),
+                attrs: vec![("outcome", outcome.to_string())],
+            });
+        }
+        self.dropped_guardian_spend(fields);
+        if let Some(reason) = lookup(fields, "fail_closed_reason") {
+            self.export.metric(Metric {
+                name: "fontaine.guardian.fail_closed.count",
+                unit: "{denial}",
+                value: MetricValue::Int(1),
+                attrs: vec![("reason", reason.to_string())],
+            });
+        }
+        if let (Some(tier), Some(decision)) = (lookup(fields, "tier"), lookup(fields, "decision")) {
+            self.export.metric(Metric {
+                name: "fontaine.tool_decision.count",
+                unit: "{decision}",
+                value: MetricValue::Int(1),
+                attrs: vec![
+                    ("tier", tier.to_string()),
+                    ("decision", decision.to_string()),
+                ],
+            });
+        }
+    }
+
+    /// The 5-minute and 1-hour parts of a reply's cache writes, which rig's span does not carry.
+    /// They are a subset of the `cacheCreation` total.
+    fn cache_write_split(&self, fields: &[(String, String)]) {
+        let model = lookup(fields, "model").unwrap_or("unknown");
+        let query_source = lookup(fields, "query_source").unwrap_or("main");
+        for (kind, field) in [
+            ("cacheWrite5m", "cache_write_5m"),
+            ("cacheWrite1h", "cache_write_1h"),
+        ] {
+            if let Some(tokens) = count(fields, field) {
+                self.export.metric(Metric {
+                    name: "fontaine.token.usage",
+                    unit: "{token}",
+                    value: MetricValue::Int(tokens),
+                    attrs: vec![
+                        ("type", kind.to_string()),
+                        ("model", model.to_string()),
+                        ("query_source", query_source.to_string()),
+                    ],
+                });
+            }
+        }
+    }
+}
+
 impl<S, E> Layer<S> for SpanBridge<E>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
@@ -287,51 +358,10 @@ where
         }
         let mut fields = Vec::new();
         event.record(&mut Collect(&mut fields));
-        if lookup(&fields, "message") != Some("tool_decision") {
-            return;
-        }
-        // The guardian's part of the decision: how long it took, and why it failed closed.
-        if let Some(latency) = count(&fields, "guardian.latency_ms") {
-            let attrs = ["guardian.model", "guardian.profile", "guardian.cache_hit"]
-                .into_iter()
-                .zip(["model", "profile", "cache_hit"])
-                .filter_map(|(field, name)| Some((name, lookup(&fields, field)?.to_string())))
-                .collect();
-            self.export.metric(Metric {
-                name: "fontaine.guardian.latency",
-                unit: "ms",
-                value: MetricValue::Int(latency),
-                attrs,
-            });
-        }
-        if let Some(outcome) = lookup(&fields, "screen.outcome") {
-            self.export.metric(Metric {
-                name: "fontaine.screen.count",
-                unit: "{call}",
-                value: MetricValue::Int(1),
-                attrs: vec![("outcome", outcome.to_string())],
-            });
-        }
-        self.dropped_guardian_spend(&fields);
-        if let Some(reason) = lookup(&fields, "fail_closed_reason") {
-            self.export.metric(Metric {
-                name: "fontaine.guardian.fail_closed.count",
-                unit: "{denial}",
-                value: MetricValue::Int(1),
-                attrs: vec![("reason", reason.to_string())],
-            });
-        }
-        if let (Some(tier), Some(decision)) = (lookup(&fields, "tier"), lookup(&fields, "decision"))
-        {
-            self.export.metric(Metric {
-                name: "fontaine.tool_decision.count",
-                unit: "{decision}",
-                value: MetricValue::Int(1),
-                attrs: vec![
-                    ("tier", tier.to_string()),
-                    ("decision", decision.to_string()),
-                ],
-            });
+        match lookup(&fields, "message") {
+            Some("tool_decision") => self.tool_decision(&fields),
+            Some("cache_write_split") => self.cache_write_split(&fields),
+            _ => {}
         }
     }
 
@@ -499,6 +529,35 @@ mod tests {
         assert_eq!(event.fields["output_tokens"], 500);
         assert!(event.fields.contains_key("cost_usd"));
         assert_eq!(event.fields["query_source"], "main");
+    }
+
+    #[test]
+    fn a_cache_write_split_event_yields_a_metric_per_lifetime() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: TARGET,
+                model = "claude-haiku-4-5",
+                query_source = "subagent",
+                cache_write_5m = 200u64,
+                cache_write_1h = 3000u64,
+                "cache_write_split"
+            );
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let five = metric(&metrics, "fontaine.token.usage", Some("cacheWrite5m")).unwrap();
+        let hour = metric(&metrics, "fontaine.token.usage", Some("cacheWrite1h")).unwrap();
+        assert_eq!((five.1, hour.1), (200.0, 3000.0));
+        for m in [five, hour] {
+            assert!(
+                m.2.contains(&("query_source".to_string(), "subagent".to_string()))
+                    && m.2
+                        .contains(&("model".to_string(), "claude-haiku-4-5".to_string())),
+                "{:?}",
+                m.2
+            );
+        }
+        assert!(metric(&metrics, "fontaine.token.usage", Some("cacheCreation")).is_none());
     }
 
     #[test]

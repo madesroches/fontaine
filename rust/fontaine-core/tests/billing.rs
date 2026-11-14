@@ -4,9 +4,10 @@
 mod common;
 
 use common::World;
-use common::runtime::build;
+use common::runtime::{build, build_with_document};
 use fontaine_core::config::PermissionMode::Manual;
 use fontaine_core::turn::{Drive, Flow, SessionEvent, TurnOutcome, TurnParams, drive, run_turn};
+use fontaine_core::usage_ledger::UsageSource;
 use rig_core::completion::{Cost, Usage};
 use rig_core::test_utils::{MockError, MockStreamEvent, mock_final};
 use serde_json::json;
@@ -406,4 +407,63 @@ async fn reasoning_that_settles_after_the_text_arrives_last() {
             "reasoning hm",
         ]
     );
+}
+
+async fn ledger_after_a_turn(
+    document: Option<serde_json::Value>,
+) -> fontaine_core::usage_ledger::Bucket {
+    let w = World::new();
+    let usage = Usage::new()
+        .input_tokens(10)
+        .output_tokens(5)
+        .cache_creation_input_tokens(12u64);
+    let turn = vec![
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(usage)),
+    ];
+    let built = match document {
+        Some(document) => build_with_document(&w, Manual, vec![turn], document),
+        None => build(&w, Manual, vec![turn], true),
+    };
+    let outcome = run_turn(
+        TurnParams {
+            served: Default::default(),
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+            generation_options: None,
+            max_tokens: None,
+        },
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    built.runtime.state.usage_ledger().bucket(UsageSource::Main)
+}
+
+#[tokio::test]
+async fn a_reply_that_splits_its_cache_writes_lands_in_the_split_buckets() {
+    let bucket = ledger_after_a_turn(Some(json!({"usage": {"cache_creation": {
+        "ephemeral_5m_input_tokens": 2, "ephemeral_1h_input_tokens": 10}}})))
+    .await;
+    assert_eq!(bucket.cache_creation_input_tokens, 12);
+    assert_eq!(bucket.cache_write_5m_tokens, 2);
+    assert_eq!(bucket.cache_write_1h_tokens, 10);
+}
+
+#[tokio::test]
+async fn a_reply_without_a_split_leaves_the_split_buckets_zero() {
+    let bucket = ledger_after_a_turn(Some(json!({"usage": {"input_tokens": 10}}))).await;
+    assert_eq!(bucket.cache_creation_input_tokens, 12);
+    assert_eq!(bucket.cache_write_5m_tokens, 0);
+    assert_eq!(bucket.cache_write_1h_tokens, 0);
+    let bucket = ledger_after_a_turn(None).await;
+    assert_eq!(bucket.cache_write_1h_tokens, 0);
 }

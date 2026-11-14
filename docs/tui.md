@@ -850,7 +850,10 @@ The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `c
 adjudication counting once however many requests it took to get a verdict; a guardian answer served
 from its verdict cache is not a call, but one inside a guardian composition cannot be told apart
 and does count. The `cache read` and `cache write` columns are left out when the provider reported
-no cache tokens.
+no cache tokens. When Anthropic's replies split the cache writes by lifetime, `write 5m` and
+`write 1h` columns follow `cache write`, one for the 5-minute writes and one for the 1-hour writes
+(billed at a higher rate); they are left out when no reply carried the split. They count only the
+calls whose reply carried it, so they can add up to less than `cache write`.
 
 The by-model table has one row per role and model that served a call, with the same columns. A
 call asked for through a [role](configuration.md#modelsroles) shows the role first

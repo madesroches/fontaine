@@ -778,6 +778,7 @@ pub fn cost(report: &UsageReport) -> String {
     ];
     let total = fontaine_core::usage_ledger::total(&report.by_source);
     let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
+    let split = total.cache_write_5m_tokens + total.cache_write_1h_tokens > 0;
     let cost_cell = |b: &Bucket| {
         let mut cell = match b.cost_usd {
             Some(cost) => format!("${cost:.4}"),
@@ -799,6 +800,10 @@ pub fn cost(report: &UsageReport) -> String {
             row.push(compact_count(b.cache_read_input_tokens));
             row.push(compact_count(b.cache_creation_input_tokens));
         }
+        if split {
+            row.push(compact_count(b.cache_write_5m_tokens));
+            row.push(compact_count(b.cache_write_1h_tokens));
+        }
         row.push(cost_cell(b));
         row
     };
@@ -806,6 +811,9 @@ pub fn cost(report: &UsageReport) -> String {
         let mut head = vec![first, "calls", "input", "output"];
         if cache {
             head.extend(["cache read", "cache write"]);
+        }
+        if split {
+            head.extend(["write 5m", "write 1h"]);
         }
         head.push("cost");
         head.into_iter().map(String::from).collect::<Vec<_>>()
@@ -1815,6 +1823,28 @@ mod tests {
         assert!(text.contains("cache read"), "{text}");
         assert!(text.contains("cache write"), "{text}");
         assert!(text.contains("61.0k"), "{text}");
+        assert!(!text.contains("write 5m"), "{text}");
+    }
+
+    #[test]
+    fn cost_shows_the_write_split_columns_only_when_a_reply_carried_one() {
+        let mut split = spent(1, 10, 1, Some(0.1), 0);
+        split.cache_creation_input_tokens = 3_200;
+        split.cache_write_5m_tokens = 200;
+        split.cache_write_1h_tokens = 3_000;
+        let mut unsplit = spent(1, 10, 1, Some(0.1), 0);
+        unsplit.cache_creation_input_tokens = 500;
+        let text = cost(&usage_report(&[
+            (UsageSource::Main, split),
+            (UsageSource::Guardian, unsplit),
+        ]));
+        assert!(text.contains("write 5m"), "{text}");
+        assert!(text.contains("write 1h"), "{text}");
+        assert!(text.contains("3.0k"), "{text}");
+        let guardian = text.lines().find(|l| l.contains("guardian")).unwrap();
+        assert!(guardian.contains("500"), "{text}");
+        assert!(guardian.contains("500  "), "{text}");
+        assert!(guardian.contains(" 0  "), "{text}");
     }
 
     #[test]

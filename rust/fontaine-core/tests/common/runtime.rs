@@ -78,6 +78,60 @@ pub fn build_with_scanner(
     Built { runtime, main }
 }
 
+/// The scripted transport with a reply document attached to every reply, as a provider's
+/// transport that kept the reply body supplies it.
+#[derive(Clone)]
+pub struct DocumentRuntime {
+    inner: MockRuntime,
+    document: serde_json::Value,
+}
+
+impl Transport<MockScript> for DocumentRuntime {
+    fn send(
+        &self,
+        request: <MockScript as rig_core::wire::Wire>::Payload,
+        exchange: Exchange,
+    ) -> Opening<MockFrame> {
+        let opening = self.inner.send(request, exchange);
+        let document = self.document.clone();
+        Opening::new(async move { Ok(opening.await?.with_document(document)) })
+    }
+}
+
+/// [`build`] whose every reply carries `document` as its raw reply document.
+pub fn build_with_document(
+    world: &World,
+    mode: PermissionMode,
+    turns: Vec<Vec<MockStreamEvent>>,
+    document: serde_json::Value,
+) -> Built {
+    let main = MockCompletionModel::from_stream_turns(turns);
+    let documented = Model::new(
+        MockScript::default(),
+        DocumentRuntime {
+            inner: main.transport.clone(),
+            document,
+        },
+    );
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/mock").unwrap(),
+        AccountKind::named("openai-compatible"),
+        documented.into(),
+    );
+    let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
+        main: handle.clone(),
+        main_listing: fontaine_core::models::Listing::default(),
+        guardian: Some(GuardianModel::Ready(handle)),
+        guardian_choice: GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_models(world, mode, models, None, true, Default::default(), None);
+    Built { runtime, main }
+}
+
 /// A scripted transport that serves two conversations from separate scripts, so agents that ask
 /// concurrently each get their own turns whatever order they ask in. A request whose first
 /// message mentions `marker` belongs to the child; every other is the root's.

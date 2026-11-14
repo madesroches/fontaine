@@ -122,7 +122,7 @@ exported.
 | Metric | Unit | Attributes |
 |---|---|---|
 | `fontaine.session.count` | `{session}` | `start_type` (`fresh`, `resume` or `continue`; a fork takes the value of the flag it forks from, `--continue` with nothing to continue is `fresh`, and a `/resume` or `/branch` inside the terminal UI starts a new session span with `resume`), `headless` (`true` or `false`) |
-| `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` (`main`, `guardian`, `scanner`, `goal` or `subagent`); `estimated` (`true`) on the guardian spend estimate only |
+| `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `cacheWrite5m`, `cacheWrite1h`, `reasoning`; `cacheWrite5m` and `cacheWrite1h` are the parts of `cacheCreation` that Anthropic's reply split by cache lifetime, so do not sum all the types), `model`, `query_source` (`main`, `guardian`, `scanner`, `goal` or `subagent`); `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
@@ -160,6 +160,7 @@ composition did not use is counted in the session's usage like any other guardia
 | `mcp_server_connection` | `server`, `transport` (`stdio` or `http`), `status` (`connected` or `failed`). Every attempt emits one, including a startup retry and each [reconnect](mcp.md#reconnecting) attempt. |
 | `mcp_elicitation` | `server`, `action` (`accept`, `decline` or `cancel`). Emitted when an MCP server's [request for input](mcp.md#requests-for-input) is answered, including the answers Fontaine gives itself. The message and the answer are never exported. |
 | `api_error` | `model`, `provider`, `query_source` (`main` or `subagent`), `agent.id`, `error_class` (rig's stable error code, such as `provider_response`, `http`, `timeout` or `json`), and `status_code` when the failure carries an HTTP status. The provider's message is not exported: it can echo the request. Retries are not visible, so there is no attempt count. Emitted for a main-agent or subagent turn that failed with a provider error or a rig error report, in practice a failed model call; `error_class` tells the rare rig-internal failures (such as `internal`, `divergence` or `handler_unavailable`) apart. A turn limit or a cancel is not one. |
+| `cache_write_split` | `model`, `provider`, `query_source` (`main` or `subagent`), `agent.id`, `cache_write_5m` and `cache_write_1h` (the model call's cache writes by lifetime). Emitted only for a reply that carries the split, which is what feeds the `cacheWrite5m` and `cacheWrite1h` token metrics. |
 | `internal_error` | `class` (`audit_write` or `ledger_write`). Emitted for every failed write to the audit log or the session ledger, not only the first one the terminal reports. The I/O error text is not exported: it can contain a path. |
 | `permission_mode_changed` | `from`, `to` |
 | `usage_paused` | `role` (`main` or `guardian`), `account`, `reset_at` (Unix epoch seconds, absent when unknown). The run was put on hold because the account's [usage window](headless.md#usage-windows) is spent. |
