@@ -155,6 +155,9 @@ pub struct DecisionRecord {
     pub guardian_dropped_priced: Option<bool>,
     pub permission_mode: String,
     pub headless: bool,
+    /// Who answered prompts: `present`, `absent` or `delegate` (a host program).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub human_channel: String,
     /// AFK mode was on when the decision was made.
     #[serde(default)]
     pub afk: bool,
@@ -215,6 +218,7 @@ impl DecisionRecord {
             guardian_dropped_priced: None,
             permission_mode,
             headless,
+            human_channel: if headless { "absent" } else { "present" }.to_string(),
             afk: false,
             converted: None,
             explanation: None,

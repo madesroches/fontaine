@@ -162,7 +162,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver,
-        headless: false,
+        human: fontaine_core::permissions::HumanChannel::Present,
         hooks: Vec::new(),
         denied_hooks: Vec::new(),
         plugin_hooks: Default::default(),

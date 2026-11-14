@@ -92,12 +92,42 @@ async fn each_audit_entry_has_one_tool_decision_event_and_one_feed_record() {
                 record.permission_mode.as_str()
             );
             assert_eq!(event.fields["headless"], record.headless);
+            assert_eq!(event.fields["human_channel"], record.human_channel.as_str());
+            assert_eq!(
+                record.human_channel,
+                if headless { "absent" } else { "present" }
+            );
         }
         // Content-free: neither the command nor the path reaches telemetry.
         let rendered =
             serde_json::to_string(&events.iter().map(|e| &e.fields).collect::<Vec<_>>()).unwrap();
         assert!(!rendered.contains("rm -rf") && !rendered.contains(".git/config"));
     }
+}
+
+#[tokio::test]
+async fn a_delegate_answer_is_recorded_as_delegate_in_the_audit_log_and_the_event() {
+    let capture = TraceCapture::default();
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let mut options = Options::new(Manual);
+    options.human = Some(fontaine_core::permissions::HumanChannel::Delegate);
+    let rig = Rig::with(options);
+    rig.approver.answer(Answer::AllowOnce);
+    rig.check("shell", json!({"command": "touch x"})).await;
+    let audit = rig.audit();
+    assert!(!audit.is_empty());
+    assert!(audit.iter().all(|r| r.human_channel == "delegate"));
+    let events: Vec<_> = capture
+        .events()
+        .into_iter()
+        .filter(|e| e.message() == "tool_decision")
+        .collect();
+    assert_eq!(events.len(), audit.len());
+    assert!(
+        events
+            .iter()
+            .all(|e| e.fields["human_channel"] == "delegate")
+    );
 }
 
 #[tokio::test]

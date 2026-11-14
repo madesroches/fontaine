@@ -737,3 +737,40 @@ async fn a_user_typed_skill_is_not_attributed_to_the_previous_tool_call() {
     built.runtime.expand_skill("review", "").await.unwrap();
     assert_eq!(state.current_call(fontaine_tools::gate::ROOT_AGENT), None);
 }
+
+#[test]
+fn a_host_defined_agent_replaces_a_file_agent_of_its_name_and_is_rebuilt_with_every_type_set() {
+    use fontaine_agents::registry::TypeOrigin;
+    use fontaine_core::agent::build_agent_types_with;
+    use fontaine_core::extensions::agent_from_definition;
+
+    let w = World::new();
+    project_agent(
+        &w,
+        "reviewer",
+        "---\ndescription: from the repository\n---\nx",
+    );
+    let ext = load_for(&w, &[]).unwrap();
+    let config = w.load().unwrap();
+    let roles = Roles::from_config(&config).unwrap();
+    let host = agent_from_definition(
+        "reviewer",
+        &serde_json::json!({"description": "from the host", "prompt": "Review."}),
+        &[],
+        &|_| false,
+    )
+    .unwrap();
+    // A plugin reload builds the types again from the files; the host's survive it.
+    for _ in 0..2 {
+        let (types, _) =
+            build_agent_types_with(&config, &ext, &roles, std::slice::from_ref(&host)).unwrap();
+        let reviewer = types.get("reviewer").unwrap();
+        assert_eq!(reviewer.description, "from the host");
+        assert_eq!(reviewer.origin, TypeOrigin::Session);
+    }
+    let (types, _) = build_agent_types(&config, &ext, &roles).unwrap();
+    assert_eq!(
+        types.get("reviewer").unwrap().description,
+        "from the repository"
+    );
+}

@@ -88,7 +88,40 @@ pub enum Answer {
     AllowOnce,
     AllowSession,
     AllowAlways,
-    Deny { feedback: Option<String> },
+    /// An answer from a host that can also change the call: the session allows and the mode it
+    /// asks for hold from the next call, and new `args` send the call back through the whole
+    /// pipeline.
+    AllowUpdated {
+        args: Option<Value>,
+        grants: Vec<Rule>,
+        mode: Option<PermissionMode>,
+    },
+    Deny {
+        feedback: Option<String>,
+    },
+}
+
+/// Who answers a prompt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HumanChannel {
+    /// A person at the terminal.
+    Present,
+    /// Nobody: every would-prompt outcome becomes a denial.
+    #[default]
+    Absent,
+    /// A host program answers for the person. It is asked exactly where a person would be, but it
+    /// is never offered "always allow": nothing it says outlives the session.
+    Delegate,
+}
+
+impl HumanChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HumanChannel::Present => "present",
+            HumanChannel::Absent => "absent",
+            HumanChannel::Delegate => "delegate",
+        }
+    }
 }
 
 /// The human-approval callback.
@@ -305,15 +338,16 @@ fn pause_ended(guardian: &LlmGuardian, ended: &crate::gate::UsagePauseEnded) -> 
 }
 
 /// What a fail-closed hook's failure turns into: a denial that says why.
-fn fail_closed_denial(failure: &str) -> HookDecision {
+fn fail_closed_denial(reason: String) -> HookDecision {
     HookDecision {
         permission: Some(HookPermission::Deny),
-        reason: Some(format!(
-            "blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict ({failure})"
-        )),
+        reason: Some(reason),
         ..HookDecision::default()
     }
 }
+
+/// The words of a PowerShell command hook's fail-closed denial.
+pub const GIT_BASH_FAIL_CLOSED: &str = "blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict";
 
 #[derive(Debug)]
 pub enum HookError {
@@ -423,6 +457,11 @@ pub trait PreToolUseHook: Send + Sync {
     /// only tightens: output that cannot be read still decides nothing.
     fn fails_closed(&self) -> bool {
         false
+    }
+
+    /// Why a [fail-closed](PreToolUseHook::fails_closed) hook's failure denied the call.
+    fn fail_closed_reason(&self, failure: &str) -> String {
+        format!("{GIT_BASH_FAIL_CLOSED} ({failure})")
     }
 
     /// Waits for whatever the hook needs before its run starts, outside its timeout: a hook that
@@ -603,8 +642,8 @@ pub async fn run_elicitation_hooks(
 pub struct PipelineParams {
     pub state: Arc<SessionState>,
     pub approver: Arc<dyn Approver>,
-    /// Nothing can be asked: every would-prompt outcome becomes a denial.
-    pub headless: bool,
+    /// Who answers a prompt; with `Absent`, every would-prompt outcome becomes a denial.
+    pub human: HumanChannel,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
     pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     /// The hooks plugins bring, consulted after `hooks` and `denied_hooks`; a reload swaps them.
@@ -618,7 +657,7 @@ pub struct PipelineParams {
 pub struct PermissionPipeline {
     state: Arc<SessionState>,
     approver: Arc<dyn Approver>,
-    headless: bool,
+    human: HumanChannel,
     hooks: Vec<Arc<dyn PreToolUseHook>>,
     denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     plugin_hooks: LivePlugins,
@@ -656,6 +695,30 @@ struct CallCtx<'a> {
     original_digest: Option<String>,
     mode: PermissionMode,
     started: Instant,
+    /// This is the second pass of a call whose host changed its input; the host may not change
+    /// it again.
+    redone: bool,
+    /// What a host's answer left to do once its changed input has been judged again.
+    again: Mutex<Option<Again>>,
+}
+
+/// A host's answer that changed the call: the call goes through the whole pipeline again with
+/// `args`, and the session allows and the mode apply only if that pass allows it.
+struct Again {
+    args: Value,
+    grants: Vec<Rule>,
+    mode: Option<PermissionMode>,
+}
+
+/// What one pass of the pipeline came to.
+enum Pass {
+    Decided(GateDecision),
+    Again(Again),
+}
+
+/// What the second pass keeps of the first.
+struct Redo {
+    original_digest: String,
 }
 
 /// What the composition made of a call, for the audit record of whatever decides it.
@@ -882,7 +945,7 @@ impl PermissionPipeline {
             preclassifier: Preclassifier::new(&params.allow_extra),
             state: params.state,
             approver: params.approver,
-            headless: params.headless,
+            human: params.human,
             hooks: params.hooks,
             denied_hooks: params.denied_hooks,
             plugin_hooks: params.plugin_hooks,
@@ -977,7 +1040,7 @@ impl PermissionPipeline {
                 Ok(Ok(decision)) => decision,
                 Ok(Err(e @ HookError::Failed { .. })) if hook.fails_closed() => {
                     tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it denies the call");
-                    fail_closed_denial(&chain(&e))
+                    fail_closed_denial(hook.fail_closed_reason(&chain(&e)))
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it decides nothing");
@@ -985,7 +1048,7 @@ impl PermissionPipeline {
                 }
                 Err(_) if hook.fails_closed() => {
                     tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it denies the call");
-                    fail_closed_denial("it timed out")
+                    fail_closed_denial(hook.fail_closed_reason("it timed out"))
                 }
                 Err(_) => {
                     tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it decides nothing");
@@ -1563,7 +1626,7 @@ impl PermissionPipeline {
     fn no_human(&self) -> Option<NoHuman> {
         if self.state.afk_on() {
             Some(NoHuman::Afk)
-        } else if self.headless {
+        } else if self.human == HumanChannel::Absent {
             Some(NoHuman::Headless)
         } else {
             None
@@ -1626,8 +1689,9 @@ impl PermissionPipeline {
             tier,
             decision,
             cx.mode.as_str().to_string(),
-            self.headless,
+            self.human != HumanChannel::Present,
         );
+        record.human_channel = self.human.as_str().to_string();
         record.afk = self.state.afk_on();
         record.agent_name = self
             .state
@@ -1841,12 +1905,65 @@ impl PermissionPipeline {
     }
 
     async fn adjudicate(&self, call: CallView<'_>) -> GateDecision {
+        let again = match self.adjudicate_pass(&call, None).await {
+            Pass::Decided(decision) => return decision,
+            Pass::Again(again) => again,
+        };
+        // The host's changed input is judged from the top, hooks included, so no stage is
+        // skipped for it. The original digest stays on the record.
+        let args = again.args.clone();
+        let view = CallView {
+            args: &args,
+            ..call
+        };
+        let redo = Redo {
+            original_digest: args_digest(call.args),
+        };
+        let decision = match self.adjudicate_pass(&view, Some(&redo)).await {
+            Pass::Decided(decision) => decision,
+            Pass::Again(_) => GateDecision::Deny {
+                message: self.denied(call.tool, "the host changed the input twice"),
+            },
+        };
+        if !matches!(decision, GateDecision::Allow { .. }) {
+            return decision;
+        }
+        match self.apply_updates(again.mode, again.grants) {
+            Ok(()) => decision,
+            Err(why) => GateDecision::Deny {
+                message: self.denied(call.tool, &why),
+            },
+        }
+    }
+
+    /// The session allows and the mode a host's answer asked for: the mode first, and a refusal
+    /// of it applies nothing.
+    fn apply_updates(&self, mode: Option<PermissionMode>, grants: Vec<Rule>) -> Result<(), String> {
+        if let Some(mode) = mode {
+            // Only the user's own flag or key press enters AFK mode.
+            if mode == PermissionMode::Afk {
+                return Err("a host cannot turn AFK mode on".to_string());
+            }
+            if let Err(refusal) = self.state.set_mode(mode, AfkSource::Sdk) {
+                return Err(format!("the mode change was refused: {refusal}"));
+            }
+        }
+        for rule in grants {
+            self.state.append(Record::Grant {
+                rule: rule.to_string(),
+            });
+            self.state.grant(rule, RuleSource::Session);
+        }
+        Ok(())
+    }
+
+    async fn adjudicate_pass(&self, call: &CallView<'_>, redo: Option<&Redo>) -> Pass {
         let started = Instant::now();
         let tool_use_id = self.state.current_call(call.agent);
         let Some((mode, plan_block)) = self.posture_of(call.agent) else {
             // Hooks and the guardian never see a caller nobody can identify.
             let cx = CallCtx {
-                call: &call,
+                call,
                 digest: args_digest(call.args),
                 original_digest: None,
                 args: call.args.clone(),
@@ -1854,21 +1971,24 @@ impl PermissionPipeline {
                 tool_use_id,
                 mode: PermissionMode::DontAsk,
                 started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
             };
-            return self
-                .deny(
+            return Pass::Decided(
+                self.deny(
                     &cx,
                     Tier::DenyRule,
                     Some("agent registry".to_string()),
                     self.refuse(call.tool, UNREGISTERED_AGENT),
                 )
-                .await;
+                .await,
+            );
         };
         // A temperature stop denies every call of every agent, before the escape hatch and the
         // floor. It can only deny.
         if self.state.afk().stopped.is_some() {
             let cx = CallCtx {
-                call: &call,
+                call,
                 digest: args_digest(call.args),
                 original_digest: None,
                 args: call.args.clone(),
@@ -1876,9 +1996,11 @@ impl PermissionPipeline {
                 tool_use_id,
                 mode,
                 started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
             };
-            return self
-                .deny(
+            return Pass::Decided(
+                self.deny(
                     &cx,
                     Tier::Afk,
                     Some("afk_stopped".to_string()),
@@ -1889,7 +2011,8 @@ impl PermissionPipeline {
                         fail_closed: None,
                     },
                 )
-                .await;
+                .await,
+            );
         }
         // The interactive-only escape hatch: every root call runs before the floor and the
         // guardian. Children are never loosened by it, and no call from an unregistered agent
@@ -1908,7 +2031,7 @@ impl PermissionPipeline {
                 _ => call.args.clone(),
             };
             let cx = CallCtx {
-                call: &call,
+                call,
                 digest: args_digest(&args),
                 original_digest: None,
                 args,
@@ -1916,31 +2039,37 @@ impl PermissionPipeline {
                 tool_use_id,
                 mode,
                 started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
             };
-            return self.allow(
+            return Pass::Decided(self.allow(
                 &cx,
                 Tier::GuardianOff,
                 Some("guardian disabled".to_string()),
-            );
+            ));
         }
-        let hook = self.run_hooks(&call, tool_use_id.as_deref(), mode).await;
+        let hook = self.run_hooks(call, tool_use_id.as_deref(), mode).await;
         let judged = hook
             .updated_input
             .clone()
             .unwrap_or_else(|| call.args.clone());
         let (args, arg_error) = self.normalize_external(call.tool, &judged);
         let cx = CallCtx {
-            call: &call,
+            call,
             digest: args_digest(&args),
-            original_digest: hook.updated_input.is_some().then(|| args_digest(call.args)),
+            original_digest: redo
+                .map(|redo| redo.original_digest.clone())
+                .or_else(|| hook.updated_input.is_some().then(|| args_digest(call.args))),
             args,
             arg_error,
             tool_use_id,
             mode,
             started,
+            redone: redo.is_some(),
+            again: Mutex::new(None),
         };
 
-        match self.evaluate(&call, &judged, &cx, &hook, mode, plan_block) {
+        let decision = match self.evaluate(call, &judged, &cx, &hook, mode, plan_block) {
             Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
             Verdict::Deny {
                 tier,
@@ -1956,6 +2085,13 @@ impl PermissionPipeline {
             }
             Verdict::Prompt(prompt) => self.prompt_or_ask(&cx, prompt).await,
             Verdict::Guardian => self.guardian_branch(&cx, &hook).await,
+        };
+        // A host that changed the input left the new input here; the decision above is only
+        // the placeholder deny that keeps a missed hand-off closed.
+        let again = lock(&cx.again, "host re-judgement").take();
+        match again {
+            Some(again) => Pass::Again(again),
+            None => Pass::Decided(decision),
         }
     }
 
@@ -2573,7 +2709,9 @@ impl PermissionPipeline {
         };
         let offers = Offers {
             session: proposed.is_some(),
-            always: proposed.is_some() && self.user_config.is_some(),
+            always: proposed.is_some()
+                && self.user_config.is_some()
+                && self.human != HumanChannel::Delegate,
         };
         let preview = {
             let (tool, args, scope) = (call.tool.to_string(), args.clone(), scope.clone());
@@ -2687,6 +2825,55 @@ impl PermissionPipeline {
                 self.approved(cx, Tier::Human, if saved { "always" } else { "session" });
                 GateDecision::Allow { args }
             }
+            Answer::AllowUpdated { grants, .. } if !offers.session && !grants.is_empty() => {
+                self.deny_answer(cx, "no session allow was offered for this prompt")
+                    .await
+            }
+            Answer::AllowUpdated {
+                args: None,
+                grants,
+                mode,
+            } => {
+                if let Err(why) = self.apply_updates(mode, grants.clone()) {
+                    return self.deny_answer(cx, &why).await;
+                }
+                let rule = (!grants.is_empty()).then(|| {
+                    format!(
+                        "{} [session]",
+                        grants
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                });
+                let label = if grants.is_empty() { "once" } else { "session" };
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, rule, None));
+                self.approved(cx, Tier::Human, label);
+                GateDecision::Allow { args }
+            }
+            Answer::AllowUpdated { args: Some(_), .. } if cx.redone => {
+                self.deny_answer(cx, "the host changed the input a second time")
+                    .await
+            }
+            Answer::AllowUpdated {
+                args: Some(new),
+                grants,
+                mode,
+            } => {
+                // Refused before the re-run, so a mode no host may enter never rides on it.
+                if mode == Some(PermissionMode::Afk) {
+                    return self.deny_answer(cx, "a host cannot turn AFK mode on").await;
+                }
+                *lock(&cx.again, "host re-judgement") = Some(Again {
+                    args: new,
+                    grants,
+                    mode,
+                });
+                GateDecision::Deny {
+                    message: self.denied(call.tool, "the host changed the input"),
+                }
+            }
             // A grant the prompt did not offer is only the one call.
             Answer::AllowSession | Answer::AllowAlways => {
                 self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
@@ -2719,6 +2906,23 @@ impl PermissionPipeline {
                     message: refusal.message,
                 }
             }
+        }
+    }
+
+    /// The host's answer could not be carried out: the call is denied and the record says why.
+    async fn deny_answer(&self, cx: &CallCtx<'_>, why: &str) -> GateDecision {
+        let refusal = self.refuse(cx.call.tool, why);
+        self.emit(self.record(
+            cx,
+            Tier::Human,
+            Decision::Deny,
+            None,
+            Some(refusal.message.clone()),
+        ));
+        self.state
+            .append(self.denial(cx, Tier::Human, None, &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
         }
     }
 
@@ -2776,6 +2980,7 @@ pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
         decision = record.decision.as_str(),
         permission_mode = record.permission_mode.as_str(),
         headless = record.headless,
+        human_channel = record.human_channel.as_str(),
         latency_ms = record.latency_ms,
         guardian.model = record.guardian_model.as_deref(),
         guardian.profile = record.guardian_profile.as_deref(),

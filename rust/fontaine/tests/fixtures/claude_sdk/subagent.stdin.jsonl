@@ -1,0 +1,2 @@
+{"request_id":"mh3ppelo95r","type":"control_request","request":{"subtype":"initialize","systemPrompt":[""],"agents":{}}}
+{"type":"user","session_id":"","message":{"role":"user","content":[{"type":"text","text":"use the helper agent to run: echo hi"}]},"parent_tool_use_id":null}

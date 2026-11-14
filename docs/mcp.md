@@ -90,6 +90,14 @@ A malformed `mcp-local.toml` or `.mcp.json`, or an entry in one that cannot be u
 (at startup, in `fontaine doctor` and in `fontaine mcp`) and is skipped, so `fontaine mcp` can still
 run to repair it.
 
+## Servers in the SDK host
+
+An application using [Agent SDK mode](agent-sdk.md) can hand Fontaine MCP servers it runs itself
+(`createSdkMcpServer`, `create_sdk_mcp_server`); Fontaine reaches them through the SDK's
+`mcp_message` requests, not a process or a URL. Their tools register like any other MCP tool, as
+`arbitrary`, so every call crosses the full gate and their results are untrusted output the scanner
+reads. A `readOnlyHint` never skips the guardian.
+
 ## Tool names
 
 A tool `create_issue` of the server `github` is registered as `mcp__github__create_issue`, the

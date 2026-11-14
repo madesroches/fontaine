@@ -45,8 +45,9 @@ use crate::goal::{JudgeFailure, judge};
 use crate::models::GuardianModel;
 use crate::permission_rules::{CallContext, Posture, matches, parse_rule};
 use crate::permissions::{
-    Approver, DenyAll, ElicitationEvent, ElicitationHook, HookDecision, HookError, HookPermission,
-    PermissionDeniedEvent, PermissionDeniedHook, PreToolUseEvent, PreToolUseHook,
+    Approver, DenyAll, ElicitationEvent, ElicitationHook, GIT_BASH_FAIL_CLOSED, HookDecision,
+    HookError, HookPermission, PermissionDeniedEvent, PermissionDeniedHook, PreToolUseEvent,
+    PreToolUseHook,
 };
 use crate::usage_pause::UsagePause;
 use fontaine_tools::mcp::ElicitReply;
@@ -366,10 +367,51 @@ struct PromptVerdict {
     impossible: Option<bool>,
 }
 
+/// How a callback hook reaches the program that registered it. The wire is the transport's
+/// business; the core only sees the hook's input and its JSON answer.
+pub trait HookTransport: Send + Sync {
+    /// Sends `input` for `callback_id` and returns the hook's JSON output. The caller owns the
+    /// timeout.
+    fn call<'a>(
+        &'a self,
+        callback_id: &'a str,
+        input: &'a Value,
+    ) -> BoxFuture<'a, Result<Value, HookError>>;
+}
+
+/// A hook a host program registered at runtime instead of the configuration declaring it.
+#[derive(Clone)]
+pub struct CallbackHook {
+    pub event: HookEvent,
+    /// In the permission-rule grammar for `pre_tool_use`; a tool name for the other tool events.
+    pub matcher: Option<String>,
+    pub callback_id: String,
+    pub timeout: Option<Duration>,
+    /// A failure or timeout denies the call instead of deciding nothing.
+    pub fails_closed: bool,
+    pub transport: Arc<dyn HookTransport>,
+}
+
+impl std::fmt::Debug for CallbackHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackHook")
+            .field("event", &self.event)
+            .field("matcher", &self.matcher)
+            .field("callback_id", &self.callback_id)
+            .field("timeout", &self.timeout)
+            .field("fails_closed", &self.fails_closed)
+            .finish_non_exhaustive()
+    }
+}
+
 enum Handler {
     Command(Arc<HookProcess>, String),
     Http(HttpSpec),
     Prompt(PromptSpec),
+    Callback {
+        id: String,
+        transport: Arc<dyn HookTransport>,
+    },
 }
 
 impl Handler {
@@ -414,6 +456,7 @@ impl Handler {
             }
             Handler::Http(spec) => spec.post(input, timeout).await,
             Handler::Prompt(spec) => spec.ask(input, timeout, label).await,
+            Handler::Callback { id, transport } => Self::object(transport.call(id, input).await?),
         }
     }
 
@@ -622,6 +665,25 @@ impl UserHook {
         }
     }
 
+    /// A hook a host program registered. It is never trusted to allow: like a repository's hook
+    /// it can deny, ask and rewrite the input, so it can only tighten.
+    pub fn callback(hook: &CallbackHook, deps: &HookDeps) -> UserHook {
+        UserHook {
+            id: format!("{}:callback:{}", hook.event.config_key(), hook.callback_id),
+            event: hook.event,
+            matcher: hook.matcher.clone(),
+            timeout: hook.timeout.unwrap_or_else(|| hook.event.default_timeout()),
+            user_trust: false,
+            fails_closed: hook.fails_closed,
+            handler: Arc::new(Handler::Callback {
+                id: hook.callback_id.clone(),
+                transport: hook.transport.clone(),
+            }),
+            approver: deps.approver.clone(),
+            pause: None,
+        }
+    }
+
     /// Waits while a usage pause is in force, for a hook that asks the model. Outside the hook's
     /// timeout, so a pause is never turned into one; the other handlers do not wait.
     async fn wait_for_model(&self) -> Result<(), HookError> {
@@ -663,6 +725,7 @@ impl UserHook {
                 Handler::Command(..) => "command",
                 Handler::Http(_) => "http",
                 Handler::Prompt(_) => "prompt",
+                Handler::Callback { .. } => "callback",
             },
             success = tracing::field::Empty,
         );
@@ -819,6 +882,15 @@ impl PreToolUseHook for UserHook {
 
     fn fails_closed(&self) -> bool {
         self.fails_closed
+    }
+
+    fn fail_closed_reason(&self, failure: &str) -> String {
+        match &*self.handler {
+            Handler::Callback { .. } => {
+                format!("blocked by the callback hook's `onFailure: block` setting: {failure}")
+            }
+            _ => format!("{GIT_BASH_FAIL_CLOSED} ({failure})"),
+        }
     }
 
     fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
@@ -1866,6 +1938,30 @@ pub struct BuiltHooks {
 }
 
 impl BuiltHooks {
+    /// Adds a hook a host registered to the list its event runs from.
+    pub fn add(&mut self, event: HookEvent, user: UserHook) {
+        match event {
+            HookEvent::PreToolUse => self.pre.push(Arc::new(user)),
+            HookEvent::PermissionDenied => self.denied.push(Arc::new(user)),
+            HookEvent::Elicitation => self.elicitation.push(Arc::new(user)),
+            HookEvent::PostToolUse => self.post.push(user),
+            HookEvent::PostToolUseFailure => self.post_failure.push(user),
+            HookEvent::TaskCompleted => self.task_completed.push(user),
+            HookEvent::TaskCreated => self.task_created.push(user),
+            HookEvent::TeammateIdle => self.teammate_idle.push(user),
+            HookEvent::SubagentStart => self.subagent_start.push(user),
+            HookEvent::SubagentStop => self.subagent_stop.push(user),
+            HookEvent::SessionStart
+            | HookEvent::SessionEnd
+            | HookEvent::UserPromptSubmit
+            | HookEvent::Stop
+            | HookEvent::StopFailure
+            | HookEvent::PreCompact
+            | HookEvent::PostCompact
+            | HookEvent::Notification => self.lifecycle.entry(event).or_default().push(user),
+        }
+    }
+
     /// The warnings the trust rules call for, one per event and one for the handler types.
     /// `teams` is whether the task boards are on, without which `teammate_idle` never fires.
     pub fn warnings(&self, teams: bool) -> Vec<String> {
@@ -1948,27 +2044,7 @@ pub fn build_layer(
                     });
                 }
             }
-            let user = UserHook::new(event, hook, deps);
-            match event {
-                HookEvent::PreToolUse => built.pre.push(Arc::new(user)),
-                HookEvent::PermissionDenied => built.denied.push(Arc::new(user)),
-                HookEvent::Elicitation => built.elicitation.push(Arc::new(user)),
-                HookEvent::PostToolUse => built.post.push(user),
-                HookEvent::PostToolUseFailure => built.post_failure.push(user),
-                HookEvent::TaskCompleted => built.task_completed.push(user),
-                HookEvent::TaskCreated => built.task_created.push(user),
-                HookEvent::TeammateIdle => built.teammate_idle.push(user),
-                HookEvent::SubagentStart => built.subagent_start.push(user),
-                HookEvent::SubagentStop => built.subagent_stop.push(user),
-                HookEvent::SessionStart
-                | HookEvent::SessionEnd
-                | HookEvent::UserPromptSubmit
-                | HookEvent::Stop
-                | HookEvent::StopFailure
-                | HookEvent::PreCompact
-                | HookEvent::PostCompact
-                | HookEvent::Notification => built.lifecycle.entry(event).or_default().push(user),
-            }
+            built.add(event, UserHook::new(event, hook, deps));
         }
         if ignored > 0 {
             built.ignored_project.push((event, ignored));
@@ -2157,5 +2233,126 @@ mod tests {
         };
         let user = UserHook::new(HookEvent::Stop, &prompt, &HookDeps::new(process));
         assert_eq!(user.id(), format!("stop:prompt:{}", "x".repeat(40)));
+    }
+
+    struct Transport(std::sync::Mutex<Option<Result<Value, ()>>>);
+
+    impl HookTransport for Transport {
+        fn call<'a>(
+            &'a self,
+            _callback_id: &'a str,
+            _input: &'a Value,
+        ) -> BoxFuture<'a, Result<Value, HookError>> {
+            Box::pin(async move {
+                let reply = self.0.lock().unwrap().take();
+                match reply {
+                    Some(Ok(value)) => Ok(value),
+                    Some(Err(())) => Err(HookError::failed("the host went away")),
+                    None => {
+                        futures::future::pending::<()>().await;
+                        unreachable!("pending never completes")
+                    }
+                }
+            })
+        }
+    }
+
+    fn callback(
+        fails_closed: bool,
+        reply: Option<Result<Value, ()>>,
+        timeout: Option<Duration>,
+    ) -> UserHook {
+        let process = Arc::new(HookProcess {
+            scrub_env: Vec::new(),
+            set_env: Vec::new(),
+            shell: CommandShell::Sh,
+            project_dir: std::env::temp_dir(),
+        });
+        UserHook::callback(
+            &CallbackHook {
+                event: HookEvent::PreToolUse,
+                matcher: Some("shell".into()),
+                callback_id: "hook_0".into(),
+                timeout,
+                fails_closed,
+                transport: Arc::new(Transport(std::sync::Mutex::new(reply))),
+            },
+            &HookDeps::new(process),
+        )
+    }
+
+    #[test]
+    fn a_callback_hook_fails_closed_only_as_its_registration_says_and_never_allows() {
+        let blocking = callback(true, None, None);
+        let continuing = callback(false, None, None);
+        assert!(PreToolUseHook::fails_closed(&blocking));
+        assert!(!PreToolUseHook::fails_closed(&continuing));
+        // Like a repository's hook: it can tighten, never approve.
+        assert!(!PreToolUseHook::can_allow(&blocking));
+        assert_eq!(
+            PreToolUseHook::id(&blocking),
+            "pre_tool_use:callback:hook_0"
+        );
+        assert_eq!(
+            PreToolUseHook::timeout(&blocking),
+            HookEvent::PreToolUse.default_timeout()
+        );
+        assert_eq!(
+            PreToolUseHook::timeout(&callback(false, None, Some(Duration::from_secs(5)))),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn the_fail_closed_reason_names_the_setting_for_a_callback_and_keeps_git_bash_for_a_command() {
+        let reason =
+            PreToolUseHook::fail_closed_reason(&callback(true, None, None), "it timed out");
+        assert!(
+            reason.contains("onFailure: block") && reason.contains("it timed out"),
+            "{reason}"
+        );
+        assert!(!reason.contains("Git Bash"));
+        let command = PreToolUseHook::fail_closed_reason(&command_hook("true", 1), "x");
+        assert!(command.contains(GIT_BASH_FAIL_CLOSED), "{command}");
+    }
+
+    #[tokio::test]
+    async fn a_callback_hook_answers_through_the_output_parser_and_a_transport_error_is_a_failure()
+    {
+        use crate::permissions::PreToolUseEvent;
+        let hook = callback(
+            false,
+            Some(Ok(json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "no",
+            }}))),
+            None,
+        );
+        let roots: Vec<String> = Vec::new();
+        let event = |args| PreToolUseEvent {
+            tool: "shell",
+            args,
+            agent: "root",
+            tool_use_id: Some("t1"),
+            session_id: "s",
+            cwd: std::path::Path::new("."),
+            permission_mode: "manual",
+            workspace_roots: &roots,
+        };
+        let args = json!({"command": "ls"});
+        let decision = PreToolUseHook::run(&hook, event(&args))
+            .await
+            .expect("a decision");
+        assert_eq!(
+            decision.permission,
+            Some(crate::permissions::HookPermission::Deny)
+        );
+        assert_eq!(decision.reason.as_deref(), Some("no"));
+        let failing = callback(true, Some(Err(())), None);
+        let error = PreToolUseHook::run(&failing, event(&args))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HookError::Failed { .. }), "{error:?}");
     }
 }

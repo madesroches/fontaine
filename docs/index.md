@@ -58,6 +58,9 @@ describe what the current build does; each page covers one topic.
   file, `/rewind` and Esc Esc, restoring code, the conversation or both, and what is not tracked.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,
   colour themes and `NO_COLOR`, notifications for pending prompts, and screen-reader mode.
+- [Claude Agent SDK compatibility](agent-sdk.md): using `fontaine` as the executable of an unmodified
+  TypeScript or Python Agent SDK application, what is supported, how `canUseTool` stays below the
+  permission rules, and the differences from Claude Code.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Claude subscription](claude-subscription.md): the account kind that runs your

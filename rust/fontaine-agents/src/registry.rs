@@ -119,6 +119,8 @@ pub enum TypeOrigin {
     ProjectFile(PathBuf),
     /// A file in an installed plugin: third-party, so it follows the project rules.
     PluginFile(PathBuf),
+    /// Defined by a host program for this session only: it can only narrow, like a repository's.
+    Session,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,12 +236,12 @@ impl AgentType {
         out
     }
 
-    /// Whether a per-call `model` may replace this type's model. A repository's or a plugin's
-    /// type stays on the session model: it must not end up on a model it steered.
+    /// Whether a per-call `model` may replace this type's model. A repository's, a plugin's or a
+    /// host program's type stays on the session model: it must not end up on a model it steered.
     pub fn accepts_model_override(&self) -> bool {
         match self.origin {
             TypeOrigin::Builtin | TypeOrigin::Config | TypeOrigin::UserFile(_) => true,
-            TypeOrigin::ProjectFile(_) | TypeOrigin::PluginFile(_) => false,
+            TypeOrigin::ProjectFile(_) | TypeOrigin::PluginFile(_) | TypeOrigin::Session => false,
         }
     }
 }

@@ -257,6 +257,9 @@ fn server_description(server: &McpServer) -> String {
     line
 }
 
+/// Reads the state of each MCP server, for a task that does not own the runtime.
+pub type McpStatesReader = Arc<dyn Fn() -> Vec<(String, McpServerState)> + Send + Sync>;
+
 /// The MCP servers a session at `root` would start, and which of them need the user's say-so.
 /// `project_executables` is whether the repository's own servers may load at all, and `confirm`
 /// whether the repository's servers wait for the user's approval.
@@ -916,12 +919,34 @@ impl AgentRuntime {
                 }),
             }
         }
+        if let Some(host) = &self.setup.host_mcp {
+            attempts.extend(host.servers.iter().map(|name| {
+                let spec = ServerSpec {
+                    name: name.clone(),
+                    transport: Transport::Sdk {
+                        factory: host.factory.clone(),
+                    },
+                };
+                (name.clone(), spec)
+            }));
+        }
         (attempts, failed)
     }
 
     /// The state of each MCP server the session attempted, by name.
     pub fn mcp_states(&self) -> Vec<(String, McpServerState)> {
         self.mcp.states()
+    }
+
+    /// [`mcp_states`](Self::mcp_states) as a handle another task can read while a turn runs.
+    pub fn mcp_states_reader(&self) -> McpStatesReader {
+        let slots = self.mcp.slots_handle();
+        Arc::new(move || {
+            fontaine_tools::lock::read(&slots, "MCP server slots")
+                .iter()
+                .map(|(name, slot)| (name.clone(), slot.state()))
+                .collect()
+        })
     }
 
     /// The auth status of each configured server, for the `/mcp` listing's auth column: `n/a`

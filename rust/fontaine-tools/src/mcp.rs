@@ -28,6 +28,6 @@ pub use output::OutputLimits;
 pub use register::{GuardedSink, mcp_tool_name};
 pub use rig_rmcp::McpConnection as McpConnectionHandle;
 pub use servers::{
-    CONNECT_TIMEOUT, CallScope, Connected, McpError, McpErrorKind, McpOptions, ServerSpec,
-    Transport, connect, connect_transport,
+    CONNECT_TIMEOUT, CallScope, Connected, McpError, McpErrorKind, McpOptions, SdkTransportFactory,
+    ServerSpec, Transport, connect, connect_transport,
 };

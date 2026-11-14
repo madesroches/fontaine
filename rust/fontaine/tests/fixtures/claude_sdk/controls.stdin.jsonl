@@ -1,0 +1,10 @@
+{"request_id":"zfc7jn53u5","type":"control_request","request":{"subtype":"initialize","systemPrompt":[""]}}
+{"type":"user","message":{"role":"user","content":"say hi"},"parent_tool_use_id":null}
+{"request_id":"yvoqcb7mee","type":"control_request","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}
+{"request_id":"ejf168123r","type":"control_request","request":{"subtype":"set_permission_mode","mode":"plan"}}
+{"request_id":"2yjtgezk8pd","type":"control_request","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}
+{"request_id":"0n7o0v5fhbk","type":"control_request","request":{"subtype":"set_permission_mode","mode":"afk"}}
+{"request_id":"7kvuif8nu9d","type":"control_request","request":{"subtype":"set_model","model":"sonnet"}}
+{"request_id":"w0tqolnhpsj","type":"control_request","request":{"subtype":"set_model","model":"no-such-model-anywhere"}}
+{"request_id":"k8h5i6949ue","type":"control_request","request":{"subtype":"mcp_status"}}
+{"request_id":"y9vrq4x9rg","type":"control_request","request":{"subtype":"get_context_usage"}}

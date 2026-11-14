@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use fontaine_agents::registry::AgentTypes;
+use fontaine_agents::registry::{AgentType, AgentTypes};
 use fontaine_agents::spawn;
 use fontaine_guardian::Profile;
 use fontaine_tools::builtins::Seen;
@@ -47,7 +47,7 @@ use crate::model_roles::{RoleChains, Roles};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
-use crate::permissions::{Approver, PermissionPipeline};
+use crate::permissions::{Approver, HumanChannel, PermissionPipeline};
 use crate::project_env::{self, ProjectEnvironment};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
@@ -59,7 +59,7 @@ use crate::steering::Steering;
 use crate::tools;
 use crate::trust;
 use crate::turn_recovery::{self, Fallback, Unsettled};
-use crate::user_hooks;
+use crate::user_hooks::{self, CallbackHook};
 use crate::workspace::{self, RootSource};
 use fontaine_tools::live::Live;
 
@@ -85,8 +85,8 @@ pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use goal::{PreparedSuggestion, SUGGESTION_BACKOFF, SuggestionInputs, should_suggest};
 pub use mcp::{
-    HookElicitor, McpOutcome, McpResourceSummary, McpServerPlan, headers_helper_refusal, mcp_plan,
-    probe_server, resolved_server, server_digest, server_spec,
+    HookElicitor, McpOutcome, McpResourceSummary, McpServerPlan, McpStatesReader,
+    headers_helper_refusal, mcp_plan, probe_server, resolved_server, server_digest, server_spec,
 };
 use mcp_supervisor::McpServers;
 pub use mcp_supervisor::{
@@ -99,7 +99,10 @@ use reload::PluginState;
 pub use rewind::{RewindError, RewindOutcome};
 use setup::ChildDeps;
 use setup::extension_runtimes as ext_runtimes;
-pub use setup::{build_agent_types, build_composition, build_guardian, build_guardian_telling};
+pub use setup::{
+    build_agent_types, build_agent_types_with, build_composition, build_guardian,
+    build_guardian_telling,
+};
 
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 
@@ -141,8 +144,21 @@ pub struct AgentSetup {
     pub append_system_prompt: Option<String>,
     /// A schema the final answer must follow.
     pub json_schema: Option<Schema>,
-    /// Nothing can be asked: every would-prompt outcome is a denial.
+    /// Nobody sits at the terminal: teams, the ledger's session record and bug-report drafts
+    /// follow it. Who answers a prompt is `human_channel`.
     pub headless: bool,
+    /// Who answers a prompt: a person, nobody (every would-prompt outcome is a denial) or a host
+    /// program.
+    pub human_channel: HumanChannel,
+    /// Hooks a host program registered, run beside the configured ones. They can only tighten.
+    pub callback_hooks: Vec<CallbackHook>,
+    /// Agent types a host program defined for this session; they survive a plugin reload.
+    pub session_agents: Vec<AgentType>,
+    /// MCP servers that live in the host program.
+    pub host_mcp: Option<HostMcp>,
+    /// The builtin tools the root agent is built with; `None` is all of them. A subagent can
+    /// never have a tool its parent lacks, so this bounds every agent.
+    pub root_tools: Option<Vec<String>>,
     /// Enter AFK mode before the agent is built, for a session asked to start in it.
     pub afk: bool,
     /// Whether this surface runs scheduled prompts when the conversation is idle, so the
@@ -183,6 +199,13 @@ pub struct AgentSetup {
     /// Whether the run has an explicit `--max-budget-usd`: it must stay measurable, so a model
     /// list skips the unpriced entries it falls through to.
     pub explicit_budget_cap: bool,
+}
+
+/// The MCP servers of a host program driving the session, reached through `factory`.
+#[derive(Clone)]
+pub struct HostMcp {
+    pub servers: Vec<String>,
+    pub factory: Arc<dyn fontaine_tools::mcp::SdkTransportFactory>,
 }
 
 pub struct AgentRuntime {
@@ -292,6 +315,10 @@ pub(crate) struct Setup {
     scheduling: bool,
     /// Nothing can be asked, so nothing is queued for the user either.
     headless: bool,
+    /// The agent types a host program defined, which every rebuild of the types includes.
+    session_agents: Vec<AgentType>,
+    host_mcp: Option<HostMcp>,
+    root_tools: Option<Vec<String>>,
     env: EnvLookup,
     /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild
     /// reuses it. Dropping the runtime stops it.

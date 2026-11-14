@@ -2967,7 +2967,7 @@ impl Config {
         )
     }
 
-    pub(crate) fn defaults(workspace: PathBuf) -> Self {
+    pub fn defaults(workspace: PathBuf) -> Self {
         Config {
             workspace,
             scopes: Vec::new(),

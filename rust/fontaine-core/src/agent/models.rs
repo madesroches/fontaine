@@ -215,6 +215,25 @@ impl AgentRuntime {
         })
     }
 
+    /// Switches the live session's model like [`switch_main_model`](Self::switch_main_model), for
+    /// this session only: a host program's choice is never written to the user's settings.
+    /// `None` returns to the configured main model.
+    pub async fn switch_main_model_for_session(
+        &mut self,
+        text: Option<&str>,
+    ) -> Result<Switched, RuntimeError> {
+        let text = text.map_or("$main", str::trim);
+        let guardian_followed = self.install_main_chain(text).await?;
+        self.turn_generation_options();
+        Ok(Switched {
+            reference: self.models.main.reference.to_string(),
+            guardian_followed,
+            persist_error: None,
+            facts_notice: None,
+            session_only: Some("a host program chose it for this session".to_string()),
+        })
+    }
+
     /// Whether a typed `/model` choice may be saved as `[model] model`: `None` when it may, else
     /// why it stays with this session. A role or a list in the settings is the user's own
     /// document, and a second `main` key beside it would stop the next start.

@@ -219,9 +219,10 @@ reconnected as in the terminal UI.
 
 Nothing prompts in a headless run. Every outcome that would ask a human, such as an `ask` rule, a
 critical-path or protected-path call, or a call the mode does not pre-approve, becomes a denial
-that is returned to the model as the tool result; the run continues and exits 0. External approval
-delegates are not supported: there is no second approval path around the permission rules. See
-[Permissions](permissions.md).
+that is returned to the model as the tool result; the run continues and exits 0. A
+plain `-p` run has no external approval delegate. A host that wants to answer those prompts uses
+[Agent SDK mode](agent-sdk.md), where `canUseTool` is a human channel that sits after the same
+permission rules and never loosens them. See [Permissions](permissions.md).
 
 With `--afk` the denial also tells the model that the user is not available and to complete the
 allowed work or stop and report; see [AFK mode](afk.md).
@@ -326,6 +327,10 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}' \
 ```
 
 ## Using it as a driver
+
+A TypeScript or Python Agent SDK application drives `fontaine` through a different surface,
+described in [Claude Agent SDK compatibility](agent-sdk.md); it is selected by the SDK's own
+command line and does not change this page's contract.
 
 The eval runner and the integration tests run `fontaine -p` against a scripted model endpoint, so
 the output contract is what they assert on. To script a run, point an `openai-compatible` account

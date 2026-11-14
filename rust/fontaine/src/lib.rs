@@ -1,4 +1,5 @@
 mod auto_mode;
+mod claude_compat;
 pub mod cli;
 mod doctor_cmd;
 pub mod headless;
@@ -32,7 +33,7 @@ use fontaine_core::extensions::{self, Extensions};
 use fontaine_core::memory;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
-use fontaine_core::permissions::DenyAll;
+use fontaine_core::permissions::{DenyAll, HumanChannel};
 use fontaine_core::plugins;
 use fontaine_core::scanner_stage::{self, ScannerStart};
 use fontaine_core::scratch::{self, Scratch};
@@ -317,6 +318,25 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             }
         };
     }
+    // Claude Agent SDK mode: the shape every SDK launches its executable with. It runs the same
+    // session on Fontaine's own flags, so the command line is translated and checked here, before
+    // anything is read or any model is contacted.
+    let mut sdk = None;
+    let args = if claude_compat::cli::is_sdk_invocation(&args) {
+        match claude_compat::cli::parse(&args) {
+            Ok(options) => {
+                let translated = options.fontaine_args.clone();
+                sdk = Some(options);
+                translated
+            }
+            Err(refusal) => {
+                eprintln!("fontaine: {refusal}");
+                return ExitCode::from(EXIT_CONFIG);
+            }
+        }
+    } else {
+        args
+    };
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -366,6 +386,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
         }
     };
 
+    if let Some(sdk) = &sdk {
+        claude_compat::apply_to_config(&mut config, sdk);
+    }
     if let Some(cli::Command::AutoMode(args)) = &cli.command {
         return auto_mode::run(&cli, args, &config, &dirs, &host);
     }
@@ -455,6 +478,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(code);
         }
     };
+    if let Some(sdk) = &sdk {
+        // Plugins load inside prepare_session, after the first pass of this filter.
+        claude_compat::apply_strict_mcp(&mut config, sdk);
+    }
     // Headless has no conversation to show them in. Printing now, before models are resolved,
     // keeps them on stderr when a later startup check exits.
     if headless.is_some() {
@@ -501,7 +528,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             let outcome = runtime.block_on(async {
                 match headless.take() {
                     Some(options) => Outcome::Done(
-                        run_headless(&cli, options, prep, &config, &dirs, &host).await,
+                        run_headless(&cli, options, prep, &config, &dirs, &host, sdk.take()).await,
                     ),
                     None => {
                         run_interactive(
@@ -1144,6 +1171,15 @@ fn agent_setup(
         append_system_prompt: cli.append_system_prompt.clone(),
         json_schema,
         headless,
+        human_channel: if headless {
+            HumanChannel::Absent
+        } else {
+            HumanChannel::Present
+        },
+        callback_hooks: Vec::new(),
+        session_agents: Vec::new(),
+        host_mcp: None,
+        root_tools: None,
         afk,
         approver: Arc::new(DenyAll),
         home: prep.home,
@@ -1174,17 +1210,45 @@ async fn run_headless(
     config: &Config,
     dirs: &Dirs,
     host: &Host,
+    sdk: Option<claude_compat::cli::Options>,
 ) -> u8 {
-    let models = match resolve_models(cli, config, dirs, host, &prep.session.id).await {
-        Ok(models) => models,
+    if let Some(sdk) = sdk {
+        return claude_compat::run(sdk, cli, options, prep, config, dirs, host).await;
+    }
+    let started = match start_headless(cli, &options, prep, config, dirs, host, |_| {}).await {
+        Ok(started) => started,
         Err(code) => return code,
     };
+    let mut runtime = started.runtime;
+    // Servers that fail to start are reported on stderr and skipped.
+    runtime.connect_mcp(&[]).await;
+    headless::run(options, runtime, &dirs.data, started.guardian_login).await
+}
+
+/// A headless session built and ready to run.
+struct Started {
+    runtime: AgentRuntime,
+    guardian_login: Option<(String, fontaine_core::providers::ExternalLogin)>,
+}
+
+/// Resolves the models, starts the scanner and builds the runtime of a headless session. `tweak`
+/// adjusts the setup before the runtime is built.
+async fn start_headless(
+    cli: &Cli,
+    options: &headless::Options,
+    prep: SessionPrep,
+    config: &Config,
+    dirs: &Dirs,
+    host: &Host,
+    tweak: impl FnOnce(&mut AgentSetup),
+) -> Result<Started, u8> {
+    let models = resolve_models(cli, config, dirs, host, &prep.session.id).await?;
     if options.max_budget_usd.is_some() && !models.main.priced() {
         eprintln!(
             "fontaine: --max-budget-usd needs a known price, and rig's catalog has none for `{}`",
             models.main.reference
         );
-        return EXIT_CONFIG;
+        return Err(EXIT_CONFIG);
     }
     let guardian_login = match &models.guardian {
         Some(models::GuardianModel::Unavailable {
@@ -1205,7 +1269,7 @@ async fn run_headless(
         host,
     };
     let scanner = start_scanner(&launch, &prep, &models).await;
-    let setup = agent_setup(
+    let mut setup = agent_setup(
         &launch,
         prep,
         models,
@@ -1213,16 +1277,18 @@ async fn run_headless(
         true,
         options.json_schema.clone(),
     );
-    let mut runtime = match AgentRuntime::new(setup) {
+    tweak(&mut setup);
+    let runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
         Err(e) => {
             eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
-            return 1;
+            return Err(1);
         }
     };
-    // Servers that fail to start are reported on stderr and skipped.
-    runtime.connect_mcp(&[]).await;
-    headless::run(options, runtime, &dirs.data, guardian_login).await
+    Ok(Started {
+        runtime,
+        guardian_login,
+    })
 }
 
 /// Whether adding an account, signing in or picking a model could fix the failure.

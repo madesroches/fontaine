@@ -2012,6 +2012,7 @@ impl App {
             Answer::AllowOnce => "allowed once".to_string(),
             Answer::AllowSession => "allowed for this session".to_string(),
             Answer::AllowAlways => "always allowed".to_string(),
+            Answer::AllowUpdated { .. } => "allowed with changes".to_string(),
             Answer::Deny { feedback: None } => "denied".to_string(),
             Answer::Deny {
                 feedback: Some(why),
@@ -2317,6 +2318,7 @@ mod tests {
             guardian_dropped_priced: None,
             permission_mode: "manual".into(),
             headless: false,
+            human_channel: "present".into(),
             explanation: None,
             afk: false,
             converted: None,

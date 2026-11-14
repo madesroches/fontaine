@@ -96,6 +96,13 @@ its place; a type of your own that lists `shell` does too, and one that disallow
 command tool. `reviewer` gets none there: its `shell` entries carry specifiers, which do not cover
 `powershell`, so it behaves like `explore`.
 
+An application using [Agent SDK mode](agent-sdk.md) can add types for the session through
+`initialize`'s `agents`. They run as a tightened scope: `tools` and `disallowedTools` cannot exceed
+the parent's, `model` is absent or `inherit` (the session model) or a configured role, `effort` is
+refused, `permissionMode` is `default` or `dontAsk`, and a per-call model override is refused.
+Any other field set to a value, `mcpServers`, `skills`, `maxTurns` and `background` among them, is
+an error that names the agent and the field. The types survive a plugin reload.
+
 `reviewer` has no edit tools and its prompt tells it to report findings, not fix them, but it is
 not read-only. Each command is matched like a `shell` allow rule, so a chain, pipe, redirection or
 substitution is refused, as is plain `cargo fmt`. Still, `cargo` writes `target/` and runs build
