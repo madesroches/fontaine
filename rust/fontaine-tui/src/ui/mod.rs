@@ -956,7 +956,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Asks for a prompt suggestion on a task, so the idle loop is never held up by the model.
     /// The skip checks and the transcript read are a short store read, awaited here.
     async fn start_suggestion(&mut self, runtime: &AgentRuntime) {
-        if !self.app.input.is_empty() || self.app.viewing.is_some() || self.app.wakeup_pending {
+        if !self.app.input.is_empty()
+            || self.app.viewing.is_some()
+            || self.app.wakeup_pending
+            || self.app.linear
+        {
             return;
         }
         let inputs = SuggestionInputs {

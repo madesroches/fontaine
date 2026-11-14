@@ -656,7 +656,8 @@ impl App {
     /// Whether the input is in a state where ghost text may be shown and accepted: the main
     /// conversation's box, nothing open over or beside it, and not vim Normal mode.
     fn ghost_allowed(&self) -> bool {
-        self.viewing.is_none()
+        !self.linear
+            && self.viewing.is_none()
             && !self.covered()
             && self.search.is_none()
             && self.completion.is_none()
@@ -4748,6 +4749,15 @@ mod tests {
             running.set_running(true);
             running.set_suggestion("late".into());
             assert!(running.suggestion.is_none());
+        }
+
+        #[test]
+        fn the_suggestion_is_neither_shown_nor_accepted_in_linear_mode() {
+            let mut app = suggesting("run the tests");
+            app.linear = true;
+            assert_eq!(app.ghost_text(), None);
+            press(&mut app, KeyCode::Tab);
+            assert!(app.input.is_empty());
         }
 
         #[test]

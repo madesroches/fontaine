@@ -860,11 +860,17 @@ pub fn last_user_text(conversation: &Conversation) -> Option<String> {
         .filter(|entry| entry.author != Some(&summarizer))
         .find_map(|entry| match entry.message {
             Message::User { content } => content.iter().find_map(|item| match item {
-                UserContent::Text(text) => Some(text.text.clone()),
+                UserContent::Text(text) if !is_harness_note(&text.text) => Some(text.text.clone()),
                 _ => None,
             }),
             _ => None,
         })
+}
+
+/// The retry and hook-continuation notes ride in user-role messages but are not the human's words.
+fn is_harness_note(text: &str) -> bool {
+    text == crate::turn::RETRY_NOTE
+        || (text.starts_with("[Hook context from ") && text.contains(", not the user's words:"))
 }
 
 /// rig's structured-output errors carry no usage, so every billed response is tallied as it

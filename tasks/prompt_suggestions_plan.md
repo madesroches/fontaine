@@ -67,7 +67,7 @@ Core (`fontaine-core`):
 - Skip conditions (pure function `should_suggest(&Inputs)`, unit-tested): feature off; permission mode is
   plan; last turn did not finish normally (error, interrupt); fewer than 1 completed turn; the previous
   suggestion was shown and left unused three times in a row (back-off, reset when one is accepted); the
-  usage gate is paused; headless runs and child agents never ask. The TUI owns the streak, turn count,
+  usage gate is paused; AFK mode; the last turn was unattended (goal or wakeup); headless runs and child agents never ask. The back-off expires after 5 human turns (`SUGGESTION_BACKOFF_TURNS`). Screen-reader (linear) mode neither draws, accepts nor requests suggestions. The TUI owns the streak, turn count,
   last outcome and enabled flag and passes them in `Inputs`. `usage_gate_idle()` waits, so the prepare step
   calls the existing non-blocking `state.usage_pause().is_paused()` and skips when paused. `billed` is passed to
   `SideQuestion::new` as `/btw` does.
@@ -175,7 +175,7 @@ of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The l
 ## Testing Strategy
 
 Unit tests (no live API; deterministic completion model from `rig_core::test_utils`):
-- `should_suggest` over every skip condition, including back-off after three unused suggestions.
+- `should_suggest` over every skip condition, including AFK, unattended turns, and back-off after three unused suggestions (and its expiry after 5 human turns); the linear-mode ghost is hidden and not accepted.
 - Output cleaning: quotes, prefixes, multiline, empty, over-long, `/`- and `!`-leading, equal to last message.
 - Transcript rendering excludes tool results for this purpose; includes them for `/btw` unchanged.
 - Transcript argument stripping: tool-call arguments are reduced to names for this purpose.

@@ -675,6 +675,19 @@ fn the_last_user_text_skips_tool_results_and_summaries() {
 }
 
 #[test]
+fn the_last_user_text_skips_harness_notes() {
+    let mut conversation = Conversation::new();
+    conversation.push(text_message("fix it"));
+    conversation.push(Message::assistant("done"));
+    conversation.push(text_message(fontaine_core::turn::RETRY_NOTE));
+    conversation.push(text_message(&fontaine_core::user_hooks::hook_note(
+        fontaine_core::config::HookEvent::Stop,
+        "run the tests",
+    )));
+    assert_eq!(last_user_text(&conversation).as_deref(), Some("fix it"));
+}
+
+#[test]
 fn a_compaction_summary_is_labelled_as_one() {
     let mut conversation = Conversation::new();
     conversation.push(Entry::new(text_message("they fixed the parser")).by(summary_author()));
