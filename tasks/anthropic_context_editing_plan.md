@@ -85,6 +85,7 @@ in the body; `guardian_completion` and every side call never do.
 - Default off: net cache cost is unmeasured and the #169 fallback is not built.
 - Raw JSON edit server-side rather than a client prune: client history stays intact.
 - Per-account rather than `[model]`: it exists only on the Anthropic wire.
+- AFK: client-side compaction (`session.rs` `over_threshold`) keeps estimating the full stored history, unchanged; with clearing on it may fire earlier than the server-side input size warrants, which is the conservative direction. The docs note this next to `trigger_tokens`; aligning the two is a follow-up once measured.
 
 ## Documentation
 - `docs/configuration.md` `[accounts.<name>]` table: the `context_editing` keys, defaults, the cache
