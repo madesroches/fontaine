@@ -87,13 +87,8 @@ once on the total and applies to the per-source and per-model tables alike, as `
 
 ### Pricing
 
-`Usage.cost` is already split-priced by rig for the `anthropic` account only, so the ledger cost
-needs no change. The telemetry path's `cost_usd` rebuilds a `Usage` and so loses it; it gets the split
-and prices writes as rig does (5m at `pricing.cache_write`, 1h at `2 × pricing.input`), only when
-the split sums to the writes and `cache_write` is listed or the 5m count is 0; otherwise it falls back to
-`Pricing::cost` as today. The 2× multiple lives in one small helper
-(`cache_write_cost(pricing, writes)`) beside `cost_usd` in `span_bridge.rs`, its only consumer, with
-a comment pointing at rig's matching rule, since rig's own is private.
+The ledger and `/cost` cost is rig's split-priced `Usage.cost` for the `anthropic` account only, so
+it needs no change. The telemetry `cost` metric is unchanged.
 
 ### Telemetry
 
@@ -116,7 +111,7 @@ the telemetry target are exported as OTLP log records (`is_exported_event`, `spa
 2. `gate.rs`: `record_usage_split`; `record_usage` delegates with `None`.
 3. `turn.rs`: read the split from `call.raw` and record it.
 4. `reports.rs`: the `/cost` columns.
-5. Telemetry: the event, the bridge metrics, and the split-aware `cost_usd`.
+5. Telemetry: the event and the bridge metrics.
 6. Docs and `CHANGELOG.md`.
 
 ## Files to Modify
@@ -124,7 +119,7 @@ the telemetry target are exported as OTLP log records (`is_exported_event`, `spa
 - `rust/fontaine-core/src/usage_ledger.rs`, `rust/fontaine-core/src/gate.rs`,
   `rust/fontaine-core/src/turn.rs`
 - `rust/fontaine-tui/src/reports.rs`
-- `rust/fontaine/src/telemetry/span_bridge.rs` (the event dispatch, metrics, `cache_write_cost`)
+- `rust/fontaine/src/telemetry/span_bridge.rs` (the event dispatch, metrics)
 - `rust/fontaine/src/headless.rs` (the `cache_tokens_reach_the_result_usage` test calls
   `UsageLedger::record` directly; pass `None`)
 - `rust/fontaine-core/tests/billing.rs`, `rust/fontaine-core/tests/audit_telemetry.rs`
@@ -150,6 +145,7 @@ the telemetry target are exported as OTLP log records (`is_exported_event`, `spa
   split; none has a reply document at the recording point, and they stay as they are.
 - 2026-11-14: gateway accounts (`Quirks::gateway()`, `cache_ttl_pricing` false) that return a split
   keep single-rate ledger cost; only the `anthropic` account is split-priced.
+- 2026-11-14: AFK: telemetry `cost_usd` stays unsplit; rig's span cannot carry the split, so only the ledger and `/cost` (rig's `Usage.cost`, anthropic account) are split-priced.
 
 ## Documentation
 
@@ -161,8 +157,7 @@ subset of `cacheCreation`, so the types must not all be summed. A line in `CHANG
 ## Testing Strategy
 
 - Unit: `CacheWrites::from_reply` (full split, absent, `null`, partial, non-numeric);
-  `Bucket::add`/`merge` sum the split and leave a bucket with only unsplit calls at zero;
-  `cache_write_cost` for 5m only, 1h only, mixed, and missing rate.
+  `Bucket::add`/`merge` sum the split and leave a bucket with only unsplit calls at zero.
 - `/cost` in `reports.rs` tests: columns absent without a split, present with one, and a mixed
   session (a split and an unsplit call) renders both.
 - Integration, extending the existing `fontaine-core/tests/billing.rs`: keep its `MockStreamEvent`
