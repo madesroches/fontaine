@@ -59,7 +59,7 @@ existence requirement, so the existing "cannot run" error still names a missing 
 - Scope is cache-bench only. `baseline capture --claude` (`baseline.rs`) has the same relative-path
   weakness; it is left for a separate issue so this change stays small. The helper stays private to
   `cache_bench.rs`.
-- AFK: the live `message.id` dedupe check (Manual Verification 2) was not run because the real `claude` CLI call was denied by the guardian; the parser is unchanged and the dedupe stays confirmed only by the synthetic unit test. Still to do by hand; the PR should not claim to close that half of #498.
+- 2026-11-14: the live `message.id` check was run with the real CLI: one message spans several events (text plus parallel tool_use) sharing an id and identical usage, so the dedupe is correct and the parser is unchanged; a trimmed real-shape test was added.
 
 ## Documentation
 `evals/README.md` flag table (above). `docs/claude-subscription.md` needs no change unless the
