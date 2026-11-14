@@ -289,6 +289,9 @@ All notable changes are recorded here. The format follows
   instead of the path cargo re-links on every nested build, so a sibling test process's build can
   no longer remove it between the build and the spawn (the flaky macOS ENOENT on
   `fontaine_claude_cli_double`) (#607).
+- A headless `--input-format stream-json --output-format stream-json --afk` run now prints the
+  assessed evasion report: once, after the last `result`, as a new `afk_report` event. Before, only
+  the ledger held it (#428).
 
 ### Changed
 

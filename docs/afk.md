@@ -223,3 +223,9 @@ A blocked run exits 1 with `afk.outcome = "blocked"`; a stopped one exits 1 with
 carries `afk` and `converted`. The schema is in
 [headless-v1.schema.json](schemas/headless-v1.schema.json); the object is optional, so version 1
 only gained a property.
+
+The assessment is paid for once per run. With `--input-format stream-json` the run ends when the
+input does, so a `result` before that shows `assessment.status = "pending"` when the stretch has
+denials. A stream that ends at EOF then carries the assessed `afk` object in one `afk_report`
+event after the last `result`, unless an earlier `result` (a failed turn, a stopped or blocked run)
+already carried it.
