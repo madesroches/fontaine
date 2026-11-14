@@ -268,6 +268,11 @@ impl ModelHandle {
         }
     }
 
+    /// The provider options the main agent and subagents attach on this model's account.
+    pub fn provider_options(&self) -> Option<rig_core::completion::ProviderOptions> {
+        self.client.as_ref()?.0.provider_options()
+    }
+
     /// The provider's `/models` entry for this handle's model; `None` when the handle holds no
     /// client or the endpoint does not say; `Err` is why the lookup failed.
     pub fn served_model(

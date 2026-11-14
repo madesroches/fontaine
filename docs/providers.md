@@ -50,6 +50,24 @@ api_key_env = "ANTHROPIC_API_KEY"
 model = "work/claude-sonnet-5"
 ```
 
+`context_editing` is off by default. When enabled it asks Anthropic to clear old tool results
+server-side once the input passes `trigger_tokens`, keeping the newest `keep` tool uses and never
+clearing the `exclude_tools`. The host must accept the `context-management-2025-06-27` beta; one
+that rejects it fails the request. Each clearing rewrites the cached prefix from the cleared point
+on, so `clear_at_least_tokens` skips a clearing that would free little.
+
+```toml
+[accounts.work]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[accounts.work.context_editing]
+enabled = true
+trigger_tokens = 100000
+keep = 3
+exclude_tools = ["board_show", "board_update", "memory", "todo_write"]
+```
+
 ## `openai`
 
 Responses API. Key from `api_key_env` or `/login`.

@@ -17,6 +17,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Anthropic context editing (#629): an `anthropic` account can set `[accounts.<name>.context_editing]`
+  (user scope, off by default) to have the server clear old tool results before the model reads the
+  conversation, with `trigger_tokens`, `keep`, `clear_at_least_tokens` and `exclude_tools`. The main
+  agent and subagents send it; the guardian and side calls never do. The stored history is untouched.
 - MCP large-result warning (#539): a tool or resource result over 10,000 tokens that is still under
   the output limit now raises a warning naming the tool and its size, as Claude Code does.
 - Cache-write lifetime split (#631): when an Anthropic reply splits its cache writes into 5-minute

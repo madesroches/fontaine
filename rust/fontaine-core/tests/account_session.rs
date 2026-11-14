@@ -546,3 +546,240 @@ async fn the_guardian_quota_slot_follows_install_guardian() {
     });
     assert!(built.runtime.guardian_quota().is_none());
 }
+
+const CONTEXT_BETA: &str = "context-management-2025-06-27";
+const LISTED: &str = "claude-sonnet-4-6";
+
+fn messages_sse() -> String {
+    let events = [
+        json!({"type": "message_start", "message": {
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "m1",
+            "content": [], "stop_reason": null, "stop_sequence": null,
+            "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0,
+               "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0,
+               "delta": {"type": "text_delta", "text": "hello"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta",
+               "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+               "usage": {"output_tokens": 1}}),
+        json!({"type": "message_stop"}),
+    ];
+    events
+        .iter()
+        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+        .collect()
+}
+
+async fn streaming_messages_gateway() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(messages_sse(), "text/event-stream"))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn message_requests(server: &MockServer) -> Vec<wiremock::Request> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/v1/messages")
+        .collect()
+}
+
+fn beta_of(request: &wiremock::Request) -> Option<String> {
+    request
+        .headers
+        .get("anthropic-beta")
+        .map(|v| v.to_str().unwrap().to_string())
+}
+
+/// One `anthropic` account on a model the catalog lists, so the request has its `max_tokens`.
+async fn editing_session(w: &World, server: &MockServer, account_extra: &str) -> AgentRuntime {
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"{LISTED}\"]\n\
+         {account_extra}\n[model]\nmodel = \"main/{LISTED}\"\n",
+        server.uri()
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    session(w).await
+}
+
+async fn root_turn(runtime: &AgentRuntime) {
+    use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
+    runtime.begin_turn("go", false);
+    let outcome = run_turn(
+        TurnParams {
+            served: Default::default(),
+            agent: &runtime.agent,
+            state: &runtime.state,
+            prompt: "go".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
+            max_turns: Some(3),
+            priced: true,
+            model: LISTED.to_string(),
+            provider: "anthropic".to_string(),
+            native_search: false,
+            generation_options: runtime.turn_generation_options(),
+            max_tokens: runtime.turn_max_tokens(),
+        },
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn context_editing_rides_the_main_agents_request_with_the_beta_header() {
+    let server = streaming_messages_gateway().await;
+    let w = World::new();
+    let runtime = editing_session(
+        &w,
+        &server,
+        "[accounts.main.context_editing]\nenabled = true\nkeep = 5\n",
+    )
+    .await;
+    root_turn(&runtime).await;
+    let requests = message_requests(&server).await;
+    let request = requests.last().expect("a request");
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let edit = &body["context_management"]["edits"][0];
+    assert_eq!(edit["type"], "clear_tool_uses_20250919", "{body}");
+    assert_eq!(
+        edit["trigger"],
+        json!({"type": "input_tokens", "value": 100000})
+    );
+    assert_eq!(edit["keep"], json!({"type": "tool_uses", "value": 5}));
+    assert_eq!(
+        edit["clear_at_least"],
+        json!({"type": "input_tokens", "value": 20000})
+    );
+    assert_eq!(
+        edit["exclude_tools"],
+        json!(["board_show", "board_update", "memory", "todo_write"])
+    );
+    assert!(
+        beta_of(request).is_some_and(|b| b.contains(CONTEXT_BETA)),
+        "{:?}",
+        request.headers
+    );
+}
+
+#[tokio::test]
+async fn a_disabled_context_editing_sends_neither_body_field_nor_header() {
+    for extra in ["", "[accounts.main.context_editing]\nenabled = false\n"] {
+        let server = streaming_messages_gateway().await;
+        let w = World::new();
+        let runtime = editing_session(&w, &server, extra).await;
+        root_turn(&runtime).await;
+        let requests = message_requests(&server).await;
+        let request = requests.last().expect("a request");
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(body.get("context_management").is_none(), "{body}");
+        assert!(beta_of(request).is_none_or(|b| !b.contains(CONTEXT_BETA)));
+    }
+}
+
+#[tokio::test]
+async fn the_guardian_never_carries_context_management() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    // Both accounts opt in: the guardian's own account still sends no edit in the body.
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"anthropic\"\nbase_url = \"{0}\"\nmodels = [\"m1\"]\n\
+         [accounts.main.context_editing]\nenabled = true\n\
+         [accounts.judge]\nkind = \"anthropic\"\nbase_url = \"{0}\"\nmodels = [\"g1\"]\n\
+         [accounts.judge.context_editing]\nenabled = true\n\
+         [model]\nmodel = \"main/m1\"\n\n[guardian]\nmodel = \"judge/g1\"\n",
+        server.uri(),
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    credentials::store(&w.data, "judge", "sk-judge").unwrap();
+    let runtime = session(&w).await;
+    let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian else {
+        panic!("the guardian is ready");
+    };
+    handle.completion.call(caching_request()).await.unwrap();
+    let body = last_body(&server).await;
+    assert!(body.get("context_management").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn a_subagent_gets_context_editing_through_its_own_account() {
+    use fontaine_core::model_roles::ModelChain;
+    use fontaine_core::models::{GuardianChoice, Listing, ModelHandle, ModelRef, Models};
+    use rig_core::test_utils::{MockCompletionModel, MockStreamEvent, mock_final};
+
+    let server = streaming_messages_gateway().await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.paid]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"{LISTED}\"]\n\
+         [accounts.paid.context_editing]\nenabled = true\ntrigger_tokens = 60000\n\n\
+         [permissions]\nallow = [\"agent\"]\n\
+         [agents.types.scout]\ntools = [\"read\"]\nmodel = \"paid/{LISTED}\"\n",
+        server.uri()
+    ));
+    credentials::store(&w.data, "paid", "sk-paid").unwrap();
+    let config = w.load().unwrap();
+    let switcher = Switcher::new(config, w.data.clone(), Arc::new(|_| None), None);
+    let main = MockCompletionModel::from_stream_turns(vec![
+        vec![
+            MockStreamEvent::ToolCall {
+                id: "call-agent".into(),
+                name: "agent".into(),
+                arguments: json!({"agent_type": "scout", "prompt": "look around"}),
+                call_id: None,
+            },
+            MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::new())),
+        ],
+        vec![
+            MockStreamEvent::Text("root done".into()),
+            MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::new())),
+        ],
+    ]);
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/main").unwrap(),
+        AccountKind::named("openai-compatible"),
+        main.into(),
+    );
+    let models = Models {
+        main_chain: ModelChain::single(handle.reference.clone()),
+        main: handle,
+        main_listing: Listing::default(),
+        guardian: None,
+        guardian_choice: GuardianChoice::Pinned,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_models(
+        &w,
+        Manual,
+        models,
+        Some(switcher),
+        false,
+        Default::default(),
+        None,
+    );
+    root_turn(&runtime).await;
+    let mut requests = Vec::new();
+    for _ in 0..100 {
+        requests = message_requests(&server).await;
+        if !requests.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let request = requests.first().expect("the child made a request");
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["context_management"]["edits"][0]["trigger"],
+        json!({"type": "input_tokens", "value": 60000}),
+        "{body}"
+    );
+    assert!(beta_of(request).is_some_and(|b| b.contains(CONTEXT_BETA)));
+}

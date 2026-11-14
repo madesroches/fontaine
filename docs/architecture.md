@@ -321,6 +321,11 @@ the other wires cache by prefix automatically. The cache read and write token co
 model, the guardian, subagents and goal evaluator are in the headless [`usage`](headless.md)
 output.
 
+Anthropic context editing (`context_editing` on an `anthropic` account) is the other way a prefix
+changes: when the server clears old tool results, the cached prefix is invalidated from the cleared
+point on and the next request rewrites it. `clear_at_least_tokens` keeps a clearing from firing for
+a small gain.
+
 ## Tracing
 
 Every crate instruments with the `tracing` facade only. No crate other than the `fontaine` binary
