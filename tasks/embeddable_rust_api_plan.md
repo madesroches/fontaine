@@ -48,15 +48,19 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   trees are `#[doc(hidden)]`-free so links in the facade's docs resolve.
 - The merge is mechanical: `git mv` the trees, `fontaine_core::` -> `fontaine_sdk::core::` (and
   likewise) across the roughly 340 files that import them, and the three `Cargo.toml` dependency
-  lists fold into one. It lands as its own commit, ahead of any behavior change, so the tests are
-  the proof it changed nothing.
+  lists fold into one. It also rewrites `crate::` paths inside the moved trees and cross-tree
+  `fontaine_tools::`/`fontaine_agents::` paths inside core to `crate::tools::`/`crate::agents::`;
+  moves `fontaine-core/prompts/` next to the new source (`include_str!` in `prompt.rs`, `goal.rs`);
+  renames the colliding integration tests (`choke_point.rs`, `lsp.rs`, `network.rs`, `common/`);
+  fixes the `example_bin("fontaine-core"|"fontaine-tools", ...)` call sites and the `#[path]`
+  includes of the other crates' tests and examples; and re-points the `pg2` feature from
+  `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`. It lands as its own commit, ahead of any
+  behavior change, so the tests are the proof it changed nothing.
 - `fontaine-guardian` stays its own crate: the repo requires it to be dependency-light and
   lift-out-able by other harnesses, and folding it in would end that. It is the SDK's one
   re-exported dependency (`fontaine_sdk::guardian`). An embedder still names one crate.
 - Out of the SDK: `fontaine-tui`, `fontaine-remote`, `fontaine-evals`, `fontaine-testkit` and the
   `fontaine` binary. They depend on the SDK.
-- Publication is out of scope (workspace stays `publish = false`), but nothing here blocks it:
-  after this change the published set would be `fontaine-sdk` and `fontaine-guardian`.
 
 ### Public surface
 
@@ -65,11 +69,11 @@ pub struct SessionBuilder { /* private */ }
 impl SessionBuilder {
     pub fn new(project_dir: impl Into<PathBuf>) -> Self;
     pub fn dirs(self, config_dir: PathBuf, data_dir: PathBuf) -> Self;   // default: dirs::resolve
-    pub fn env(self, env: EnvFn) -> Self;                                 // default: process env
-    pub fn mode(self, mode: PermissionMode) -> Self;                      // default: Manual
+    pub fn env(self, env: EnvLookup) -> Self;                             // default: process env
+    pub fn mode(self, mode: PermissionMode) -> Self;                      // default: [permissions] default_mode, then Manual
     pub fn model(self, reference: &str) -> Self;
     pub fn system_prompt(self, p: String) -> Self;  pub fn append_system_prompt(self, p: String) -> Self;
-    pub fn json_schema(self, schema: Schema) -> Self;
+    pub fn json_schema(self, schema: serde_json::Value) -> Self;
     pub fn max_turns(self, n: usize) -> Self;       pub fn max_budget_usd(self, usd: f64) -> Self;
     pub fn allowed_tools(self, rules: Vec<String>) -> Self;  // CLI-scope allow rules, below the floor
     pub fn disallowed_tools(self, rules: Vec<String>) -> Self;
@@ -77,7 +81,7 @@ impl SessionBuilder {
     pub fn add_dir(self, dir: PathBuf) -> Self;
     pub fn resume(self, id: SessionRef) -> Self;    // Continue | Id(String), plus .fork()
     pub fn approver(self, a: Arc<dyn Approver>) -> Self;     // sets HumanChannel::Delegate
-    pub fn hook(self, h: Arc<dyn PreToolUseHook>) -> Self;   // tighten-only, as SDK callback hooks
+    pub fn hook(self, h: CallbackHook) -> Self;              // tighten-only; appended to AgentSetup::callback_hooks
     pub fn tool(self, t: impl HostTool + 'static) -> Self;
     pub async fn build(self) -> Result<Session, EmbedError>;
 }
@@ -94,38 +98,53 @@ pub enum Event { /* the headless-v1 events, typed; serde-serializable to the ide
 
 Decisions that shape this surface:
 
-- **Event stream = `headless-v1`.** The typed `Event` enum and its serde form are moved out of
-  `headless.rs`' `HeadlessV1Sink` into `fontaine-sdk::events` and the sink becomes a thin writer of
-  `serde_json::to_string(&event)`. A test asserts the typed value serializes to JSON that validates
+- **Event stream = `headless-v1`.** `Event` is a typed, `#[non_exhaustive]` enum with one variant
+  per schema kind (the 13 kinds of the closed `oneOf`; no notice kind). It lives in
+  `fontaine-sdk::events`, and `HeadlessV1Sink` becomes a thin writer of
+  `serde_json::to_string(&event)`. Field order reproduces today's key order. A test asserts the typed value serializes to JSON that validates
   against `headless-v1.schema.json`, which pins "identical to stream-json" mechanically. The schema
-  version stays `1`; embedders see `SCHEMA_VERSION` re-exported.
+  version stays `1`; embedders see `SCHEMA_VERSION` re-exported. The existing `headless_contract`
+  tests and a byte-equality check on a recorded stream pin the key order.
 - **Approvals.** `build()` with an approver sets `HumanChannel::Delegate`; without one it sets
   `Absent` (every would-prompt is a denial). `Present` is not exposed: it means "a person at a
   terminal". The approver is reached only where the TUI would ask a person, after the floor, hooks,
   rules, mode and guardian, and is never offered "always allow" (existing `Delegate` semantics).
 - **Host tools.** `HostTool` is a trait (`name`, `description`, JSON-schema `parameters`, async
-  `call(args) -> Result<String, ToolError>`, and a mandatory `risk: RiskClass`). Registration goes
-  through the existing registry so the choke-point rule (every tool has a risk class, every call
-  passes the gate) holds; a host tool is never on the read-only fast path (same as MCP tools). The
-  registry change is additive: a `host_tools: Vec<Arc<dyn HostTool>>` field on `AgentSetup`.
+  `call(args) -> Result<String, ToolError>`, with `ToolError` re-exported from the SDK). A host tool
+  declares no risk: risk lives in the descriptor table, never on the tool, so every host tool is
+  registered as `RiskClass::Arbitrary`, like SDK MCP tools. Registration goes through the existing
+  registry so the choke-point rule (every tool has a risk class, every call passes the gate) holds;
+  a host tool is never on the read-only fast path (same as MCP tools). The registry change is
+  additive: a `host_tools: Vec<Arc<dyn HostTool>>` field on `AgentSetup`, kept in the retained
+  setup so plugin reloads rebuild it, and subject to `root_tools`/toolset cutting like built-ins, so
+  a subagent never has a host tool its parent lacks.
 - **No way to loosen security.** The builder exposes no guardian-off switch, no floor override, no
   `bypass` mode and no project-scope loosening. Project settings still load as tighten-only; user
   scope is read from the supplied `config_dir`.
-- **Stability.** `AgentSetup` stays unstable and un-promised; only `fontaine-sdk` items are the
-  semver surface. It starts at `0.x`, `publish = false` like the workspace (`publish.workspace`),
-  and the facade is `#[non_exhaustive]` on enums and builders' options structs.
+- **Embedded session settings.** An embedded session takes headless semantics: `headless = true`,
+  `scheduling = false`, `confirm_project_servers = false`, and `project_executables` follows
+  `[headless] require_trust` and the trust store. `PermissionMode::Afk` maps as the CLI's
+  `session_mode` does: `Auto` plus `setup.afk = true`.
+- **Stability.** `AgentSetup` stays unstable and un-promised; only the root facade is the semver
+  surface. It starts at `0.x`, `publish = false` like the workspace (`publish.workspace`), and the
+  facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
-  `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). Nothing
-  prints to stderr: warnings reach the approver's `warn`, or an `Event::Notice` stream.
+  `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
+  writes to stderr only through the `Approver::warn`/`notice` defaults, which an embedder overrides;
+  the PromptGuard download message in `scanner_stage` goes through `notice` when embedded.
 
 ### Assembly extraction
 
 The pure parts of `prepare_session` (roots, scratch, memory root, plugin load, extensions, model
-resolution, scanner start, `AgentSetup` construction) move into `fontaine-sdk` as functions
+resolution, scanner start, `requested_mode`/`session_mode`, the project-executables trust check from
+`run()`, `AgentSetup` construction) move into `fontaine-sdk` as functions
 over plain parameter structs, returning `Result<_, EmbedError>` and warnings as data. The CLI keeps
 only flag-to-params translation and `eprintln!`/exit-code mapping. Moves are mechanical; behavior
 is held by the existing `headless_*`, `resume`, `claude_sdk_compat` and `cassettes` tests, which must
-stay green unchanged.
+stay green unchanged. The headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel,
+`EventSink`, `InputSource`) moves too, so `Session` and the CLI share the model-list fall-through,
+usage-limit wait, budget stop, `--json-schema` output, AFK stop, stop-hook continuation, goals and
+interrupt.
 
 ### Non-Rust languages
 
@@ -137,25 +156,32 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 
 1. Merge `fontaine-core`, `fontaine-tools` and `fontaine-agents` into the new `rust/fontaine-sdk` as
    the `core`, `tools` and `agents` modules (one mechanical commit, see One crate for the SDK);
-   repoint every dependent crate, the workspace manifest, `deny.toml`, the dist config and the CI
-   steps that name the old crates; the existing test suites must pass unchanged.
-2. Move the `headless-v1` event model and its serialization from `fontaine/src/headless.rs` into
-   `fontaine-sdk::events`; rewire `HeadlessV1Sink`. Add the schema-validation test.
-3. Move session assembly (`load_config`, `resolve_roots`, `open_session`, `prepare_session`,
-   `resolve_models`, `start_scanner`, `AgentSetup` construction) from `fontaine/src/lib.rs` into
-   `fontaine-sdk::assemble`; the CLI calls it. No behavior change.
-4. Add `HostTool` and `AgentSetup::host_tools`; register through `fontaine_sdk::core::tools` with a risk
-   class; extend the choke-point test to cover host tools.
-5. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over `AgentRuntime::new` and `drive`.
+   repoint every dependent crate and the workspace manifest; the existing test suites must pass
+   unchanged.
+2. Define typed `Event` structs for all 13 schema kinds in `fontaine-sdk::events` and move their
+   builders (`init_event`, `result_event`, `usage_event`, the goal and AFK helpers, `Outcome`/`Usage`)
+   out of `fontaine/src/headless.rs`; rewire `HeadlessV1Sink`. Add the schema-validation test and the
+   byte-equality check on a recorded stream.
+3. Move the headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel, `EventSink`,
+   `InputSource`) from `fontaine/src/headless.rs` into the SDK; the CLI calls it. No behavior change.
+4. Move session assembly (`load_config`, `resolve_roots`, `open_session`, `prepare_session`,
+   `resolve_models`, `start_scanner`, `requested_mode`/`session_mode`, the trust check, `AgentSetup`
+   construction) from `fontaine/src/lib.rs` into `fontaine-sdk::assemble`; the CLI calls it. No
+   behavior change.
+5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
+   `RegistryParams` in `agent/build.rs` so plugin reloads keep it; register every host tool as
+   `RiskClass::Arbitrary`; update the `AgentSetup` literal sites (`fontaine/src/lib.rs`,
+   `fontaine-sdk/tests/common/runtime.rs`, `fontaine-tui/src/ui/tests.rs`,
+   `fontaine-tui/tests/common/mod.rs`, ...); extend the choke-point test to cover host tools.
+6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over `AgentRuntime::new` and the
+   run loop moved in step 3, not over `drive`.
 6. Add `fontaine-sdk/examples/embed.rs` (a 30-line program: builder, approver, one host tool, print
    events) and `docs/embedding.md`; link it from `docs/SUMMARY.md`, `docs/index.md`, and the
    architecture crate table; add a `CHANGELOG.md` entry; record the Decisions in the master plan.
-7. CI: add `fontaine-sdk` to the existing workspace steps (automatic); the example compiles under
-   `cargo clippy --all-targets`.
 
 ## Files to Modify
 
-- `rust/Cargo.toml`, `rust/deny.toml`, `.github/workflows/*` (core, tools and agents removed, sdk added)
+- `rust/Cargo.toml` (core, tools and agents removed, sdk added)
 - `rust/fontaine-sdk/**` (new; receives `fontaine-core/**`, `fontaine-tools/**`, `fontaine-agents/**`)
 - every `Cargo.toml` and import in `fontaine`, `fontaine-tui`, `fontaine-remote`, `fontaine-evals`,
   `fontaine-testkit`
@@ -164,16 +190,11 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 - `docs/embedding.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/architecture.md`,
   `docs/agent-sdk.md`, `docs/headless.md` (cross-links)
 - `tasks/fontaine_harness_plan.md` (Decisions, workspace layout), `CHANGELOG.md`, `AGENTS.md`
-  (crate list), `tasks/design/*.md` and docs that name the merged crates
+  (crate list), `CONTRIBUTING.md` (paths into the merged crates), `tasks/design/*.md` and docs that
+  name the merged crates
 
 ## Trade-offs
 
-- **Facade in `fontaine-core` (issue wording) vs a new crate that contains it:** core alone cannot
-  hold the facade (assembly needs the agents and tools wiring), and the user wants a single crate
-  for readable docs. So the facade and the three internals share one crate.
-- **Several public crates vs one:** one crate keeps the docs followable. A re-export-only facade
-  over three crates was rejected: docs.rs would still show three crates and three version numbers.
-- **Fold guardian in too:** rejected, it would end its lift-out property.
 - **Run the binary as a subprocess from Rust:** needs no new code, but gives no in-process tools or
   typed callbacks. Kept as the documented route for other languages only.
 - **Expose `AgentSetup` directly:** cheapest, but promises 35 internal fields.
@@ -182,6 +203,7 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 
 - 2026-11-14: Rust embedding is a typed, in-process facade whose event stream serializes to `headless-v1` unchanged; foreign languages use the existing stdio surfaces, with no third protocol.
 - 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools` and `fontaine-agents` become its modules in this same change. `fontaine-guardian` stays separate for lift-out and is re-exported.
+- 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` and `fontaine-guardian`.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
 
 ## Documentation
@@ -194,19 +216,13 @@ table in `architecture.md`. Docs describe current behavior only.
 
 Unit tests for builder validation and defaults (no approver → `Absent`; mode mapping; resume/fork).
 Integration tests with `rig_core::test_utils` deterministic models, no live APIs:
-- an approver that allows, denies and returns modified input, with the audit record showing
-  `delegate`;
-- a pre-tool hook can tighten but its allow is ignored;
-- a host tool call goes through the gate, and one with a destructive class is guardian-judged;
-- a floor-denied call (protected path) never reaches the approver, the exact security property;
+- wiring: builder plus approver gives `HumanChannel::Delegate`, and a prompt reaches the approver
+  (`fontaine-core/tests/permissions_delegate.rs` covers the delegate semantics);
+- a host callback hook can tighten but its allow is ignored;
+- a host tool call is guardian-judged in `auto` and prompts in `manual`;
 - `Event` JSON validates against `headless-v1.schema.json`, and a recorded `fontaine -p` run and an
-  embedded run of the same scripted model produce the same event sequence;
+  embedded run of the same scripted model produce the same event sequence, including with
+  `max_turns`, `max_budget_usd` and `json_schema` set;
 - interrupt ends a turn with the same `result` as the CLI.
 The existing headless, resume, SDK-compat and cassette suites are the regression net for the
 assembly move.
-
-## Open Questions
-
-- Should `Event` be an exhaustive typed enum, or `serde_json::Value` plus helpers? Default: typed,
-  `#[non_exhaustive]`.
-- Whether to publish: out of scope; the workspace is `publish = false` (see One crate for the SDK).
