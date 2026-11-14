@@ -104,9 +104,13 @@ from `Steering`, so nothing here is ever restored into the human's input.
 - **Guardian**: `MessageOrigin::Remote` counts as human intent (it is a user message). Because the
   ticket is a bearer credential, that is the deliberate widening of trust this slice makes; the
   sender label is the authenticated node id, never payload text, and is shown in the transcript.
-- **Limits of the presumption**: the text is a prompt only. It never enters the slash-command
-  parser, approval dialogs, mode changes or `/guardian-disable` (those read local terminal input
-  only), and a remote text starting with `/` or `!` is delivered as literal prose.
+- **Remote is a terminal, not just a prompt**: the line is submitted through the same dispatch
+  as a line typed at the prompt (`submit`, `fontaine-tui/src/ui/mod.rs:1026`), so slash commands
+  (`/permissions`, mode changes, `/compact`...), skills and `!` lines work, and a pending
+  approval or question dialog can be answered by a remote line. It never goes through the
+  `Input` key/paste events or the human's input buffer, so the draft and its cursor are untouched.
+  The one exception is `/guardian-disable` (and `/guardian-enable`), which stay local-terminal
+  only: AGENTS.md makes the escape hatch interactive-only with an explicit local confirmation.
 
 ### 4. Enabling and disabling (local, explicit, user-only)
 
@@ -136,8 +140,8 @@ field ignore it via serde defaults, and `MessageOrigin::Remote` is added so resu
 
 ### 7. Invariants kept
 
-The remote message is a presumed-user prompt and nothing more: it cannot answer approvals, change
-modes, run slash commands or reach `/guardian-disable` (local terminal input only). Every tool
+The remote line is presumed-user terminal input: it can answer approvals, change modes and run
+slash commands, but not `/guardian-disable` or `/guardian-enable` (local terminal only). Every tool
 call it induces crosses the floor, guardian, workspace scope and result pipeline unchanged. The
 guardian is not optional, no regex is applied to arguments, no new tool is registered (the
 risk-class choke-point is untouched), and enabling is user-only, per session, never via config,
@@ -184,7 +188,7 @@ the issue's earlier untrusted-mail wording in the plan's Decisions.
 ## Decisions
 
 - 2026-11-14: remote messages are presumed to come from the user (user message, guardian intent, prompt hooks), superseding the issue's original untrusted-agent-mail wording; the issue body was updated to match.
-- 2026-11-14: remote text never reaches approvals, mode changes, slash commands or `/guardian-disable`.
+- 2026-11-14: a remote line is full terminal input (slash commands, mode changes, approval answers), because the feature is the first slice of remote control; `/guardian-disable` and `/guardian-enable` remain local-only to keep the AGENTS.md floor invariant.
 
 ## Documentation
 
@@ -199,8 +203,9 @@ Unit (no network): ticket encode/parse round trip and malformed/expired/version 
 consume and reuse; idempotent retry returns the same `message_id` without a second enqueue;
 frame cap and oversized text; rate lock after bad attempts; inbox cap → `InboxFull`;
 `RemoteQueue` bounds, FIFO and never-restored-into-draft; tool-result delivery then ledger
-`UserMessage{origin: Remote}` in order; remote text is present in guardian human intent; `/` and
-`!` prefixed text is literal; prompt-submit hook block; AFK-blocked hold; audit records;
+`UserMessage{origin: Remote}` in order; remote text is present in guardian human intent; `/` lines dispatch as slash commands, a mode
+change takes effect, a pending approval is answered by a remote line, `/guardian-disable` from a
+remote line is refused; prompt-submit hook block; AFK-blocked hold; audit records;
 `MessageOrigin` serde back-compat.
 
 Integration (`fontaine-remote/tests`): server and client in one process on local iroh endpoints
@@ -219,6 +224,10 @@ Real-network qualification catches NAT/relay behavior a loopback test cannot; it
 3. Type a draft in the target, send, confirm the draft is untouched.
 
 ## Open Questions
+
+- How is a remote line matched to a pending approval or question dialog (the next remote line
+  answers the oldest open dialog; non-matching text is queued as a prompt)? Default: the next
+  remote line answers the open dialog if it parses as an option, else it is queued.
 
 - Which iroh version and relay default (n0 public relays vs. configurable `[remote] relay_url`
   in user-scope config)? Default to n0's and document the metadata exposure; resolve against the
