@@ -90,6 +90,22 @@ fn bucket_usage(bucket: &Bucket) -> Value {
     })
 }
 
+/// What `now` added over `base`; ledger buckets only grow within a session.
+fn bucket_delta(now: &Bucket, base: &Bucket) -> Bucket {
+    Bucket {
+        calls: now.calls.saturating_sub(base.calls),
+        input_tokens: now.input_tokens.saturating_sub(base.input_tokens),
+        output_tokens: now.output_tokens.saturating_sub(base.output_tokens),
+        cache_read_input_tokens: now
+            .cache_read_input_tokens
+            .saturating_sub(base.cache_read_input_tokens),
+        cache_creation_input_tokens: now
+            .cache_creation_input_tokens
+            .saturating_sub(base.cache_creation_input_tokens),
+        ..*now
+    }
+}
+
 fn bucket_object(bucket: &Bucket) -> Value {
     json!({
         "input_tokens": bucket.input_tokens,
@@ -301,7 +317,11 @@ impl Translator {
                 }
             }
             SessionEvent::Decision(record) => {
-                if record.decision == Decision::Deny {
+                // Child agents' records reach the root feed too, but only the root conversation
+                // is streamed, so a child's denial has no tool_use the host has seen.
+                if record.decision == Decision::Deny
+                    && record.agent_id == fontaine_tools::gate::ROOT_AGENT
+                {
                     let id = record.tool_use_id.clone().unwrap_or_default();
                     let (name, input) = self
                         .tool_calls
@@ -444,6 +464,8 @@ fn model_usage(runtime: &AgentRuntime) -> Value {
 pub struct ClaudeSink {
     router: Arc<Router>,
     translator: Translator,
+    /// The main usage when the turn started: a result reports the turn, not the session.
+    turn_base: Bucket,
 }
 
 impl ClaudeSink {
@@ -451,6 +473,7 @@ impl ClaudeSink {
         ClaudeSink {
             router,
             translator: Translator::new(partial),
+            turn_base: Bucket::default(),
         }
     }
 
@@ -469,6 +492,7 @@ impl ClaudeSink {
             usage.goal.cost_usd,
             usage.subagents.cost_usd,
         );
+        let turn_main = bucket_delta(&usage.main, &self.turn_base);
         let ms = info.outcome.started.elapsed().as_millis() as u64;
         ResultMessage {
             kind: "result",
@@ -476,7 +500,7 @@ impl ClaudeSink {
             is_error: finish.is_error,
             duration_ms: ms,
             duration_api_ms: ms,
-            num_turns: usage.main.calls,
+            num_turns: turn_main.calls,
             result: if finish.is_error {
                 String::new()
             } else if info.outcome.text.is_empty() && info.interrupted {
@@ -487,7 +511,7 @@ impl ClaudeSink {
             stop_reason: (!finish.is_error).then_some("end_turn"),
             session_id: info.session_id.to_string(),
             total_cost_usd: cost,
-            usage: bucket_usage(&usage.main),
+            usage: bucket_usage(&turn_main),
             model_usage: model_usage(info.runtime),
             permission_denials: std::mem::take(&mut self.translator.denials),
             structured_output: info.outcome.structured.clone(),
@@ -508,6 +532,7 @@ impl EventSink for ClaudeSink {
     fn session_start(&mut self, _runtime: &AgentRuntime, _data_dir: &Path) {}
 
     fn turn_start(&mut self, runtime: &AgentRuntime, _data_dir: &Path) {
+        self.turn_base = crate::headless::main_usage(runtime);
         let model = runtime.models.main.reference.to_string();
         self.translator.begin(&runtime.session.id, &model);
         let mcp_servers = runtime
@@ -859,6 +884,52 @@ mod tests {
         assert_eq!((t.unanswered, t.tool_calls.len()), (1, 1));
         t.begin("sid", "m");
         assert_eq!((t.unanswered, t.tool_calls.len()), (0, 0));
+    }
+
+    #[test]
+    fn a_turn_reports_what_it_added_to_the_session_bucket() {
+        let base = Bucket {
+            calls: 2,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 1,
+            ..Bucket::default()
+        };
+        let now = Bucket {
+            calls: 3,
+            input_tokens: 17,
+            output_tokens: 9,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 4,
+            ..Bucket::default()
+        };
+        let turn = bucket_delta(&now, &base);
+        assert_eq!(turn.calls, 1);
+        let usage = bucket_usage(&turn);
+        assert_eq!(usage["input_tokens"], 7);
+        assert_eq!(usage["output_tokens"], 4);
+        assert_eq!(usage["cache_read_input_tokens"], 0);
+        assert_eq!(usage["cache_creation_input_tokens"], 3);
+    }
+
+    #[test]
+    fn a_child_agents_deny_is_not_streamed_or_kept_for_the_result() {
+        let mut t = Translator::new(false);
+        t.begin("sid", "m");
+        let record = fontaine_core::audit::DecisionRecord::new(
+            "sid".into(),
+            "child-1".into(),
+            "shell".into(),
+            "d".into(),
+            fontaine_core::tier::Tier::DenyRule,
+            Decision::Deny,
+            "manual".into(),
+            true,
+        );
+        t.event(&SessionEvent::Decision(Box::new(record)));
+        assert!(t.take().iter().all(|m| m["subtype"] != "permission_denied"));
+        assert!(t.denials.is_empty());
     }
 
     #[test]

@@ -54,6 +54,22 @@ pub fn apply_to_config(config: &mut Config, options: &cli::Options) {
     }
 }
 
+/// Drops what loaded after `apply_to_config` (plugin servers) when `--strict-mcp-config` is set,
+/// so only the `--mcp-config` servers remain.
+pub fn apply_strict_mcp(config: &mut Config, options: &cli::Options) {
+    if options.strict_mcp {
+        config.mcp_servers.retain(|name, _| {
+            config
+                .mcp_origins
+                .get(name)
+                .is_some_and(|origin| origin.slot == Slot::Cli)
+        });
+        config
+            .mcp_origins
+            .retain(|name, _| config.mcp_servers.contains_key(name));
+    }
+}
+
 /// Reads stdin on a detached thread: a blocking read on a pipe the host keeps open would
 /// otherwise keep the process from exiting once the run is over.
 struct DetachedStdin {
@@ -348,4 +364,42 @@ pub async fn run(
     router.close();
     router.flush().await;
     code
+}
+
+#[cfg(test)]
+mod strict_mcp_tests {
+    use super::*;
+    use fontaine_core::config::McpServer;
+
+    fn server(command: &str) -> McpServer {
+        serde_json::from_value(json!({ "command": command })).unwrap()
+    }
+
+    #[test]
+    fn strict_mcp_drops_servers_plugins_add_after_the_first_pass() {
+        let options = cli::Options {
+            strict_mcp: true,
+            mcp_servers: vec![("mine".into(), server("x"))],
+            ..Default::default()
+        };
+        let mut config = Config::defaults(std::path::PathBuf::from("."));
+        apply_to_config(&mut config, &options);
+        // What `apply_plugins` does inside session preparation.
+        config.mcp_servers.insert("from-plugin".into(), server("p"));
+        config.mcp_origins.insert(
+            "from-plugin".into(),
+            Origin {
+                slot: Slot::Plugin,
+                user_trust: true,
+            },
+        );
+        apply_strict_mcp(&mut config, &options);
+        assert_eq!(config.mcp_servers.keys().collect::<Vec<_>>(), ["mine"]);
+        assert_eq!(config.mcp_origins.keys().collect::<Vec<_>>(), ["mine"]);
+
+        let loose = cli::Options::default();
+        config.mcp_servers.insert("kept".into(), server("k"));
+        apply_strict_mcp(&mut config, &loose);
+        assert!(config.mcp_servers.contains_key("kept"));
+    }
 }

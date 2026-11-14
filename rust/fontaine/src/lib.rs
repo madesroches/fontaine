@@ -478,6 +478,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(code);
         }
     };
+    if let Some(sdk) = &sdk {
+        // Plugins load inside prepare_session, after the first pass of this filter.
+        claude_compat::apply_strict_mcp(&mut config, sdk);
+    }
     // Headless has no conversation to show them in. Printing now, before models are resolved,
     // keeps them on stderr when a later startup check exits.
     if headless.is_some() {
