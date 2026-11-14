@@ -19,9 +19,11 @@ whose replies carry no split are unchanged.
   and has no field for the split. rig prices the writes by the split inside its Anthropic stream
   decoder (`providers/anthropic/streaming.rs`, `Counts::write_cost`: 5m at `pricing.cache_write`,
   1h at `2 × pricing.input`, and unpriced when the split is absent or does not sum to the
-  writes), so `Usage.cost` on the `anthropic` account is already split-priced.
-- The reply document rides on each call: `CompletionCall.raw` (rig-agent) holds the unary reply
-  document, with `usage.cache_creation` in it. `fontaine-core/src/providers/claude_subscription/
+  writes), so `Usage.cost` on the `anthropic` account is already split-priced. Only
+  `Quirks::anthropic()` sets `cache_ttl_pricing`; gateway dialects use `Quirks::gateway()` (false)
+  and price every write at the single rate.
+- The reply document rides on each call: `CompletionCall.raw` (rig-agent) holds the unary or
+  reassembled streamed reply document (turns are streamed), with `usage.cache_creation` in it. `fontaine-core/src/providers/claude_subscription/
   context.rs:290` (`CacheUsage::from_result`) already reads the split from a raw usage `Value`.
 - `fontaine-core/src/turn.rs:~853` handles `MultiTurnStreamItem::CompletionCall(call)` and calls
   `state.record_usage(source, agent, &call.usage, true, &served)` (`gate.rs:1289`), which feeds
@@ -64,14 +66,18 @@ reader keeps its own 1h-only reading (it needs only the 1h count, and a result m
 - `Bucket::add` and `UsageLedger::record` take `Option<CacheWrites>`; `merge` sums the new fields.
 - `UsageSource`-level `record_usage` keeps its signature and delegates to a new
   `record_usage_split(.., writes: Option<CacheWrites>)` on `SessionState` (`gate.rs`), so the six
-  other recorders stay untouched (open/closed). `record_usage_answered` threads the value to
-  `self.usage.record`.
+  other recorders stay untouched (open/closed). `record_usage_answered` gains the
+  `Option<CacheWrites>` parameter and threads it to `self.usage.record`; its three direct callers
+  (guardian adjudication, guardian-answered, goal; `gate.rs:1347,1366,1378`) pass `None`, and
+  `record_usage_split` passes `answered = sent_request`.
 
 ### Turn wiring
 
 `turn.rs` computes `CacheWrites::from_reply(&call.raw)` at `CompletionCall` and calls
 `record_usage_split`. This covers main and subagent calls, the only calls that carry a reply
-document. Guardian, goal, compaction, advisor, side-question and suggestion calls record no split.
+document, including `claude_subscription` ones: their split is read from the reassembled stream
+`raw`, not the CLI result frame, and cost is unchanged (`Billing::Unpriced`, cost dropped at
+`turn.rs:855`). Guardian, goal, compaction, advisor, side-question and suggestion calls record no split.
 
 ### `/cost`
 
@@ -81,10 +87,10 @@ once on the total and applies to the per-source and per-model tables alike, as `
 
 ### Pricing
 
-`Usage.cost` is already split-priced by rig for the `anthropic` account, so the ledger cost needs
-no change. The telemetry path's `cost_usd` rebuilds a `Usage` and so loses it; it gets the split
+`Usage.cost` is already split-priced by rig for the `anthropic` account only, so the ledger cost
+needs no change; gateway accounts that return a split keep the single-rate ledger cost. The telemetry path's `cost_usd` rebuilds a `Usage` and so loses it; it gets the split
 and prices writes as rig does (5m at `pricing.cache_write`, 1h at `2 × pricing.input`), only when
-the split sums to the writes and the table has the rates; otherwise it falls back to
+the split sums to the writes and `cache_write` is listed or the 5m count is 0; otherwise it falls back to
 `Pricing::cost` as today. The 2× multiple lives in one small helper
 (`cache_write_cost(pricing, writes)`) in `fontaine-core` with a comment pointing at rig's matching
 rule, since rig's own is private.
@@ -92,12 +98,16 @@ rule, since rig's own is private.
 ### Telemetry
 
 The split does not reach `span_bridge` through rig's span, so `turn.rs` emits it itself: a
-`tracing` event on the bridge's target, alongside the existing decision-event path
-(`span_bridge.rs::on_event`), carrying `cache_write_5m` and `cache_write_1h`, model and query
-source. The bridge turns it into `fontaine.token.usage` metrics of `type` `cacheWrite5m` and
-`cacheWrite1h`, leaving `cacheCreation` as the sum. Accounts with no split emit no event. The
-exact event plumbing is fixed during implementation by reading how the bridge consumes
-`tool_decision`.
+`cache_write_split` event on target `fontaine::telemetry` (each crate redeclares
+`const TARGET: &str = "fontaine::telemetry"`, as `gate.rs:41`), emitted from the `CompletionCall`
+arm modeled on `api_error` (`turn.rs:915-924`): `query_source` ("main"/"subagent" from
+`params.agent_id == ROOT_AGENT`), `model = params.model`, `provider = params.provider` (bare wire
+ids matching the bridge's `gen_ai.request.model`; `params.served.model` is `<account>/<model>` and
+would not join), plus `cache_write_5m` and `cache_write_1h`. `span_bridge.rs::on_event` returns
+early unless the message is `tool_decision` (:290), so it becomes a dispatch by message name. The
+bridge turns the event into `fontaine.token.usage` metrics of `type` `cacheWrite5m` and
+`cacheWrite1h`, leaving `cacheCreation` as the sum. Accounts with no split emit no event. Events on
+the telemetry target are exported as OTLP log records (`otlp.rs::is_exported_event`).
 
 ## Implementation Steps
 
@@ -115,8 +125,8 @@ exact event plumbing is fixed during implementation by reading how the bridge co
   `rust/fontaine-core/src/turn.rs`
 - `rust/fontaine-tui/src/reports.rs`
 - `rust/fontaine/src/telemetry/span_bridge.rs`
-- `rust/fontaine-core/tests/agent_pipeline.rs`
-- `CHANGELOG.md`, and the docs page describing `/cost` and telemetry
+- `rust/fontaine-core/tests/billing.rs` (new), `rust/fontaine-core/tests/audit_telemetry.rs`
+- `CHANGELOG.md`, `docs/tui.md`, `docs/telemetry.md`
 
 ## Trade-offs
 
@@ -136,11 +146,15 @@ exact event plumbing is fixed during implementation by reading how the bridge co
   the ledger, `/cost` and telemetry, and the headless contract is a versioned surface.
 - 2026-11-14: guardian, goal, compaction, advisor, side-question and suggestion calls record no
   split; none has a reply document at the recording point, and they stay as they are.
+- 2026-11-14: gateway accounts (`Quirks::gateway()`, `cache_ttl_pricing` false) that return a split
+  keep single-rate ledger cost; only the `anthropic` account is split-priced.
 
 ## Documentation
 
-The `/cost` and telemetry pages under `docs/` (find via `docs/SUMMARY.md`): the new columns and
-the `cacheWrite5m` / `cacheWrite1h` metric types. A line in `CHANGELOG.md`.
+`docs/tui.md` ("Usage and cost": the new columns and the cache-column rule, ~:853) and
+`docs/telemetry.md` (the metric `type` list, ~:125, gaining `cacheWrite5m` / `cacheWrite1h`, and a
+`cache_write_split` row in the Events table). State that `cacheWrite5m` + `cacheWrite1h` are a
+subset of `cacheCreation`, so the types must not all be summed. A line in `CHANGELOG.md`.
 
 ## Testing Strategy
 
@@ -149,11 +163,11 @@ the `cacheWrite5m` / `cacheWrite1h` metric types. A line in `CHANGELOG.md`.
   `cache_write_cost` for 5m only, 1h only, mixed, and missing rate.
 - `/cost` in `reports.rs` tests: columns absent without a split, present with one, and a mixed
   session (a split and an unsplit call) renders both.
-- Integration in `agent_pipeline.rs`: a wiremock Anthropic reply with `usage.cache_creation`
-  lands in the ledger's split buckets and a reply without it leaves them zero, which catches the
-  `raw` wiring a unit test of the parser cannot.
-- Telemetry: the bridge test emits the event and asserts the two metric types.
-
-## Open Questions
-
-- None the code cannot settle; the telemetry event plumbing is resolved during implementation.
+- Integration in a new `fontaine-core/tests/billing.rs`: `run_turn` against a wiremock
+  `/v1/messages` SSE reply (reusing the `max_tokens.rs` SSE helper pattern) with
+  `usage.cache_creation` lands in the ledger's split buckets and a reply without it leaves them
+  zero, which catches the `raw` wiring a unit test of the parser cannot. `MockCompletionModel` in
+  `agent_pipeline.rs` cannot carry `usage.cache_creation`.
+- Telemetry: the bridge test emits the event and asserts the two metric types; an
+  `audit_telemetry.rs` case asserts `turn.rs` emits `cache_write_split` (precedent: `api_error`,
+  `:408`).
