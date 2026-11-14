@@ -313,6 +313,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 "an agent reported back"
             },
         );
+        self.app.automatic_next = true;
         let end = self
             .turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
             .await;
@@ -373,6 +374,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(end) => end,
             None => {
                 Self::keep_leftover_turn(runtime).await;
+                self.app.automatic_next = true;
                 self.turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
                     .await
             }
@@ -402,6 +404,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(end) => end,
             None => {
                 Self::keep_leftover_turn(runtime).await;
+                self.app.automatic_next = true;
                 self.turn(runtime, prompt, None, MessageOrigin::Other, Vec::new())
                     .await
             }
@@ -944,6 +947,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         origin: MessageOrigin,
         attachments: Vec<Attachment>,
     ) -> TurnEnd {
+        self.app.automatic_turn = std::mem::take(&mut self.app.automatic_next);
         let mut text = text;
         let mut human = human;
         let mut attachments = attachments;
@@ -1532,6 +1536,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// area, and every line behind it, until the session ends.
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.set_running(false);
+        let answered = matches!(end, TurnEnd::Finished(TurnOutcome::Answer(_)));
+        self.app.last_turn_finished = answered;
+        self.app.completed_turns += u32::from(answered);
+        self.app.suggestion_due = !matches!(end, TurnEnd::InputClosed);
+        self.app.note_turn_settled();
         self.app.refusal = None;
         self.app.attach_notice = None;
         self.app.deny_pending();

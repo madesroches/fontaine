@@ -250,7 +250,8 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R (`history_search`) | Search the prompt history; see [History](#history). |
 | Ctrl-V or Alt-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Windows Terminal and conhost take Ctrl+V as their own paste action, so the text arrives as keystrokes and the key event never reaches Fontaine (see [Pasting](#pasting)); Alt+V is the alternative there. A dropped PDF path becomes a PDF attachment. |
-| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. |
+| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. With no list open, it accepts the dimmed [suggestion or history completion](#prompt-suggestions-and-history-completion) when one is shown. |
+| Right | Moves the cursor right. At the end of the input, or in an empty one, it accepts the dimmed suggestion or history completion when one is shown, like Tab. Ctrl-Right and Alt-Right still move by word. |
 | Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, plan, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
@@ -433,6 +434,37 @@ history then lasts for the session only.
 - Ctrl-R opens a search above the input. Typing narrows the match (case-insensitive), Ctrl-R again
   moves to the next older match, Enter or Tab put the match in the input without sending it, and Esc
   cancels.
+
+## Prompt suggestions and history completion
+
+Two kinds of dimmed text can appear in the input box. Neither is part of what you typed: it cannot
+be sent or copied until you accept it, and it is clipped to the row so the box never grows.
+
+- **History completion** is on by default. While you type, the newest earlier input that starts
+  with what you typed (case-sensitive, single-line) is shown after the cursor. It appears only with
+  the cursor at the end of the text, and never for a `/` command or `!` shell line or while you
+  walk the history with Up and Down. `[tui] history_completion = false` turns it off. It makes no
+  model call.
+- **Prompt suggestions** are off by default; `[tui] prompt_suggestions = true` turns them on. When a
+  turn has ended, the main model is asked, on a background task, for the message you are most
+  likely to type next, and it is shown dimmed in the empty input. Starting a new turn, quitting or
+  `/clear` drops the call. It is skipped in `plan` mode, after a turn that failed or was
+  interrupted, before the first answered turn, while a [usage window](#usage-windows-spent) is
+  paused, in [AFK](afk.md), after a turn that a scheduled task, `/loop`, a notification or a goal
+  started, and after three suggestions in a row that you did not use (accepting one starts the
+  count again; otherwise it expires after five more turns of yours). A suggestion that is empty, longer than 200 characters, a repeat of your last message, or
+  starts with `/` or `!` is dropped, so it never pre-types a command or a shell line.
+
+Tab or Right fills the input with the dimmed text, and Enter then sends it as an ordinary message.
+Typing, Esc or sending something else dismisses a suggestion. Nothing is shown while a menu, an
+overlay or a search is open, with files attached, in an agent's view, or in vim Normal mode. The
+screen-reader renderer shows no dimmed text.
+
+A suggestion is a separate request with no tools. It reads the conversation as text without tool
+results, and tool calls are reduced to their names. It is not saved to the conversation, and the
+guardian does not take it as something you said until you send it. It does not reuse the main turn's
+prompt cache, so it costs input tokens on every turn it runs; the spend is its own `suggestions` row
+in [`/cost`](#usage-and-cost).
 
 ## Markdown in replies
 
@@ -814,7 +846,7 @@ By model
 ```
 
 The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `compaction`,
-`side questions` (`/btw`) and `advisor`, in that order. `calls` counts model requests, with a guardian
+`side questions` (`/btw`), `advisor` and `suggestions` (the [prompt suggestion](#prompt-suggestions-and-history-completion)), in that order. `calls` counts model requests, with a guardian
 adjudication counting once however many requests it took to get a verdict; a guardian answer served
 from its verdict cache is not a call, but one inside a guardian composition cannot be told apart
 and does count. The `cache read` and `cache write` columns are left out when the provider reported
@@ -888,6 +920,8 @@ one row each: the key, its effective value with defaults filled in, and the scop
    tui.screen_reader            unset                          default   ✎
    tui.show_reasoning           true                           default   ✎
    tui.notify                   bell                           default   ✎
+   tui.prompt_suggestions       false                          default   ✎
+   tui.history_completion       true                           default   ✎
    context.autocompact_window   150000                         project-local ✎
    permissions.default_mode     unset (interactive: auto, ...  default
    permissions.deny             3 entries                      user, project
@@ -909,7 +943,7 @@ environment variable (`--model`, screen-reader mode) is not labelled as such.
 
 Typing filters the rows by key, space included. Up and Down select and wrap around, and Esc closes.
 
-Eleven rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
+Thirteen rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
 network, telemetry, `env`, hook and MCP keys change what the guardian and the permission pipeline
 allow or send data off the machine, so they take a deliberate edit of the settings file. Rule
 editing stays in the files too; see [Permissions](permissions.md).
@@ -921,6 +955,8 @@ editing stays in the files too; see [Permissions](permissions.md).
 | `tui.show_reasoning` | Cycles `true`, `false` | From the next launch |
 | `tui.editor_mode` | Cycles `emacs`, `vim`, unset | From the next launch |
 | `tui.notify` | Cycles `bell`, `osc9`, `osc777`, `off`, unset | From the next launch |
+| `tui.prompt_suggestions` | Cycles `true`, `false` | From the next launch |
+| `tui.history_completion` | Cycles `true`, `false` | From the next launch |
 | `context.autocompact_window` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `schedule.enabled` | Cycles `true`, `false` | From the next launch |
 | `memory.auto` | Cycles `true`, `false` | From the next launch |

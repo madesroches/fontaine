@@ -1376,6 +1376,8 @@ project or project-local file that has a `[tui]` table is an error.
 | `screen_reader` | Turns on screen-reader mode. `--ax-screen-reader` turns it on and `FONTAINE_AX_SCREEN_READER=0` keeps it off over this setting. See [Terminal setup](terminal.md#screen-reader-mode). | `false` |
 | `show_reasoning` | Shows the model's reasoning in the conversation: it streams live, then folds to a few rows once it settles, and `/expand thinking` prints it in full. `false` hides it. See [Terminal UI](tui.md#model-reasoning). | `true` |
 | `notify` | How a prompt that waits for your answer (an approval, a question, an MCP server or skill prompt, the guardian-unavailable prompt) signals the terminal: `bell` (the default), `osc9` or `osc777` (a desktop notification, on terminals that support the sequence) or `off`. Screen-reader mode keeps its own bell. See [Notifications](terminal.md#notifications). | `bell` |
+| `prompt_suggestions` | After a turn, asks the main model for the message you are likely to type next and shows it dimmed in the empty input; Tab or Right fills it in. It is an extra model call per turn, shown as `suggestions` in `/cost`. See [Prompt suggestions and history completion](tui.md#prompt-suggestions-and-history-completion). | `false` |
+| `history_completion` | Shows the newest earlier input that extends what you are typing as dimmed text after the cursor; Tab or Right accepts it. No model call. | `true` |
 | `editor_mode` | How the input box edits text: `emacs` (readline-style, the default) or `vim` (modal INSERT/NORMAL; see [Vim input mode](tui.md#vim-input-mode)). `/vim` toggles it live and saves the choice. | `emacs` |
 
 ```toml
@@ -1385,6 +1387,8 @@ screen_reader = false
 show_reasoning = true
 editor_mode = "vim"
 notify = "osc9"
+prompt_suggestions = true
+history_completion = true
 ```
 
 ### `[keybindings]`

@@ -297,6 +297,18 @@ pub const KEYS: &[KeyRow] = &[
         NextLaunch
     ),
     row!(
+        "tui.prompt_suggestions",
+        |c, _| c.tui.prompt_suggestions.to_string(),
+        Edit::Choice(bool_choices),
+        NextLaunch
+    ),
+    row!(
+        "tui.history_completion",
+        |c, _| c.tui.history_completion.to_string(),
+        Edit::Choice(bool_choices),
+        NextLaunch
+    ),
+    row!(
         "context.autocompact_window",
         |c, _| unset_or(
             c.context.autocompact_window,
@@ -801,6 +813,8 @@ mod tests {
         assert_eq!(effective("tui.theme", &c), "dark-ansi");
         assert_eq!(effective("tui.screen_reader", &c), "unset");
         assert_eq!(effective("tui.show_reasoning", &c), "true");
+        assert_eq!(effective("tui.prompt_suggestions", &c), "false");
+        assert_eq!(effective("tui.history_completion", &c), "true");
         assert_eq!(effective("schedule.enabled", &c), "true");
         assert_eq!(effective("agents.max_parallel", &c), "4");
         assert_eq!(effective("agents.subagent_token_budget", &c), "unset");
@@ -945,6 +959,8 @@ mod tests {
                 "tui.show_reasoning",
                 "tui.editor_mode",
                 "tui.notify",
+                "tui.prompt_suggestions",
+                "tui.history_completion",
                 "context.autocompact_window",
                 "schedule.enabled",
                 "memory.auto",

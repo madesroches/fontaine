@@ -25,7 +25,7 @@ use crate::usage_prompt::UsagePausePrompt;
 use crate::{Action, App, Command, Input, Prompt, Ui, parse_command};
 use crate::{StatuslineTrigger, reports, statusbar};
 use fontaine_core::afk_report::AfkSource;
-use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal};
+use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal, SuggestionInputs};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::AfkRefusal;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
@@ -96,6 +96,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(task) = self.statusline_task.take() {
             task.abort();
         }
+        self.app.pending_suggestion = None;
         let deadline = started + self.quit_budget;
         if let Some(on_quit) = self.on_quit.as_mut() {
             on_quit(deadline);
@@ -780,6 +781,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 continue;
             }
+            if !held && std::mem::take(&mut self.app.suggestion_due) {
+                self.start_suggestion(runtime).await;
+            }
             // Elapsed times in the agent list, and the end of an ended row's 30 seconds there,
             // are shown without anything else happening.
             self.draw(runtime);
@@ -799,6 +803,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let mut statusline_rx = self.statusline_rx.as_mut();
             let statusline_result_rx = &mut self.statusline_result_rx;
             let afk_stops = &mut self.afk_stops;
+            let mut suggestion_reply = self
+                .app
+                .pending_suggestion
+                .as_mut()
+                .map(|pending| &mut pending.reply);
             let mut stopped = false;
             let action = if let Some(input) = buffered {
                 self.act_on(runtime, input)
@@ -839,6 +848,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         self.statusline_last_run = Some(std::time::Instant::now());
                         if let Some(line) = line {
                             self.app.statusline = Some(line);
+                        }
+                        Action::None
+                    }
+                    // A task that was ended without an answer reads as no suggestion.
+                    reply = async {
+                        match suggestion_reply.as_mut() {
+                            Some(reply) => reply.await.ok().flatten(),
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        self.app.pending_suggestion = None;
+                        if let Some(text) = reply {
+                            self.app.set_suggestion(text);
                         }
                         Action::None
                     }
@@ -929,6 +951,34 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::SetupComposition(_) => {}
             }
         }
+    }
+
+    /// Asks for a prompt suggestion on a task, so the idle loop is never held up by the model.
+    /// The skip checks and the transcript read are a short store read, awaited here.
+    async fn start_suggestion(&mut self, runtime: &AgentRuntime) {
+        if !self.app.input.is_empty()
+            || self.app.viewing.is_some()
+            || self.app.wakeup_pending
+            || self.app.linear
+        {
+            return;
+        }
+        let inputs = SuggestionInputs {
+            enabled: runtime.config.tui.prompt_suggestions,
+            mode: runtime.state.mode(),
+            last_turn_finished: self.app.last_turn_finished,
+            completed_turns: self.app.completed_turns,
+            unused_streak: self.app.unused_suggestions,
+            last_turn_automatic: self.app.automatic_turn,
+        };
+        let Some(prepared) = runtime.prepare_prompt_suggestion(&inputs).await else {
+            return;
+        };
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = reply.send(prepared.run().await);
+        });
+        self.app.pending_suggestion = Some(crate::app::PendingSuggestion::new(task, answer));
     }
 
     /// The notice lands where the human is looking: an agent's view, or the main chat.

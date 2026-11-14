@@ -152,6 +152,20 @@ impl History {
         }
     }
 
+    /// What the newest single-line entry that starts with `typed` and goes on past it adds, for
+    /// ghost text after the cursor. Case-sensitive, unlike `search`, so the ghost always extends
+    /// exactly what was typed. A command or shell line is never completed.
+    pub fn completion(&self, typed: &str) -> Option<&str> {
+        if typed.is_empty() || typed.contains('\n') || typed.starts_with(['/', '!']) {
+            return None;
+        }
+        self.entries
+            .iter()
+            .rev()
+            .filter(|entry| !entry.contains('\n'))
+            .find_map(|entry| entry.strip_prefix(typed).filter(|rest| !rest.is_empty()))
+    }
+
     /// The newest entry older than `before` that contains `query`, ignoring case.
     pub fn search(&self, query: &str, before: usize) -> Option<(usize, &str)> {
         let query = query.to_lowercase();
@@ -283,6 +297,32 @@ mod tests {
         assert_eq!(history.search("parser", 2), Some((0, "Fix the Parser")));
         assert_eq!(history.search("parser", 0), None);
         assert_eq!(history.search("missing", 4), None);
+    }
+
+    #[test]
+    fn completion_is_the_remainder_of_the_newest_extending_entry() {
+        let mut history = History::in_memory("p");
+        for entry in ["fix the parser", "fix the lexer", "run tests", "fix"] {
+            history.push(entry);
+        }
+        assert_eq!(history.completion("fix t"), Some("he lexer"));
+        assert_eq!(history.completion("fix the p"), Some("arser"));
+        assert_eq!(history.completion("r"), Some("un tests"));
+        assert_eq!(history.completion("Fix"), None, "case-sensitive");
+    }
+
+    #[test]
+    fn completion_needs_a_longer_entry_and_leaves_commands_and_multiline_alone() {
+        let mut history = History::in_memory("p");
+        for entry in ["/model x", "!ls -la", "line one\nline two", "exact"] {
+            history.push(entry);
+        }
+        assert_eq!(history.completion(""), None);
+        assert_eq!(history.completion("exact"), None);
+        assert_eq!(history.completion("/mo"), None);
+        assert_eq!(history.completion("!l"), None);
+        assert_eq!(history.completion("line one\nl"), None);
+        assert_eq!(history.completion("line o"), None);
     }
 
     #[test]

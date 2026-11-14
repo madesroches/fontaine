@@ -755,7 +755,7 @@ pub fn recap(input: &RecapInput) -> String {
 /// What `/cost` reports: the ledger's buckets and the session cost budget.
 pub struct UsageReport {
     /// In `UsageSource::ALL` order.
-    pub by_source: [Bucket; 7],
+    pub by_source: [Bucket; 8],
     /// One bucket per role and model that served a call.
     pub by_model: Vec<(Served, Bucket)>,
     /// The `[agents]` session cost cap and what the session has spent against it.
@@ -773,6 +773,7 @@ pub fn cost(report: &UsageReport) -> String {
         ("compaction", UsageSource::Compaction),
         ("side questions", UsageSource::SideQuestion),
         ("advisor", UsageSource::Advisor),
+        ("suggestions", UsageSource::PromptSuggestion),
     ];
     let total = fontaine_core::usage_ledger::total(&report.by_source);
     let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
@@ -1639,7 +1640,7 @@ mod tests {
     }
 
     fn usage_report(rows: &[(UsageSource, Bucket)]) -> UsageReport {
-        let mut by_source = [Bucket::default(); 7];
+        let mut by_source = [Bucket::default(); 8];
         for (source, bucket) in rows {
             by_source[source.index()] = *bucket;
         }
@@ -1674,6 +1675,28 @@ mod tests {
         assert!(lines[2].contains("84.2k"), "{text}");
         assert!(!text.contains("unpriced"), "{text}");
         assert!(!text.contains("budget"), "{text}");
+    }
+
+    #[test]
+    fn cost_shows_the_prompt_suggestion_apart_from_side_questions() {
+        let text = cost(&usage_report(&[
+            (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.4), 0)),
+            (
+                UsageSource::SideQuestion,
+                spent(1, 3_000, 200, Some(0.01), 0),
+            ),
+            (
+                UsageSource::PromptSuggestion,
+                spent(3, 9_000, 60, Some(0.02), 0),
+            ),
+        ]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[3].starts_with("  side questions"), "{text}");
+        assert!(
+            lines[4].starts_with("  suggestions") && lines[4].ends_with("$0.0200"),
+            "{text}"
+        );
+        assert!(lines[5].ends_with("$0.4300"), "{text}");
     }
 
     #[test]
