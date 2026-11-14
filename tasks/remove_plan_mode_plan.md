@@ -25,6 +25,8 @@ deliberate deviation from Claude Code, which has plan mode.
   `Posture::of_root`/`child`. With plan gone, `RootMode` has one variant (`Ladder`).
   `tree.rs` holds `set_root_mode` and a `RootModeSource` closure; `gate.rs:144` maps
   `PermissionMode` to `RootMode`.
+- **Stale doc comment**: `fontaine-core/src/agent.rs:749` ("The permission mode now, which Shift+Tab,
+  `/plan` and the guardian prompts can change").
 - **Mode lists that simply name it**: `headless.rs` (1037, 1601), `agent/goal.rs:54`,
   `native_search.rs` (26, tests), `claude_compat/cli.rs:503` (`parse_mode`), `cli.rs` (`ModeArg::Plan`).
 - **Config**: `config_scope.rs` (project scope already refuses `plan`; test at ~929 and ~524, both on a raw `toml::Value` so they still pass but would test a value that is no longer a mode).
@@ -71,16 +73,18 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 - **Pipeline**: delete the edit block, the `plan_block` argument (so `posture_of` returns only the
   mode) and the `Plan` arms; `Spawn` allows `Auto | Afk`, and the mode match loses `Plan`.
 - **Agents**: with no root posture other than the ladder, `RootMode` and `Posture::plan_block`
-  have no remaining meaning. Remove `RootMode`, `Posture::of_root`'s plan arm and `plan_block`; if
-  `Posture` is then a one-field wrapper around `Ladder`, collapse it to `Ladder` and have
-  `set_root_mode` take `Ladder`. Keep this refactor as small as the compiler allows: delete first,
+  have no remaining meaning. Remove `RootMode`, `Posture::of_root`'s plan arm and `plan_block`; keep
+  `Posture { mode }`. Keep this refactor as small as the compiler allows: delete first,
   simplify only what is left empty.
 - **`Tier::PlanBlock`**: remove it, drop it from `Tier::ALL` (now 21), `as_str`, the AFK severity
   list and the headless schema's tier enum. The audit log, ledger and `gate_decision` events of
   sessions written before this change may contain `"plan_block"`, and both are read back: `Ledger::open` parses every line as `Entry` (`Action { tier: Option<Tier> }`)
   and fails on an unparseable line, and `AuditLog::read` deserializes the non-optional
   `DecisionRecord.tier` (used by `/bug` on a resumed session). Both readers need a shim for an old
-  `"plan_block"`; the mechanism is settled by the Open Question below.
+  `"plan_block"`; put `#[serde(alias = "plan_block")]` on `Tier::DenyRule`, which covers both readers
+  (`Option<Tier>` and `Tier` are the same enum); the alias only affects reading, so new records write
+  `"deny_rule"`. The plan-block deny was a `DenyRule`-shaped deny and `severity_weight` already puts
+  both tiers in the Medium arm, so old records read as Medium, as before.
 - **`AfkSource::Plan`**: serialized as `"plan"` in the ledger, which is read back on resume. Remove
   the variant and add `#[serde(alias = "plan")]` to `Command`.
 - **Resume**: a resume does not restore the mode, and `Record::ModeChange` stores plain strings, so
@@ -93,10 +97,12 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 ## Implementation Steps
 
 1. **Core types.** Remove `PermissionMode::Plan` (`config.rs`) and fix every exhaustive match the
-   compiler reports. Remove `Tier::PlanBlock` (`tier.rs`, `afk_report.rs`) and `AfkSource::Plan`
+   compiler reports. Remove `Tier::PlanBlock` (`tier.rs`, `afk_report.rs`; add
+   `#[serde(alias = "plan_block")]` to `Tier::DenyRule`) and `AfkSource::Plan`
    (add `#[serde(alias = "plan")]` to `AfkSource::Command`).
 2. **Pipeline.** `permissions.rs`: delete the plan edit block, the `plan_block` plumbing and the
    `Plan` arms. `gate.rs`, `goal.rs`, `native_search.rs`: drop `Plan` from the mode lists.
+   `agent.rs:749`: drop `/plan` from the permission-mode doc comment.
 3. **Agents.** `fontaine-agents/src/mode.rs` and `tree.rs`: remove the plan posture as designed
    above; update `tests/seam.rs` for the changed `RootMode`/`set_root_mode` signature.
 4. **CLI and compat.** `cli.rs` (`ModeArg`), `claude_compat/cli.rs` (`parse_mode` and its test),
@@ -135,8 +141,7 @@ Delete the mode end to end; add nothing. The pieces that need a decision:
 
 ## Files to Modify
 
-See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`,
-`tasks/design/permissions.md`, `tasks/design/testing.md`, `docs/architecture.md` and `AGENTS.md`.
+See Current State: every file listed there, plus `tasks/fontaine_harness_plan.md` and `CHANGELOG.md`.
 
 ## Trade-offs
 
@@ -170,17 +175,12 @@ Everything here is unit or integration level; no live API and no manual step is 
   move to `acceptEdits`, and a new small test asserts `default_mode = "plan"` errors naming the key; new tests that `--permission-mode plan`
   and the compat `parse_mode("plan")` fail with an error naming `plan`.
 - `statusbar.rs` test that the cycle is manual → accept edits → auto → AFK → manual.
-- Shim tests: a ledger with `"plan"` (`AfkSource`) and `"plan_block"` (`Tier`) still opens, and an
-  audit log record with tier `"plan_block"` still reads.
+- Shim tests: a ledger with `"plan"` (`AfkSource`) and a ledger line with tier `"plan_block"` still
+  open (the tier reading back as `DenyRule`), and an audit log record with tier `"plan_block"` still
+  reads.
 - The permission matrices keep their remaining modes, so the deterministic-floor and edit-class
   coverage of `manual`, `acceptEdits`, `dontAsk`, `auto` and `afk` is unchanged.
 - Gates from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings`, `cargo test`,
   `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, and the two `fixture` eval runs from
   AGENTS.md.
-
-## Open Questions
-
-- Which mechanism reads an old `plan_block` tier back (the audit log's `DecisionRecord.tier` is not
-  optional, the ledger's is `Option<Tier>`), and what severity an old plan-block denial gets in
-  `afk_report::severity_weight`.
