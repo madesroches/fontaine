@@ -524,7 +524,10 @@ fn a_powershell_call_is_always_destructive_and_touches_no_path() {
 fn text_operands_of_printf_and_sed_are_not_touched_paths() {
     let scope = Scope::new(std::path::PathBuf::from("/w"), []);
     let command = "printf '\\n[dependencies]\\n' >> crates/x/Cargo.toml && sed -i 's/pub fn add/pub fn sum/' crates/x/src/main.rs && sed -e 's/a/b/' -i crates/x/src/lib.rs";
-    let paths = touched_paths("shell", &json!({ "command": command }), &scope, None);
+    let paths: Vec<String> = touched_paths("shell", &json!({ "command": command }), &scope, None)
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect();
     assert_eq!(
         paths,
         vec![
