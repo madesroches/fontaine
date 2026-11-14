@@ -48,8 +48,7 @@ check uses `Environment { scope, cwd }` built from the call's `cwd` argument (ne
 need not exist, matching how `in_scope` already works). A `cd` out of the roots, or from an
 out-of-scope `cwd`, gets no tolerance and falls through as before.
 
-Soundness: nothing about what runs changes. The grants and hook allows that reach the same matcher
-(see Current State) accept the prefix under the same conditions. The `cd` is a builtin that only moves the directory
+Soundness: nothing about what runs changes. The `cd` is a builtin that only moves the directory
 within the roots (the shell tool already confines the persisted cwd to the roots), and the command
 after it must match the allow rule's words exactly as it would alone. The floor, hooks, guardian
 and the critical-path check still see the whole original command line. Anything else with a list
@@ -84,7 +83,6 @@ rule is proposed for `cd X && cmd`. The reviewer's denial text is unchanged.
 
 - **Tolerate a `cd` prefix (chosen)** vs. fix the subagent's cwd only: the latter misses models
   that `cd` anyway and user allow rules.
-- Accept `;` and `||` too: rejected. Strip `cd` for all postures: unnecessary.
 
 ## Decisions
 
