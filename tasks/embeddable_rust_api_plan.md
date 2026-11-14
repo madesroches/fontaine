@@ -34,9 +34,9 @@ route and documents all three as one embedding story.
 
 The SDK is **one crate**, `rust/fontaine-sdk`, the only crate a Rust embedder names in `Cargo.toml`
 or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so the current
-`fontaine-core`, `fontaine-tools` and `fontaine-agents` become **modules** of it:
+`fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become **modules** of it:
 
-- `fontaine_sdk::core`, `fontaine_sdk::tools`, `fontaine_sdk::agents` hold the existing source trees
+- `fontaine_sdk::core`, `fontaine_sdk::tools`, `fontaine_sdk::agents`, `fontaine_sdk::guardian` hold the existing source trees
   unchanged (`core/src/*` -> `sdk/src/core/*`, and so on). Module names collide across the three
   crates (`tasks`, `effort`, `schedule`, `checkpoint`, `tools`), which is why each tree keeps its
   own namespace instead of being flattened.
@@ -56,9 +56,12 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   includes of the other crates' tests and examples; and re-points the `pg2` feature from
   `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`. It lands as its own commit, ahead of any
   behavior change, so the tests are the proof it changed nothing.
-- `fontaine-guardian` stays its own crate: the repo requires it to be dependency-light and
-  lift-out-able by other harnesses, and folding it in would end that. It is the SDK's one
-  re-exported dependency (`fontaine_sdk::guardian`). An embedder still names one crate.
+- `fontaine-guardian` becomes the `guardian` module too (`fontaine_sdk::guardian`), so the SDK is
+  the only Fontaine crate an embedder names. Its dependency-light property is kept inside the
+  crate: the module imports nothing from the other modules, and the Rune scripting dependency
+  stays behind the SDK's `guardian-composition` feature (the old `composition` feature of
+  `fontaine-guardian`, which core enabled, so it is on by default). The guardian's `pg2` feature
+  folds into the SDK's existing `pg2` feature. `AGENTS.md`'s lift-out rule is reworded to match.
 - Out of the SDK: `fontaine-tui`, `fontaine-remote`, `fontaine-evals`, `fontaine-testkit` and the
   `fontaine` binary. They depend on the SDK.
 
@@ -182,7 +185,7 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 ## Files to Modify
 
 - `rust/Cargo.toml` (core, tools and agents removed, sdk added)
-- `rust/fontaine-sdk/**` (new; receives `fontaine-core/**`, `fontaine-tools/**`, `fontaine-agents/**`)
+- `rust/fontaine-sdk/**` (new; receives `fontaine-core/**`, `fontaine-tools/**`, `fontaine-agents/**`, `fontaine-guardian/**`)
 - every `Cargo.toml` and import in `fontaine`, `fontaine-tui`, `fontaine-remote`, `fontaine-evals`,
   `fontaine-testkit`
 - `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine/Cargo.toml`
@@ -202,8 +205,8 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 ## Decisions
 
 - 2026-11-14: Rust embedding is a typed, in-process facade whose event stream serializes to `headless-v1` unchanged; foreign languages use the existing stdio surfaces, with no third protocol.
-- 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools` and `fontaine-agents` become its modules in this same change. `fontaine-guardian` stays separate for lift-out and is re-exported.
-- 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` and `fontaine-guardian`.
+- 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become its modules in this same change. Deviates from the guardian crate's lift-out rule: a lift-out consumer now depends on the SDK with default features off, and the guardian module imports no other SDK module.
+- 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` alone.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
 
 ## Documentation
