@@ -148,6 +148,56 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
 }
 
 #[test]
+fn executables_given_as_relative_paths_still_run_from_the_fixture_directories() {
+    // CARGO_TARGET_TMPDIR sits in the workspace target dir, outside the package cwd
+    // that cargo gives integration tests, so the stubs live under the cwd instead.
+    let cwd = std::env::current_dir().unwrap();
+    let tmp = tempfile::tempdir_in(&cwd).unwrap();
+    let dir = tmp.path().to_path_buf();
+    let fontaine_out = format!(
+        "{}\n{}\n",
+        json!({"type": "init", "model": "acct/sonnet"}),
+        [900, 50, 220, 220, 50].map(model_call).join("\n")
+    );
+    let claude_out = format!(
+        "{}\n{}\n",
+        json!({"type": "system", "subtype": "init", "model": "claude-sonnet-x"}),
+        [900, 200, 200, 200, 50]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| assistant(&format!("m{i}"), *c))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let fontaine = stub(&dir, "fontaine", &fontaine_out);
+    let claude = stub(&dir, "claude", &claude_out);
+    let relative = |absolute: &str| {
+        Path::new(absolute)
+            .strip_prefix(&cwd)
+            .expect("the stub directory is created under the test's cwd")
+            .display()
+            .to_string()
+    };
+    let args = [
+        "fontaine-evals".to_string(),
+        "cache-bench".into(),
+        "--model".into(),
+        "acct/sonnet".into(),
+        "--files".into(),
+        "4".into(),
+        "--fontaine".into(),
+        relative(&fontaine),
+        "--claude".into(),
+        relative(&claude),
+        "--out".into(),
+        dir.join("card.json").display().to_string(),
+    ];
+    assert_eq!(run(args.into_iter().map(Into::into)), 0);
+    assert_eq!(argv(&dir, "fontaine")[0], "-p");
+    assert_eq!(argv(&dir, "claude")[0], "-p");
+}
+
+#[test]
 fn a_ratio_above_the_threshold_exits_one_and_still_writes_the_scorecard() {
     let dir = tempfile::tempdir().unwrap();
     let code = bench(

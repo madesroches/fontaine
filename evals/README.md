@@ -390,7 +390,7 @@ cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out ../eva
 | `--claude-model <alias>` | The `claude -p --model` value; default the part of `--model` after the `/`. |
 | `--files <n>` | Fixture files read one at a time; default 6, at least 4. |
 | `--threshold <x>` | The ratio above which the run is flagged; default 1.25. |
-| `--fontaine <path>`, `--claude <path>` | The executables; default `fontaine` and `claude`. |
+| `--fontaine <path>`, `--claude <path>` | The executables; default `fontaine` and `claude`. A relative path is resolved against the current directory. |
 | `--out <path>` | The scorecard to write. Required. |
 
 Each side gets its own scratch workspace of equal-sized text files and the same prompt, with a
