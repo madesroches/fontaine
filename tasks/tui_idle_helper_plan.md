@@ -7,7 +7,7 @@
 shared harness as `Ui::idle`, delete the local copies and rewrite call sites.
 
 ## Current State
-The issue counts 7 copies; the tree now holds 15 byte-identical ones, in every file under
+The issue counts 7 copies; the tree now holds 15 identical ones, in every file under
 `rust/fontaine-tui/tests/` except `common/mod.rs`: afk, agents, bug, extensions, goal,
 plugins_live, providers, quit, remote, rewind, schedule, sessions, shell_cwd, todos, tui. Each
 is:
@@ -18,7 +18,7 @@ async fn idle(ui: &Ui) {
 }
 ```
 
-Call sites are `idle(&ui).await` (also `idle(ui)` where `ui` is already a reference, in tui.rs).
+Call sites are `idle(&ui).await` (also `idle(ui)` where `ui` is already a reference, in tui.rs and rewind.rs).
 `Ui` lives in `tests/common/mod.rs` with `wait_until` / `wait_for` at ~lines 640-657.
 `fontaine-tools/src/mcp/elicitation.rs` has an unrelated `idle`; leave it.
 
