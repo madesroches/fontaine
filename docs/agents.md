@@ -82,17 +82,27 @@ agent stay controls for you, in the
 
 ## Agent types
 
-Three types are built in:
+Four types are built in:
 
 | Type | Model | Tools |
 |---|---|---|
 | `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `send_message` |
+| `reviewer` | `$main` | the `explore` tools, plus `shell` limited to `git diff`, `git log`, `git show`, `git status`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`, `cargo clippy`, `cargo test` and `cargo fmt --check` |
 | `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `memory`, `shell`, `send_message` |
 | `fork` | the session model | every tool the main conversation has, except `ask_user_question` and `advisor` |
 
 On Windows without Git Bash the main conversation has no `shell`, and `worker` gets `powershell` in
 its place; a type of your own that lists `shell` does too, and one that disallows `shell` gets no
-command tool.
+command tool. `reviewer` gets none there: its `shell` entries carry specifiers, which do not cover
+`powershell`, so it behaves like `explore`.
+
+`reviewer` has no edit tools and its prompt tells it to report findings, not fix them, but it is
+not read-only. Each command is matched like a `shell` allow rule, so a chain, pipe, redirection or
+substitution is refused, as is plain `cargo fmt`. Still, `cargo` writes `target/` and runs build
+scripts and tests, and some `git` and `gh` options write files. Because it holds `shell`, a
+`reviewer` spawn has no read-only fast path and is gated like `worker`; every call it makes still
+passes the full permission pipeline. The list is fixed: for another one, define a type of your own
+with `tools = ["shell(...)"]` entries.
 
 `$main` is the session model, including the entry it has fallen through to. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none; it is opt-in — no built-in type uses it.
@@ -347,7 +357,7 @@ A task has an id (`t1`, `t2`, unique across every board in the session and never
   read-only spawn fast path. `board_update` writes only the session's own `tasks.json` (for `main`'s
   board) and runs your `task_created` and `task_completed` hooks, so every mode runs it at the `coordination` tier with
   no guardian verdict and no prompt; a `deny` or `ask` rule on `board_update` applies first. It has
-  no fast path. The built-in `worker` type gets both tools and `explore` gets `board_show` when
+  no fast path. The built-in `worker` type gets both tools and `explore` and `reviewer` get `board_show` when
   boards are on; a type of yours has them only if its `tools` names them (or names none). A type
   that names `agent` can own a board.
 

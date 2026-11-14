@@ -1,4 +1,4 @@
-//! The agent types a session can spawn: the built-in three, `[agents.types]` entries and agent
+//! The agent types a session can spawn: the built-in four, `[agents.types]` entries and agent
 //! files in one registry. A type names a model, a toolset and a mode; the toolset a child
 //! really gets is that set cut down to what its parent has.
 
@@ -244,6 +244,27 @@ impl AgentType {
     }
 }
 
+/// The tools of the built-in `explore`; `reviewer` starts from the same set.
+const EXPLORE_TOOLS: [&str; 6] = ["ls", "read", "glob", "grep", "lsp", "send_message"];
+
+/// The commands the built-in `reviewer` may run. The trailing ` *` also matches the command
+/// with no arguments; `cargo fmt --check` keeps plain `cargo fmt`, which rewrites files, out.
+const REVIEWER_SHELL: [&str; 11] = [
+    "shell(git diff *)",
+    "shell(git log *)",
+    "shell(git show *)",
+    "shell(git status *)",
+    "shell(gh pr view *)",
+    "shell(gh pr diff *)",
+    "shell(gh pr checks *)",
+    "shell(gh issue view *)",
+    "shell(cargo clippy *)",
+    "shell(cargo test *)",
+    "shell(cargo fmt --check *)",
+];
+
+const REVIEWER_PROMPT: &str = "You are a reviewer. Review the change you were pointed at: read the code, run the allowed commands to check it, and report your findings with file and line. Do not fix anything, and do not try to work around a command that is refused.";
+
 /// Tools only the user's session has: it alone drafts bug reports, and a child consulting the
 /// advisor would multiply its spend and what leaves for the second provider.
 const ROOT_ONLY: &[&str] = &[fontaine_tools::descriptor::DRAFT_BUG_REPORT, "advisor"];
@@ -254,18 +275,33 @@ pub struct AgentTypes {
 }
 
 impl AgentTypes {
-    /// The types every session has: a read-only `explore`, a `worker` that can edit and run
-    /// commands, and a `fork` that starts from the main conversation.
+    /// The types every session has: a read-only `explore`, a `reviewer` that also runs a fixed set
+    /// of review commands, a `worker` that can edit and run commands, and a `fork` that starts
+    /// from the main conversation.
     pub fn builtin() -> AgentTypes {
         let mut types = AgentTypes::default();
         types.insert(AgentType {
             name: "explore".to_string(),
             description: "Reads and searches the workspace; cannot change anything.".to_string(),
             prompt: None,
+            tools: Some(EXPLORE_TOOLS.map(String::from).to_vec()),
+            disallowed: Vec::new(),
+            model: Some(ModelSpec::Main),
+            mode: ModeSetting::Inherit,
+            effort: None,
+            origin: TypeOrigin::Builtin,
+            inherits_context: false,
+        });
+        types.insert(AgentType {
+            name: "reviewer".to_string(),
+            description: "Reads and searches the workspace and runs a fixed set of review commands; edits nothing through the file tools.".to_string(),
+            prompt: Some(REVIEWER_PROMPT.to_string()),
             tools: Some(
-                ["ls", "read", "glob", "grep", "lsp", "send_message"]
+                EXPLORE_TOOLS
+                    .into_iter()
+                    .chain(REVIEWER_SHELL)
                     .map(String::from)
-                    .to_vec(),
+                    .collect(),
             ),
             disallowed: Vec::new(),
             model: Some(ModelSpec::Main),
@@ -319,13 +355,14 @@ impl AgentTypes {
         types
     }
 
-    /// Gives the built-in `worker` both board tools and the built-in `explore` the reading one,
+    /// Gives the built-in `worker` both board tools and the built-in `explore` and `reviewer` the reading one,
     /// since a type's toolset is only what it names. `fork` names none and inherits whatever its
     /// parent has.
     pub fn enable_teams(&mut self) {
         for (name, tools) in [
             ("worker", &["board_show", "board_update"][..]),
             ("explore", &["board_show"][..]),
+            ("reviewer", &["board_show"][..]),
         ] {
             if let Some(agent) = self
                 .types
@@ -691,6 +728,60 @@ mod tests {
             plain.get("worker").unwrap().toolset(&parent),
             names(&["read", "send_message"])
         );
+    }
+
+    #[test]
+    fn the_reviewer_is_the_explore_tools_plus_shell() {
+        let types = AgentTypes::builtin();
+        let reviewer = types.get("reviewer").unwrap();
+        assert_eq!(reviewer.origin, TypeOrigin::Builtin);
+        assert!(reviewer.prompt.is_some());
+        let listed = reviewer.tools.as_ref().unwrap();
+        for tool in ["edit", "write", "notebook_edit", "memory"] {
+            assert!(!listed.iter().any(|e| entry_tool(e) == tool), "{tool}");
+        }
+        let parent = names(&[
+            "ls",
+            "read",
+            "glob",
+            "grep",
+            "lsp",
+            "send_message",
+            "edit",
+            "write",
+            "notebook_edit",
+            "memory",
+            "shell",
+            "powershell",
+        ]);
+        let mut got = reviewer.toolset(&parent);
+        got.sort();
+        let mut want: Vec<String> = EXPLORE_TOOLS.iter().map(|t| t.to_string()).collect();
+        want.push("shell".to_string());
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn the_reviewer_has_no_command_tool_without_a_posix_shell() {
+        let types = AgentTypes::builtin();
+        let set = types
+            .get("reviewer")
+            .unwrap()
+            .toolset(&names(&["read", "powershell"]));
+        assert_eq!(set, names(&["read"]));
+    }
+
+    #[test]
+    fn teams_give_the_reviewer_the_reading_board_tool_only() {
+        let mut types = AgentTypes::builtin();
+        types.enable_teams();
+        let set =
+            types
+                .get("reviewer")
+                .unwrap()
+                .toolset(&names(&["read", "board_show", "board_update"]));
+        assert_eq!(set, names(&["read", "board_show"]));
     }
 
     #[test]

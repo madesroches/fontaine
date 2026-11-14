@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A built-in `reviewer` agent type (#616): the `explore` tools plus `shell` limited to review
+  commands (`git diff`, `gh pr view`, `cargo clippy`, `cargo test`, …), with no edit tools and a
+  prompt that says to report findings, not fix them.
 - A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
   example each. `claude-subscription` is no longer labeled experimental.
 - MCP tool calls that a server answers with a task (protocol 2026-07-28, tasks extension) now

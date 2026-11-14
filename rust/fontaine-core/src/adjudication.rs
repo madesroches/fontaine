@@ -585,6 +585,7 @@ mod tests {
         let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
         assert_eq!(spawn(&types, &all, "explore"), Some(false));
         assert_eq!(spawn(&types, &all, "worker"), Some(true));
+        assert_eq!(spawn(&types, &all, "reviewer"), Some(true));
         assert_eq!(spawn(&types, &all, "fork"), Some(true));
     }
 
