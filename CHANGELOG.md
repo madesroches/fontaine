@@ -215,6 +215,10 @@ All notable changes are recorded here. The format follows
   harness did not index (a crate it just scaffolded, a gitignored file) is routine editing, so an
   unattended run is not stopped by an escalation nobody can answer. Deletions, truncations, moves and
   copies, `pre_existing` untracked files and paths outside the workspace still deny.
+- The guardian is no longer shown the text of `printf`/`echo` or the script of `sed`/`awk` as touched
+  paths (#636), and its prompt now says workspace edits are generally allowed and that a request
+  naming only a task or a skill covers the edits that serve it, so the compound shell edit that
+  stopped an AFK run is allowed on the live Haiku eval.
 - `fontaine-evals cache-bench` now accepts a relative `--fontaine` or `--claude` path (#498). The
   bench runs each side from a temporary fixture directory, so a path such as `target/debug/fontaine`
   failed with "cannot run"; it is now resolved against the current directory first.

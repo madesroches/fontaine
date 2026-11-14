@@ -97,6 +97,50 @@ fn shell(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
     analysis.commands.iter().any(destructive_command)
 }
 
+/// Indices of the operands that are text, not files: what `printf` and `echo` print, and the
+/// script of `sed` and `awk`. A format string or an `s/a/b/` script has slashes and backslashes
+/// but names no path, and listing it as one shows the guardian a path nothing touches.
+fn text_operands(program: &str, args: &[Option<&str>]) -> Vec<usize> {
+    let name = program.rsplit('/').next().unwrap_or(program);
+    let is_option = |arg: &Option<&str>| arg.is_some_and(|a| a.starts_with('-'));
+    match name {
+        "printf" | "echo" => (0..args.len())
+            .filter(|&at| !is_option(&args[at]))
+            .collect(),
+        "sed" | "awk" => {
+            let mut text = Vec::new();
+            let mut script_option = false;
+            let mut file_script = false;
+            let mut at = 0;
+            while at < args.len() {
+                match args[at] {
+                    Some("-e") | Some("--expression") if name == "sed" => {
+                        script_option = true;
+                        text.push(at + 1);
+                        at += 1;
+                    }
+                    Some("-f") | Some("--file") => file_script = true,
+                    Some("-v") | Some("-F") if name == "awk" => {
+                        text.push(at + 1);
+                        at += 1;
+                    }
+                    _ => {}
+                }
+                at += 1;
+            }
+            if !script_option
+                && !file_script
+                && let Some(first) =
+                    (0..args.len()).find(|&at| !is_option(&args[at]) && !text.contains(&at))
+            {
+                text.push(first);
+            }
+            text
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn words(command: &SimpleCommand) -> Option<Vec<String>> {
     command.words.iter().map(|w| w.literal.clone()).collect()
 }
@@ -341,11 +385,19 @@ pub fn touched_paths(
                 }
             }
             for simple in &analysis.commands {
-                for word in simple.words.iter().skip(1) {
-                    let Some(literal) = word.literal.as_deref() else {
+                let literals: Vec<Option<&str>> = simple
+                    .words
+                    .iter()
+                    .skip(1)
+                    .map(|w| w.literal.as_deref())
+                    .collect();
+                let program = simple.words.first().and_then(|w| w.literal.as_deref());
+                let text = program.map_or_else(Vec::new, |p| text_operands(p, &literals));
+                for (at, literal) in literals.iter().enumerate() {
+                    let Some(literal) = *literal else {
                         continue;
                     };
-                    if literal.is_empty() || literal.starts_with('-') {
+                    if literal.is_empty() || literal.starts_with('-') || text.contains(&at) {
                         continue;
                     }
                     let joined = join(literal);
