@@ -5,16 +5,9 @@
 mod common;
 
 use common::routed::{Route, Turn, start};
-use common::{Ui, World, text_turn, tool_turn};
+use common::{World, text_turn, tool_turn};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::{Value, json};
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 fn judged(verdict: &str, reason: &str) -> Value {
     json!({"verdict": verdict, "reason": reason})
@@ -34,7 +27,7 @@ async fn a_not_met_verdict_runs_a_harness_turn_and_a_met_one_ends_the_goal() {
     w.run(|ui| async move {
         ui.send("/goal the file exists");
         ui.wait_for("Goal achieved: the file exists").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("Goal set: the file exists"), "{screen}");
         assert!(
@@ -102,7 +95,7 @@ async fn an_impossible_verdict_ends_the_goal_with_its_reason() {
         ui.send("/goal write to the read-only mount");
         ui.wait_for("Goal impossible: the file system is read-only")
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("◎ goal"));
         ui.send("/goal");
         ui.wait_for("No goal set").await;
@@ -127,7 +120,7 @@ async fn the_turn_cap_pauses_the_goal_and_a_message_resumes_the_evaluation() {
         ui.send("/goal be done");
         ui.wait_for("Goal paused: 2 goal turns ran without it being met")
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("Send a message to continue."), "{screen}");
         assert!(screen.contains("◎ goal paused"), "{screen}");
@@ -164,14 +157,14 @@ async fn an_evaluator_with_no_model_pauses_the_goal_and_clear_removes_it() {
         ui.send("/goal be done");
         ui.wait_for("Goal paused: the evaluator gave no verdict")
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("judge/gone"), "{screen}");
         assert!(screen.contains("◎ goal paused"), "{screen}");
 
         ui.send("/goal clear");
         ui.wait_for("Goal cleared: be done").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!ui.screen().contains("◎ goal"));
         ui.send("/goal stop");
         ui.wait_until("nothing to clear", |s| count(s, "No goal set") >= 1)
@@ -184,7 +177,7 @@ async fn an_evaluator_with_no_model_pauses_the_goal_and_clear_removes_it() {
 async fn an_empty_goal_is_the_status_and_a_too_long_one_is_refused() {
     let w = World::new(Vec::new());
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/goal");
         ui.wait_for("No goal set").await;
         ui.send(&format!("/goal {}", "x".repeat(4_001)));
@@ -207,7 +200,7 @@ async fn escape_during_a_goal_turn_pauses_the_goal() {
         ui.wait_for("• shell sleep 5").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("Goal paused: it was interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("◎ goal paused"));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!ui.screen().contains("goal: not met"));
@@ -234,13 +227,13 @@ async fn escape_during_the_evaluation_pauses_the_goal_without_a_goal_turn() {
     .await;
     let w = World::routed(&server.uri(), "");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/goal be done");
         ui.wait_for("worked on it").await;
         ui.wait_for("◎ goal 0s").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("Goal paused: it was interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("◎ goal paused"));
         assert!(!ui.screen().contains("goal: not met"));
     })
@@ -267,11 +260,11 @@ async fn a_message_a_prompt_hook_blocks_does_not_resume_a_paused_goal() {
         ui.send("/goal be done");
         ui.wait_for("Goal paused: 2 goal turns ran without it being met")
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         std::fs::write(&flag, "").unwrap();
         ui.send("keep going");
         ui.wait_for("no prompts today").await;
-        idle(&ui).await;
+        ui.idle().await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let screen = ui.screen();
         assert!(screen.contains("◎ goal paused"), "{screen}");

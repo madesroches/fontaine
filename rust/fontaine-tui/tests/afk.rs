@@ -9,13 +9,6 @@ use fontaine_core::config::PermissionMode;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 fn shell_turn(id: &str, command: &str) -> Vec<rig_core::test_utils::MockStreamEvent> {
     tool_turn(id, "shell", json!({ "command": command }))
 }
@@ -43,7 +36,7 @@ fn status_line(ui: &Ui) -> String {
 async fn shift_tab_enters_afk_reports_and_leaves_into_manual_with_a_review() {
     let w = World::new(Vec::new()).in_mode(PermissionMode::Auto);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         let screen = ui.screen();
@@ -82,7 +75,7 @@ async fn shift_tab_enters_afk_reports_and_leaves_into_manual_with_a_review() {
 async fn the_cycle_walks_all_four_modes_and_a_rebound_key_walks_the_same_one() {
     let w = World::new(Vec::new()).with_config("[keybindings]\n\"f2\" = \"cycle_mode\"\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         for expected in ["accept edits on", "auto mode on", "AFK mode on"] {
             ui.press(KeyCode::F(2));
             ui.wait_until(expected, |s| {
@@ -104,7 +97,7 @@ async fn the_cycle_walks_all_four_modes_and_a_rebound_key_walks_the_same_one() {
 async fn a_refused_entry_shows_the_error_and_lands_in_manual() {
     let w = World::new(Vec::new()).in_mode(PermissionMode::Auto);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/guardian-disable");
         ui.wait_for_live_prompt("Turn the guardian off for this session?")
             .await;
@@ -125,7 +118,7 @@ async fn a_refused_entry_shows_the_error_and_lands_in_manual() {
 async fn afk_and_the_guardian_escape_hatch_refuse_each_other() {
     let w = World::new(Vec::new()).in_mode(PermissionMode::Auto);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("/guardian-disable");
@@ -148,7 +141,7 @@ async fn leaving_afk_during_a_turn_reviews_the_stretch_when_the_turn_ends() {
         .in_mode(PermissionMode::Auto)
         .with_guardian(vec![verdict("allow", "allow", 0.95)]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("slow work");
@@ -170,7 +163,7 @@ async fn entering_afk_with_an_approval_open_denies_it_and_opens_no_overlay() {
         text_turn("denied, so stopped"),
     ]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("run it");
         ui.wait_for_prompt("python x.py").await;
         // manual -> accept edits -> auto -> AFK
@@ -178,7 +171,7 @@ async fn entering_afk_with_an_approval_open_denies_it_and_opens_no_overlay() {
             ui.press(KeyCode::BackTab);
         }
         ui.wait_for("denied, so stopped").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("AFK mode on"), "{screen}");
         assert!(screen.contains("open prompt(s) answered"), "{screen}");
@@ -196,14 +189,14 @@ async fn a_temperature_stop_cuts_the_turn_refuses_prompts_and_waits_for_a_review
     .with_guardian(vec![deny()])
     .with_config("[afk]\ntemperature_ceiling = 0.5\n");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("run it");
         ui.wait_for("AFK: stopped").await;
         ui.wait_until("the stopped indicator", |s| s.contains("AFK STOPPED"))
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("run /afk review"), "{}", ui.screen());
 
         // A typed prompt is refused and goes back to the input; nothing reaches the model.
@@ -254,7 +247,7 @@ async fn a_stop_pauses_the_goal_and_starts_no_evaluation_or_turn() {
     .with_config("[afk]\ntemperature_ceiling = 0.5\n")
     .with_guardian(vec![deny()]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("/goal finish the work");
@@ -287,7 +280,7 @@ async fn a_blocked_session_announces_it_pauses_the_goal_and_starts_no_turn() {
     .in_mode(PermissionMode::Auto)
     .with_guardian(vec![deny]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("/goal push the branch");
@@ -295,7 +288,7 @@ async fn a_blocked_session_announces_it_pauses_the_goal_and_starts_no_turn() {
             .await;
         ui.wait_for("Goal paused: the denial breaker tripped while the user was away")
             .await;
-        idle(&ui).await;
+        ui.idle().await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     })
     .await;

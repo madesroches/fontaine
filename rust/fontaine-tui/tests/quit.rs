@@ -24,13 +24,6 @@ fn options() -> DriveOptions {
     }
 }
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 fn ctrl_d(ui: &Ui) {
     ui.press_with(KeyCode::Char('d'), KeyModifiers::CONTROL);
 }
@@ -92,7 +85,7 @@ async fn quit_during_a_held_response(trigger: Trigger) {
     let held = &server;
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("first task");
             wait_for_request(held).await;
             ui.send("queued behind");
@@ -139,7 +132,7 @@ async fn a_quit_already_buffered_behind_other_keys_is_served_first() {
     let held = &server;
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("first task");
             wait_for_request(held).await;
             // All of it is in the channel before the interface looks again.
@@ -170,7 +163,7 @@ async fn ctrl_d_with_text_in_the_prompt_still_edits_while_a_turn_runs() {
     let held = &server;
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("first task");
             wait_for_request(held).await;
             ui.type_text("ab");
@@ -178,7 +171,7 @@ async fn ctrl_d_with_text_in_the_prompt_still_edits_while_a_turn_runs() {
             ctrl_d(&ui);
             ui.wait_for("done at last").await;
             assert!(finished.get().is_none(), "Ctrl-D with text is not a quit");
-            idle(&ui).await;
+            ui.idle().await;
             assert!(ui.live().contains('a'), "{}", ui.live());
         })
         .await;
@@ -194,12 +187,12 @@ async fn ctrl_c_still_only_interrupts_a_running_turn() {
     let w = World::routed(&server.uri(), "");
     let held = &server;
     w.run_with(options(), |ui, finished| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("first task");
         wait_for_request(held).await;
         ui.press_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         assert!(finished.get().is_none(), "an interrupt is not a quit");
     })
     .await;
@@ -210,7 +203,7 @@ async fn an_idle_prompt_quits_within_the_budget() {
     let w = World::new(Vec::new());
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             let took = leave(&ui, &finished, Trigger::Exit).await;
             assert!(took < BUDGET + TOLERANCE, "took {took:?}");
         })
@@ -241,10 +234,10 @@ async fn a_nested_agent_that_never_reaches_a_stopping_point_does_not_hold_the_ex
     let held = &server;
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("root task");
             ui.wait_for("launched").await;
-            idle(&ui).await;
+            ui.idle().await;
             wait_for_requests(held, 3).await;
             let took = leave(&ui, &finished, Trigger::Exit).await;
             assert!(took < BUDGET + TOLERANCE, "took {took:?}");
@@ -278,7 +271,7 @@ async fn a_blocked_stop_hook_does_not_hold_the_exit() {
     );
     let outcome = w
         .run_with(options(), |ui, finished| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("first task");
             ui.wait_for("all done").await;
             // The stop hook is now running; the quit does not wait for it.

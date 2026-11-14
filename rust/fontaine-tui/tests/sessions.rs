@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::routed::{Route, Turn, start};
-use common::{Ui, World, text_turn, tool_turn};
+use common::{World, text_turn, tool_turn};
 use fontaine_core::ledger::Record;
 use fontaine_core::session::Session;
 use fontaine_tui::{DriveOutcome, SessionTarget};
@@ -15,13 +15,6 @@ use serde_json::json;
 
 const OLD: &str = "00000000-0000-4000-8000-0000000000a1";
 const OLDER: &str = "00000000-0000-4000-8000-0000000000a2";
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 /// A session of an earlier run in `w`'s workspace, as `--continue` would find it.
 fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
@@ -85,10 +78,10 @@ async fn branch_copies_the_session_and_asks_the_caller_to_carry_on_in_the_copy()
     let w = World::new(vec![text_turn("hi there")]);
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("hello world");
             ui.wait_for("hi there").await;
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/branch variant");
         })
         .await;
@@ -117,7 +110,7 @@ async fn branch_names_the_copy_after_the_source_when_no_name_is_given() {
     let w = World::new(vec![]);
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/rename base");
             ui.wait_for("session renamed to base").await;
             ui.send("/fork");
@@ -135,7 +128,7 @@ async fn branch_with_a_bad_name_stays_in_the_session() {
     let w = World::new(vec![]);
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send(&format!("/branch {}", "x".repeat(81)));
             ui.wait_for("at most 80 characters").await;
         })
@@ -168,10 +161,10 @@ async fn branch_is_refused_while_a_subagent_runs() {
     let w = World::routed_known(&server.uri(), "\n[permissions]\nallow = [\"agent\"]\n");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("root task");
             ui.wait_for("launched").await;
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/branch");
             ui.wait_for("refused").await;
         })
@@ -189,7 +182,7 @@ async fn resume_by_name_or_id_switches_and_an_unknown_one_is_an_error() {
     earlier(&w, OLD, Some("Demo"), "earlier work");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/resume nobody");
             ui.wait_for("no session with ID or name nobody").await;
             ui.send("/resume demo");
@@ -205,7 +198,7 @@ async fn resume_by_name_or_id_switches_and_an_unknown_one_is_an_error() {
 
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send(&format!("/resume {OLD}"));
         })
         .await;
@@ -219,7 +212,7 @@ async fn resume_with_two_sessions_of_a_name_lists_them_and_stays() {
     earlier(&w, OLDER, Some("twin"), "two");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/resume twin");
             ui.wait_for("several sessions are named twin").await;
             // The ids are long enough to wrap, so only their last group is looked for.
@@ -237,7 +230,7 @@ async fn the_resume_picker_lists_other_sessions_filters_and_switches() {
     earlier(&w, OLDER, None, "write the docs");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/resume");
             ui.wait_for("sessions started in this directory").await;
             let screen = ui.screen();
@@ -263,12 +256,12 @@ async fn the_resume_picker_without_other_sessions_says_so_and_escape_closes_it()
     let w = World::new(vec![]);
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/resume");
             ui.wait_for("no other session was started in this directory")
                 .await;
             ui.press(KeyCode::Esc);
-            idle(&ui).await;
+            ui.idle().await;
         })
         .await;
     assert_eq!(outcome, DriveOutcome::Exit);
@@ -300,7 +293,7 @@ async fn a_queued_branch_with_later_input_is_refused_and_replay_carries_on() {
     .with_config("[permissions]\nallow = [\"shell(sleep *)\"]\n");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("start");
             ui.wait_for("• shell sleep 1").await;
             ui.send("/branch");
@@ -312,7 +305,7 @@ async fn a_queued_branch_with_later_input_is_refused_and_replay_carries_on() {
             ui.wait_for("/branch is refused while queued input still waits")
                 .await;
             ui.wait_for("msg reply").await;
-            idle(&ui).await;
+            ui.idle().await;
         })
         .await;
     assert_eq!(outcome, DriveOutcome::Exit);
@@ -335,7 +328,7 @@ async fn a_resume_picker_choice_with_later_input_is_refused_and_replay_carries_o
     earlier(&w, OLD, Some("Demo"), "earlier work");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("start");
             ui.wait_for("• shell sleep 1").await;
             ui.send("/resume");
@@ -349,7 +342,7 @@ async fn a_resume_picker_choice_with_later_input_is_refused_and_replay_carries_o
             ui.wait_for("/resume is refused while queued input still waits")
                 .await;
             ui.wait_for("msg reply").await;
-            idle(&ui).await;
+            ui.idle().await;
         })
         .await;
     assert_eq!(outcome, DriveOutcome::Exit, "no session switch happened");
@@ -387,10 +380,10 @@ async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
     earlier(&w, OLD, Some("Demo"), "earlier work");
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("root task");
             ui.wait_for("launched").await;
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/resume");
             ui.wait_for("sessions started in this directory").await;
             ui.wait_for("an agent reported back").await;
@@ -401,7 +394,7 @@ async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
             ui.wait_for("/resume is refused while queued input still waits")
                 .await;
             ui.wait_for("queued reply").await;
-            idle(&ui).await;
+            ui.idle().await;
         })
         .await;
     assert_eq!(outcome, DriveOutcome::Exit, "no session switch happened");
@@ -421,12 +414,12 @@ async fn rename_names_the_session_and_derives_a_name_from_the_first_message() {
     let w = World::new(vec![text_turn("on it")]);
     let outcome = w
         .run(|ui| async move {
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/rename");
             ui.wait_for("there is no message to draw a name from").await;
             ui.send("fix the failing build\nplease");
             ui.wait_for("on it").await;
-            idle(&ui).await;
+            ui.idle().await;
             ui.send("/rename");
             ui.wait_for("session renamed to fix the failing build")
                 .await;
@@ -450,10 +443,10 @@ async fn rename_names_the_session_and_derives_a_name_from_the_first_message() {
 async fn export_writes_the_conversation_once_and_never_overwrites() {
     let w = World::new(vec![text_turn("hi there")]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("hello world");
         ui.wait_for("hi there").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/export notes.md");
         ui.wait_for("exported the conversation to").await;
         ui.send("/export notes.md");

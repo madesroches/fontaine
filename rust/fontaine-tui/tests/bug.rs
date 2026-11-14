@@ -5,17 +5,10 @@
 
 mod common;
 
-use common::{Ui, World, text_turn};
+use common::{World, text_turn};
 use ratatui::crossterm::event::KeyCode;
 use std::path::Path;
 use std::time::Duration;
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 fn bundles(data: &Path) -> Vec<String> {
     std::fs::read_dir(data.join("bug-reports"))
@@ -54,7 +47,7 @@ async fn bug_previews_cancels_and_files() {
     // Preview, then Esc: nothing is written or recorded.
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/bug it crashes when I press x");
         ui.wait_for_live("This is everything that will be sent")
             .await;
@@ -72,7 +65,7 @@ async fn bug_previews_cancels_and_files() {
     w.run(|ui| async move {
         ui.send("a distinctive question");
         ui.wait_for("the answer").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/bug it crashes");
         ui.wait_for_live("This is everything that will be sent")
             .await;
@@ -102,7 +95,7 @@ async fn bug_previews_cancels_and_files() {
     fake_gh(bin.path());
     let w = World::new(vec![]);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/bug gh path");
         ui.wait_for_live("via gh issue create").await;
         tokio::time::sleep(Duration::from_millis(450)).await;

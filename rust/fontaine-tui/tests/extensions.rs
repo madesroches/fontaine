@@ -2,19 +2,12 @@
 
 mod common;
 
-use common::{Ui, World, text_turn, tool_turn};
+use common::{World, text_turn, tool_turn};
 use ratatui::crossterm::event::KeyCode;
 use rig_core::test_utils::MockStreamEvent;
 use serde_json::json;
 
 const ALLOW_SLEEP: &str = "[permissions]\nallow = [\"shell(sleep *)\"]\n";
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 /// A world with the user-invocable `review` skill and a script of `turns`.
 fn skill_world(turns: Vec<Vec<MockStreamEvent>>) -> World {
@@ -44,7 +37,7 @@ fn world() -> World {
 async fn the_slash_menu_filters_commands_and_user_invocable_skills_with_their_hints() {
     let w = world();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         // The bare list is windowed to its first rows, so each entry is found by filtering.
         ui.type_text("/rev");
         ui.wait_for("/review [pr-number]").await;
@@ -80,7 +73,7 @@ async fn the_slash_menu_filters_commands_and_user_invocable_skills_with_their_hi
 async fn enter_on_a_menu_entry_runs_the_command() {
     let w = world();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.type_text("/mod");
         ui.wait_for("Tab complete").await;
         ui.press(KeyCode::Enter);
@@ -96,13 +89,13 @@ async fn a_skill_runs_as_a_command_with_its_arguments_and_the_users_words_are_wh
     let w = world();
     let sent = &w;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/review 42");
         ui.wait_until("the request to reach the model", |_| {
             !sent.requests().is_empty()
         })
         .await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -127,7 +120,7 @@ async fn a_skill_runs_as_a_command_with_its_arguments_and_the_users_words_are_wh
 async fn an_unknown_command_says_so_and_a_skill_only_the_model_may_use_is_not_a_command() {
     let w = world();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/nonesuch");
         ui.wait_for("unknown command /nonesuch").await;
         ui.send("/internal");
@@ -141,14 +134,14 @@ async fn an_unknown_command_says_so_and_a_skill_only_the_model_may_use_is_not_a_
 async fn output_style_switches_the_prompt_the_agent_gets_and_none_removes_it() {
     let w = world();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/output-style");
         ui.wait_for("terse (Short answers)").await;
         ui.send("/output-style terse");
         ui.wait_for("output style is now terse").await;
         ui.send("hello");
         ui.wait_for("ok").await;
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/output-style none");
         ui.wait_for("output style is now none").await;
         ui.send("again");
@@ -171,7 +164,7 @@ async fn the_skill_list_is_in_the_system_prompt_without_the_skill_bodies() {
     let w = world();
     let sent = &w;
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("hello");
         ui.wait_until("the request to reach the model", |_| {
             !sent.requests().is_empty()
@@ -201,7 +194,7 @@ async fn a_skill_command_that_needs_approval_prompts_and_answering_completes_the
         "---\ndescription: Greets\n---\nOutput: !`echo hello-from-skill > out.txt && echo marker-ran`\n",
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/greet");
         ui.wait_for_prompt("Allow shell?").await;
         ui.press(KeyCode::Char('y'));
@@ -219,7 +212,7 @@ async fn a_skill_command_that_needs_approval_prompts_and_answering_completes_the
 async fn help_and_skills_list_the_loaded_skills() {
     let w = world();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/help");
         ui.wait_for("/review [pr-number] — Review a pull request")
             .await;
@@ -251,7 +244,7 @@ async fn a_skill_typed_during_a_turn_runs_expanded_once_it_ends() {
         ui.wait_for("queued: /review 42").await;
         ui.wait_for("current answer").await;
         ui.wait_for("skill answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -297,7 +290,7 @@ async fn a_message_queued_after_a_skill_waits_with_it_and_runs_after_it() {
         ui.wait_for("current answer").await;
         ui.wait_for("skill answer").await;
         ui.wait_for("message answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -341,7 +334,7 @@ async fn only_the_message_typed_at_the_idle_prompt_is_recorded_as_a_prompt() {
         ui.wait_for("queued: typed before the answer was shown")
             .await;
         ui.wait_for("message answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let origin_of = |text: &str| -> Option<String> {
@@ -397,7 +390,7 @@ async fn typed_order_spans_replay_and_newer_input_cannot_overtake_it() {
         ui.send("O message text");
         ui.wait_for("queued: O message text").await;
         ui.wait_for("N answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -456,7 +449,7 @@ async fn interrupting_the_turn_puts_a_queued_skill_back_in_the_input() {
         ui.wait_for("queued: /review 42").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
-        idle(&ui).await;
+        ui.idle().await;
         // Nothing was sent unseen: the invocation waits in the input, unexpanded.
         let live = ui.live();
         assert!(live.contains("/review 42"), "{live}");
@@ -489,7 +482,7 @@ async fn a_builtin_queued_mid_turn_runs_after_the_turn_in_typed_order() {
         ui.wait_for("skill answer").await;
         ui.wait_for("message answer").await;
         ui.wait_for("session renamed to later").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         let skill_turn = screen.find("> /review 42").expect("the skill's turn");
         let message_turn = screen.find("> queued message").expect("the message's turn");
@@ -524,7 +517,7 @@ async fn an_immediate_command_runs_mid_turn_and_never_queues() {
         ui.wait_for("MCP servers: 0 of 0 connected").await;
         assert!(!ui.screen().contains("queued:"), "{}", ui.screen());
         ui.wait_for("answer").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -551,7 +544,7 @@ async fn a_bang_command_typed_mid_turn_runs_after_it_and_reaches_the_next_messag
         // The shell run executes after the turn, before the queued message.
         ui.wait_for("! echo hi-from-queue").await;
         ui.wait_for("message reply").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -598,7 +591,7 @@ async fn esc_during_a_queued_skill_expansion_aborts_only_that_expansion() {
         ui.wait_for("interrupted").await;
         // The expansion's raw is spent; the next submission still runs.
         ui.wait_for("next reply").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     let requests = w.requests();
@@ -616,7 +609,7 @@ async fn a_builtin_wins_over_a_skill_of_the_same_name() {
         "---\ndescription: Shadowed\n---\nbody\n",
     );
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.wait_for("skill /status is hidden by the built-in command of the same name")
             .await;
         ui.send("/status");

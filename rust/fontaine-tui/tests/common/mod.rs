@@ -655,6 +655,14 @@ impl Ui {
             .await;
     }
 
+    /// Waits for the idle prompt that every routed test drives from.
+    pub async fn idle(&self) {
+        self.wait_until("an idle prompt", |s| {
+            s.contains("shift+tab mode · /add-dir")
+        })
+        .await;
+    }
+
     /// Waits for an approval prompt and for its answer keys to start counting.
     pub async fn wait_for_prompt(&self, text: &str) {
         self.wait_for(text).await;

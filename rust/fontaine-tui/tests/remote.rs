@@ -15,13 +15,6 @@ use serde_json::json;
 const DIRECT_ONLY: &str =
     "[remote]\nrelay = \"disabled\"\n[permissions]\nallow = [\"shell(sleep *)\"]\n";
 
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
-
 fn options() -> SendOptions {
     SendOptions {
         timeout: Duration::from_secs(15),
@@ -62,7 +55,7 @@ async fn an_idle_session_runs_a_remote_message_as_a_user_turn_and_the_ticket_is_
             matches!(again, Err(SendError::Rejected(Reason::Reused))),
             "{again:?}"
         );
-        idle(&ui).await;
+        ui.idle().await;
         assert!(!screen.contains(&ticket.encode()));
         assert!(accepted.message_id.starts_with("msg-"));
     })
@@ -128,7 +121,7 @@ async fn a_message_sent_during_a_tool_call_arrives_with_the_next_result_and_the_
             .await
             .unwrap();
         ui.wait_for("noted").await;
-        idle(&ui).await;
+        ui.idle().await;
         let live = ui.live();
         assert!(
             live.contains("draft one") && live.contains("draft two"),
@@ -165,7 +158,7 @@ async fn a_remote_y_answers_an_approval_that_opened_before_it_arrived() {
         ui.wait_for_prompt("Allow write?").await;
         send(&ticket, "Allow Once", options()).await.unwrap();
         ui.wait_for("all done").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert_eq!(
@@ -205,7 +198,7 @@ async fn a_text_that_is_not_an_option_leaves_the_approval_pending_and_is_deliver
         assert!(ui.live().contains("Allow write?"), "{}", ui.live());
         ui.press(KeyCode::Char('y'));
         ui.wait_for("all done").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(
@@ -311,7 +304,7 @@ async fn a_clear_queued_ahead_of_a_remote_line_drops_the_line_with_an_audit_reco
         ui.send("/clear");
         send(&ticket, "after the clear", options()).await.unwrap();
         ui.wait_for("cleared the conversation").await;
-        idle(&ui).await;
+        ui.idle().await;
     })
     .await;
     assert!(

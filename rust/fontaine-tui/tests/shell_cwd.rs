@@ -3,16 +3,9 @@
 
 mod common;
 
-use common::{Ui, World, text_turn, tool_turn, verdict};
+use common::{World, text_turn, tool_turn, verdict};
 use fontaine_core::config::PermissionMode;
 use serde_json::json;
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 fn world(turns: Vec<Vec<rig_core::test_utils::MockStreamEvent>>) -> World {
     World::new(turns)
@@ -30,7 +23,7 @@ async fn a_cd_shows_in_the_status_bar_and_clear_resets_it() {
     std::fs::create_dir_all(w.work.join("sub")).unwrap();
     let sub = format!("work{}sub", std::path::MAIN_SEPARATOR);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         assert!(ui.screen().contains("work ·"), "{}", ui.screen());
         ui.send("go to sub");
         ui.wait_for("moved").await;
@@ -57,7 +50,7 @@ async fn a_cd_out_of_the_workspace_leaves_the_bar_on_the_root() {
     w.run(|ui| async move {
         ui.send("go");
         ui.wait_for("moved").await;
-        idle(&ui).await;
+        ui.idle().await;
         let screen = ui.screen();
         assert!(screen.contains("shell working directory reset"), "{screen}");
         assert!(!screen.contains(&sub), "{screen}");

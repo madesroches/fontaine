@@ -5,16 +5,9 @@ mod common;
 
 use std::path::Path;
 
-use common::{Ui, World, text_turn};
+use common::{World, text_turn};
 use fontaine_core::plugins::{MarketplaceEntry, Registry, marketplace_dir, write_registry};
 use ratatui::crossterm::event::KeyCode;
-
-async fn idle(ui: &Ui) {
-    ui.wait_until("an idle prompt", |s| {
-        s.contains("shift+tab mode · /add-dir")
-    })
-    .await;
-}
 
 const OLD: &str = "---\ndescription: The old description\n---\nBody.\n";
 const NEW: &str = "---\ndescription: The new description, longer\n---\nA different body.\n";
@@ -72,7 +65,7 @@ async fn an_edited_skill_is_noticed_applied_by_reload_and_shown_by_skills() {
     let w = World::new(vec![text_turn("ok")]).with_user_file("skills/review/SKILL.md", OLD);
     let file = w.config_dir.join("skills/review/SKILL.md");
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/skills");
         ui.wait_for("The old description").await;
 
@@ -82,7 +75,7 @@ async fn an_edited_skill_is_noticed_applied_by_reload_and_shown_by_skills() {
         ui.wait_for("skills/plugins changed on disk — run /reload-plugins")
             .await;
         ui.wait_for("ok").await;
-        idle(&ui).await;
+        ui.idle().await;
 
         ui.send("/reload-plugins");
         ui.wait_for("skills changed: review").await;
@@ -97,7 +90,7 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
     let w = World::new(Vec::new());
     marketplace(&w.config_dir);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install demo@local");
         ui.wait_for_prompt("Install plugin `demo`").await;
         let screen = ui.screen();
@@ -134,7 +127,7 @@ async fn trusting_a_skill_at_install_records_it_and_applies_it_in_the_session() 
     let w = World::new(Vec::new());
     marketplace(&w.config_dir);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install tools@local");
         ui.wait_for_prompt("Install plugin `tools`").await;
         ui.press(KeyCode::Char('y'));
@@ -163,7 +156,7 @@ async fn declining_the_skill_trust_installs_the_plugin_untrusted() {
     let w = World::new(Vec::new());
     marketplace(&w.config_dir);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install tools@local");
         ui.wait_for_prompt("Install plugin `tools`").await;
         ui.press(KeyCode::Char('y'));
@@ -186,7 +179,7 @@ async fn leaving_at_the_skill_trust_question_cancels_the_install() {
     let w = World::new(Vec::new());
     marketplace(&w.config_dir);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install tools@local");
         ui.wait_for_prompt("Install plugin `tools`").await;
         ui.press(KeyCode::Char('y'));
@@ -203,7 +196,7 @@ async fn declining_an_install_records_nothing() {
     let w = World::new(Vec::new());
     marketplace(&w.config_dir);
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install demo@local");
         ui.wait_for_prompt("Install plugin `demo`").await;
         ui.press(KeyCode::Char('n'));
@@ -226,7 +219,7 @@ async fn disable_unloads_enable_loads_and_uninstall_removes_the_plugin() {
     marketplace(&w.config_dir);
     let config = w.config_dir.clone();
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin install demo@local");
         ui.wait_for_prompt("Install plugin `demo`").await;
         ui.press(KeyCode::Char('y'));
@@ -252,7 +245,7 @@ async fn disable_unloads_enable_loads_and_uninstall_removes_the_plugin() {
 async fn a_bad_plugin_command_says_how_to_use_it() {
     let w = World::new(Vec::new());
     w.run(|ui| async move {
-        idle(&ui).await;
+        ui.idle().await;
         ui.send("/plugin frobnicate");
         ui.wait_for("usage: /plugin").await;
         ui.send("/plugin install nope@nowhere");
