@@ -172,6 +172,10 @@ impl ChainJob<'_> {
 }
 
 impl AgentRuntime {
+    fn paused_total(&self) -> std::time::Duration {
+        self.state.usage_pause().total_paused()
+    }
+
     /// What the session has spent so far: the root's spend, which holds the main model, the
     /// guardian and the goal evaluator, plus every subagent's. A goal measures itself by the
     /// change in this.
@@ -402,7 +406,9 @@ impl AgentRuntime {
 
     /// `/goal <condition>`: replaces any active goal. The surface then runs the first turn.
     pub fn set_goal(&self, condition: &str) -> Result<(), GoalError> {
-        self.session.goal().set(condition, self.tree_spend())?;
+        self.session
+            .goal()
+            .set(condition, self.tree_spend(), self.paused_total())?;
         self.state.append(Record::Goal {
             event: GoalEvent::Set,
             evaluations: 0,
@@ -463,7 +469,9 @@ impl AgentRuntime {
 
     /// The user sent a prompt: a paused goal runs again.
     pub fn goal_user_prompt(&self) {
-        self.session.goal().user_prompt(self.tree_spend());
+        self.session
+            .goal()
+            .user_prompt(self.tree_spend(), self.paused_total());
     }
 
     /// The evaluation due now, if any; none while a subagent still runs.
@@ -478,6 +486,7 @@ impl AgentRuntime {
         let applied = self.session.goal().apply(
             evaluation,
             self.tree_spend(),
+            self.paused_total(),
             &GoalCaps::from(&self.config.goal),
             self.models.main.priced(),
         );

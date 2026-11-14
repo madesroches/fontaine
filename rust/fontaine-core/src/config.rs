@@ -2753,7 +2753,7 @@ pub struct Context {
 
 pub const DEFAULT_GOAL_MAX_TURNS: u32 = 50;
 const MAX_GOAL_TURNS: u32 = 1000;
-/// 30 days; keeps `Instant` and `Duration` arithmetic far from overflow.
+/// 30 days; a bound that catches a typo, not a limit anyone needs.
 const MAX_GOAL_DURATION_SECS: u64 = 30 * 86_400;
 const MAX_RETRY_COUNT: u32 = 10;
 /// A full day; keeps `Instant + Duration` far from overflow.

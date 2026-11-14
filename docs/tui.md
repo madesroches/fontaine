@@ -1244,9 +1244,9 @@ when:
 - `[goal] max_turns` goal turns (50 by default) have run since you last sent a message;
 - the spend of the stretch passes `[goal] max_cost_usd`, when that is set and the model is priced;
 - the tokens of the stretch pass `[goal] max_tokens`, when that is set, priced model or not;
-- the stretch has run longer than `[goal] max_duration_secs`, when that is set. The clock is checked
-  after each evaluation and does not interrupt a running turn, so a stretch can overrun it by one
-  turn plus one evaluation;
+- the stretch has run longer than `[goal] max_duration_secs`, when that is set. Time spent waiting
+  for a usage window does not count. The clock is checked after each evaluation and does not
+  interrupt a running turn, so a stretch can overrun it by one turn plus one evaluation;
 - 8 verdicts in a row came after turns that called no tool;
 - a turn fails or is interrupted with Esc, or Esc interrupts the evaluation; or
 - the evaluator gives no verdict (an error, a timeout, an unreadable answer, or a guardian model

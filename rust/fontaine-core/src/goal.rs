@@ -262,6 +262,9 @@ struct Stretch {
     idle_verdicts: u32,
     spend_base: Spend,
     started: Instant,
+    /// The session's total usage-pause time when the stretch began; waits for a usage window
+    /// are not the goal's time.
+    paused_base: Duration,
 }
 
 #[derive(Default)]
@@ -433,7 +436,7 @@ impl SessionGoal {
         };
         match loaded {
             Ok(Some(saved)) if valid(&saved.condition).is_ok() => {
-                let active = goal.fresh(saved.condition, Spend::default());
+                let active = goal.fresh(saved.condition, Spend::default(), Duration::ZERO);
                 lock(&goal.state, "goal").active = Some(active);
             }
             Ok(Some(_)) => goal.warn(format!(
@@ -468,7 +471,7 @@ impl SessionGoal {
             .count()
     }
 
-    fn fresh(&self, condition: String, base: Spend) -> ActiveGoal {
+    fn fresh(&self, condition: String, base: Spend, paused_now: Duration) -> ActiveGoal {
         ActiveGoal {
             condition,
             started: Instant::now(),
@@ -482,6 +485,7 @@ impl SessionGoal {
                 idle_verdicts: 0,
                 spend_base: base,
                 started: Instant::now(),
+                paused_base: paused_now,
             },
             pending: false,
             paused: None,
@@ -500,10 +504,11 @@ impl SessionGoal {
         }
     }
 
-    /// Sets the goal, replacing any active one. `base` is the tree's spend now.
-    pub fn set(&self, condition: &str, base: Spend) -> Result<(), GoalError> {
+    /// Sets the goal, replacing any active one. `base` is the tree's spend now and `paused_now`
+    /// the session's total usage-pause time.
+    pub fn set(&self, condition: &str, base: Spend, paused_now: Duration) -> Result<(), GoalError> {
         let condition = valid(condition)?;
-        let active = self.fresh(condition.clone(), base);
+        let active = self.fresh(condition.clone(), base, paused_now);
         let mut state = lock(&self.state, "goal");
         let text = serde_json::to_vec(&Saved {
             condition: condition.clone(),
@@ -603,7 +608,7 @@ impl SessionGoal {
 
     /// The user sent a prompt: a paused goal is evaluated again, with a fresh stretch. A pause
     /// the AFK temperature stop caused stays until the stop is reviewed.
-    pub fn user_prompt(&self, spend_now: Spend) {
+    pub fn user_prompt(&self, spend_now: Spend, paused_now: Duration) {
         let stopped = self.ledger.view().afk().stopped().is_some();
         if let Some(goal) = lock(&self.state, "goal").active.as_mut() {
             if stopped && goal.paused == Some(PauseReason::AfkStopped) {
@@ -617,6 +622,7 @@ impl SessionGoal {
                 idle_verdicts: 0,
                 spend_base: spend_now,
                 started: Instant::now(),
+                paused_base: paused_now,
             };
         }
     }
@@ -636,6 +642,7 @@ impl SessionGoal {
         &self,
         result: Evaluation,
         spend_now: Spend,
+        paused_now: Duration,
         caps: &GoalCaps,
         priced: bool,
     ) -> Option<Applied> {
@@ -659,7 +666,7 @@ impl SessionGoal {
         goal.last_reason = Some(verdict.reason.clone());
         let evaluations = goal.evaluations;
         let step = match verdict.verdict {
-            Judgment::NotMet => not_met(goal, &verdict.reason, spend_now, caps, priced),
+            Judgment::NotMet => not_met(goal, &verdict.reason, spend_now, paused_now, caps, priced),
             ended => {
                 let summary = Summary {
                     condition: goal.condition.clone(),
@@ -695,6 +702,7 @@ fn not_met(
     goal: &mut ActiveGoal,
     reason: &str,
     spend_now: Spend,
+    paused_now: Duration,
     caps: &GoalCaps,
     priced: bool,
 ) -> Step {
@@ -723,9 +731,11 @@ fn not_met(
         .exhausted(&spent, false)
         .is_some()
     });
-    let over_duration = caps
-        .max_duration
-        .is_some_and(|cap| stretch.started.elapsed() > cap);
+    let active_time = stretch
+        .started
+        .elapsed()
+        .saturating_sub(paused_now.saturating_sub(stretch.paused_base));
+    let over_duration = caps.max_duration.is_some_and(|cap| active_time > cap);
     let pause = if stretch.idle_verdicts >= NO_PROGRESS_LIMIT {
         Some(PauseReason::NoProgress(NO_PROGRESS_LIMIT))
     } else if stretch.turns >= caps.max_turns {
