@@ -180,6 +180,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `fontaine-evals cache-bench` now accepts a relative `--fontaine` or `--claude` path (#498). The
+  bench runs each side from a temporary fixture directory, so a path such as `target/debug/fontaine`
+  failed with "cannot run"; it is now resolved against the current directory first.
 - Guardian over-denials, fourth pass (#611; tracker #312). The guardian is shown each remote's git
   name with its URL (`origin https://…`), `(none)` when the repository had none and `(not
   recorded)` when the harness could not read them completely, and trusts a remote the call names by

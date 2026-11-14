@@ -307,8 +307,22 @@ async fn run_side(program: &str, args: &[&str], cwd: &Path) -> Result<String, St
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Each side runs from its own fixture directory, so a relative path with a separator would be
+/// resolved against that directory. A bare name stays a PATH lookup.
+fn resolve_program(program: &str) -> Result<String, String> {
+    let path = Path::new(program);
+    if path.components().count() <= 1 && !path.has_root() {
+        return Ok(program.to_string());
+    }
+    let absolute = std::path::absolute(path)
+        .map_err(|e| format!("cannot resolve `{program}` to an absolute path: {e}"))?;
+    Ok(absolute.display().to_string())
+}
+
 pub async fn run_bench(options: &Options, date: String) -> Result<Scorecard, String> {
-    let version = claude_version(&options.claude).await?;
+    let fontaine_program = resolve_program(&options.fontaine)?;
+    let claude_program = resolve_program(&options.claude)?;
+    let version = claude_version(&claude_program).await?;
     let prompt = prompt(options.files);
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut dirs = Vec::new();
@@ -320,7 +334,7 @@ pub async fn run_bench(options: &Options, date: String) -> Result<Scorecard, Str
         dirs.push(dir);
     }
     let fontaine_out = run_side(
-        &options.fontaine,
+        &fontaine_program,
         &[
             "-p",
             &prompt,
@@ -335,7 +349,7 @@ pub async fn run_bench(options: &Options, date: String) -> Result<Scorecard, Str
     )
     .await?;
     let claude_out = run_side(
-        &options.claude,
+        &claude_program,
         &[
             "-p",
             &prompt,
@@ -456,6 +470,28 @@ mod tests {
         assert_eq!(stream.steps[0].cache_creation, 100);
         assert!(stream.steps[0].calls_tool);
         assert!(!stream.steps[1].calls_tool);
+    }
+
+    #[test]
+    fn a_relative_path_with_a_separator_becomes_absolute() {
+        let relative = Path::new("target").join("debug").join("fontaine");
+        let resolved = resolve_program(relative.to_str().unwrap()).unwrap();
+        let resolved = Path::new(&resolved);
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with(&relative));
+    }
+
+    #[test]
+    fn a_bare_name_is_left_for_the_path_lookup() {
+        assert_eq!(resolve_program("claude").unwrap(), "claude");
+    }
+
+    #[test]
+    fn an_absolute_path_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("fontaine");
+        let resolved = resolve_program(program.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&resolved), program);
     }
 
     #[test]
