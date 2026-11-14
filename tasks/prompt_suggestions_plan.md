@@ -7,8 +7,7 @@
 Two ghost-text aids in the TUI input box: a **prompt suggestion** (after a turn ends, a model proposes the
 user's likely next prompt, shown dimmed in the empty input) and a **history completion** (while typing, the
 most recent history entry that extends what is typed is shown dimmed after the cursor). Tab accepts either;
-typing dismisses the suggestion. The suggestion costs one small tool-less model call per turn, so it is
-opt-in; the history completion is local and free, so it is on by default.
+typing dismisses the suggestion.
 
 ## Current State
 
@@ -27,7 +26,7 @@ opt-in; the history completion is local and free, so it is on by default.
   completion over the conversation rendered as text (`goal::transcript_of`), debited to the ledger under a
   `UsageSource` and never written to the conversation or the guardian's intent record. It has no tools, so
   it is outside the guardian path by construction. It does not share the main turn's prompt cache.
-- `[tui]` config: `TuiSection`/`Tui` in `fontaine-core/src/config.rs` (~1449, ~2819), settable keys listed in
+- `[tui]` config: `TuiSection`/`Tui` in `fontaine-core/src/config.rs` (~1451, ~2819), settable keys listed in
   `config_catalog.rs`; docs in `docs/tui.md` and `docs/configuration.md`.
 
 ## Design
@@ -39,26 +38,37 @@ Core (`fontaine-core`):
   user is most likely to type; at most 12 words; reply with the message only, or nothing if no obvious
   follow-up"; the conversation is data), a small `max_tokens` (64) and a short timeout (10 s). It reuses
   the request building, `neutralize` fencing and failure handling, so a safety fix reaches all three
-  purposes.
+  purposes. The purpose also needs arms in `preamble`, `max_tokens`, `prompt`, `unsuitable`,
+  `unreachable_what` and the tracing match in `ask`; `prompt()` handles an empty question (no question is
+  asked for this purpose, the transcript is the input), and the 10 s timeout is set via `with_timeout`.
 - The transcript for this purpose excludes tool results: only user and assistant text and tool call names,
-  so the call never sees more than the user and assistant did in the visible conversation. If
-  `transcript_of` does not already allow this, add a parameter on `render_transcript` rather than a second
-  renderer.
-- New `UsageSource::PromptSuggestion` (`usage_ledger.rs`, `UsageSource::ALL`, the `/cost` rows in
-  `fontaine-tui/src/reports.rs`) so the spend is visible, separate from `/btw`. Debited to the root like a
-  compaction, including a billed but unusable answer.
-- `AgentRuntime::suggest_prompt()` (next to `ask_side_question` in `agent/goal.rs`): returns `Ok(None)`
-  without calling the model when any skip condition holds, otherwise the cleaned suggestion. Skip
-  conditions (pure function `should_suggest(&Inputs)`, unit-tested): feature off; permission mode is plan;
-  last turn did not finish normally (error, interrupt); fewer than 1 completed turn; the previous
-  suggestion was shown and left unused three times in a row (back-off, reset when one is accepted);
-  the usage gate is paused; main model is not billed per token and not subscription-backed unsuitable
-  (reuse `catalog_billed` handling like `/btw`); headless runs and child agents never ask.
+  so the call never sees more than the user and assistant did in the visible conversation. `blocks_of`
+  (`agent/goal.rs` ~775-790) already omits tool results and reduces tool-call arguments to names for
+  `/btw`; a flag on the transcript builder must reach it rather than a second renderer. A test pins the
+  argument stripping.
+- New `UsageSource::PromptSuggestion` (`usage_ledger.rs`, added last because `index()` is `self as usize`;
+  `UsageSource::ALL` grows to 8; a `/cost` row in `fontaine-tui/src/reports.rs` in `ALL` order; the row
+  order in `docs/tui.md` ~817 follows) so the spend is visible, separate from `/btw`. Debited to the root
+  like a compaction, including a billed but unusable answer.
+- `AgentRuntime` is not `Clone` and `Ui::run` holds `&mut AgentRuntime`, so a spawned task cannot borrow
+  it. The core is split in two next to `ask_side_question` in `agent/goal.rs`: a synchronous
+  `prepare_prompt_suggestion(&Inputs)` that runs the skip checks and returns `None` when one holds,
+  otherwise owned values (the conversation snapshot, a clone of `models.main.completion`, the
+  `Arc<SessionState>`, `billed`); and a `run` step on those owned values that makes the call, cleans the
+  output, and debits the ledger via `state.record_usage`. The spawned task calls `run`.
+- Skip conditions (pure function `should_suggest(&Inputs)`, unit-tested): feature off; permission mode is
+  plan; last turn did not finish normally (error, interrupt); fewer than 1 completed turn; the previous
+  suggestion was shown and left unused three times in a row (back-off, reset when one is accepted); the
+  usage gate is paused; headless runs and child agents never ask. The TUI owns the streak, turn count,
+  last outcome and enabled flag and passes them in `Inputs`. `usage_gate_idle()` waits, so a non-blocking
+  gate-paused accessor is added to `gate.rs` and the check skips when paused. `billed` is passed to
+  `SideQuestion::new` as `/btw` does.
 - Output cleaning (pure function, unit-tested): trim, strip surrounding quotes and a leading "You:"/"User:",
   take the first line, reject empty, longer than 200 chars, starting with `/` or `!` (a suggestion must not
   pre-type a command or shell line), or equal to the user's last message.
-- The call goes through the same completion model as `/btw`, no tools, no guardian involvement and no
-  conversation or ledger-intent write, so it cannot act and is never guardian intent.
+- A suggestion is not intent until the user submits it; the call itself writes no conversation or
+  ledger-intent record. Once submitted (Enter, the same path as a typed message) it is an ordinary
+  `Record::UserMessage`; the `/` and `!` rejection plus the second Enter are the safeguard.
 
 TUI (`fontaine-tui`):
 - After a turn ends and the idle input loop starts, `Ui` spawns one task that owns what it needs (a clone of
@@ -69,15 +79,16 @@ TUI (`fontaine-tui`):
 - `App` gains `suggestion: Option<String>` shown only when the input is empty, has no attachments, no
   overlay or menu is open and the view is the main agent. Cleared by any edit of the buffer, by Esc, by
   starting a turn and by a `/clear`-style reset.
-- Keys: `Tab` or `Right` (plain, no menu open) writes the suggestion into the input; `Enter` on an empty
-  input with a suggestion does nothing special: accepting only fills the input and a second Enter
-  submits, as in Claude Code. Typing any character dismisses it and is inserted normally.
+- Keys: `Tab` or `Right` (plain, no menu open) fills the input; Enter then submits. `Right` is also handled
+  in vim Insert mode (`input.rs` ~465, 492), so the accept is gated on `VimState`, and Ctrl/Alt+Right are
+  excluded like the existing `plain` check. Typing any character dismisses it and is inserted normally.
 
 ### History completion (local)
 
 - Pure function `History::completion(&self, typed: &str) -> Option<&str>` in `history.rs`: when `typed`
   is non-empty, single-line, and not beginning with `/` or `!`, return the remainder of the most recent
-  entry that starts with `typed` and is longer than it.
+  entry that starts with `typed` and is longer than it. Entries are stored oldest-first, so this is a
+  reverse scan; `starts_with` is case-sensitive, unlike `search`.
 - Shown as ghost text after the cursor only when the cursor is at the end of the buffer, no completion
   menu is open and the input is not in history navigation. `Tab` or `Right` at end of buffer accepts it
   (appends the remainder); any other key behaves as before. Vim normal mode is unaffected (only insert
@@ -87,10 +98,11 @@ TUI (`fontaine-tui`):
 ### Rendering
 
 `draw_input` appends a dim span (same `Modifier::DIM` style used for the viewed-agent placeholder) after the
-typed rows: the suggestion on an empty input, or the completion remainder after the last row. The ghost text
-is never part of `InputBuffer::text()`, so it cannot be submitted or copied by accident. In screen-reader
-mode the ghost is not drawn; a one-line hint ("suggestion available, Tab to accept") is announced instead
-through the existing announcement path.
+typed rows: the suggestion on an empty input, or the completion remainder after the last row. The ghost is
+clipped to the remaining width of the last row (the first row for a suggestion) so the input height
+(`rows.len()` + chip rows + 2 in `view.rs`; rows are `Line::raw`) is unchanged. The ghost text is never part
+of `InputBuffer::text()`, so it cannot be submitted or copied by accident. The linear renderer never calls
+`draw_input`, so it shows no ghost text.
 
 ### Config
 
@@ -98,19 +110,23 @@ through the existing announcement path.
 - `[tui] history_completion` (bool, default `true`): the history ghost text.
 - Both are preferences in `TuiSection`/`Tui` (user scope, like the rest of `[tui]`), listed in
   `config_catalog.rs` as editable booleans so `/config` toggles them (applied from the next launch, as
-  the other startup-read keys). Add them to the JSON schema in `docs/schemas` via its generator.
+  the other startup-read keys). The settings schema is derived at test time, so nothing is generated.
 - No environment variable (Claude Code's `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` is not copied; the config
   key is the single switch).
 
 ## Implementation Steps
 
-1. `fontaine-core`: `Tui` fields and `TuiSection` options, merge in `config.rs`, catalog rows, schema.
+1. `fontaine-core`: `Tui` fields and `TuiSection` options, manual defaults (~3044) and merge (~3107) in
+   `config.rs`, catalog rows; update `editable_rows_are_exactly_the_preference_set` and the defaults test in
+   `config_catalog.rs`, and `fontaine-core/tests/config.rs`.
 2. `fontaine-core`: `Purpose::PromptSuggestion`, tool-result-free transcript rendering, output cleaning,
-   `should_suggest`, `UsageSource::PromptSuggestion`, `AgentRuntime::suggest_prompt`.
+   `should_suggest`, `UsageSource::PromptSuggestion`, the gate-paused accessor, and the prepare/run split
+   of `suggest_prompt`.
 3. `fontaine-tui`: `History::completion`; `App` state for suggestion and completion; key handling in
    `app.rs`; `/cost` row in `reports.rs`.
-4. `fontaine-tui`: spawn/abort/poll of the suggestion task in `ui/mod.rs` and `ui/turn.rs`; back-off counter.
-5. `fontaine-tui`: ghost rendering in `view.rs`; screen-reader hint.
+4. `fontaine-tui`: call prepare synchronously, spawn `run`, abort and poll the task in `ui/mod.rs` and
+   `ui/turn.rs`; back-off counter and `Inputs` state.
+5. `fontaine-tui`: ghost rendering in `view.rs`.
 6. Docs and CHANGELOG.
 
 ## Files to Modify
@@ -119,34 +135,30 @@ through the existing announcement path.
   `rust/fontaine-core/src/agent/goal.rs`
 - `rust/fontaine-tui/src/{app.rs,history.rs,view.rs,reports.rs}`,
   `rust/fontaine-tui/src/ui/{mod.rs,turn.rs}`
-- `docs/tui.md`, `docs/configuration.md`, `docs/schemas/*`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `docs/tui.md` (settings sample, keys table, `/cost` row order), `docs/configuration.md` (`[tui]` table and
+  TOML example), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
   (Decisions)
 
 ## Trade-offs
 
-- **Default off for the model suggestion.** Fontaine's `SideQuestion` renders the conversation as text and
-  does not reuse the main turn's prompt cache, so each suggestion re-reads the whole transcript as fresh
-  input; Claude Code's version is cheap only because of cache reuse. Making it opt-in keeps token usage
-  from inflating silently. A cache-sharing request path is a separate optimization.
 - **Autocomplete while typing is history-only.** A model call per keystroke pause is slow and costly; the
   history ghost covers repeated prompts at zero cost.
-- **Reusing `SideQuestion`** rather than a new client: same tool-less, ledger-debited, guardian-free path.
 
 ## Decisions
 
-- AFK: the model suggestion defaults to off, although the issue asks for an opt-out, because without cache
+- 2026-11-13: AFK (#620): the model suggestion defaults to off, although the issue asks for an opt-out, because without cache
   reuse it would inflate token usage on every turn; flipping the default is a one-line change once the call
   shares the main turn's cache.
-- AFK: accepting a suggestion only fills the input (Tab/Right); Enter then submits, as in Claude Code.
-- AFK: model-based autocomplete of text being typed is not implemented; file a follow-up issue.
-- Deviation from Claude Code: history ghost-text completion is added (Claude Code has none); recorded in the
+- 2026-11-13: AFK (#620): accepting a suggestion only fills the input (Tab/Right); Enter then submits, as in Claude Code.
+- 2026-11-13: AFK (#620): model-based autocomplete of text being typed is not implemented; file a follow-up issue.
+- 2026-11-13: Deviation from Claude Code (#620): history ghost-text completion is added (Claude Code has none); recorded in the
   master plan's TUI Decisions with the feature.
 
 ## Documentation
 
 - `docs/tui.md`: new "Prompt suggestions and history completion" section (keys, skip conditions, cost).
 - `docs/configuration.md`: the two `[tui]` keys.
-- `CHANGELOG.md` entry; master plan `## Decisions` (TUI subsection) lines for the deviations above.
+- `CHANGELOG.md` entry; master plan `## Decisions` lines for the deviations above, added at the end of the `### TUI` subsection.
 
 ## Testing Strategy
 
@@ -154,15 +166,16 @@ Unit tests (no live API; deterministic completion model from `rig_core::test_uti
 - `should_suggest` over every skip condition, including back-off after three unused suggestions.
 - Output cleaning: quotes, prefixes, multiline, empty, over-long, `/`- and `!`-leading, equal to last message.
 - Transcript rendering excludes tool results for this purpose; includes them for `/btw` unchanged.
-- `suggest_prompt` against a fake model: usage debited under `UsageSource::PromptSuggestion` on success and
+- Transcript argument stripping: tool-call arguments are reduced to names for this purpose.
+- `run` step against a fake model: usage debited under `UsageSource::PromptSuggestion` on success and
   on a billed unusable answer; nothing written to the conversation or guardian intent; timeout and error
   return `None` without surfacing a failure.
 - `History::completion`: most recent match wins, exact match yields none, slash/shell/multiline excluded.
 - `App` key handling: Tab/Right accept, typing dismisses, menus take precedence, vim normal mode ignores,
-  suggestion hidden with attachments or overlays.
-- `view.rs` render tests with `TestBackend`: ghost text is dim, not in `InputBuffer::text()`, absent in
-  screen-reader mode.
-- Config: defaults, scope handling, catalog and schema stay in sync (existing tests).
+  suggestion hidden with attachments or overlays, Right gated off in vim Insert and with Ctrl/Alt.
+- `view.rs` render tests with `TestBackend`: ghost text is dim, not in `InputBuffer::text()`, and clipped
+  so the input height is unchanged.
+- Config: defaults, scope handling, catalog stays in sync (existing tests).
 - A cost-ledger test pins that the suggestion call is visible in `/cost`.
 
 ## Manual Verification
@@ -172,8 +185,3 @@ Unit tests (no live API; deterministic completion model from `rig_core::test_uti
    rendering must be seen together; the call itself is covered by the fake-model tests.
 2. In a real tmux (see `tasks/design/testing.md`), type the start of an earlier prompt; expect dim
    completion that Tab accepts, with no layout shift on wrapped input.
-
-## Open Questions
-
-- Should accepted suggestions be recorded in the ledger as human intent? Proposed: yes, once submitted,
-  because it is then an ordinary typed message the user chose to send.
