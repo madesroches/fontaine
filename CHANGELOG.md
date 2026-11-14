@@ -23,6 +23,16 @@ All notable changes are recorded here. The format follows
   and 1-hour tokens, the usage ledger keeps both, `/cost` adds `write 5m` and `write 1h` columns
   (only when a split was reported), and telemetry gains `cacheWrite5m` and `cacheWrite1h` token
   metrics and a `cache_write_split` event. Accounts whose replies carry no split are unchanged.
+- A remote inbox (#627): `/remote-inbox on` in a terminal session prints a short-lived, one-time ticket,
+  and `fontaine send <ticket> "text"` from another terminal or device delivers one message to that
+  live session over iroh (direct or relayed QUIC). `accepted` means the session queued it. The message
+  is presumed to come from you, because holding a live ticket you minted is the proof: it is a user
+  message, rides the next tool result while a turn runs and starts a turn while idle, never touches
+  your draft or queued input, and can run slash commands and answer an open dialog that opened
+  before it. The ticket is shown once and never recorded; `--ticket-stdin` and `FONTAINE_TICKET`
+  keep it out of shell history. `[remote] relay = "disabled"` (user scope only) allows direct
+  connections only. A new `fontaine-remote` crate holds the transport, and the guardian toggles and
+  audit records note the remote identity. See `docs/remote-inbox.md`.
 - Claude Agent SDK compatibility (#582): an unmodified TypeScript or Python Agent SDK application can
   use `fontaine` as its Claude Code executable. SDK mode is selected by the SDK's own command line
   (stream-json in and out, `--verbose`, no `-p`) and serves Claude-shaped messages and control

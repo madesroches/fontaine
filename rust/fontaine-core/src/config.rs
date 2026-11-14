@@ -1292,6 +1292,33 @@ pub struct FeedbackSection {
     pub drafts: Option<DraftsMode>,
 }
 
+/// Which network paths the remote inbox's endpoint may use. It never enables the inbox.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteRelay {
+    /// The public relays run by the iroh project, so a sender behind a NAT can still reach the
+    /// session. The relay sees connection metadata, never message text.
+    #[default]
+    Default,
+    /// Direct connections only.
+    Disabled,
+}
+
+impl RemoteRelay {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RemoteRelay::Default => "default",
+            RemoteRelay::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteSection {
+    pub relay: Option<RemoteRelay>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StatuslineSection {
@@ -1559,6 +1586,7 @@ pub struct Settings {
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub statusline: Option<StatuslineSection>,
     pub feedback: Option<FeedbackSection>,
+    pub remote: Option<RemoteSection>,
     pub telemetry: Option<TelemetrySection>,
     pub websearch: Option<WebsearchSection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
@@ -2810,6 +2838,12 @@ pub struct Feedback {
     pub drafts: DraftsMode,
 }
 
+/// The merged `[remote]` section.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Remote {
+    pub relay: RemoteRelay,
+}
+
 /// The merged `[statusline]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Statusline {
@@ -2900,6 +2934,7 @@ pub struct Config {
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub statusline: Statusline,
     pub feedback: Feedback,
+    pub remote: Remote,
     pub mcp: Mcp,
     pub telemetry: Telemetry,
     pub websearch: Websearch,
@@ -3047,6 +3082,7 @@ impl Config {
             feedback: Feedback {
                 drafts: DraftsMode::default(),
             },
+            remote: Remote::default(),
             mcp: Mcp::default(),
             tui: Tui {
                 theme: ThemeName::default(),
@@ -3360,6 +3396,9 @@ impl Config {
         }
         if let Some(v) = s.feedback.as_ref().and_then(|f| f.drafts) {
             self.feedback.drafts = v;
+        }
+        if let Some(v) = s.remote.as_ref().and_then(|r| r.relay) {
+            self.remote.relay = v;
         }
         if let Some(v) = s.mcp.as_ref().and_then(|m| m.tool_search) {
             self.mcp.tool_search = v;

@@ -1402,6 +1402,7 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
                 .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
+                remote: None,
                 origin,
                 text: text.clone(),
                 attachments: Vec::new(),
@@ -1452,6 +1453,7 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
                 .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
+                remote: None,
                 origin: MessageOrigin::Other,
                 text,
                 attachments: Vec::new(),

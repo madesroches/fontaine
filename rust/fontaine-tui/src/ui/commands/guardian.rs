@@ -28,6 +28,9 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             self.app.transcript.error(message);
             return ControlFlow::Continue(());
         }
+        // The line that asked, if it was a remote one, is recorded with the toggle.
+        let requested_by = self.current_remote.clone();
+        self.remote_confirm = None;
         self.app.begin_guardian_off();
         loop {
             self.draw(runtime);
@@ -35,10 +38,15 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.guardian_off_prompt = None;
                 return ControlFlow::Continue(());
             };
-            let action = self.app.handle_input(input);
+            let action = self.dialog_input(runtime, input);
             match action {
                 Action::GuardianOff(true) => {
-                    match runtime.state.set_guardian_off(true) {
+                    let confirmed_by = self.remote_confirm.take();
+                    let toggle = fontaine_core::gate::GuardianToggle {
+                        requested_by: requested_by.as_ref(),
+                        confirmed_by: confirmed_by.as_ref(),
+                    };
+                    match runtime.state.set_guardian_off_by(true, toggle) {
                         Ok(()) => self.app.transcript.notice(
                             "guardian off for this session: every call runs without the guardian or the permission rules — /guardian-enable turns it back on",
                         ),
@@ -51,6 +59,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     return ControlFlow::Continue(());
                 }
                 Action::Quit => return ControlFlow::Break(()),
+                Action::CopyTicket => self.copy_ticket(),
                 _ => {}
             }
         }
@@ -64,7 +73,11 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("the guardian is already on for this session");
             return;
         }
-        match runtime.state.set_guardian_off(false) {
+        let toggle = fontaine_core::gate::GuardianToggle {
+            requested_by: self.current_remote.as_ref(),
+            confirmed_by: None,
+        };
+        match runtime.state.set_guardian_off_by(false, toggle) {
             Ok(()) => self.app.transcript.notice("guardian on"),
             Err(refusal) => self.app.transcript.error(refusal.to_string()),
         }

@@ -53,10 +53,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.drain_prompts();
                 self.goal_after_turn(runtime, &end);
                 self.app.transcript.notice("interrupted");
-                if let EndOfTurn::RestoreToInput(back) =
-                    end_of_turn(&end, runtime.steering.retract())
-                {
-                    self.app.restore_to_input(&back);
+                match end_of_turn(&end, runtime.steering.retract_unheld()) {
+                    EndOfTurn::RestoreToInput(back, remote) => {
+                        self.settle_restore(runtime, &back, remote);
+                    }
+                    EndOfTurn::Closed(dropped) => {
+                        self.drop_remote_entries(
+                            runtime,
+                            dropped,
+                            "the session ended before they ran",
+                        );
+                    }
+                    EndOfTurn::Submit(_) | EndOfTurn::Nothing => {}
                 }
                 return Some(Continue(()));
             }
@@ -64,7 +72,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let step = applied.as_ref().map(|applied| self.show_verdict(applied));
         // What the human typed during the evaluation runs next, ahead of any goal turn.
         let finished = TurnEnd::Finished(TurnOutcome::Answer(String::new()));
-        if let EndOfTurn::Submit(submissions) = end_of_turn(&finished, runtime.steering.retract()) {
+        if let EndOfTurn::Submit(submissions) =
+            end_of_turn(&finished, runtime.steering.retract_unheld())
+        {
             return Some(
                 self.converse(
                     runtime,

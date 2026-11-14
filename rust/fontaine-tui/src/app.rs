@@ -57,6 +57,9 @@ pub enum Input {
     Key(KeyEvent),
     Paste(String),
     Resize,
+    /// The remote inbox has something for the loop: a line queued, or the endpoint finished
+    /// starting. It carries nothing; the loop looks in the steering queue and the start slot.
+    Remote,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -123,6 +126,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// `c` in the ticket dialog: copy the ticket to the clipboard.
+    CopyTicket,
     /// The human answered the `/bug` preview.
     Bug(crate::bug_prompt::BugAnswer),
     /// The human answered the `/afk review` confirmation.
@@ -136,6 +141,34 @@ pub enum Action {
     /// The human answered the `/auto-mode-setup` offer of the guardian composition; `None`
     /// declined.
     SetupComposition(Option<fontaine_core::composition_offer::Offer>),
+}
+
+/// The dialogs a remote line may answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DialogKind {
+    Approval,
+    Question,
+    GuardianDisable,
+    AfkReview,
+}
+
+impl DialogKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            DialogKind::Approval => "approval",
+            DialogKind::Question => "question",
+            DialogKind::GuardianDisable => "guardian_disable",
+            DialogKind::AfkReview => "afk_review",
+        }
+    }
+}
+
+/// An open dialog a remote line may answer, and the words that answer it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteDialog {
+    pub kind: DialogKind,
+    pub id: u64,
+    pub options: Vec<String>,
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -260,6 +293,10 @@ pub struct App {
     pub server: Option<ConfirmPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<ConfirmPrompt>,
+    /// The remote-inbox ticket dialog while it is open.
+    pub ticket_prompt: Option<crate::ticket_prompt::TicketPrompt>,
+    /// What the status bar says of the remote inbox; `None` when it is off.
+    pub remote_indicator: Option<&'static str>,
     /// The `/bug` preview while it is open.
     pub bug_prompt: Option<crate::bug_prompt::BugPrompt>,
     /// Warnings shown this session, newest last, for the bug report. Display-only state.
@@ -385,6 +422,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    ticket_opened: u64,
     bug_opened: u64,
     afk_review_opened: u64,
     skill_trust_opened: u64,
@@ -480,6 +518,8 @@ impl App {
             transcript_print: false,
             server: None,
             guardian_off_prompt: None,
+            ticket_prompt: None,
+            remote_indicator: None,
             bug_prompt: None,
             recent_warnings: Default::default(),
             warn_sink: Arc::new(|message| eprintln!("fontaine: warning: {message}")),
@@ -544,6 +584,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            ticket_opened: 0,
             bug_opened: 0,
             afk_review_opened: 0,
             skill_trust_opened: 0,
@@ -1030,6 +1071,12 @@ impl App {
         self.guardian_off_prompt = Some(prompt);
     }
 
+    pub fn begin_ticket(&mut self, mut prompt: crate::ticket_prompt::TicketPrompt) {
+        self.ticket_opened += 1;
+        prompt.id = self.ticket_opened;
+        self.ticket_prompt = Some(prompt);
+    }
+
     pub fn begin_bug(&mut self, mut prompt: crate::bug_prompt::BugPrompt) {
         self.bug_opened += 1;
         prompt.id = self.bug_opened;
@@ -1248,7 +1295,8 @@ impl App {
             Input::Paste(text) => {
                 // A pasted key lands in the dialog's masked field, never in the message box.
                 // Overlays that take keys before the dialog also own the paste.
-                let above_dialog = self.denied.is_some()
+                let above_dialog = self.ticket_prompt.is_some()
+                    || self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.usage_pause_prompt.is_some()
                     || self.server.is_some()
@@ -1362,7 +1410,8 @@ impl App {
 
     /// Whether an overlay has the keyboard.
     pub fn covered(&self) -> bool {
-        self.approval.is_some()
+        self.ticket_prompt.is_some()
+            || self.approval.is_some()
             || !self.questions.is_empty()
             || !self.elicitations.is_empty()
             || self.denied.is_some()
@@ -1413,6 +1462,16 @@ impl App {
             .approval
             .as_ref()
             .is_some_and(Approval::is_typing_feedback);
+        if let Some(prompt) = &mut self.ticket_prompt {
+            return match prompt.handle_key(key) {
+                crate::ticket_prompt::TicketKey::None => Action::None,
+                crate::ticket_prompt::TicketKey::Copy => Action::CopyTicket,
+                crate::ticket_prompt::TicketKey::Dismiss => {
+                    self.ticket_prompt = None;
+                    Action::None
+                }
+            };
+        }
         if let Some(list) = &mut self.denied {
             return match list.handle_key(key) {
                 DeniedKey::None => Action::None,
@@ -2008,6 +2067,14 @@ impl App {
         let Some(answer) = approval.handle_key(key) else {
             return;
         };
+        self.finish_approval(answer);
+    }
+
+    /// Hands `answer` to the call that asked, shows it, and opens the next waiting approval.
+    fn finish_approval(&mut self, answer: Answer) {
+        let Some(approval) = &mut self.approval else {
+            return;
+        };
         let note = match &answer {
             Answer::AllowOnce => "allowed once".to_string(),
             Answer::AllowSession => "allowed for this session".to_string(),
@@ -2035,6 +2102,119 @@ impl App {
             self.transcript.notice(format!("{tool} {note}"));
         } else {
             self.transcript.notice(format!("{agent}: {tool} {note}"));
+        }
+    }
+
+    /// The dialog a remote line may answer right now, if the first thing to want an answer is one
+    /// of the four kinds: the approval, the model's question, the `/guardian-disable`
+    /// confirmation or the `/afk review` confirmation. Anything else (a picker, another prompt, a
+    /// reason being typed) is the person's, and the line waits behind it.
+    pub(crate) fn remote_dialog(&self) -> Option<RemoteDialog> {
+        if self.ticket_prompt.is_some()
+            || self.denied.is_some()
+            || self.unavailable.is_some()
+            || self.usage_pause_prompt.is_some()
+            || self.server.is_some()
+        {
+            return None;
+        }
+        if let Some(prompt) = &self.guardian_off_prompt {
+            return Some(RemoteDialog {
+                kind: DialogKind::GuardianDisable,
+                id: prompt.id,
+                options: crate::confirm_prompt::REMOTE_ANSWERS
+                    .map(String::from)
+                    .to_vec(),
+            });
+        }
+        if self.bug_prompt.is_some() {
+            return None;
+        }
+        if let Some(prompt) = &self.afk_review_prompt {
+            return Some(RemoteDialog {
+                kind: DialogKind::AfkReview,
+                id: prompt.id,
+                options: crate::confirm_prompt::REMOTE_ANSWERS
+                    .map(String::from)
+                    .to_vec(),
+            });
+        }
+        if self.skill_trust_prompt.is_some()
+            || self.plugin_prompt.is_some()
+            || self.setup_review.is_some()
+            || self.setup_composition.is_some()
+            || self.models.is_some()
+            || self.resume.is_some()
+            || self.rewind.is_some()
+            || self.config.is_some()
+            || self.providers.is_some()
+            || self.agents.is_some()
+            || self.transcript_view.is_some()
+        {
+            return None;
+        }
+        if let Some(approval) = &self.approval {
+            if approval.is_typing_feedback() {
+                return None;
+            }
+            return Some(RemoteDialog {
+                kind: DialogKind::Approval,
+                id: approval.id,
+                options: approval.remote_options(),
+            });
+        }
+        let panel = self.questions.front()?;
+        // A line must not send the person's half-typed text as a note or discard checked boxes.
+        if panel.is_mid_edit() {
+            return None;
+        }
+        Some(RemoteDialog {
+            kind: DialogKind::Question,
+            // A question panel advances through its questions under one id; the options change
+            // with it, which the caller compares too.
+            id: panel.id,
+            options: panel.remote_options(),
+        })
+    }
+
+    /// Applies a remote line to the dialog `kind`, as if the person had picked the option it
+    /// names. Returns what the interface loop does next, like a key would.
+    pub(crate) fn answer_remote_dialog(&mut self, kind: DialogKind, text: &str) -> Action {
+        match kind {
+            DialogKind::Approval => {
+                let answer = self
+                    .approval
+                    .as_mut()
+                    .and_then(|approval| approval.answer_text(text));
+                if let Some(answer) = answer {
+                    self.finish_approval(answer);
+                }
+                Action::None
+            }
+            DialogKind::Question => {
+                let Some(panel) = self.questions.front_mut() else {
+                    return Action::None;
+                };
+                if let Some(reply) = panel.answer_text(text) {
+                    panel.reply(reply);
+                    self.questions.pop_front();
+                }
+                Action::None
+            }
+            DialogKind::GuardianDisable => match crate::confirm_prompt::answer_text(text) {
+                Some(answer) => {
+                    self.guardian_off_prompt = None;
+                    Action::GuardianOff(answer)
+                }
+                None => Action::None,
+            },
+            DialogKind::AfkReview => match crate::confirm_prompt::answer_text(text) {
+                Some(answer) => {
+                    self.afk_review_prompt = None;
+                    Action::AfkReview(answer)
+                }
+                None => Action::None,
+            },
         }
     }
 
@@ -2942,6 +3122,21 @@ mod tests {
         assert_eq!(overlay.title, "approval");
         app.approval = None;
         assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "question");
+    }
+
+    #[test]
+    fn a_remote_line_leaves_a_question_alone_while_the_person_is_mid_edit() {
+        let mut app = app();
+        let _rx = open_question(&mut app, "root", true);
+        assert!(app.remote_dialog().is_some());
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.remote_dialog().is_none(), "a box is checked");
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.remote_dialog().is_some());
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.remote_dialog().is_none(), "Other holds text");
     }
 
     #[test]

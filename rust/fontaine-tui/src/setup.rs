@@ -426,7 +426,7 @@ impl Setup {
                 return Ok(Step::Quit);
             };
             match event {
-                Input::Resize => {}
+                Input::Resize | Input::Remote => {}
                 Input::Paste(text) => {
                     if self.picker.is_none() {
                         self.dialog.handle_paste(&text);

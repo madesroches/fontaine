@@ -109,6 +109,45 @@ impl QuestionPanel {
         self.selected == self.question().options.len()
     }
 
+    /// Whether the person has typed into "Other" or checked a box, which an answer would eat.
+    pub(crate) fn is_mid_edit(&self) -> bool {
+        self.other_text().is_some() || self.checked.iter().any(|on| *on)
+    }
+
+    /// What a remote line may say to answer the current question: an option's label or its
+    /// number.
+    pub(crate) fn remote_options(&self) -> Vec<String> {
+        let mut options = Vec::new();
+        for (i, option) in self.question().options.iter().enumerate() {
+            options.push(option.label.clone());
+            options.push((i + 1).to_string());
+        }
+        options
+    }
+
+    /// The reply a remote line gives by naming one option of the current question; `None` when
+    /// it moves on to the next question or names nothing. The "Other" row is the person's own.
+    pub(crate) fn answer_text(&mut self, text: &str) -> Option<QuestionReply> {
+        let said = text.trim().to_lowercase();
+        let row = self
+            .question()
+            .options
+            .iter()
+            .position(|option| option.label.trim().to_lowercase() == said)
+            .or_else(|| {
+                said.parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=self.question().options.len()).contains(n))
+                    .map(|n| n - 1)
+            })?;
+        self.selected = row;
+        if self.question().multi_select {
+            self.checked = vec![false; self.question().options.len()];
+            self.checked[row] = true;
+        }
+        self.confirm()
+    }
+
     /// Handles a key; the reply comes back once the human has answered every question or
     /// cancelled the call.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<QuestionReply> {

@@ -44,6 +44,7 @@ fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
     session
         .ledger
         .append(Record::UserMessage {
+            remote: None,
             origin: Default::default(),
             text: prompt.into(),
             attachments: Vec::new(),

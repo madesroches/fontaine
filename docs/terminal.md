@@ -100,7 +100,7 @@ through; set `set -g allow-passthrough on`. The default `bell` needs no setting 
 
 When a prompt that waits for your answer opens (an approval, a question from the model, an MCP
 server or skill trust prompt, the guardian-unavailable prompt or the `/guardian-disable`
-confirmation), Fontaine tells the terminal once, so you find out after switching windows. This
+confirmation), Fontaine tells the terminal once, so you find out after switching windows. (A [remote inbox](remote-inbox.md) ticket dialog is not one of these: it is a dialog you open yourself.) This
 includes approvals raised by background agents. `[tui] notify` in your user settings picks how:
 
 | Value | What is sent |
@@ -235,6 +235,7 @@ What is printed:
 | `no transcript` | Printed by Ctrl-O or `/transcript` when no entry has settled yet. Otherwise those print every settled entry once: calls and reasoning in the whole form `/expand` prints, the rest as above. No view opens. |
 | `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit`, `write` or `notebook_edit`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |
+| `remote inbox:` | The [remote inbox](remote-inbox.md) ticket dialog. The ticket is printed once, like any dialog, outside the transcript model; a line-oriented terminal cannot erase it, so your terminal's scrollback keeps that one print until you clear it. In the graphical renderer dismissing the dialog removes it from the screen. |
 | `selected: ...` | The highlighted row of the open dialog. |
 | `viewing agent-3 (worker)` | You showed a subagent's transcript. Its entries not printed before follow, and `back to the main conversation` and the main chat's entries not printed before follow when you return. The terminal is not erased, so nothing is printed twice. |
 | `[manual mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[auto mode on]`, `[AFK mode on]` or `[dontAsk mode on]`, however it changed. |

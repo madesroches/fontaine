@@ -3,6 +3,8 @@ mod goal;
 pub(crate) use commands::Launcher;
 mod mcp;
 mod providers;
+mod remote;
+pub(crate) use remote::{DialogHold, RemoteState};
 mod schedule;
 #[cfg(test)]
 mod tests;
@@ -117,11 +119,38 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// What one input does, with a quit key latching the final exit on the way out. Every place
     /// the interface reads input while work runs or a dialog is open goes through here.
     pub(crate) fn act_on(&mut self, runtime: &AgentRuntime, input: Input) -> Action {
-        let action = self.app.handle_input(input);
-        if matches!(action, Action::Quit) {
-            self.request_quit(runtime);
+        let action = self.dialog_input(runtime, input);
+        match action {
+            Action::Quit => self.request_quit(runtime),
+            Action::CopyTicket => {
+                self.copy_ticket();
+                return Action::None;
+            }
+            _ => {}
         }
         action
+    }
+
+    /// `c` in the ticket dialog. The ticket goes to the clipboard and nowhere else; the notice
+    /// names no part of it.
+    pub(crate) fn copy_ticket(&mut self) {
+        let Some(ticket) = self
+            .app
+            .ticket_prompt
+            .as_ref()
+            .map(|p| p.ticket().to_string())
+        else {
+            return;
+        };
+        match (self.clipboard)(&ticket) {
+            Ok(()) => self.app.attach_notice = Some("ticket copied to the clipboard".to_string()),
+            Err(e) => {
+                self.app.attach_notice = Some(format!(
+                    "could not copy to the clipboard: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ))
+            }
+        }
     }
 
     fn draw(&mut self, runtime: &AgentRuntime) {
@@ -156,7 +185,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.refresh_panel(runtime, &rows);
         }
         self.show_delivered_to_agents(runtime);
-        self.app.queued = runtime.steering.queued();
+        self.sync_remote(runtime);
+        self.app.queued = runtime
+            .steering
+            .queued_entries()
+            .into_iter()
+            .map(|line| match line.remote {
+                Some(from) => format!("[remote {}] {}", from.short_node(), line.raw),
+                None => line.raw,
+            })
+            .collect();
         self.app.queued_agent = self
             .app
             .viewing
@@ -747,6 +785,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if buffered.is_none() {
                 self.announce_blocked(runtime).await;
             }
+            // What the remote inbox queued runs like typed input, even while AFK is blocked: the
+            // sender is presumed to be the user. Checked every pass, not only on a wake-up, so a
+            // line a closed dialog or picker had been holding is not stranded.
+            if buffered.is_none()
+                && Box::pin(self.remote_idle(runtime, launch_dir))
+                    .await
+                    .is_break()
+            {
+                return;
+            }
             // While AFK is blocked or stopped nothing the user did not type may start a turn:
             // not news, not a scheduled prompt, not a goal step. Jobs stay listed, not deleted.
             let held = buffered.is_some() || runtime.unattended_blocked().is_some();
@@ -943,6 +991,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
+                | Action::CopyTicket
                 | Action::Bug(_)
                 | Action::AfkReview(_)
                 | Action::SkillTrust(_)
@@ -1054,7 +1103,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 {
                     Break(()) => Break(()),
                     // A picker or dialog the command opened is served by the idle loop.
-                    Continue(CommandOutcome::Done | CommandOutcome::AwaitingModal) => Continue(()),
+                    Continue(
+                        CommandOutcome::Done
+                        | CommandOutcome::Cleared
+                        | CommandOutcome::AwaitingModal,
+                    ) => Continue(()),
                     Continue(CommandOutcome::Turn(submission)) => {
                         self.converse(
                             runtime,
@@ -1307,6 +1360,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // The first turn is the user's: the line they typed is the intent the
                     // guardian reads, and later goal turns are harness notes.
                     runtime.append(Record::UserMessage {
+                        remote: self.current_remote.clone(),
                         origin: Default::default(),
                         text: raw.to_string(),
                         attachments: Vec::new(),
@@ -1344,6 +1398,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
                 // Recorded before the turn so the guardian judging the write has this intent.
                 runtime.append(Record::UserMessage {
+                    remote: self.current_remote.clone(),
                     origin: Default::default(),
                     text: format!("/init: create or improve {}", target.display()),
                     attachments: Vec::new(),
@@ -1409,8 +1464,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Continue(CommandOutcome::Done)
             }
             Command::Clear(name) => {
-                self.clear(runtime, &name).await;
-                Continue(CommandOutcome::Done)
+                if self.clear(runtime, &name).await {
+                    Continue(CommandOutcome::Cleared)
+                } else {
+                    Continue(CommandOutcome::Done)
+                }
             }
             Command::Compact(focus) => match self.compact(runtime, focus).await {
                 Break(()) => Break(()),
@@ -1480,6 +1538,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.move_notices_to_shown(mark);
     }
 
+    /// An immediate command the person typed while a remote-started turn runs: it must not
+    /// inherit that turn's sender.
+    pub(crate) fn run_typed_immediate(&mut self, runtime: &AgentRuntime, command: &Command) {
+        let remote = self.current_remote.take();
+        self.run_immediate(runtime, command);
+        self.current_remote = remote;
+    }
+
     fn run_immediate_inner(&mut self, runtime: &AgentRuntime, command: &Command) {
         match command {
             Command::Help => {
@@ -1519,6 +1585,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Vim => self.vim(),
             Command::Keybindings => self.keybindings(),
             Command::Exit => self.request_quit(runtime),
+            Command::RemoteInbox(argument) => self.remote_command(runtime, argument),
             _ => {}
         }
     }
@@ -1538,7 +1605,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         if let Some(id) = self.pending_resume.take() {
             // Switching now would strand undelivered input in this session's steering queue.
-            if !runtime.steering.queued().is_empty() {
+            if runtime.steering.has_typed() {
                 self.refuse_switch("/resume");
             } else if self.switch_to(runtime, &id).is_break() {
                 return std::ops::ControlFlow::Break(());
@@ -1569,7 +1636,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// Up with messages queued: they come back into the input to be edited.
     fn edit_queued(&mut self, runtime: &AgentRuntime) {
-        let entries = runtime.steering.retract();
+        // Remote entries stay queued: only what the human typed goes back to the draft.
+        let entries = runtime.steering.retract_typed();
         if entries.is_empty() {
             // The hook delivered them since the last draw, so the display is stale.
             self.app.queued.clear();

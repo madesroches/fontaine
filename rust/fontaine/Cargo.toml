@@ -33,6 +33,7 @@ dirs.workspace = true
 fontaine-agents.workspace = true
 fontaine-core.workspace = true
 fontaine-guardian.workspace = true
+fontaine-remote.workspace = true
 fontaine-tools.workspace = true
 fontaine-tui.workspace = true
 futures.workspace = true

@@ -117,6 +117,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
 | `[feedback]` | no | no | yes |
+| `[remote]` | no | no | yes |
 | `[guardian.composition]` | `shadow = true` only | `shadow = true` only | `shadow = true` only |
 | `[permissions] default_mode` | `manual` or `dontAsk` only | `manual` or `dontAsk` only | yes |
 | `[permissions] deny`, `ask` | add only | add only | add only |
@@ -1212,6 +1213,20 @@ Only the user file and `--settings` can set this. Drafts are never sent: you fil
 drafts = "quiet"
 ```
 
+### `[remote]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `relay` | Which network paths the [remote inbox](remote-inbox.md)'s endpoint may use: `default` uses the public relays run by the iroh project, so a sender behind a NAT can still reach the session (a relay sees connection metadata, never message text); `disabled` allows direct connections only. | `default` |
+
+Only the user file and `--settings` can set this, and a project file that does is refused. It never
+enables the inbox: only `/remote-inbox on` in a live terminal session does.
+
+```toml
+[remote]
+relay = "disabled"
+```
+
 ### `[afk]`
 
 | Key | Meaning | Default |
@@ -1610,4 +1625,4 @@ with code 2 and names the variable or flag.
 |---|---|
 | 0 | Success. A headless run that finished exits 0 even when tool calls were denied. |
 | 1 | A run error: a provider or model failure, a failed model listing, a run stopped by `--max-turns` or `--max-budget-usd`, a headless [goal](tui.md#goals) that ended impossible or paused, or an `--afk` run that was blocked or stopped (see [AFK mode](afk.md)). |
-| 2 | Configuration or usage error. |
+| 2 | Configuration or usage error. `fontaine send` also uses 2 for a ticket the session refused; see [the remote inbox](remote-inbox.md#errors-and-exit-codes). |

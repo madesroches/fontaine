@@ -41,6 +41,9 @@ pub enum Command {
     GuardianDisable,
     /// `/guardian-enable`: turn the guardian and the permission floor back on.
     GuardianEnable,
+    /// `/remote-inbox on [--ttl <dur>] | off | status | ticket [--ttl <dur>]`: the remote inbox
+    /// for one-shot messages from `fontaine send`.
+    RemoteInbox(String),
     /// `/auto-mode-setup`: collect this project's environment facts for the guardian.
     AutoModeSetup,
     /// `/login [account]`.
@@ -123,6 +126,7 @@ impl Command {
             | Command::Bug(_)
             | Command::Plugin(_)
             | Command::ReloadPlugins
+            | Command::RemoteInbox(_)
             | Command::Init(_) => true,
             Command::OutputStyle(argument) => !argument.is_empty(),
             _ => false,
@@ -131,7 +135,9 @@ impl Command {
 
     /// Whether the command runs immediately, even while a turn works: its handler is
     /// synchronous and touches only UI state — never the turn, the conversation or a blocking
-    /// wait, and the ledger only through one brief read of its view. Every other built-in queues
+    /// wait, and the ledger only through one brief read of its view. `/remote-inbox` is the one
+    /// handler that also spawns a task, to start the network endpoint; its result returns as a
+    /// wake-up input. Every other built-in queues
     /// like a message and executes once the turn ends; `/loop` and unknown names stay refused
     /// mid-turn.
     pub fn runs_mid_turn(&self) -> bool {
@@ -153,6 +159,7 @@ impl Command {
                 | Command::Cost
                 | Command::Vim
                 | Command::Keybindings
+                | Command::RemoteInbox(_)
         ) || matches!(
             self,
             Command::Skills(argument) | Command::Mcp(argument) | Command::Plugin(argument)
@@ -427,6 +434,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "apply plugin and skill changes to this session",
         command: |_| Command::ReloadPlugins,
+    },
+    Builtin {
+        name: "remote-inbox",
+        aliases: &[],
+        hint: Some("on [--ttl <dur>] | off | status | ticket [--ttl <dur>]"),
+        description: "let one `fontaine send` message reach this session; prints a one-time ticket",
+        command: Command::RemoteInbox,
     },
     Builtin {
         name: "rename",
@@ -1166,6 +1180,8 @@ mod tests {
             "/usage",
             "/vim",
             "/keybindings",
+            "/remote-inbox status",
+            "/remote-inbox on --ttl 5m",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");

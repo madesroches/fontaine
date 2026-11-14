@@ -8,16 +8,20 @@ use fontaine_tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/clear`: empties the model's context and the transcript, and keeps the session.
-    pub(crate) async fn clear(&mut self, runtime: &AgentRuntime, name: &str) {
+    /// Returns whether the conversation was actually cleared.
+    pub(crate) async fn clear(&mut self, runtime: &AgentRuntime, name: &str) -> bool {
         if !name.is_empty() {
             self.app.transcript.error(
                 "/clear takes no name; /rename names this session, and /resume returns to a session later",
             );
-            return;
+            return false;
         }
         let had_goal = runtime.session.goal().is_active();
         match runtime.clear_conversation().await {
             Ok(()) => {
+                // Only a clear that happened tears the inbox down; a failed one keeps both it
+                // and its queue, which still belong to the surviving conversation.
+                let dropped = self.remote_clear(runtime);
                 self.app.transcript.clear();
                 self.app.reset_suggestions();
                 // The old conversation would otherwise stay on screen and in scrollback, which
@@ -38,11 +42,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if had_goal {
                     self.app.transcript.notice("the goal was cleared with it");
                 }
+                if dropped > 0 {
+                    self.app.transcript.notice(format!(
+                        "dropped {dropped} queued remote message(s) with it; their senders were told `accepted`, which meant queued"
+                    ));
+                }
+                true
             }
-            Err(e) => self
-                .app
-                .transcript
-                .error(fontaine_tools::error_chain::chain(&e)),
+            Err(e) => {
+                self.app
+                    .transcript
+                    .error(fontaine_tools::error_chain::chain(&e));
+                false
+            }
         }
     }
 
@@ -155,7 +167,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 None
             }
         };
-        let queued = runtime.steering.retract();
+        // Remote entries stay queued: only what the human typed goes back to the draft.
+        let queued = runtime.steering.retract_typed();
         if !queued.is_empty() {
             let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
             self.app.restore_to_input(&raws.join("\n\n"));

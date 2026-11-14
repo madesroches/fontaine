@@ -363,6 +363,7 @@ impl Overlay {
 /// in [`overlay`]'s precedence is. Key routing and drawing both ask, so they cannot drift.
 pub(crate) fn transcript_has_keys(app: &App) -> bool {
     app.transcript_view.is_some()
+        && app.ticket_prompt.is_none()
         && app.denied.is_none()
         && app.unavailable.is_none()
         && app.usage_pause_prompt.is_none()
@@ -394,6 +395,12 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
 /// precedence, which is the order `App::handle_key` routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
     let theme = &app.theme;
+    if let Some(prompt) = &app.ticket_prompt {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("remote inbox", prompt.body(width, theme), prompt.footer())
+        };
+    }
     if let Some(list) = &app.denied {
         return Overlay::new("denied", list.body(width, theme), list.footer());
     }

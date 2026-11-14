@@ -46,11 +46,13 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
     assert_eq!(record.tier, Tier::GuardianOff);
 
     let ledger = rig.session.ledger.read().unwrap();
-    assert!(
-        ledger
-            .iter()
-            .any(|entry| matches!(entry.record, Record::GuardianOff { off: true }))
-    );
+    assert!(ledger.iter().any(|entry| matches!(
+        entry.record,
+        Record::GuardianOff {
+            off: true,
+            remote: None
+        }
+    )));
     assert!(
         rig.audit()
             .iter()
