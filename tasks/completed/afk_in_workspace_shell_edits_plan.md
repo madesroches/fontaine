@@ -137,6 +137,8 @@ Tighten the rule and prompt guidance and add eval cases; changing the AFK escala
 ## Decisions
 
 - 2026-11-14 (user): In-workspace files may be edited whether or not git tracks them, so the exception covers any `unindexed` in-workspace path, through the shell and the file tools alike, with no session-created-directory condition. Replaces the earlier AFK decisions that limited it to shell calls and to session-created directories. Credential files stay behind the deterministic floor.
+- 2026-11-14 (user): The guardian text frames workspace edits positively, as generally allowed with the user responsible for backing up workspace contents before a long-running task, and a request that names only a task or a skill covers the edits that serve it. The "public project work" allowance also covers the paste service that hosts a paste the user asked for. A live Haiku run showed the incident's compound call still escalating on the unnamed edits, and the benign slice flaking on a public paste; accepting a looser guardian was the user's call.
+- `touched_paths` no longer lists the text of `printf`/`echo` or the script of `sed`/`awk` as paths: a `printf` format string and an `s/a/b/` script were shown to the guardian as bogus paths. Redirect targets and file operands are unchanged.
 - Direction 2 (changing the AFK `escalate` → deny conversion or the `AFK_RECOVERY` text) is not
   done: the recovery text is the fail-closed contract, and "error text may explain a Deny,
   never change it". Fixing the false positive at its source makes the conversion irrelevant here.
