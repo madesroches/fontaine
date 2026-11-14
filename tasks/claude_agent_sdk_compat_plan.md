@@ -113,9 +113,9 @@ Read from the released packages: TS `@anthropic-ai/claude-agent-sdk@0.3.325`, Py
   `{behavior:"deny", message, interrupt?}`; `hook_callback` (`callback_id`, `input`,
   `tool_use_id`) → hook JSON output; `mcp_message` (`server_name`, JSON-RPC `message`) →
   `{mcp_response}`; `control_cancel_request` (`request_id`) abandons a pending request.
-- **Version check.** The Python SDK reads `claude_code_version` from `system/init` and warns
-  below `2.0.0`, and below `2.1.248` for verbatim prompts. Setting
-  `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` skips the check.
+- **Version check.** The Python SDK only warns, never fails, when `claude_code_version` in
+  `system/init` is missing or not `x.y.z`; `2.1.248` matters only for verbatim prompts (also a
+  warning). Setting `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` skips the check.
 - **Message parsing.** The Python parser indexes these keys directly, so they are required:
   `assistant.message.{content, model}`, `result.{subtype, duration_ms, duration_api_ms,
   is_error, num_turns, session_id}`, `stream_event.{uuid, session_id, event}`, and the
@@ -135,7 +135,9 @@ only act under `-p`), so no existing `headless-v1` or TUI invocation changes mea
 `fontaine -p --output-format stream-json …` remains `headless-v1`.
 
 `lib.rs::run` checks the argv shape next to the existing pre-clap hidden-mode check, before the
-clap parse, and hands argv to a separate clap struct, `claude_compat::Cli`. That struct carries Claude's exact flag spellings (camelCase
+clap parse, and hands argv to a separate clap struct, `claude_compat::Cli`. The raw argv scan skips the operand after known value-taking flags (e.g.
+`--system-prompt`, `--append-system-prompt`), so a value of `-p`, `--verbose` or `stream-json`
+cannot flip detection. That struct carries Claude's exact flag spellings (camelCase
 included). Its value enums and the unsupported list come from the capability matrix (§9). Any
 unknown flag, and any flag classed as unsupported, exits with code 2 and a one-line stderr
 message naming the flag and pointing to `docs/agent-sdk.md`, before stdin is read or a model
@@ -144,8 +146,8 @@ is contacted. The SDKs surface the CLI's stderr and exit code in their error, so
 
 ### 2. Module layout
 
-All new code lives in `rust/fontaine/src/claude_compat/`. Core gains only the seams listed in
-§3 and §5–§8: the event sink, the human channel, callback hooks, injected MCP transports and
+All new code lives in `rust/fontaine/src/claude_compat/`. Core and headless gain only the seams listed in
+§3 and §5–§8: the event sink (in `rust/fontaine/src/headless.rs`), the human channel, callback hooks, injected MCP transports and
 session agents, and `AgentSetup` inputs for CLI-only MCP servers, the root toolset and a
 non-persisting model switch.
 
@@ -155,7 +157,8 @@ claude_compat/
   cli.rs        clap struct with Claude flag names; flag -> Options mapping; unsupported table
   wire.rs       typed serde structs: inbound (User, ControlRequest, ControlResponse,
                 ControlCancel) and outbound (SystemInit, Assistant, User, StreamEvent, Result,
-                SystemStatus, PermissionDenied, Task*, ControlRequest/Response)
+                SystemStatus, PermissionDenied, Task*, ControlRequest/Response); inbound types
+                ignore unknown fields (no `deny_unknown_fields`)
   router.rs     stdin demux task + single stdout writer task; outbound request ids,
                 pending map, cancel, EOF fail-closed
   translate.rs  SessionEvent -> wire messages (tool-name mapping, parent_tool_use_id,
@@ -265,7 +268,11 @@ unchanged `headless` bool. Since the approver is reached only from `ask_human`, 
 callback runs after the unregistered-agent check, the AFK stop, hooks, the floor, rules, mode
 handling and (in `auto`/`afk`) the guardian. A floor deny, a guardian deny or a fail-closed
 guardian outcome never reaches it. In `afk`, `AfkApprover` still wraps the delegate, so AFK's
-would-prompt-is-deny semantics hold there as they do for a human. `/guardian-disable` cannot be
+would-prompt-is-deny semantics hold there as they do for a human. SDK mode passes
+`confirm_project_servers=false` and `scheduling=false` (the headless values, `lib.rs:1159-1160`),
+independent of `HumanChannel`. `SdkApprover` keeps the trait-default `guardian_unavailable`
+(Deny); the composition-stop forced prompt and a guardian Escalate reach the delegate via
+`ask_human`. `/guardian-disable` cannot be
 reached from SDK mode: it is a TUI command, and SDK mode has no slash commands.
 
 **Request.** `SdkApprover::approve` sends `can_use_tool` with `tool_name` (wire name), `input`
@@ -281,6 +288,7 @@ ruleContent}], behavior:"allow", destination:"session"}`.
 | SDK answer | Fontaine outcome |
 |---|---|
 | `allow`, `updatedInput` equal to the sent input, no `updatedPermissions` | `AllowOnce` |
+| `allow` with `updatedInput` absent, no `updatedPermissions` | `AllowOnce` (absent is treated as equal to the sent input; unknown extra keys such as `toolUseID` and `decisionClassification` are tolerated) |
 | `allow` + `updatedPermissions` = addRules/allow/`session` naming the proposed rule | `AllowSession` (existing grant path) |
 | `allow` + `updatedPermissions` naming an accepted session allow rule other than the proposed one | `AllowOnce` plus those session grants |
 | `allow` + `updatedInput` different from the sent input | `AllowModified(args)` → re-adjudication (below) |
@@ -342,7 +350,7 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   base set (mapped names; an unknown name exits 2). The restriction is an `AgentSetup`
   root-toolset field applied where the root tool server is built, so excluded tools are not
   advertised. `--allowedTools` / `--disallowedTools` are
-  comma lists mapped to CLI-scope allow/deny rules, exactly like `--allowed-tools`.
+  comma lists; each entry goes through `map_tool_entry` before the CLI-scope rule path. `--tools` entries with a specifier exit 2.
 - **`--setting-sources`.** Fontaine reads its own TOML config, not Claude's settings. The flag is
   accepted, but it never removes Fontaine's project-scope deny/ask tightening, because dropping
   it would loosen from the host side. User and project Fontaine config always load, and this
@@ -378,7 +386,10 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
 - **Startup read.** The runtime is built before `headless::run` opens stdin, but callback hooks,
   session agents and SDK MCP transports arrive on stdin. SDK mode therefore reads stdin up to
   the first `initialize` (or the first user message, if none) before building the runtime, and
-  passes what it found into `AgentSetup` (§8).
+  passes what it found into `AgentSetup` (§8). User lines arriving before the `initialize` reply
+  are buffered (the TS SDK writes the first user line right after `initialize` without waiting).
+  Unknown fields on inbound `user` lines (`session_id` as `""`/`"default"`, `parent_tool_use_id`,
+  `client_composed`) are ignored.
 - **`initialize`** must come before the first user message if it comes at all; Claude Code
   tolerates its absence and so does Fontaine. Its response mirrors the baseline's keys that have
   meaning here: `commands: []`, `agents`, `models` (configured), `current_permission_mode`,
@@ -392,10 +403,13 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   `plugins`, `managedSettings`, `workspaceTrust`) get an error response naming them; default
   values never do. The SDK raises on an error response to `initialize`, so the caller sees it.
 - **`interrupt`.** `run_attempt` gains a `select!` arm on a cancel receiver, next to the AFK
-  stop. Interrupt drops the turn future (the TUI's mechanism), kills the turn's foreground
-  children through the existing teardown, and cancels pending outbound requests (each fails
-  closed). The turn's `result` then goes out with Claude's interrupt shape, pinned against a
-  captured baseline. The control response is sent after the turn has stopped. Queued user
+  stop. Interrupt drops the turn future (the TUI's mechanism); that kills foreground
+  children through their drop guards and `kill_on_drop`, as in the TUI. It also cancels pending
+  outbound requests (each fails closed). The turn's `result` then goes out with Claude Code
+  2.1.325's aborted-turn shape: `subtype:"error_during_execution"`, `is_error:true`,
+  `terminal_reason` `aborted_streaming` or `aborted_tools`, and `errors:["[ede_diagnostic] …"]`,
+  except `subtype:"success"` when the last message is assistant text, or all tool results with
+  `end_turn`. The Step 1 baseline assertions pin `terminal_reason` and `errors`. The control response is sent after the turn has stopped. Queued user
   messages stay queued. The arm calls `keep_unsettled_turn(Unsettled::User, …)` as the AFK arm
   does.
 - **Streaming input while a turn runs.** A user message that arrives mid-turn goes to the root's
@@ -439,13 +453,14 @@ mode never uses it as is; `agent/models.rs` gains a non-persisting variant). An 
   floor (`Tier::Hook`), which skips `canUseTool` and, for narrow matchers in auto, the guardian,
   as a PreToolUse allow does in Claude Code. Timeout is the matcher's `timeout`, or the
   command-hook default. An error or timeout follows `onFailure`: `block` makes a PreToolUse
-  deny, and `continue` or absent gives command-hook non-blocking-error semantics. A hook's output
+  deny, and `continue` or absent gives command-hook non-blocking-error semantics. The callback constructor sets the existing `fails_closed`
+  (`PreToolUseHook::fails_closed`, `UserHook.fails_closed`) from `onFailure: block`. A hook's output
   is data, never a human answer. Events with no Fontaine equivalent get an `initialize` error
   naming the event.
 - **Programmatic agents** (`initialize.agents`, `--agents` is not a flag the SDK sends) are
   mapped from the JSON definition into agent types by a new function in `extensions.rs` (today
-  it maps only frontmatter files), under a new explicit session origin (`TypeOrigin` in
-  `fontaine-agents/src/registry.rs` and the extension `Scope` gain a session variant). The
+  it maps only frontmatter files), under a new explicit session origin on `TypeOrigin` only (`fontaine-agents/src/registry.rs`;
+  the extension `Scope` is shared with skills and styles and gains no variant). The
   toolset, model and effort restrictions that apply to tightened scopes apply to them. Tool
   lists go through `map_tool_entry` and cannot exceed the parent's toolset. `AgentSetup` gains a
   session-agents input, kept across plugin reload (which overwrites the live agent-type cell).
@@ -487,7 +502,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    literal ~:2110-2143), `fontaine-core/src/statusline.rs` (~:487-520) and
    `fontaine-core/tests/audit_telemetry.rs`.
 5. `fontaine-core/src/user_hooks.rs`: add `Handler::Callback` behind a `HookTransport` trait,
-   built by a constructor that bypasses `HandlerKind`.
+   built by a constructor that bypasses `HandlerKind` and sets `fails_closed` from `onFailure`.
 6. `fontaine-tools/src/mcp/servers.rs` and `fontaine-core/src/agent/mcp*.rs`: add
    `Transport::Sdk`, a public transport-factory trait, a non-Config spec source, and routing in
    `ServerConnector` via `connect_transport`.
@@ -496,14 +511,16 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
    session agents (kept across reload), a "CLI MCP servers only" switch, a root-toolset
    restriction applied where the root tool server is built, and a non-persisting model switch.
 8. `fontaine-agents/src/registry.rs` and `rust/fontaine-core/src/extensions.rs`: a session
-   `TypeOrigin` / `Scope`, and the JSON agent-definition mapping with the toolset, model and
+   `TypeOrigin`, and the JSON agent-definition mapping with the toolset, model and
    effort restrictions of tightened scopes applied.
 9. `rust/fontaine/src/lib.rs`: `agent_setup` and `run_headless` take an approver and a
    `HumanChannel` parameter (today `DenyAll` is hard-coded and `headless` also drives
-   `confirm_project_servers` and scheduling), and build their inputs from `headless::Options`
+   `confirm_project_servers` and scheduling; SDK mode passes both as false, independent of
+   `HumanChannel`), and build their inputs from `headless::Options`
    plus compat extras instead of Fontaine's `&Cli`.
-10. Lift `LineReader` from `claude_subscription/cli.rs` into a shared module and use it from
-    both sides.
+10. Lift `LineReader` from `claude_subscription/cli.rs` into a new `pub` module,
+    `fontaine-core/src/line_reader.rs`, generic over `AsyncRead`, moving `LineBuffer` and
+    `ReadFail` with it, and use it from both sides.
 
 **Step 3: The surface.**
 11. `rust/fontaine/src/lib.rs`: argv-shape detection in `run`, next to the pre-clap hidden-mode
@@ -534,7 +551,9 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 19. `docs/agent-sdk.md` (new), `docs/headless.md`, `docs/permissions.md`, `docs/mcp.md`,
     `docs/hooks.md`, `docs/telemetry.md`, `docs/guardian.md`, `docs/agents.md`,
     `docs/extensions.md`, `docs/SUMMARY.md`, `docs/index.md`, `CHANGELOG.md`.
-20. Master plan `## Decisions`: the lines listed under Decisions below, in their subsections.
+20. Master plan `## Decisions`: the lines listed under Decisions below, in their subsections;
+    also the workspace-layout `ci.yml` step list (`tasks/fontaine_harness_plan.md` ~:205-207),
+    which gains the `sdk-compat` job.
 
 ## Files to Modify
 
@@ -544,7 +563,7 @@ versions are TS `0.3.325`, Python `0.2.182` and Claude Code protocol baseline `2
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `ledger.rs`, `audit.rs`,
   `user_hooks.rs`, `agent/mcp.rs`, `agent/mcp_supervisor.rs`, `agent/setup.rs`,
   `agent/build.rs`, `agent/models.rs`, `agent/reload.rs`, `statusline.rs`
-- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (LineReader moved out)
+- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (LineReader moved out), `rust/fontaine-core/src/line_reader.rs` (new)
 - `rust/fontaine-tools/src/mcp/servers.rs`
 - `rust/fontaine-agents/src/registry.rs`
 - `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/ui/tests.rs`,
@@ -640,7 +659,8 @@ Master-plan lines to add (`### Headless` unless noted):
 
 **Unit tests (in the modules):**
 - `cli.rs`: argv-shape detection (every shape the SDKs send → SDK mode; `-p` forms and the TUI
-  → not); every matrix row (supported flags map to the expected `Options`, unsupported ones exit
+  → not; a value-taking flag whose operand is `-p`, `--verbose` or `stream-json` does not flip
+  detection); every matrix row (supported flags map to the expected `Options`, unsupported ones exit
   2 with the flag named, an unknown flag exits 2); permission-mode mapping, with
   `bypassPermissions` rejected; the matrix renders to the docs table.
 - `wire.rs`: serde round-trip of every message and control shape against the checked-in
@@ -681,7 +701,6 @@ packages from the registries and contacts no model provider.
 
 ## Open Questions
 
-- Which `result` shape Claude Code emits after `interrupt` (subtype and `is_error`), and whether
-  it delivers mid-turn user messages at the next tool boundary or only at turn end. The early baseline
-  capture (Step 1) settles both before `control.rs` is written. The plan assumes the
+- Whether Claude Code delivers mid-turn user messages at the next tool boundary or only at turn
+  end. The early baseline capture (Step 1) settles it before `control.rs` is written. The plan assumes the
   tool-boundary delivery described in §7.
