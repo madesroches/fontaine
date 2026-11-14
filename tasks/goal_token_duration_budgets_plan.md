@@ -36,26 +36,28 @@ the same evaluation boundary as the other caps, pausing the goal with a specific
 - `GoalCaps`: add `max_tokens: Option<u64>` and `max_duration: Option<Duration>`; `GoalCaps` stays
   `Copy`.
 - `PauseReason`: add `TokenCap(u64)` ("the goal's tokens passed 500.0k", via `compact_count`) and
-  `DurationCap(Duration)` ("the goal ran longer than 2h 00m", via `duration_text`). Not `Impossible`,
+  `DurationCap(Duration)` ("the stretch ran longer than 2h 00m", via `duration_text`; the clock is per stretch while status shows goal-wide elapsed). Not `Impossible`,
   no new headless outcome, no new exit code.
 - `Stretch`: add `started: Instant`, set wherever the stretch is created (`fresh`, `user_prompt`) so
   tokens, duration, turns and cost all reset at the same boundaries.
 - `not_met()`: after the cost check, test tokens with `Budget { tokens: Some(cap), cost_usd: None }
   .exhausted(&spent, false)` (no `priced` guard: it is the point) and duration with
-  `stretch.started.elapsed() >= cap`. Order of precedence: no-progress, turns, cost, tokens, duration.
+  `stretch.started.elapsed() > cap` (strict, matching `Budget::exhausted`'s `spent > cap`). Order of precedence: no-progress, turns, cost, tokens, duration.
   Like the other caps it fires on the "not met" boundary only; a met/impossible verdict ends the goal
   regardless. This is not hard cancellation: an in-flight model call or tool wait is not interrupted,
   so a stretch may overrun the duration by one turn plus one evaluation.
 - No model tool is added; the model cannot raise budgets.
-- Status/pause display: `PauseReason` strings flow into `/goal` status, ledger pause records and
-  headless/TUI notices unchanged.
+- Status/pause display: cap reasons reach `/goal` status and the headless/TUI notices unchanged.
+  They do not reach ledger pause records: `evaluate_goal` records `Paused` with reason `None` for
+  `Step::Pause` (only the AFK `pause_goal` records text).
 
 ## Implementation Steps
 
 1. `config.rs`: fields, validation, `Goal` defaults (`None`), merge; `config_catalog.rs`: two rows
    beside `goal.max_cost_usd`; schema regeneration if the repo snapshots it.
 2. `goal.rs`: `GoalCaps`, `PauseReason` variants and `Display`, `Stretch.started`, `not_met()` checks.
-3. Fix struct-literal call sites of `GoalCaps`/`Goal` in tests and evals.
+3. Fix the three `GoalCaps` struct literals in `rust/fontaine-core/tests/goal.rs` (approx. lines 37,
+   367, 395); the `config::Goal` literal at `config.rs:3119` is covered by step 1.
 4. Tests (below).
 5. Docs and changelog; master plan Decisions line.
 
@@ -92,15 +94,17 @@ the same evaluation boundary as the other caps, pausing the goal with a specific
 Unit tests in `fontaine-core/tests/goal.rs`, following the existing cost-cap tests:
 - Token cap fires with an unpriced model (`priced = false`) and counts spend built as a tree total
   including guardian/evaluator/subagent tokens via `spend_since`.
-- Duration cap fires once the stretch's `started` is older than the cap (use a tiny cap, e.g. 1 s,
-  with a sleep, or a test-only constructor), and does not fire below it.
+- Duration cap fires once the stretch's `started` is strictly older than the cap (use a tiny cap,
+  e.g. 1 s, with a sleep, or a test-only constructor), and does not fire at or below it.
 - Both reset on `user_prompt`: a paused goal continues under a fresh stretch.
 - Pause leaves goal set; ordering vs. turn/cost caps; unset caps change nothing.
 - `PauseReason` display strings.
 
 `fontaine-core/tests/config.rs`: defaults `None`; user file sets both; project scope and `--settings`
-behaviour matches `goal.max_cost_usd` (project rejected); invalid values (0, over max, negative,
-non-integer) rejected naming the key. A headless test in `fontaine/tests/goal_headless.rs` for
+behaviour matches `goal.max_cost_usd` (project rejected); invalid values: 0 and over-max
+reach `validate_values` and the error names `goal.max_tokens`/`goal.max_duration_secs`; negative
+and non-integer values fail in toml parsing (`ConfigError::Parse`), so assert only that an error is
+returned. A headless test in `fontaine/tests/goal_headless.rs` for
 a token-capped goal pausing with exit 1 and unchanged `subtype`.
 
 ## Open Questions
