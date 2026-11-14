@@ -1267,7 +1267,7 @@ minutes of waiting the model is asked to check on the work (`goal: checking on b
 turn that lists what still runs and tells it to read the output, keep waiting if the work is
 progressing, and fix or stop anything stuck. Later check-ins come after 1 hour and then every 2
 hours. A check-in counts as a goal turn toward `[goal] max_turns`, and one that falls due at the cap
-pauses the goal. Check-ins that start while the session sits idle stop after 3 until you send a
+or past `max_cost_usd` pauses the goal. Check-ins that start while the session sits idle stop after 3 until you send a
 message; the third one says so. `[goal] checkin_minutes` sets the first interval, and `0` turns
 check-ins off while the goal still waits for the work.
 

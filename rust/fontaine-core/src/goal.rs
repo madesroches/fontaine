@@ -410,7 +410,7 @@ pub enum Due {
     CheckIn(CheckIn),
     /// A check-in is due while idle, but the idle ones are used up.
     IdleExhausted,
-    /// A due check-in would exceed the turn cap: the goal is now paused.
+    /// A due check-in falls at the turn cap or past the cost cap: the goal is now paused.
     Paused(PauseReason),
 }
 
