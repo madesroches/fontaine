@@ -565,6 +565,39 @@ async fn effort_sets_and_shows_the_session_level_and_model_revalidates_it() {
     .await;
 }
 
+const CACHE_WARNING: &str = "a changed effort can invalidate the prompt cache";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn effort_warns_about_the_prompt_cache_once_a_turn_has_run() {
+    let w = World::new(vec![text_turn("first reply")]).with_prompt_caching();
+    w.run(|ui| async move {
+        ui.idle().await;
+        ui.send("/effort low");
+        ui.wait_for("effort is now low for this session").await;
+        assert!(!ui.screen().contains(CACHE_WARNING), "{}", ui.screen());
+        ui.send("hello");
+        ui.wait_for("first reply").await;
+        ui.idle().await;
+        ui.send("/effort high");
+        ui.wait_for(CACHE_WARNING).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn effort_does_not_warn_without_prompt_caching() {
+    let w = World::new(vec![text_turn("first reply")]);
+    w.run(|ui| async move {
+        ui.send("hello");
+        ui.wait_for("first reply").await;
+        ui.idle().await;
+        ui.send("/effort high");
+        ui.wait_for("effort is now high for this session").await;
+        assert!(!ui.screen().contains(CACHE_WARNING), "{}", ui.screen());
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn guardian_model_pins_the_guardian_and_saves_the_choice() {
     let w = World::new(vec![])

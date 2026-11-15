@@ -69,7 +69,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// `/effort`: shows the session's reasoning effort and the levels the model takes, or sets
     /// it for this session. It is not saved: `[model] effort` is the standing choice.
-    pub(crate) fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
+    pub(crate) async fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
         let supported = takes(&runtime.models.main.supported_efforts());
         if text.is_empty() {
             let current = runtime.state.effort().map_or_else(
@@ -93,6 +93,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
         };
+        let previous = runtime.state.effort();
         runtime.state.set_effort(level);
         self.app.effort = level;
         // A level the model cannot take is warned about here rather than at the next turn.
@@ -101,6 +102,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(level) => format!("effort is now {level} for this session"),
             None => "effort is unset for this session: the model's own default applies".to_string(),
         });
+        let caching = runtime.models.main.prompt_caching;
+        if previous == level || !caching {
+            return;
+        }
+        match runtime.conversation_len().await {
+            Ok(len) => {
+                if let Some(warning) = effort_cache_warning(previous, level, caching, len > 0) {
+                    self.app.transcript.notice(warning);
+                }
+            }
+            Err(e) => self
+                .app
+                .transcript
+                .warning(fontaine_tools::error_chain::chain(&e), None),
+        }
     }
 
     /// Lists the models of every account, or of `account` alone, which can take a while, then
@@ -420,6 +436,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 }
 
+/// The notice for a changed effort on a session whose prompt cache holds the conversation.
+fn effort_cache_warning(
+    previous: Option<Effort>,
+    new: Option<Effort>,
+    caching: bool,
+    has_history: bool,
+) -> Option<&'static str> {
+    (previous != new && caching && has_history).then_some(
+        "the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache",
+    )
+}
+
 fn takes(levels: &[Effort]) -> String {
     if levels.is_empty() {
         return "no effort level (the endpoint has no reasoning mapping)".to_string();
@@ -434,6 +462,19 @@ fn takes(levels: &[Effort]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_warning_needs_a_change_caching_and_history() {
+        let high = Some(Effort::High);
+        let low = Some(Effort::Low);
+        assert!(effort_cache_warning(low, high, true, true).is_some());
+        assert!(effort_cache_warning(None, high, true, true).is_some());
+        assert!(effort_cache_warning(high, None, true, true).is_some());
+        assert!(effort_cache_warning(high, high, true, true).is_none());
+        assert!(effort_cache_warning(None, None, true, true).is_none());
+        assert!(effort_cache_warning(low, high, false, true).is_none());
+        assert!(effort_cache_warning(low, high, true, false).is_none());
+    }
 
     #[test]
     fn a_model_with_no_levels_says_so() {
