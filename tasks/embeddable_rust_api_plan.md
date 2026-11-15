@@ -33,13 +33,11 @@ route and documents all three as one embedding story.
 ### One crate for the SDK
 
 The SDK is **one crate**, `rust/fontaine-sdk`, the only crate a Rust embedder names in `Cargo.toml`
-or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so the current
+or reads on docs.rs. The current
 `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become **modules** of it:
 
 - `fontaine_sdk::core`, `fontaine_sdk::tools`, `fontaine_sdk::agents`, `fontaine_sdk::guardian` hold the existing source trees
-  unchanged (`core/src/*` -> `sdk/src/core/*`, and so on). Module names collide across the four
-  crates (`tasks`, `effort`, `schedule`, `checkpoint`, `tools`), which is why each tree keeps its
-  own namespace instead of being flattened.
+  unchanged (`core/src/*` -> `sdk/src/core/*`, and so on).
 - The embedder-facing facade (`SessionBuilder`, `Session`, `Event`, `HostTool`, and curated
   re-exports of `Approver`, `PermissionMode`, `CallbackHook`, `HookTransport`, `HookEvent` and the like) sits at the crate root
   and in a few top-level modules (`fontaine_sdk::permissions`, `::config`, ...), so the docs lead
@@ -65,7 +63,7 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   fixes the `example_bin("fontaine-core"|"fontaine-tools", ...)` call sites and the `#[path]`
   includes of the other crates' tests and examples; and re-points the `pg2` feature from
   `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`; it also rewrites crate names in code and doc comments (`tools/gate.rs:2`, `todo.rs:55`, `skill.rs:15`, `agents/runner.rs:2`, the `cargo test -p fontaine-guardian --features pg2` line in `scanner/pg2.rs`) and renames the `#[cfg(feature = "composition")]` sites (guardian `lib.rs`, `tests/composition.rs`) to `guardian-composition`. It lands as its own commit, ahead of any
-  behavior change, so the tests are the proof it changed nothing.
+  behavior change; the suites pass with only the listed renames and snapshot re-accepts, no assertion changes.
 - The Rune scripting dependency of `fontaine-guardian` stays behind the SDK's `guardian-composition` feature (the old `composition` feature of
   `fontaine-guardian`, which core enabled, so it is on by default). The guardian's `pg2` feature
   folds into the SDK's existing `pg2` feature. `AGENTS.md`'s lift-out rule is reworded to match.
@@ -128,10 +126,7 @@ Decisions that shape this surface:
   rules, mode and guardian, and is never offered "always allow" (existing `Delegate` semantics).
 - **Host tools.** `HostTool` is a trait (`name`, `description`, JSON-schema `parameters`, `fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<String, ToolExecutionError>>` (object-safe for `Arc<dyn HostTool>`, like `Approver::approve` and `HookTransport::call`), with rig's `ToolExecutionError` re-exported from the SDK, the error type `guard_callback` already works in). A host tool
   declares no risk: risk lives in the descriptor table, never on the tool, so every host tool is
-  registered as `RiskClass::Arbitrary`, like SDK MCP tools. A host tool's name is chosen at
-  runtime, so it cannot go through `ExtensionTool::new<T: Tool>` / `register_extension` (compile-time
-  `T::NAME`, risk from `registered_risk(name)`, `ToolSource::Builtin` hard-coded in `GuardedTool`).
-  Instead each host tool is wrapped by `guard_callback` (as MCP tools are), which gains a
+  registered as `RiskClass::Arbitrary`, like SDK MCP tools. Each host tool is wrapped by `guard_callback` (as MCP tools are), which gains a
   `ToolSource` parameter, at `RiskClass::Arbitrary`, and pushed into the registry as a `Registered`
   beside the built-ins, so every call still passes the gate. `Registered.name` is `&'static str`;
   `build()` leaks each host tool's name once (a bounded, per-tool `Box::leak`) and the retained
@@ -156,7 +151,7 @@ Decisions that shape this surface:
   facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
-  writes no stderr lines in an embedded session: the run loop's lines reach the approver's `warn`
+  writes no stderr lines in an embedded session: the assembly warnings reach the approver's `warn` from `build()`, the run loop's lines reach the approver's `warn`
   through the embedded channel sink, and the PromptGuard download message in `scanner_stage`
   through the `StartParams` notice callback the embedded session sets; without an approver the
   `DenyAll` defaults apply, which an embedder replaces by supplying one.
@@ -169,9 +164,9 @@ The pure parts of `prepare_session` (roots, scratch, memory root, plugin load, e
 resolution, scanner start, `requested_mode`/`session_mode`, the project-executables trust check from
 `run()`, `AgentSetup` construction) move into `fontaine-sdk` as functions
 over plain parameter structs, returning `Result<_, EmbedError>` and warnings as data. The CLI keeps
-only flag-to-params translation and `eprintln!`/exit-code mapping. Moves are mechanical; behavior
+only flag-to-params translation and `eprintln!`/exit-code mapping. Assembly returns startup warnings as data (`prepare_session`'s warnings, and the trust check's "workspace is not trusted..." line); the CLI prints them to stderr as today, and `SessionBuilder::build` sends every returned warning to the approver's `warn` (`DenyAll`'s stderr default when there is no approver), covered by a unit test. Moves are mechanical; behavior
 is held by the existing `headless_*`, `resume`, `claude_sdk_compat` and `cassettes` tests, which must
-stay green unchanged. The headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel,
+stay green with no assertion changes. The headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel,
 `EventSink`, `InputSource`) moves too, so `Session` and the CLI share the model-list fall-through,
 usage-limit wait, budget stop, `--json-schema` output, AFK stop, stop-hook continuation, goals and
 interrupt.
@@ -220,15 +215,15 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
 1. Merge `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` into the new
    `rust/fontaine-sdk` as the `core`, `tools`, `agents` and `guardian` modules (one mechanical commit, see One crate for the SDK);
    repoint every dependent crate and the workspace manifest; the existing test suites must pass
-   unchanged.
+   with only the listed renames and snapshot re-accepts; no assertion changes.
 2. Define typed `Event` structs for the 12 output kinds (all but `user_input`) in `fontaine-sdk::events` and move their
    builders (`init_event`, `result_event`, `usage_event`, the goal and AFK helpers, `Outcome`/`Usage`)
-   out of `fontaine/src/headless.rs`; rewire `HeadlessV1Sink`. First capture today's builder output for each of the 12 kinds as literal
+   out of `fontaine/src/headless.rs`; make `Outcome`, `Usage` and `Subtype` and their fields public; rewire `HeadlessV1Sink`. First capture today's builder output for each of the 12 kinds as literal
    strings, then add the unit test that serializes each `Event` variant built from fixed values and
    asserts equality with them.
 3. Move the headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel, `EventSink`,
    `InputSource`, and `Options` with SDK-owned format enums) from `fontaine/src/headless.rs` into
-   the SDK; make the items `claude_compat` imports public (the full list is in Assembly extraction); route every `eprintln!` through a new `EventSink`
+   the SDK; make the remaining items `claude_compat` imports public (the full list is in Assembly extraction); route every `eprintln!` through a new `EventSink`
    method (stderr in `HeadlessV1Sink` and the SDK-mode sink). Tighten
    `Ctx.pending` and the two `wait_for_news` parameters from `&dyn Fn() -> bool` to
    `&(dyn Fn() -> bool + Sync)` so the `run_session` future is `Send` and the task `Session`
