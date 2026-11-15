@@ -1274,7 +1274,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Command::Effort(level) => {
-                self.effort(runtime, &level);
+                self.effort(runtime, &level).await;
                 Continue(CommandOutcome::Done)
             }
             Command::GuardianModel(reference) => {

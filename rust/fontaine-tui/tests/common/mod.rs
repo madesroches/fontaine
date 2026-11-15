@@ -95,6 +95,8 @@ pub struct World {
     /// The session has a scratch directory, which is also a root. Without one the shell's
     /// directory never moves.
     scratch: bool,
+    /// The main model's requests carry prompt-cache markers.
+    prompt_caching: bool,
 }
 
 /// The instant the scheduler's clock starts at in a test world: 2026-01-15 12:00 UTC.
@@ -156,6 +158,7 @@ impl World {
             runs: Cell::new(0),
             clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
             scratch: false,
+            prompt_caching: false,
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -164,6 +167,12 @@ impl World {
     /// Gives the session a scratch directory, as the binary does.
     pub fn with_scratch(mut self) -> World {
         self.scratch = true;
+        self
+    }
+
+    /// The main model's account caches prompts.
+    pub fn with_prompt_caching(mut self) -> World {
+        self.prompt_caching = true;
         self
     }
 
@@ -300,11 +309,12 @@ impl World {
             env: &|_| None,
         })
         .unwrap();
-        let model = ModelHandle::new(
+        let mut model = ModelHandle::new(
             ModelRef::parse("test/mock").unwrap(),
             AccountKind::named("openai-compatible"),
             self.mock.clone().into(),
         );
+        model.prompt_caching = self.prompt_caching;
         let lookup: std::collections::HashMap<String, std::ffi::OsString> = self
             .env
             .iter()

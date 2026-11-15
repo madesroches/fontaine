@@ -69,7 +69,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// `/effort`: shows the session's reasoning effort and the levels the model takes, or sets
     /// it for this session. It is not saved: `[model] effort` is the standing choice.
-    pub(crate) fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
+    pub(crate) async fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
         let supported = takes(&runtime.models.main.supported_efforts());
         if text.is_empty() {
             let current = runtime.state.effort().map_or_else(
@@ -93,6 +93,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
         };
+        let previous = runtime.state.effort();
         runtime.state.set_effort(level);
         self.app.effort = level;
         // A level the model cannot take is warned about here rather than at the next turn.
@@ -101,6 +102,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(level) => format!("effort is now {level} for this session"),
             None => "effort is unset for this session: the model's own default applies".to_string(),
         });
+        let caching = runtime.models.main.prompt_caching;
+        // The cache keys on what is sent: a level the model refuses sends nothing.
+        let changed = effort_changes_request(&runtime.models.main, previous, level);
+        if !changed || !caching {
+            return;
+        }
+        match runtime.conversation_len().await {
+            Ok(len) => {
+                if let Some(warning) = effort_cache_warning(changed, caching, len > 0) {
+                    self.app.transcript.notice(warning);
+                }
+            }
+            Err(e) => self
+                .app
+                .transcript
+                .warning(fontaine_tools::error_chain::chain(&e), None),
+        }
     }
 
     /// Lists the models of every account, or of `account` alone, which can take a while, then
@@ -420,6 +438,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 }
 
+/// Whether moving from `previous` to `new` changes what the model is sent: a level it refuses
+/// sends nothing, the same as unset.
+fn effort_changes_request(
+    model: &fontaine_core::models::ModelHandle,
+    previous: Option<Effort>,
+    new: Option<Effort>,
+) -> bool {
+    model.generation_options(previous).0 != model.generation_options(new).0
+}
+
+/// The notice for a changed effort on a session whose prompt cache holds the conversation.
+fn effort_cache_warning(changed: bool, caching: bool, has_history: bool) -> Option<&'static str> {
+    (changed && caching && has_history).then_some(
+        "the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache",
+    )
+}
+
 fn takes(levels: &[Effort]) -> String {
     if levels.is_empty() {
         return "no effort level (the endpoint has no reasoning mapping)".to_string();
@@ -434,6 +469,42 @@ fn takes(levels: &[Effort]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_warning_needs_a_change_caching_and_history() {
+        assert!(effort_cache_warning(true, true, true).is_some());
+        assert!(effort_cache_warning(false, true, true).is_none());
+        assert!(effort_cache_warning(true, false, true).is_none());
+        assert!(effort_cache_warning(true, true, false).is_none());
+    }
+
+    #[test]
+    fn refused_levels_send_the_same_nothing() {
+        use fontaine_core::config::AccountKind;
+        use fontaine_core::models::{ModelHandle, ModelRef};
+        use rig_core::catalog::Catalog;
+        use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
+
+        let mock = MockCompletionModel::from_stream_turns(Vec::<Vec<MockStreamEvent>>::new())
+            .priced_as(
+                (*Catalog::builtin()
+                    .resolve("openai/gpt-4o-mini")
+                    .unwrap()
+                    .spec)
+                    .clone(),
+            );
+        let model = ModelHandle::new(
+            ModelRef::parse("test/mock").unwrap(),
+            AccountKind::named("openai-compatible"),
+            mock.into(),
+        );
+        let (low, high) = (Some(Effort::Low), Some(Effort::High));
+        // This model takes no level but off: low and high are both refused.
+        assert!(!effort_changes_request(&model, low, high));
+        assert!(!effort_changes_request(&model, None, high));
+        assert!(!effort_changes_request(&model, high, None));
+        assert!(effort_changes_request(&model, None, Some(Effort::Off)));
+    }
 
     #[test]
     fn a_model_with_no_levels_says_so() {

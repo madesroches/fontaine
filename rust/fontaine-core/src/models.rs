@@ -18,7 +18,8 @@ use crate::effort::Effort;
 use crate::gate::SessionState;
 use crate::model_roles::{ModelChain, RoleChains, Roles};
 use crate::providers::{
-    AccountClient, Billing, ConnectContext, CredentialPolicy, RefusedModel, ServedModel,
+    AccountClient, Billing, ConnectContext, CredentialPolicy, PromptCaching, RefusedModel,
+    ServedModel,
 };
 use crate::quota::QuotaSource;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
@@ -155,6 +156,8 @@ pub struct ModelHandle {
     pub output_probe: Option<Arc<dyn OutputProbe>>,
     /// Where the account's own subscription quota is read, when it opted in.
     pub quota: Option<Arc<dyn QuotaSource>>,
+    /// Whether the model's requests carry prompt-cache markers.
+    pub prompt_caching: bool,
     /// The same model's completions with conversation-wide and static-prefix-only caching, when
     /// it was built from a client.
     scopes: Option<Scopes>,
@@ -190,6 +193,7 @@ impl ModelHandle {
             thinking_off: None,
             output_probe: None,
             quota: None,
+            prompt_caching: false,
             scopes: None,
             client: None,
             facts_notice: None,
@@ -259,6 +263,7 @@ impl ModelHandle {
             thinking_off,
             output_probe,
             quota,
+            prompt_caching: false,
             scopes: Some(Scopes {
                 conversation,
                 guardian,
@@ -715,7 +720,9 @@ async fn resolve_main_model(
     if !lists(main_account.kind, &main_models.models, &main_ref.model) {
         return Err(not_offered(&main_client, &main_ref, &main_models.models));
     }
-    let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, &main_client);
+    let mut main = ModelHandle::from_client(main_ref.clone(), main_account.kind, &main_client);
+    main.prompt_caching = main_account.kind.provider().accepts_prompt_caching()
+        && PromptCaching::of(main_account).enabled;
     Ok((main_ref, main_client, main_models, main))
 }
 
