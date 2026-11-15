@@ -449,6 +449,22 @@ impl ChildContext {
                 let (handle, _) = switcher.main(text).await.map_err(|e| e.to_string())?;
                 handle
             }
+            ModelSpec::Named(name) if self.roles.get(name).is_none() => {
+                let Some(switcher) = switcher else {
+                    return Err("models cannot be resolved in this session".to_string());
+                };
+                let reference = switcher.bare_model(
+                    name,
+                    &main.handle.reference,
+                    main.handle.kind,
+                    &main.listing.models,
+                )?;
+                let (handle, _) = switcher
+                    .main(&reference.to_string())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                handle
+            }
             ModelSpec::Named(_) | ModelSpec::List(_) => {
                 let Some(switcher) = switcher else {
                     return Err("models cannot be resolved in this session".to_string());

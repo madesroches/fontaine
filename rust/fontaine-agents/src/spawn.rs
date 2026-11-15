@@ -1059,7 +1059,7 @@ impl Tool for AgentTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        let mut model = "Optional model for this agent: a role name, `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.".to_string();
+        let mut model = "Optional model for this agent: a role name, `$main`, `$guardian_default`, `<account>/<model>`, or a bare model name the main account or an account with a `models` list offers (names with `.` or `:` need `<account>/<model>`). Defaults to the agent type's model.".to_string();
         if !self.roles.is_empty() {
             model.push_str(" Roles:\n");
             model.push_str(&self.roles);

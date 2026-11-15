@@ -104,7 +104,7 @@ impl ModelSpec {
 
 fn not_a_model(text: &str) -> String {
     format!(
-        "`{text}` is not a model: use a role name, `$main`, `$guardian_default` or `<account>/<model>`"
+        "`{text}` is not a model: use a role name, `$main`, `$guardian_default` or `<account>/<model>` (a model name with `.` or `:` needs the `<account>/<model>` form)"
     )
 }
 

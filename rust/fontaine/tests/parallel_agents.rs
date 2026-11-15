@@ -785,6 +785,88 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
             .contains("not a defined model role"),
         "{i}"
     );
+    assert!(
+        i["text"]
+            .as_str()
+            .unwrap()
+            .contains("checked accounts: mock"),
+        "{i}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_model_name_the_main_account_offers_starts_the_child_on_it() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "agent",
+                        json!({"agent_type": "explore", "prompt": "child-P: ok", "model": "other"}),
+                    ),
+                    Turn::tool(
+                        "c2",
+                        "agent",
+                        json!({"agent_type": "explore", "prompt": "child-Q: no", "model": "gpt-4.1"}),
+                    ),
+                    Turn::tool("c3", "job_output", json!({"id": "agent-1"})),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new("child-P", vec![Turn::text("P done")]),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let bodies = requests_with(&endpoint, "child-P").await;
+    assert!(
+        bodies.iter().any(|b| b.contains("\"model\":\"other\"")),
+        "{bodies:?}"
+    );
+    let q = agent_result(&lines, 1);
+    assert_eq!(q["success"], json!(false));
+    assert!(
+        q["text"].as_str().unwrap().contains("<account>/<model>"),
+        "{q}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_role_named_like_a_listed_model_wins_over_the_bare_model() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "agent",
+                        json!({"agent_type": "explore", "prompt": "child-P: ok", "model": "other"}),
+                    ),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new("child-P", vec![Turn::text("P done")]),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "\n[models.roles]\nother = [\"mock/scripted\"]\n");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let bodies = requests_with(&endpoint, "child-P").await;
+    assert!(!bodies.is_empty(), "the child made no request");
+    assert!(
+        bodies.iter().all(|b| b.contains("\"model\":\"scripted\"")),
+        "{bodies:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

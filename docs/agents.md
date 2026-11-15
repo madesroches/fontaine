@@ -11,7 +11,7 @@ and asynchronous tasks, with stricter permission rules.
 |---|---|
 | `agent_type` | One of the [agent types](#agent-types). Required. |
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
-| `model` | Optional: a [role](configuration.md#modelsroles) name, `$main`, `$guardian_default` or `<account>/<model>`. The tool's description lists the session's roles, so the model can choose one. |
+| `model` | Optional: a [role](configuration.md#modelsroles) name, `$main`, `$guardian_default`, `<account>/<model>`, or a bare model name such as `claude-sonnet-5-5`. A role of that name wins; otherwise the main account's model list is tried, then the accounts with an explicit `models` list (no other account is queried). A name offered by several accounts is an error listing the `<account>/<model>` choices, and a name with `.` or `:` (`gpt-4.1`, `llama3:8b`) must be written `<account>/<model>`. The tool's description lists the session's roles, so the model can choose one. |
 | `name` | Optional [name](#naming-a-subagent) for the subagent. |
 
 The call returns `{"agent_id": "agent-1", "name": "explore-1"}` at once and the subagent runs alongside its parent and
@@ -119,7 +119,9 @@ accounts offer, or the session model when there is none; it is opt-in — no bui
 
 A `model` may be a [role](configuration.md#modelsroles) name (`coding`), a list of references and
 roles, or an `<account>/<model>`; a role your `[models.roles]` does not define is an error in a user
-file or `[agents.types]` and a spawn error when the model passes it. Every subagent started on one
+file or `[agents.types]`; when the model passes one, the name is tried as a bare model name (the
+main account, then accounts with an explicit `models` list) and is a spawn error only when none
+offers it. Every subagent started on one
 role shares the role's current entry: when the entry in use runs out of quota and a subagent moves to
 the next one, the others, and later spawns, start on the entry that worked. A subagent on `$main`
 moves for itself and leaves the main conversation's entry alone. When every entry of its list is
