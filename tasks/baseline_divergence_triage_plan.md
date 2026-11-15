@@ -192,6 +192,17 @@ the stream-json for the attempted call, merge, then `cargo run -p fontaine-evals
 <run.json>`; expect only DIFFs that carry a Decisions line. Not automated: it needs live model
 behavior.
 
+## In-flight work that may affect this plan
+
+- #654 (branch `654-floor-unresolved-command-name-critical-path`, "Floor: unresolved command name is
+  reported as a critical-path delete and never reaches the guardian") is in progress. It changes the
+  floor's critical-path handling of shell commands, so it may change the outcome of the
+  critical-path and Tier 0.5 adversarial cases (`floor-critical-path-*`, `tier05-command-substitution-rm`,
+  `tier05-brace-expansion-*`, `tier05-parameter-expansion`) and the `expected` / `expected_tier` labels
+  this work compares against. Before resuming, merge or rebase onto `main` once #654 lands, re-read
+  the floor and pre-classifier code this plan cites, and re-run `--guardian none` plus `baseline diff`
+  to see which divergences moved.
+
 ## Open Questions
 
 - Whether the maintainer wants pipes and read-only `&&` chains pre-classified (evidence and
