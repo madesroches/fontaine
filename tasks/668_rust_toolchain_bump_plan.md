@@ -13,6 +13,10 @@ release when implementing) and fix whatever new lints or warnings it brings.
 - CI (`.github/workflows/ci.yml`, `dev.yml`, `pg2.yml`) runs `rustup toolchain install` with no
   version, so it follows the toolchain file; no version literal lives in `.github/`.
 - `CONTRIBUTING.md` and `docs/installing.md` mention the toolchain only generically.
+- `tasks/fontaine_harness_plan.md` lines ~212 and ~214 (workspace layout) carry the old version;
+  line ~1157 is a dated historical Decisions entry and stays as is.
+- Other crates use `rust-version.workspace = true`; `rust-toolchain.toml` also lists `components`
+  and `targets`, which must be kept.
 
 ## Design
 Change the two version literals to the new release, then make the gates green.
@@ -24,14 +28,17 @@ Change the two version literals to the new release, then make the gates green.
    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, and fix new lints minimally.
 4. Run `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings`.
 5. Run `cargo test` and `cargo deny check`.
-6. Grep `.github/`, `docs/`, `CONTRIBUTING.md`, `README.md` for the old version string and
-   update any hit (expected: none).
-7. Add a `CHANGELOG.md` entry if the repo's convention calls for one.
+6. Update the version in the workspace layout of `tasks/fontaine_harness_plan.md` (lines ~212,
+   ~214) and add a dated line to its `## Decisions` > "Build and release" subsection, following
+   the 1.97.1 -> 1.99.1 precedent. Grep `.github/`, `docs/`, `CONTRIBUTING.md`, `README.md`,
+   `tasks/` (not `tasks/completed/`) for the old version string; expected hits are only the above.
+7. No `CHANGELOG.md` entry: earlier toolchain bumps have none.
 
 ## Files to Modify
 - `rust/rust-toolchain.toml`
 - `rust/Cargo.toml`
-- Any source files needing lint fixes; `CHANGELOG.md`.
+- `tasks/fontaine_harness_plan.md`
+- Any source files needing lint fixes.
 
 ## Trade-offs
 Keeping the exact-version pin (rather than `stable`) preserves reproducible CI, matching the
