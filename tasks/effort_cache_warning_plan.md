@@ -24,30 +24,33 @@ caches prompts and the conversation already has content, and `docs/tui.md` will 
 Chosen option: mention the cost in `/effort` output (the issue's first option). Not applying changes at
 compaction (a new setting, and surprising) and not doc-only (the user finds out too late).
 
-- Expose the resolved caching on the handle: add `prompt_caching: bool` (default `false` in
-  `ModelHandle::new`), set where the handle is built from an account via `PromptCaching::of`.
-- Add `AgentRuntime` accessor (or reuse existing state) `conversation_has_history()`: true when the
-  session's conversation log holds at least one completed turn. Use the session's existing conversation
-  store; no token estimate.
+- Expose whether the main model's requests carry cache markers: add `prompt_caching: bool` (default
+  `false` in `ModelHandle::new`), set in `resolve_main_model` (`fontaine-core/src/models.rs`, where
+  `main_account` is in hand) as `kind.provider().accepts_prompt_caching() && PromptCaching::of(account).enabled`.
+  `switch_main_model` must go through that path so a `/model` switch refreshes it. The opencode-go chat
+  route sends no markers even when the setting is on; that over-warn is accepted (see Decisions).
+- History check: reuse the existing `AgentRuntime::conversation_len()` (async, `Result<usize, SessionError>`);
+  history means `> 0`. No new accessor, no token estimate.
+- `effort()` becomes `async` and the `Command::Effort` arm in `ui/mod.rs` awaits it. A failed
+  `conversation_len()` skips the cache notice and is reported through the existing warning path.
 - In `effort()`, after setting a level that differs from the previous one, if
   `runtime.models.main.prompt_caching && history`, append a second notice:
-  `the next request re-reads the conversation uncached: a changed effort can invalidate the prompt cache`.
-  Wording is hedged, since which models are affected is unmeasured. Emit nothing when the level is
+  `the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache`.
+  The wording is hedged throughout, since which models are affected is unmeasured. Emit nothing when the level is
   unchanged, caching is off, or the conversation is empty.
 - The pure decision lives in a small function `effort_cache_warning(previous, new, caching, has_history)
   -> Option<&'static str>` so it is unit-testable without a runtime.
 
 ## Implementation Steps
 
-1. `fontaine-core/src/models.rs` and the handle construction sites: add and populate `prompt_caching`.
-2. `fontaine-core/src/agent.rs`: add the history accessor.
-3. `fontaine-tui/src/ui/commands/model.rs`: add `effort_cache_warning`, call it from `effort()`.
-4. Docs and changelog.
+1. `fontaine-core/src/models.rs`: add `prompt_caching` to `ModelHandle`, set it in `resolve_main_model`; confirm `switch_main_model` uses it.
+2. `fontaine-tui/src/ui/commands/model.rs` and `ui/mod.rs`: add `effort_cache_warning`, make `effort()` async and call it.
+3. Docs and changelog.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/models.rs`, `rust/fontaine-core/src/providers/mod.rs` (construction), `rust/fontaine-core/src/agent.rs`
-- `rust/fontaine-tui/src/ui/commands/model.rs`
+- `rust/fontaine-core/src/models.rs`
+- `rust/fontaine-tui/src/ui/commands/model.rs`, `rust/fontaine-tui/src/ui/mod.rs`
 - `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -69,7 +72,8 @@ mid-session change can invalidate the prompt cache on accounts that cache, and t
 - A TUI test in `fontaine-tui/tests/tui.rs` style: `/effort high` on a session with a prior turn on a
   caching account shows the warning; on an empty session or non-caching account does not.
 
-## Open Questions
+## Decisions
 
-- Which current models render effort ahead of the tools and system prompt is unmeasured (`cache-bench`,
-  #498 could measure it); the wording stays hedged until then.
+- Which models render effort ahead of the tools and system prompt is unmeasured (`cache-bench`, #498
+  could measure it); the notice wording stays hedged until then.
+- The notice can over-warn on opencode-go chat-route models, which send no cache markers; accepted.
