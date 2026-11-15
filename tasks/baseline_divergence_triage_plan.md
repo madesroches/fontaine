@@ -7,8 +7,8 @@
 The Phase 3 rule is that each Claude Code baseline divergence is fixed in Fontaine or recorded as a
 dated line in the master plan's `## Decisions`. The 2026-10-23 capture (`evals/baselines/pipeline.jsonl`,
 44 of the dataset's 92 pipeline cases, PR #100) left divergences open and 48 ids without a record. This
-work finishes the capture (every capturable id: the 10 refused ones, 30 never captured, and the two WebFetch
-artifacts), records a reason for the 8 that cannot be captured, resolves every
+work finishes the capture (every capturable id: the 10 refused ones, 26 never captured, and the two WebFetch
+artifacts), records a reason for the 8 that cannot be captured and the 4 auto-mode ids deferred to #103, resolves every
 open divergence, and finishes the protected-path and Tier 0.5 allowlist confirmation against
 `claude -p`. It is mostly live runs plus data and docs edits; the only code in scope is the eval
 runner's capture prompt and `claude_args` (`webfetch`/`agent` mapping) and, if a divergence is fixed rather than recorded, a
@@ -25,6 +25,9 @@ Fontaine pipeline change with its tests.
   never captured: `floor-external-read-*` (9), `floor-external-write-*` (9), `floor-secret-*` (5),
   `spawn-explore-fast-path`, `spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`,
   `tier05-git-status-porcelain`, `tier05-git-log-paths`, `tier05-git-push`, `tier05-git-diff-ext-diff`.
+  Four of the 30 are auto-mode (`spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`,
+  `floor-external-read-auto-no-guardian`, `floor-external-write-auto-no-guardian`); their reason is
+  "auto mode, deferred to #103" (auto-mode capture), leaving 26 to capture here.
   8 are skipped by design: 6 `send_message`/`board_update` cases (no Claude Code tool name) and the 2
   `*-symlink-home-rule` cases (the `../home` symlink target does not exist next to the capture scratch dir).
 - Ten of the ids that pass the skip check were attempted and refused or failed: `floor-critical-deletion-home-manual`, `floor-critical-deletion-dont-ask`,
@@ -86,14 +89,14 @@ Order matters: the capture tooling is fixed first, then the data, then triage.
 ### 2. Live capture (needs the logged-in `claude` CLI; never CI)
 
 If `claude -p` is unavailable or not logged in, stop and report; never fabricate records.
-The merge allow-list is: the ten refused ids, the 30 never-captured ids listed in Current State,
+The merge allow-list is: the ten refused ids, the 26 never-captured non-auto ids (the 30 in Current State minus the four auto-mode ids),
 `floor-ask-rule`, `floor-ask-rule-dont-ask`, `floor-protected-path-edit`, `spawn-agent-ask-rule`,
 `spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask`.
-Capture these with `--filter` (one run per category), review each record by hand against the
+Capture these with `--filter` (one run per category: `floor`, `spawn`, `tier05-adversarial`), review each record by hand against the
 raw stream-json to confirm the call was attempted and the outcome is a permission denial, not a validation
 error. The `/etc/fontaine-eval` and `/usr/share/fontaine-eval` targets do not exist on the host, so check
 those records for a file-missing validation artifact, as for `floor-protected-path-edit`. Record a reason
-for each of the 8 skipped ids in Results and the PR.
+for each of the 8 skipped ids and the 4 auto-mode ids (deferred to #103) in Results and the PR.
 
 ### 3. Divergence triage
 
@@ -123,15 +126,15 @@ adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions`
   command under `claude -p` in `default` mode and record whether it is auto-approved. Fontaine's
   allowlist must be a subset of what Claude Code auto-approves (otherwise Fontaine is looser: fix or
   record). Entries Claude Code approves but Fontaine does not are expected deviations and listed.
-- Append a dated `### Permissions` Decisions line recording the #591 `GIT_SPECS` fast path, superseding
-  the 2026-10-21 "no git subcommand" line (~955).
+- Append a dated `### Permissions` Decisions line recording the #591 `GIT_SPECS` fast path; the new line
+  begins "Supersedes 2026-10-21 (no `git` subcommand in the curated set): …".
 - Any classifier change must keep the soundness property (golden adversarial set in
   `tasks/design/testing.md`) and be proven by the existing adversarial tests plus new cases.
 
 ### 5. Verify and record
 
 Run `--guardian none` over the dataset, then `baseline diff` against the updated baseline; every
-remaining DIFF must map to a dated Decisions line or a fix. `--guardian none` skips auto-mode cases, so their baselines print `UNMATCHED`; that is expected for exactly the four auto-mode allow-list ids (`spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`, `floor-external-read-auto-no-guardian`, `floor-external-write-auto-no-guardian`). Compare those by hand against Fontaine's documented auto behavior (or a guardian run); any divergence gets a Decisions line like a DIFF. Any other UNMATCHED id is a failure. `baseline diff` ignores run cases without a
+remaining DIFF must map to a dated Decisions line or a fix. Any UNMATCHED id is a failure. `baseline diff` ignores run cases without a
 baseline, so also compare the dataset's pipeline ids with the baseline `case_id`s (jq/shell); each missing
 id needs a recorded reason. Update the #101 annotation in the master plan's `### Release readiness`
 item (`tasks/fontaine_harness_plan.md:134-135`) and the checkbox in GitHub issue #80's body to say #101
@@ -151,10 +154,10 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
    of the matching subject subsections (`### Permissions`, `### Evals`) of
    `tasks/fontaine_harness_plan.md`.
 5. Update `evals/README.md` §Baselines: document the `claude_args` argument mapping and the
-   merge-by-case_id step; update `tasks/design/testing.md` (`:33-34`, `:41`) and add the `CHANGELOG.md`
+   merge-by-case_id step; update `tasks/design/testing.md` (`:33-34` rewords only the `git status` part, since `git clean -fdx` still falls through; `:41` describes the config-execution cases as now fast-pathing) and `tasks/design/permissions.md:59-60` (it still says no `git` subcommand is in the curated set, false after #591), and add the `CHANGELOG.md`
    `[Unreleased]` entry.
 6. Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, the `--guardian none` eval and
-   `baseline diff` (every DIFF mapped; UNMATCHED only for the four auto-mode ids, compared by hand per §5) and the coverage check; summarize in the PR body (per-case table, protected-path and allowlist results,
+   `baseline diff` (every DIFF mapped; no UNMATCHED) and the coverage check; summarize in the PR body (per-case table, protected-path and allowlist results,
    uncaptured cases with reasons).
 7. Update the #101 annotation in the master plan's `### Release readiness` item (`:134-135`) and the
    #80 issue body checkbox to say #101 is resolved; do not close #80 (see §5 for the `:103` line).
@@ -167,7 +170,8 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
 - `evals/README.md` (§Baselines: `claude_args` mapping, merge step)
 - `tasks/fontaine_harness_plan.md` (`## Decisions` lines; progress/tracker note)
 - `tasks/design/testing.md` (`:33-34` and `:41` still say no git subcommand is in the curated set /
-  `git status` / `git log` / `git diff` never fast-path; update with the #591 supersession)
+  `git status` / `git log` / `git diff` never fast-path; update with the #591 supersession: `:33-34` changes only the `git status` part, `git clean -fdx` still falls through; `:41` describes the config-execution cases as fast-pathing)
+- `tasks/design/permissions.md` (`:59-60` still says no `git` subcommand; every git invocation goes to the guardian)
 - `CHANGELOG.md` (`[Unreleased]` entry for the `baseline capture` changes: webfetch prompt, Agent
   mapping, shared prompt rewording)
 - `evals/dataset/floor.jsonl`: add `workspace.files` to `floor-protected-path-edit` (the
@@ -175,6 +179,9 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
 
 ## Decisions
 
+- 2026-11-15: the four auto-mode ids (`spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`,
+  `floor-external-read-auto-no-guardian`, `floor-external-write-auto-no-guardian`) are not captured here:
+  auto-mode capture is #103, which writes its own `auto.jsonl`.
 - 2026-11-15: capture uses one shared prompt rewording, no per-case dataset field, to keep the dataset
   format stable.
 
@@ -193,10 +200,10 @@ documented behavior.
 
 ## Manual Verification
 
-Ordered, from `rust/`: run each capture command from the issue handoff to a scratchpad file, inspect
-the stream-json for the attempted call, merge, then `cargo run -p fontaine-evals -- --dataset
+Ordered, from `rust/`: run `baseline capture --dataset ../evals/dataset --filter <floor|spawn|tier05-adversarial> --out <scratchpad>/<category>.jsonl` once per category, inspect
+the stream-json for the attempted call, merge only the §2 allow-list ids, then `cargo run -p fontaine-evals -- --dataset
 ../evals/dataset --guardian none --out <run.json>` and `baseline diff ../evals/baselines/pipeline.jsonl
-<run.json>`; expect only DIFFs that carry a Decisions line, and UNMATCHED only for the four auto-mode ids (compared by hand, see §5). Not automated: it needs live model
+<run.json>`; expect only DIFFs that carry a Decisions line and no UNMATCHED. Not automated: it needs live model
 behavior.
 
 ## Open Questions
