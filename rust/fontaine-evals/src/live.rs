@@ -419,6 +419,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
         &CriticalEnv {
             scope: &derive_scope,
             home: Some(std::path::Path::new(EVAL_HOME)),
+            scratch: None,
         },
     );
     let context = auto_context(case);

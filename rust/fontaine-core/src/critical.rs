@@ -21,6 +21,9 @@ const DELETERS: [&str; 2] = ["rm", "rmdir"];
 pub struct CriticalEnv<'a> {
     pub scope: &'a Scope,
     pub home: Option<&'a Path>,
+    /// The session scratch directory: private to the session and removed when it ends, so
+    /// deleting it loses nothing. Its parents still hold other sessions' scratch directories.
+    pub scratch: Option<&'a Path>,
 }
 
 /// The critical places the call's deleters name, each as the resolved path followed by its kind
@@ -187,6 +190,12 @@ fn kind(path: &Path, env: &CriticalEnv<'_>) -> Option<&'static str> {
     if env.home.is_some_and(|home| same_path(path, home)) {
         return Some("home directory");
     }
+    if env.scratch.is_some_and(|scratch| {
+        same_path(path, scratch)
+            || std::fs::canonicalize(scratch).is_ok_and(|real| same_path(path, &real))
+    }) {
+        return None;
+    }
     let roots = env.scope.roots();
     if roots.iter().any(|root| same_path(path, root)) {
         return Some("workspace root");
@@ -218,6 +227,7 @@ mod tests {
             } else {
                 "/home/me"
             })),
+            scratch: None,
         }
     }
 
@@ -363,6 +373,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: None,
+            scratch: None,
         };
         assert!(deletions("rm -rf ~", None, &env).is_empty());
         assert!(deletions("rm -rf $HOME", None, &env).is_empty());
@@ -376,6 +387,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: Some(Path::new("/home/me")),
+            scratch: None,
         };
         assert_eq!(
             deletions("rm -rf /srv/work", None, &env),
@@ -385,6 +397,21 @@ mod tests {
             deletions("rm -rf /srv/work/proj", None, &env),
             ["/srv/work/proj (workspace root)"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_directory_is_not_critical_but_its_parents_are() {
+        let scratch = Path::new("/srv/work/scratch/session-1");
+        let scope = Scope::new(PathBuf::from("/srv/work/proj"), [scratch.to_path_buf()]);
+        let env = CriticalEnv {
+            scope: &scope,
+            home: Some(Path::new("/home/me")),
+            scratch: Some(scratch),
+        };
+        assert!(deletions("rm -rf /srv/work/scratch/session-1", None, &env).is_empty());
+        assert!(!deletions("rm -rf /srv/work/scratch", None, &env).is_empty());
+        assert!(!deletions("rm -rf /srv/work/proj", None, &env).is_empty());
     }
 
     #[cfg(unix)]

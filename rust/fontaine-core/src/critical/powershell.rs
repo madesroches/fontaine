@@ -344,6 +344,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: Some(Path::new(home())),
+            scratch: None,
         };
         critical_powershell(command, &root(), &env)
     }
@@ -505,6 +506,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: Some(Path::new(home())),
+            scratch: None,
         };
         let (root_dir, _) = top();
         assert!(!critical_powershell("Remove-Item sub", Path::new(root_dir), &env).is_empty());
@@ -514,11 +516,32 @@ mod tests {
     }
 
     #[test]
+    fn the_scratch_directory_is_not_critical_but_its_parent_is() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let base = std::fs::canonicalize(dir.path()).expect("canonical");
+        let scratch = base.join("scratch").join("session");
+        std::fs::create_dir_all(&scratch).expect("scratch directory");
+        let scope = Scope::new(base.join("proj"), [scratch.clone()]);
+        let env = CriticalEnv {
+            scope: &scope,
+            home: Some(Path::new(home())),
+            scratch: Some(&scratch),
+        };
+        let remove = |target: &Path| {
+            critical_powershell(&format!("Remove-Item '{}'", target.display()), &base, &env)
+        };
+        assert!(remove(&scratch).is_empty());
+        assert!(!remove(scratch.parent().expect("parent")).is_empty());
+        assert!(!remove(&base.join("proj")).is_empty());
+    }
+
+    #[test]
     fn a_missing_home_adds_nothing() {
         let scope = Scope::new(root(), []);
         let env = CriticalEnv {
             scope: &scope,
             home: None,
+            scratch: None,
         };
         assert!(critical_powershell("Remove-Item ~/x", &root(), &env).is_empty());
         assert!(critical_powershell("Remove-Item ~", &root(), &env).is_empty());
@@ -562,6 +585,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: Some(Path::new("/home/me")),
+            scratch: None,
         };
         assert!(!critical_powershell("Remove-Item link", &base, &env).is_empty());
         assert!(critical_powershell("Remove-Item other", &base, &env).is_empty());
@@ -584,6 +608,7 @@ mod tests {
         let env = CriticalEnv {
             scope: &scope,
             home: Some(Path::new(r"C:\Users\me")),
+            scratch: None,
         };
         assert!(!critical_powershell("Remove-Item link", &base, &env).is_empty());
         assert!(critical_powershell("Remove-Item other", &base, &env).is_empty());

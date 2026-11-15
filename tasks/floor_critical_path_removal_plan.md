@@ -88,7 +88,8 @@ Keep the target recognition and drop the "cannot be shown not to" branches:
   operand (shell: `DELETERS` words; powershell: `Remove-Item` and aliases) whose literal target,
   resolved against the call's `cwd` like today (lexically and through `canonicalize`), is a
   critical place under the existing `is_critical` (root, top-level dir, home, workspace root or
-  parent; drive roots and `%USERPROFILE%` on Windows). It returns the resolved path followed by
+  parent, except the session scratch directory itself, which is private to the session and
+  removed at exit, its parents staying critical; drive roots and `%USERPROFILE%` on Windows). It returns the resolved path followed by
   the kind, e.g. `/home/me (home directory)`. Non-literal command names and targets, launchers,
   operand-free `rm`, unreadable commands and chains add nothing: they go to the guardian
   unannotated, and the full prompt's existing "a recursive delete whose target the call does not
@@ -306,6 +307,7 @@ same scope the 2026-11-14 (#636) entry gave to edits. The entry changes as follo
 - AFK: 2026-11-15: the full profile's critical-deletion rule is a new `DEFAULT_HARD_DENY` entry under the existing `Destroy Pre-existing Files` label, not a soft-deny addition, because the issue asks for the guardian to deny such calls and a soft deny would let a user message naming the target clear `rm -rf ~`; reusing the label leaves `RuleLabel`, AFK severity and eval categories unchanged.
 - AFK: 2026-11-15: shell `~`, `~/<literal>` and `$HOME`/`${HOME}` deletion targets resolve against `CriticalEnv.home` through a new `ShellWord.home_relative` field (`$HOME` only when the command has no assignment), because otherwise `rm -rf ~`, the most likely critical deletion, carries no `critical_deletions` fact once the floor's unreadable-command branch is gone.
 - AFK: 2026-11-15: `destructive.rs` keeps its own value-taking option list for grep/egrep/fgrep/rg instead of reusing the preclassifier's private, fast-path-only Spec tables, which miss `-e`, `-m`, `-g`, `--type` and others and would read `grep -m 5 pat f` as pattern `5`.
+- 2026-11-15 (user): the session scratch directory itself is not a critical deletion target, since it is private to the session and removed at exit; its parents stay critical.
 
 ## Security invariants
 

@@ -314,7 +314,7 @@ spelling) writes no file.
 `rm`, `rmdir` or `Remove-Item` (in a `shell`, `monitor` or `powershell` call, in any segment of a
 list, pipe or substitution) are literal paths, `~` or `$HOME` and one of them is the file system
 root, a top-level directory, your home directory, a workspace root or a parent of one (a symlink to
-one counts), the request lists it as the resolved path and its kind, such as `/home/me (home
+one counts; the session scratch directory itself is not one, its parents are), the request lists it as the resolved path and its kind, such as `/home/me (home
 directory)`. A target the harness cannot resolve (a variable, a glob, an expanded command name, a
 launcher such as `xargs`) adds nothing: the guardian reads the raw command and judges it under
 `Destroy Pre-existing Files`, which covers a recursive delete whose target the call does not make

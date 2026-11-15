@@ -313,6 +313,7 @@ pub fn build(
         &CriticalEnv {
             scope: &scope,
             home: state.home.as_deref(),
+            scratch: state.scratch.as_deref(),
         },
     );
     let mut session_facts = facts(
