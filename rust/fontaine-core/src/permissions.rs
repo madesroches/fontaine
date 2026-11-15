@@ -1,7 +1,7 @@
 //! The permission pipeline: the one place that decides whether a tool call runs. Every wrapped
 //! tool reaches it through the `ToolGate` trait. The order is the one in the design: user
-//! pre-tool-use hooks, the deterministic floor (deny rules, ask rules, critical paths, protected
-//! paths) in every mode, then the read-only fast path, the shell pre-classifier, allow rules and
+//! pre-tool-use hooks, the deterministic floor (deny rules, ask rules, protected paths) in every
+//! mode, then the read-only fast path, the shell pre-classifier, allow rules and
 //! finally what the mode does with a call nobody pre-approved.
 
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ use crate::afk_report::AfkSource;
 use crate::audit::{Converted, Decision, DecisionRecord, args_digest};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
-use crate::floor::{self, CriticalEnv};
+use crate::floor;
 use crate::gate::{
     AFK_STOPPED_MESSAGE, CompositionStage, DeniedCall, RetrySource, SessionState,
     UNREGISTERED_AGENT, permission_mode,
@@ -837,7 +837,7 @@ fn converted_of(tier: Tier) -> Converted {
     match tier {
         Tier::Guardian => Converted::BreakerPaused,
         Tier::AskRule => Converted::AskRule,
-        Tier::CriticalPath | Tier::ProtectedPath => Converted::Floor,
+        Tier::ProtectedPath => Converted::Floor,
         Tier::Hook => Converted::Hook,
         _ => Converted::Mode,
     }
@@ -1191,31 +1191,6 @@ impl PermissionPipeline {
                     forced: true,
                 },
             );
-        }
-        if (is_shell_class(tool) || tool == "powershell")
-            && let Some(command) = args.get("command").and_then(Value::as_str)
-        {
-            let env = CriticalEnv {
-                scope: &scope,
-                home,
-            };
-            let cwd = args.get("cwd").and_then(Value::as_str);
-            let critical = if tool == "powershell" {
-                floor::critical_powershell(command, cwd, &env)
-            } else {
-                floor::critical_shell(command, cwd, &env)
-            };
-            if let Some(found) = critical {
-                return self.would_prompt(
-                    mode,
-                    Prompt {
-                        tier: Tier::CriticalPath,
-                        reason: format!("it deletes a critical path ({found})"),
-                        rule: Some(found),
-                        forced: true,
-                    },
-                );
-            }
         }
         if cx.arg_error.is_none()
             && matches!(tool, "edit" | "write" | "notebook_edit")

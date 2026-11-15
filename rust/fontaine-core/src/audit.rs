@@ -332,6 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn a_record_with_the_retired_critical_path_tier_still_reads() {
+        let record = DecisionRecord::new(
+            "s".into(),
+            "root".into(),
+            "shell".into(),
+            "d".into(),
+            Tier::ProtectedPath,
+            Decision::Deny,
+            "manual".into(),
+            false,
+        );
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(line.contains(r#""tier":"protected_path""#), "{line}");
+        let old = line.replace(r#""tier":"protected_path""#, r#""tier":"critical_path""#);
+        let read: DecisionRecord = serde_json::from_str(&old).unwrap();
+        assert_eq!(read.tier, Tier::ProtectedPath);
+    }
+
+    #[test]
     fn timestamps_are_rfc_3339() {
         assert_eq!(rfc3339(0, 0), "1970-01-01T00:00:00.000Z");
         assert_eq!(rfc3339(1_709_210_096, 7), "2024-02-29T12:34:56.007Z");

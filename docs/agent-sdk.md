@@ -137,7 +137,7 @@ By default a call that would ask a person is denied, as in a headless run. Passi
 The callback sits after the unregistered-agent check, the [AFK](afk.md) stop, hooks, the
 deterministic floor, rules, the mode and, in `auto` and `afk`, the [guardian](guardian.md). A floor
 deny, a guardian deny, or a guardian that failed closed never reaches it. A prompt the floor forces
-(a protected path, a critical deletion) or a rule asks for reaches it as it would reach a person,
+(a protected path) or a rule asks for reaches it as it would reach a person,
 with no session allow offered. It is not a bypass: nothing the callback answers skips a stage that
 has already decided.
 

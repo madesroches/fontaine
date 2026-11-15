@@ -28,27 +28,19 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               argument error right after the floor: never a prompt, never the guardian.
            2. Deterministic floor — evaluated BEFORE the mode branches, in EVERY mode (no mode,
               flag, or verdict reaches past it; it can only prompt or deny, never allow; order:
-              deny → ask → critical-path → protected-path):
+              deny → ask → protected-path):
               `[permissions] deny` rule match → Deny; `[permissions] ask` rule match, or an MCP tool its server marked
               `_meta["anthropic/requiresUserInteraction"]: true` → force the
               human prompt (even in `auto`; a match in `dontAsk` denies); rules use the
-              `Tool(specifier)` grammar (§Permission rules); critical-path check →
-              `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or a
-              workspace root or one of its parents force the human prompt in
-              manual/acceptEdits/auto (never auto-approved by any mode or verdict) and Deny in
-              `dontAsk`; protected-path check (a separate list, enumerated under Protected paths below; applies to
+              `Tool(specifier)` grammar (§Permission rules); protected-path check (a separate list, enumerated under Protected paths below; applies to
               the edit-class tools `edit`/`write`) → writes prompt in manual/acceptEdits, go to the
               guardian in `auto`, Deny in `dontAsk`
               (Claude Code's protected-paths behavior). In headless `-p` every prompt outcome is a Deny. All
               structured matching (tool name + risk metadata + path containment), never regex on raw
-              args. For `shell` calls the critical-path check parses the command with the same
-              `brush-parser` pass as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
-              equality), resolving each against the call's effective `cwd` (the argument, else the
-              tracked shell directory, written into the arguments before the gate; not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), a target word that is not
-              literal (parameter expansion `$…`/`${…}`, tilde, brace pattern, unquoted glob chars), or
-              a command that fails to parse, or parses as anything but one simple command, while
-              containing an `rm`/`rmdir` word anywhere (every segment of `;`/`|`/`&&`/`||` lists is
-              inspected), is treated as critical.
+              args. There is no critical-path step: a `shell`/`monitor`/`powershell` call that deletes the
+              filesystem root, a top-level dir, home, or a workspace root or one of its parents is an
+              ordinary call to the mode (a deliberate deviation from Claude Code, which prompts), and the
+              guardian is told about it as a harness fact, `critical_deletions` (see Critical deletions below).
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian);
               likewise an `agent` call whose Fontaine-computed child toolset holds only
               ReadOnly + Destructive::Never tools (plus the coordination tools `send_message` and `board_update`); an MCP tool, a missing
@@ -159,10 +151,12 @@ second record with `tier = human`.
 
 **Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
-with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
+with no projection or renaming): `deny_rule` | `ask_rule` | `protected_path` (the
 floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`afk` allow it) | `coordination` (`send_message` and `board_update` after the floor, hooks and rules, every mode) | `allow_rule`
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (step 7) |
 `screen` (step 7: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `human`. A prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
+
+**Critical deletions.** `critical::critical_deletions(tool, args, env)` (`fontaine-core`) returns, for `shell`, `monitor` and `powershell`, each `rm`/`rmdir`/`Remove-Item` operand whose literal target (resolved against the call's `cwd`, lexically and through `canonicalize`; `~`, `~/<literal>`, `$HOME` and `${HOME}` against the session home, `$HOME` only when the command assigns nothing) is the filesystem root, a top-level dir, home, a workspace root or a parent of one, as `<resolved path> (<kind>)`. Whatever it cannot resolve (an expanded command name or target, a launcher, a wildcard, a chain, an unreadable command) adds nothing and reaches the guardian unannotated. `adjudication::build` copies the result into `ToolCallSummary.critical_deletions`; the prompt builder renders it as a harness fact; the full profile's hard deny (`Destroy Pre-existing Files`) and the minimal profile's `class=host-data-delete` deny it; and the composition's `allow_below` abstains for a call that has one, so a score never allows it.
 
 **Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
 grants, the user-hook runner, the session ledger (source of task intent, recent user messages,
@@ -171,7 +165,7 @@ human-approval callback live in a shared `SessionState` owned by the `Permission
 injected into every wrapper at registration as the `ToolGate` (see the Phase 2 plan).
 
 **Headless (`-p`)**: nothing prompts. Every would-prompt outcome — `ask`-rule match, Escalate
-verdict, critical-path/protected-path prompt, loop breaker — becomes a
+verdict, protected-path prompt, loop breaker — becomes a
 Deny returned to the agent as the tool_result, and the run continues (Claude Code parity). In headless `auto`, an unavailable pinned guardian makes every adjudication `Deny GuardianUnavailable`, with a notice in the `init` event and on stderr. Exit
 codes: 0 run completed (denials do not change it), 1 run error (provider/model failure,
 interruption), 2 config or usage error. Output and input follow the versioned headless I/O contract
@@ -202,13 +196,13 @@ unlisted one.
 contiguously anywhere in the parsed word stream (control operators split off first, so `ls && git push`
 and `sudo git push -f` hit `deny shell(git push)`),
 and a command that fails to parse, or puts a substitution or variable in command position, matches every
-deny/ask `shell` rule whose first word appears in it (the critical-path posture). A `shell` allow rule
+deny/ask `shell` rule whose first word appears in it. A `shell` allow rule
 matches only a command the Tier-0.5 parser accepts as one simple command (no chaining, pipes,
 redirections, substitution, globs), optionally after one leading `cd <literal dir> &&` whose dir is inside the roots, whose argument words are all literal and whose argv matches; a non-literal word never matches; anything else falls through. Path deny/ask
 rules match the given path and the resolved path; path allow rules match the resolved path only.
 
-**Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask,
-critical-path or protected-path outcome stands whatever allow says. A
+**Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask
+or protected-path outcome stands whatever allow says. The floor reads no shell deletion target, so an allow rule that matches `rm -rf /` approves it (the user's own grant; recorded in the master plan's Decisions). A
 matching allow rule skips the human prompt in manual/acceptEdits, pre-approves in `dontAsk`, and
 skips the guardian in `auto` (Claude Code parity). In `auto`, **broad code-execution allow rules are
 suspended** for as long as the mode is on (Claude Code parity: its docs drop blanket `Bash(*)`,

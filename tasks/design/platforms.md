@@ -7,8 +7,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 v1 supports **Linux, macOS and Windows**; platform-specific compile, lint and test coverage runs on all
 three OSes (`ubuntu-latest`, `macos-latest`, `windows-latest`); only pg2 clippy/rustdoc and the
 fixture-eval steps are Linux-only (the pg2 tests run nightly in `pg2.yml`). Windows follows Claude Code: the `shell` tool (and hook
-commands) run through **Git Bash** when Git for Windows is found (preferred, not a prerequisite: see the fallback table below), so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
-check apply unchanged. Discovery: locate `git.exe` on PATH (a scoop shim is followed once through its sibling `git.shim`; then the
+commands) run through **Git Bash** when Git for Windows is found (preferred, not a prerequisite: see the fallback table below), so the POSIX shell parser, Tier 0.5, rule matching and the `critical_deletions` walk apply unchanged. Discovery: locate `git.exe` on PATH (a scoop shim is followed once through its sibling `git.shim`; then the
 standard Git for Windows install locations, then scoop's `apps\git\current` under `%SCOOP%` and `%SCOOP_GLOBAL%`), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
 (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides discovery
 (Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); one that is not a Git Bash `bash.exe` is a startup error (exit 2). Hook commands use the same discovery.
@@ -24,11 +23,11 @@ Startup picks the Windows command shell from what it found:
 commands in `pwsh.exe` (else `powershell.exe`, else System32's Windows PowerShell; `FONTAINE_POWERSHELL_PATH` overrides), started with
 `-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand`, so PowerShell parses exactly the judged text. It is registered only when an
 interpreter is found (absence is not a startup error while Git Bash is found; with neither, startup fails), never pre-classifies (`Specifier::None`, outside the shell class), and
-`floor::critical_powershell` extends the critical-path floor to `Remove-Item` and its aliases with a token-level scan whose unreadable
-cases are critical. In the fallback `shell` and `monitor` are not registered (Claude Code: Monitor needs Git Bash on Windows), hook commands, the status line and `!` lines run in PowerShell through the same encoded invocation, the model-facing text names `powershell` where it would name `shell`, a subagent type that lists bare `shell` gets `powershell`, and skill `!` lines are reported as not run. Path handling (scope validator, protected paths, critical-path) accepts drive
+`critical::powershell` extends the `critical_deletions` fact to `Remove-Item` and its aliases with a token-level scan whose unreadable
+cases add nothing and are judged by the guardian from the raw command. In the fallback `shell` and `monitor` are not registered (Claude Code: Monitor needs Git Bash on Windows), hook commands, the status line and `!` lines run in PowerShell through the same encoded invocation, the model-facing text names `powershell` where it would name `shell`, a subagent type that lists bare `shell` gets `powershell`, and skill `!` lines are reported as not run. Path handling (scope validator, protected paths, critical deletions) accepts drive
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
-symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe
+symlinks. Critical deletions on Windows include drive roots and `%USERPROFILE%`. The containment probe
 (Phase 4 step 6; Linux only, signals defined there) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
 that is never sufficient alone.
 

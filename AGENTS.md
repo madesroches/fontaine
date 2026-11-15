@@ -45,7 +45,7 @@ all tests pass:
   session-scoped `/guardian-disable` command (see the floor invariant below): it is not config,
   not a mode, never persisted, never settable from project scope, and never inherited by a
   subagent.
-- **The deterministic floor (`deny → ask → critical-path → protected-path`) gates EVERY mode** — no mode,
+- **The deterministic floor (`deny → ask → protected-path`) gates EVERY mode** — no mode,
   flag, or verdict reaches past it. No regex matching on tool arguments anywhere. The one
   deliberate exception is `/guardian-disable`: after an explicit confirmation in the terminal UI
   (the terminal may be a remote one: a line from a live `/remote-inbox` ticket is terminal input)
@@ -58,7 +58,8 @@ all tests pass:
   exceptions. The composed guardian's allow: `allow_below` in a user-scope
   `[guardian.composition]` script, such as the `screen` preset's `allow_threshold` (a
   hosted Jev screen with a margin for its nondeterminism, or on a local model a steering-hardened
-  one), a verdict of the composed guardian and never before the floor. And in `auto`, after the
+  one), a verdict of the composed guardian and never before the floor, and never for a call with a
+  non-empty `critical_deletions`. And in `auto`, after the
   floor and hooks, file-tool edits to git-tracked, new or session-created files in the primary
   root (`tracked_edit`) and file-tool writes into the session scratch directory (`scratch_write`);
   instruction files and `.github/` are excluded, and project scope can only switch them off. And in every mode, an `agent` spawn whose

@@ -722,6 +722,7 @@ mod tests {
                 args: serde_json::json!({}),
                 args_digest: "d".into(),
                 destructive: false,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts::default(),

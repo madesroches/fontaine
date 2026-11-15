@@ -16,6 +16,7 @@ use rig_core::redact;
 use serde_json::Value;
 
 use crate::audit::args_digest;
+use crate::critical::{self, CriticalEnv};
 use crate::destructive::{self, Facts, touched_paths};
 use crate::gate::SessionState;
 use crate::instructions::InstructionFile;
@@ -306,6 +307,15 @@ pub fn build(
             view: &view,
         },
     );
+    let critical_deletions = critical::critical_deletions(
+        tool,
+        args,
+        &CriticalEnv {
+            scope: &scope,
+            home: state.home.as_deref(),
+            scratch: state.scratch.as_deref(),
+        },
+    );
     let mut session_facts = facts(
         &view,
         &scope,
@@ -338,6 +348,7 @@ pub fn build(
             args: args.clone(),
             args_digest: args_digest(args),
             destructive,
+            critical_deletions,
             annotations: annotations.map(str::to_string),
         },
         session_facts,

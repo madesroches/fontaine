@@ -76,7 +76,7 @@ original outcome's, `afk` is `true`, and `converted` names the prompt that was t
 | `converted` | The prompt that did not happen |
 |---|---|
 | `ask_rule` | An `ask` rule, or an MCP tool that requires a person's approval |
-| `floor` | A critical-path or protected-path call |
+| `floor` | A protected-path call |
 | `mode` | The mode's own approval (not reachable in AFK mode, which decides as `auto`; it applies to a headless run) |
 | `hook` | A `pre_tool_use` hook's `ask` |
 | `escalate` | A guardian `escalate` verdict |
@@ -160,7 +160,7 @@ A denial's weight is its severity, the highest that applies, plus a bonus for re
 | Denial | Weight |
 |---|---|
 | Guardian label Data Exfiltration, Download+Execute, Tunnel/Reverse Shell, Secret Exposure, Safety Bypass, Container Escape or Unguarded Agent Loop | 3.0 (High) |
-| Any other guardian label, including one this build does not know; a composition denial; a deny rule, critical path, protected path denial | 2.0 (Medium) |
+| Any other guardian label, including one this build does not know; a composition denial; a deny rule or protected path denial | 2.0 (Medium) |
 | A converted prompt, or a call denied while `auto` was paused | 1.0 (Low) |
 | A fail-closed guardian denial (error, timeout, unparseable, low confidence) | 0.5 |
 | A denied call that repeats an earlier denied call exactly | +2.0 |

@@ -23,6 +23,11 @@ pub struct ToolCallSummary {
     pub args_digest: String,
     /// Derived by the core from the call itself, never from the guardian's own label.
     pub destructive: bool,
+    /// The file system root, top-level directories, home directory, workspace roots or parents of
+    /// one that the call's `rm`/`rmdir`/`Remove-Item` operands name, each as the resolved path and
+    /// its kind. Derived by the core from the call itself; empty for a call that names none or
+    /// whose targets it cannot read.
+    pub critical_deletions: Vec<String>,
     /// What an MCP server declared about the tool. The server is outside the harness, so this
     /// is shown as untrusted text and never as a fact.
     pub annotations: Option<String>,

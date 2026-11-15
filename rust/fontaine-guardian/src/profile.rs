@@ -119,6 +119,7 @@ mod tests {
                 args: serde_json::json!({}),
                 args_digest: String::new(),
                 destructive: false,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts {
@@ -150,6 +151,7 @@ mod tests {
                 args: serde_json::json!({}),
                 args_digest: String::new(),
                 destructive: false,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts {
@@ -189,6 +191,7 @@ mod tests {
                 args: serde_json::json!({}),
                 args_digest: String::new(),
                 destructive: false,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts::default(),
@@ -219,6 +222,7 @@ mod tests {
                 args: serde_json::json!({}),
                 args_digest: String::new(),
                 destructive: true,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts::default(),

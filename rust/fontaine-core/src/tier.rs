@@ -10,7 +10,9 @@ pub enum Tier {
     #[serde(alias = "plan_block")]
     DenyRule,
     AskRule,
-    CriticalPath,
+    /// `critical_path` is the tier an older session's ledger and audit log wrote for a
+    /// recognized deletion of a critical place; they are read back on resume.
+    #[serde(alias = "critical_path")]
     ProtectedPath,
     Hook,
     ReadOnlyFastPath,
@@ -45,10 +47,9 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 21] = [
+    pub const ALL: [Tier; 20] = [
         Tier::DenyRule,
         Tier::AskRule,
-        Tier::CriticalPath,
         Tier::ProtectedPath,
         Tier::Hook,
         Tier::ReadOnlyFastPath,
@@ -73,7 +74,6 @@ impl Tier {
         match self {
             Tier::DenyRule => "deny_rule",
             Tier::AskRule => "ask_rule",
-            Tier::CriticalPath => "critical_path",
             Tier::ProtectedPath => "protected_path",
             Tier::Hook => "hook",
             Tier::ReadOnlyFastPath => "read_only_fast_path",

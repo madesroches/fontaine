@@ -110,11 +110,11 @@ async fn the_rewritten_input_is_what_the_floor_the_rules_and_the_audit_see() {
     // The floor judges the rewrite too.
     let rig2 = self::rig(
         Manual,
-        "",
-        vec![hook("rewrite", None, Some(shell("rm -rf /")))],
+        "[permissions]\nask = [\"shell(git push)\"]\n",
+        vec![hook("rewrite", None, Some(shell("git push")))],
     );
     rig2.check("shell", shell("ls")).await;
-    assert_eq!(rig2.audit()[0].tier, Tier::CriticalPath);
+    assert_eq!(rig2.audit()[0].tier, Tier::AskRule);
 
     // And an allowed call runs with the rewritten arguments.
     let rig3 = self::rig(
@@ -218,12 +218,6 @@ async fn a_hook_allow_never_passes_the_floor() {
             Decision::Deny,
         ),
         ("shell", shell("git push"), Tier::AskRule, Decision::Prompt),
-        (
-            "shell",
-            shell("rm -rf /"),
-            Tier::CriticalPath,
-            Decision::Prompt,
-        ),
         (
             "write",
             json!({"path": ".git/config", "content": "x"}),

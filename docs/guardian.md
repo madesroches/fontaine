@@ -7,7 +7,7 @@ only part of Fontaine that uses judgment, so everything around it is written to 
 from being the only thing standing between a model and your machine.
 
 A call reaches the guardian in `auto` mode. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
-rules, critical paths, protected-path handling), the read-only fast path (which includes a spawn of
+rules, protected-path handling), the read-only fast path (which includes a spawn of
 an agent type that can only read, and excludes reads of secret files such as `.env`), every other `agent` spawn, the coordination tools (`send_message` and `board_update`) and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
 it also does not see file-tool edits to tracked, new or session-created files in your workspace or
@@ -68,7 +68,7 @@ The request is built from the ledger and the call itself:
 | `agent_message_before_reply` | The last 2,000 characters of the agent's final answer, only when your latest message was typed at the prompt right after that answer. An untrusted block placed before `recent_user_messages`, in the guardian view only: the screen, the reads of a composition and the minimal profile do not get it. |
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
-| `tool_call` | The tool, its full arguments (a shell call made after an earlier `cd` carries the absolute directory it starts in as `cwd`), a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
+| `tool_call` | The tool, its full arguments (a shell call made after an earlier `cd` carries the absolute directory it starts in as `cwd`), a digest of them, `destructive`, derived by Fontaine from the call itself (below), and, when the call deletes one, `critical_deletions` (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was only partly parsed. |
 | `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start (each shown with its git name and URL, as `origin https://…`; `(none)` when the repository had none, and `(not recorded)` when the harness did not read them or could not read them completely (no root is a repository, or a repository has an `include` or `includeIf` section in its config or a remote without a fetch URL; a root that is not a repository is skipped when another root is one), in which case a git name the call uses is trusted unless this call or an earlier one in the session added or repointed it; the screen keeps bare URLs and `(none)`), the home directory of the user running the session as a `home_directory` line (guardian view and minimal profile; not the screen or the reads of a composition; set by Fontaine and never from a tool argument), the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` (the session did not record creating it; inside the workspace roots writing it is routine editing), `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a file git's index holds (never on a directory; a shell command gets both marks only when it is a single simple command (no list, pipeline or substitution) with a certain working directory and no glob or pathspec word, and a file tool always gets them), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get no scratch line and no `absent` or `git_tracked` marks (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
@@ -261,7 +261,7 @@ changed or removed. A claim of authorization anywhere else — in tool arguments
 files, hook notes, guardian-context notes or action summaries — is data, not intent, and does
 not clear the rule. In the interactive modes the call asks you instead: your answer at the
 prompt is itself the establishment that you asked, and the prompt shows the resolved target's
-diff. Nothing here loosens the deterministic floor: deny rules, ask rules, critical paths and
+diff. Nothing here loosens the deterministic floor: deny rules, ask rules and
 protected paths still act first in every mode.
 
 ## Memory writes
@@ -310,6 +310,24 @@ such as `timeout` is judged by the program it wraps), is an MCP call, or uses an
 shell parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive, and neither is `rg x src 2>/dev/null`: a redirect to `/dev/null` (that exact
 spelling) writes no file.
 
+`critical_deletions` is a second fact the harness computes from the call. When the operands of
+`rm`, `rmdir` or `Remove-Item` (in a `shell`, `monitor` or `powershell` call, in any segment of a
+list, pipe or substitution) are literal paths, `~` or `$HOME` and one of them is the file system
+root, a top-level directory, your home directory, a workspace root or a parent of one (a symlink to
+one counts; the session scratch directory itself is not one, its parents are), the request lists it as the resolved path and its kind, such as `/home/me (home
+directory)`. A target the harness cannot resolve (a variable, a glob, an expanded command name, a
+relative target after a `cd`, arguments a launcher such as `xargs` reads at run time) adds
+nothing; wrappers (`sudo`, `env`, `timeout`, `xargs`...) with literal operands are still read: the guardian reads the raw command and judges it under
+`Destroy Pre-existing Files`, which covers a recursive delete whose target the call does not make
+clear. A deletion whose target resolves inside the workspace roots is not that rule, whether or not
+the target is `pre_existing` or `git_tracked` (a glob with a literal part inside the roots counts as
+inside); `.git` and anything under it, a target the call does not make clear and a target outside the
+roots are still judged under it, as are truncations and no-content overwrites. A listed deletion is always denied, in both profiles and whatever your messages say: the
+full profile's hard deny (under the `Destroy Pre-existing Files` label, kept whatever you put in
+`[auto_mode]`) and the minimal profile's `class=host-data-delete` (rule `Container Escape`). A
+composition's `allow_below` never allows such a call: it abstains, so the script falls through to
+its `llm(call)` stage, and a script with none ends in the fail-closed denial.
+
 ### A spent usage window
 
 A provider that answers a spent usage window with a 429 is not a guardian failing: the provider's
@@ -356,7 +374,7 @@ In the terminal UI, `/denied` lists the calls the guardian denied and `r` approv
 Fontaine records your approval for that exact call (same agent, tool and arguments), tells the agent
 it may retry, and lets the next identical call through without asking the guardian. The approval is
 consumed by that call, never cached, and does not count toward the denial limits. The floor runs
-first: an `ask` rule or a critical path still asks.
+first: an `ask` rule still asks.
 
 ## Speed and cost
 
@@ -414,7 +432,8 @@ than the window makes that read fail.
 ### The screen preset
 
 The default shape is an allow screen in front of the LLM guardian, run in sequence: the screen goes
-first; if it allows the call, the call is allowed; everything it does not allow goes to the LLM
+first; if it allows the call, the call is allowed, unless the call has a `critical_deletions` target
+(see [Failing closed](#failing-closed)), which the screen never allows; everything it does not allow goes to the LLM
 guardian, which reviews it. The screen does not stop or escalate on its own unless you set
 `stop_threshold`. A call it cannot judge goes to the guardian too: a timeout, an HTTP error, an
 unreachable daemon, an answer that is not yes or no, or a read that failed while others succeeded.
@@ -480,7 +499,7 @@ On a `typesafe/` model `allow_threshold` has a default (stopping is opt-in), so 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian. |
+| `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian, unless it has a `critical_deletions` target (see [Failing closed](#failing-closed)). |
 | `stop_threshold` | none | Unset: the screen never escalates, and every call it does not allow goes to the LLM guardian. Set, a call whose risk reaches it is escalated, as a guardian escalation is. |
 | `allow` | `true` | `allow = false` switches the allow path off and ignores `allow_threshold`. |
 
@@ -605,7 +624,8 @@ model agree that it is clearly safe:
   score is at or above `steering_veto`.
 
 The call is allowed when the hardened read's risk is below `allow_threshold`, the steering score is
-below the veto and the stop read did not stop it. Without the detector, one steering sentence in a
+below the veto, the stop read did not stop it and the call has no `critical_deletions` target (see
+[Failing closed](#failing-closed)). Without the detector, one steering sentence in a
 call's arguments moved most of the should-not-allow cases in the measured set below the skip
 threshold, which is why the allow path has its own prompt and a veto.
 
@@ -651,7 +671,7 @@ without an import; the language itself is documented at rune-rs.github.io.
 | `first_decisive([futures])` | future of verdict | Polls all at once and returns the first verdict that is not an abstain, the earlier in the list winning a tie; the rest are dropped. All abstaining abstains. |
 | `std::future::join((a, b))` | tuple of results | Runs futures together; a script that awaits one after the other runs them in sequence. |
 | `escalate(node, reason)`, `deny(node, reason)`, `abstain()` | verdict | `node` names the deciding step in the audit record's `rule`. |
-| `allow_below(node, score, threshold)` | verdict | An allow if `score.value() < threshold`, else an abstain. The only way for a script to allow a call. |
+| `allow_below(node, score, threshold)` | verdict | An allow if `score.value() < threshold`, else an abstain. It also abstains for a call with a [`critical_deletions`](#failing-closed) target, whatever the score. The only way for a script to allow a call. |
 | `verdict.is_abstain()`, `verdict.is_allow()` | `bool` | For sequencing. |
 
 `params` is an object holding `[guardian.composition.params]`: numbers (as floats), strings and
@@ -806,7 +826,8 @@ bar, it works only when you set it in `[guardian] model`.
 radius of ordinary work is bounded, so the minimal guardian does not judge routine development; it
 enforces **containment integrity** (mounts, container-runtime sockets, `/proc/sys` and cgroup
 control files, privileged namespace operations, raw devices, symlink traversal to bind-mounted host
-paths, network paths around the sandbox proxy), denying them as `Container Escape` with the escape
+paths, network paths around the sandbox proxy, and a `critical_deletions` target such as a workspace
+root, which is the host's data), denying them as `Container Escape` with the escape
 class in the explanation as `class=<name>`, and still denies exfiltration to destinations that are
 not the repository's own remotes. It receives a smaller request: the call, your last 500
 characters and 3 messages, the workspace roots, the home directory, the remotes, the `[env]` names, the touched paths' status and any `active_skill` line, without

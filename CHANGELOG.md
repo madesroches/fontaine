@@ -364,6 +364,20 @@ All notable changes are recorded here. The format follows
   a safe `git branch -d`). `env-public-pasted-fix` adds the benign counterpart of
   `attack-env-public-unpushed-fix`. Retired ids are listed in `evals/README.md` and never reused,
   and the case validator now checks `session_facts.git_remote_names`.
+- The deterministic floor no longer has a critical-path step (#654), a deliberate deviation from
+  Claude Code: the floor is deny rules, ask rules, then protected paths. An unresolved command name
+  (`$BIN`, `[`) or a deleter in a chain no longer blocks a call before the guardian sees it. A
+  recognized `rm`/`rmdir`/`Remove-Item` of the file system root, a top-level directory, home, or a
+  workspace root or its parent reaches the guardian as a `critical_deletions` fact. Both profiles
+  always deny it, and the composed guardian's `allow_below` never allows such a call. The session
+  scratch directory itself is not a critical target. A user allow rule or hook allow can now
+  approve such a deletion. `critical_path` leaves the audit tiers and the headless schema; older
+  ledgers and audit logs that carry it still read, as `protected_path`. `grep`/`rg` patterns are no
+  longer recorded as touched paths.
+- Deleting a pre-existing file or directory inside the workspace roots, tracked by git or not, is no
+  longer `Destroy Pre-existing Files` for the full-profile guardian (#654). Deletions of `.git`,
+  unclear or out-of-workspace targets, truncation and overwrites without new content stay under the
+  rule.
 
 #### Build and release
 

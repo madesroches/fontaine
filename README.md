@@ -8,7 +8,7 @@ mode that runs unattended without YOLO.
 [![License](https://img.shields.io/github/license/madesroches/fontaine)](LICENSE)
 
 **Auto mode.** A separate guardian model reviews each tool call that is not provably safe, using
-your task and a short written policy. A deterministic floor of deny and ask rules, critical paths
+your task and a short written policy. A deterministic floor of deny and ask rules
 and protected paths sits beneath every mode and cannot be argued with. If the guardian cannot
 answer, the call is denied.
 

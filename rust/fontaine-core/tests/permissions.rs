@@ -832,110 +832,72 @@ async fn an_ask_rule_forces_a_prompt_in_manual_and_denies_in_dont_ask() {
 }
 
 #[tokio::test]
-async fn critical_paths_prompt_in_the_interactive_modes_and_deny_in_dont_ask_and_headless() {
+async fn a_critical_deletion_is_an_ordinary_shell_call_to_the_mode() {
     let commands = [
         "rm -rf /",
         "rm -rf ~",
         "rmdir /usr",
         "rm -rf *",
         "rm -rf $TARGET",
-        "rm -rf $(pwd)",
         "ls; rm -rf /",
         "echo ok && rm -rf /tmp",
         "rm -rf /home/x '",
         "sudo rm -rf /",
     ];
-    let allow_all = "[permissions]\nallow = [\"shell\", \"shell(rm *)\"]\n";
     for command in commands {
         for mode in [Manual, AcceptEdits] {
-            let rig = Rig::with(Options::new(mode).settings(allow_all));
-            let got = first(&rig, "shell", shell(command)).await;
+            let rig = Rig::new(mode);
             assert_eq!(
-                got,
-                (Decision::Prompt, Tier::CriticalPath),
+                first(&rig, "shell", shell(command)).await,
+                (Decision::Prompt, Tier::Mode),
                 "{command} {mode:?}"
             );
-            assert!(!rig.approver.requests.lock().unwrap()[0].offers.session);
         }
-        let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
+        let rig = Rig::new(DontAsk);
         assert_eq!(
             first(&rig, "shell", shell(command)).await,
-            (Decision::Deny, Tier::CriticalPath),
+            (Decision::Deny, Tier::DontAsk),
             "{command}"
         );
+        let rig = Rig::with(Options::new(Manual).headless());
+        let record = {
+            first(&rig, "shell", shell(command)).await;
+            rig.audit()[0].clone()
+        };
+        assert_eq!(
+            (record.decision, record.tier),
+            (Decision::Deny, Tier::Mode),
+            "{command}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_allow_rule_now_approves_a_critical_deletion_and_an_ask_rule_still_beats_it() {
+    let allow_all = "[permissions]\nallow = [\"shell\", \"shell(rm *)\"]\n";
+    for command in ["rm -rf /", "rm -rf ~"] {
+        for mode in [Manual, AcceptEdits, DontAsk] {
+            let rig = Rig::with(Options::new(mode).settings(allow_all));
+            assert_eq!(
+                first(&rig, "shell", shell(command)).await,
+                (Decision::Allow, Tier::AllowRule),
+                "{command} {mode:?}"
+            );
+        }
         let rig = Rig::with(Options::new(Manual).headless().settings(allow_all));
         assert_eq!(
             first(&rig, "shell", shell(command)).await,
-            (Decision::Deny, Tier::CriticalPath),
+            (Decision::Allow, Tier::AllowRule),
             "{command}"
         );
     }
-    // An ordinary removal is not critical.
-    let rig = Rig::new(Manual);
-    assert_eq!(
-        first(&rig, "shell", shell("rm build/out.o")).await,
-        (Decision::Prompt, Tier::Mode)
-    );
-}
-
-#[tokio::test]
-async fn critical_paths_cover_every_workspace_root_and_its_parents() {
-    let rig = Rig::new(Manual);
-    let work = rig.work().to_path_buf();
-    let parent = work.parent().unwrap().to_path_buf();
-    for target in [work.to_str().unwrap(), parent.to_str().unwrap(), ".", ".."] {
-        let got = first(&rig, "shell", shell(&format!("rm -rf '{target}'"))).await;
-        assert_eq!(got, (Decision::Prompt, Tier::CriticalPath), "{target}");
-    }
-    let nested = rig.work().join("sub");
-    std::fs::create_dir_all(&nested).unwrap();
-    assert_eq!(
-        first(&rig, "shell", shell("rm -rf sub")).await,
-        (Decision::Prompt, Tier::Mode)
-    );
-}
-
-#[tokio::test]
-async fn critical_paths_resolve_against_the_call_cwd() {
-    let rig = Rig::new(Manual);
-    std::fs::create_dir_all(rig.work().join("sub")).unwrap();
-    let args = json!({"command": "rm -rf ..", "cwd": "sub"});
-    assert_eq!(
-        first(&rig, "shell", args).await,
-        (Decision::Prompt, Tier::CriticalPath)
-    );
-    let args = json!({"command": "rm -rf x", "cwd": "sub"});
-    assert_eq!(
-        first(&rig, "shell", args).await,
-        (Decision::Prompt, Tier::Mode)
-    );
-}
-
-#[tokio::test]
-async fn the_home_directory_is_critical() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().canonicalize().unwrap().join("home");
-    std::fs::create_dir_all(home.join("docs")).unwrap();
-    let mut options = Options::new(Manual);
-    options.home = Some(home.clone());
-    let rig = Rig::with(options);
-    assert_eq!(
-        first(
-            &rig,
-            "shell",
-            shell(&format!("rm -rf '{}'", home.display()))
-        )
-        .await,
-        (Decision::Prompt, Tier::CriticalPath)
+    let rig = Rig::with(
+        Options::new(Manual)
+            .settings("[permissions]\nallow = [\"shell(rm *)\"]\nask = [\"shell(rm -rf /)\"]\n"),
     );
     assert_eq!(
-        first(
-            &rig,
-            "shell",
-            shell(&format!("rm -rf '{}/docs'", home.display()))
-        )
-        .await,
-        (Decision::Prompt, Tier::Mode)
+        first(&rig, "shell", shell("rm -rf /")).await,
+        (Decision::Prompt, Tier::AskRule)
     );
 }
 
@@ -1715,48 +1677,30 @@ async fn a_powershell_call_is_never_preclassified() {
 }
 
 #[tokio::test]
-async fn powershell_deletes_of_critical_paths_prompt_in_every_mode() {
-    // Each rig has its own workspace, so the paths are filled in from the rig under test.
+async fn powershell_deletes_of_critical_paths_are_ordinary_powershell_calls() {
     let commands = [
-        "Remove-Item -Recurse -Force '{parent}'",
-        "rm -r '{work}'",
+        "Remove-Item -Recurse -Force C:\\",
         "Remove-Item $env:USERPROFILE -Recurse",
         "Get-ChildItem | Remove-Item",
         "iex $payload",
+        "Remove-Item build/out.o",
     ];
-    let fill = |rig: &Rig, command: &str| {
-        let work = rig.work();
-        command
-            .replace("{work}", &work.display().to_string())
-            .replace("{parent}", &work.parent().unwrap().display().to_string())
-    };
-    let allow_all = "[permissions]
-allow = [\"powershell\"]
-";
-    for template in commands {
+    for command in commands {
         for mode in [Manual, AcceptEdits] {
-            let rig = Rig::with(Options::new(mode).settings(allow_all));
-            let command = &fill(&rig, template);
+            let rig = Rig::new(mode);
             assert_eq!(
                 first(&rig, "powershell", shell(command)).await,
-                (Decision::Prompt, Tier::CriticalPath),
+                (Decision::Prompt, Tier::Mode),
                 "{command} {mode:?}"
             );
         }
-        let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
-        let command = &fill(&rig, template);
+        let rig = Rig::new(DontAsk);
         assert_eq!(
             first(&rig, "powershell", shell(command)).await,
-            (Decision::Deny, Tier::CriticalPath),
+            (Decision::Deny, Tier::DontAsk),
             "{command}"
         );
     }
-    // An ordinary removal inside the workspace is not critical.
-    let rig = Rig::new(Manual);
-    assert_eq!(
-        first(&rig, "powershell", shell("Remove-Item build/out.o")).await,
-        (Decision::Prompt, Tier::Mode)
-    );
 }
 
 #[tokio::test]

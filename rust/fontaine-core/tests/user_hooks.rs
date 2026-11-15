@@ -197,17 +197,17 @@ async fn updated_input_is_what_the_floor_the_rules_and_the_audit_see() {
     // The floor judges the rewrite too.
     let to_rm = json!({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
-        "updatedInput": {"command": "rm -rf /"},
+        "updatedInput": {"command": "git push"},
     }})
     .to_string();
     let rig2 = self::rig(
         Manual,
-        "",
+        "[permissions]\nask = [\"shell(git push)\"]\n",
         vec![hook(None, command(&["--reply", &to_rm]), user())],
     );
     rig2.check("shell", shell("ls")).await;
     // The prompt's answer is a second record; the first is the floor's.
-    assert_eq!(rig2.audit()[0].tier, Tier::CriticalPath);
+    assert_eq!(rig2.audit()[0].tier, Tier::AskRule);
 }
 
 #[tokio::test]
@@ -286,7 +286,7 @@ async fn a_hook_that_fails_times_out_or_answers_unreadably_decides_nothing() {
 }
 
 #[tokio::test]
-async fn a_hook_allow_never_passes_a_deny_rule_or_the_critical_path() {
+async fn a_hook_allow_never_passes_a_deny_rule_or_an_ask_rule() {
     let allow = command(&["--reply", &reply("allow")]);
     let rig = rig(
         Manual,
@@ -296,9 +296,13 @@ async fn a_hook_allow_never_passes_a_deny_rule_or_the_critical_path() {
     assert!(!allowed(&rig.check("shell", shell("git push")).await));
     assert_eq!(last(&rig).tier, Tier::DenyRule);
 
-    let rig = self::rig(Manual, "", vec![hook(None, allow, user())]);
-    let _ = rig.check("shell", shell("rm -rf /")).await;
-    assert_eq!(rig.audit()[0].tier, Tier::CriticalPath);
+    let rig = self::rig(
+        Manual,
+        "[permissions]\nask = [\"shell(git push)\"]\n",
+        vec![hook(None, allow, user())],
+    );
+    let _ = rig.check("shell", shell("git push")).await;
+    assert_eq!(rig.audit()[0].tier, Tier::AskRule);
 }
 
 #[tokio::test]

@@ -73,7 +73,7 @@ async fn every_would_prompt_outcome_is_a_denial_the_run_continues_and_exit_is_ze
         [
             "mode",
             "mode",
-            "critical_path",
+            "mode",
             "protected_path",
             "mode",
             "read_only_fast_path"
@@ -94,7 +94,8 @@ async fn every_would_prompt_outcome_is_a_denial_the_run_continues_and_exit_is_ze
         assert!(denial.get("rule").is_some());
         assert!(denial["explanation"].as_str().unwrap().contains("denied"));
     }
-    assert_eq!(denials[2]["tier"], "critical_path");
+    assert_eq!(denials[2]["tier"], "mode");
+    assert_eq!(decisions[2]["converted"], "mode");
 
     // The model was told, as the tool result, and kept going.
     let requests = endpoint.requests().await;

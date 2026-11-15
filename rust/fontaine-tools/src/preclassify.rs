@@ -1,6 +1,6 @@
 //! Shell command analysis on a real shell parser (`brush-parser`, never a hand-rolled lexer or
-//! a regex): the word stream that permission rules match, the targets of `rm`/`rmdir` for the
-//! critical-path check, and the Tier-0.5 pre-classifier that lets a few read-only commands skip
+//! a regex): the word stream that permission rules match, the targets of `rm`/`rmdir` the
+//! guardian is told about, and the Tier-0.5 pre-classifier that lets a few read-only commands skip
 //! the human prompt and the guardian.
 //!
 //! The soundness rule everywhere: whatever cannot be fully parsed as one simple command made of
@@ -13,7 +13,7 @@ use brush_parser::ast::{
     AndOrList, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList,
     IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, Program, SeparatorOperator, Word,
 };
-use brush_parser::word::{WordPiece, WordPieceWithSource};
+use brush_parser::word::{Parameter, ParameterExpr, TildeExpr, WordPiece, WordPieceWithSource};
 use brush_parser::{Parser, ParserOptions};
 
 use crate::scope::Scope;
@@ -30,6 +30,10 @@ pub struct ShellWord {
     /// `None` when the word expands (parameter, command substitution, tilde, brace pattern,
     /// unquoted glob character).
     pub literal: Option<String>,
+    /// The rest of the word after the home directory (empty or starting with `/`) when the word
+    /// is exactly one bare `~` or one modifier-free `HOME` parameter expansion followed only by
+    /// glob-free literal text. `literal` stays `None` for it.
+    pub home_relative: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -333,8 +337,18 @@ impl Walk<'_> {
             // `export A=b` carries its assignment as a word; a prefix assignment is not a word
             // of the command, but its value can still hold a substitution.
             CommandPrefixOrSuffixItem::AssignmentWord(_, word) => {
-                // A suffix `a=b` is an argument; `export A=b` is rejected by its program name.
-                self.out.assignments |= words.is_none();
+                // A suffix `a=b` is an argument, except to a declaration builtin, which assigns.
+                self.out.assignments |= match words {
+                    None => true,
+                    Some(words) => words.first().is_some_and(|name| {
+                        name.literal.as_deref().is_some_and(|name| {
+                            matches!(
+                                name,
+                                "export" | "declare" | "typeset" | "local" | "readonly"
+                            )
+                        })
+                    }),
+                };
                 let classified = self.word(word);
                 if let Some(words) = words {
                     words.push(classified);
@@ -354,6 +368,7 @@ impl Walk<'_> {
                 return ShellWord {
                     raw: word.value.clone(),
                     literal: None,
+                    home_relative: None,
                 };
             }
         };
@@ -363,9 +378,15 @@ impl Walk<'_> {
         if literal.is_some() && has_brace_pattern(&skeleton) {
             literal = None;
         }
+        let home_relative = if literal.is_none() && !has_brace_pattern(&skeleton) {
+            home_relative_of(&pieces)
+        } else {
+            None
+        };
         ShellWord {
             raw: word.value.clone(),
             literal,
+            home_relative,
         }
     }
 
@@ -457,6 +478,57 @@ impl Walk<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether `piece` is a bare `~` or a modifier-free `$HOME` / `${HOME}`.
+fn is_home_piece(piece: &WordPiece) -> bool {
+    match piece {
+        WordPiece::TildeExpansion(TildeExpr::Home) => true,
+        WordPiece::ParameterExpansion(ParameterExpr::Parameter {
+            parameter: Parameter::Named(name),
+            indirect: false,
+        }) => name == "HOME",
+        _ => false,
+    }
+}
+
+/// What follows the home directory in a word that starts with one, as text; `None` when anything
+/// after it expands or the word is not a home-relative path.
+fn home_relative_of(pieces: &[WordPieceWithSource]) -> Option<String> {
+    let mut rest = String::new();
+    let mut at_start = true;
+    let mut visit = |piece: &WordPiece, quoted: bool| -> Option<()> {
+        match piece {
+            _ if at_start => {
+                at_start = false;
+                is_home_piece(piece).then_some(())
+            }
+            WordPiece::Text(text) if quoted || !text.contains(['*', '?', '[', ']', '(', ')']) => {
+                rest.push_str(text);
+                Some(())
+            }
+            WordPiece::SingleQuotedText(text) => {
+                rest.push_str(text);
+                Some(())
+            }
+            WordPiece::EscapeSequence(text) => {
+                rest.push_str(text.strip_prefix('\\').unwrap_or(text));
+                Some(())
+            }
+            _ => None,
+        }
+    };
+    for piece in pieces {
+        match &piece.piece {
+            WordPiece::DoubleQuotedSequence(inner) => {
+                for piece in inner {
+                    visit(&piece.piece, true)?;
+                }
+            }
+            other => visit(other, false)?,
+        }
+    }
+    (!at_start && (rest.is_empty() || rest.starts_with('/'))).then_some(rest)
 }
 
 /// Brace expansion (`{a,b}`, `{1..3}`) turns one word into several.
@@ -1284,6 +1356,45 @@ mod tests {
         literal_text(text)
     }
 
+    fn home_rel(text: &str) -> Option<String> {
+        let analysis = analyze(&format!("rm {text}"));
+        let rm = analysis
+            .commands
+            .iter()
+            .find(|c| c.words.len() == 2 && c.words[0].raw == "rm")
+            .expect("the rm command");
+        rm.words[1].home_relative.clone()
+    }
+
+    #[test]
+    fn home_relative_words_name_the_rest_after_home() {
+        for (text, rest) in [
+            ("~", ""),
+            ("$HOME", ""),
+            ("\"${HOME}\"", ""),
+            ("${HOME}", ""),
+            ("~/x", "/x"),
+            ("$HOME/x", "/x"),
+            ("\"$HOME/x y\"", "/x y"),
+            ("~/'a b'", "/a b"),
+        ] {
+            assert_eq!(home_rel(text).as_deref(), Some(rest), "{text}");
+        }
+        for text in [
+            "~user",
+            "${HOME:-/}",
+            "~/*",
+            "$HOMEX",
+            "${HOME}x",
+            "~/$X",
+            "\"~\"",
+            "x",
+            "~/$(pwd)",
+        ] {
+            assert_eq!(home_rel(text), None, "{text}");
+        }
+    }
+
     #[test]
     fn assignments_are_flagged_wherever_they_sit() {
         for text in [
@@ -1292,6 +1403,15 @@ mod tests {
             "A=b; ls",
             "ls; A=b mv x y",
             "echo $(A=b ls)",
+        ] {
+            assert!(analyze(text).assignments, "{text}");
+        }
+        for text in [
+            "export HOME=/tmp/x",
+            "declare -x HOME=/tmp/x",
+            "typeset HOME=/tmp/x",
+            "local HOME=/tmp/x",
+            "readonly HOME=/tmp/x",
         ] {
             assert!(analyze(text).assignments, "{text}");
         }

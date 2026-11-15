@@ -20,7 +20,7 @@ async fn first(rig: &Rig, tool: &str, args: Value) -> (Decision, Tier) {
 }
 
 #[tokio::test]
-async fn critical_path_prompts_for_a_drive_root_and_the_user_profile() {
+async fn a_drive_root_and_the_user_profile_deletion_is_an_ordinary_shell_prompt() {
     let tmp = tempfile::tempdir().unwrap();
     let profile = tmp.path().canonicalize().unwrap().join("profile");
     std::fs::create_dir_all(&profile).unwrap();
@@ -35,7 +35,7 @@ async fn critical_path_prompts_for_a_drive_root_and_the_user_profile() {
     ] {
         assert_eq!(
             first(&rig, "shell", shell(&command)).await,
-            (Decision::Prompt, Tier::CriticalPath),
+            (Decision::Prompt, Tier::Mode),
             "{command}"
         );
     }

@@ -555,6 +555,7 @@ mod tests {
                 args: json!({ "command": "cargo build" }),
                 args_digest: "abc".into(),
                 destructive: false,
+                critical_deletions: vec![],
                 annotations: None,
             },
             session_facts: SessionFacts::default(),

@@ -12,8 +12,8 @@ use fontaine_guardian::composition::{
     Composed, Composition, CompositionSpec, Decided, Outcome, Param, Script, adjudicate,
 };
 use fontaine_guardian::{
-    BackendKind, Decision, FailClosed, Guardian, Profile, Prompt, Question, Read, Reader,
-    ReaderSettings, SystemOneSettings,
+    AdjudicationRequest, BackendKind, Decision, FailClosed, Guardian, Profile, Prompt, Question,
+    Read, Reader, ReaderSettings, SystemOneSettings,
 };
 use serde_json::{Value, json};
 use url::Url;
@@ -667,6 +667,74 @@ async fn allow_below_under_the_threshold_allows() {
     .await;
     assert!(
         matches!(&composed.decided, Decided::Allow { node, threshold, .. } if node == "n" && *threshold == 0.9)
+    );
+}
+
+fn critical_request() -> Arc<AdjudicationRequest> {
+    let mut req = request("rm -rf ~", true);
+    req.tool_call.critical_deletions = vec!["/home/me (home directory)".into()];
+    Arc::new(req)
+}
+
+#[tokio::test]
+async fn a_critical_deletion_is_never_allowed_by_a_score() {
+    let server = idle_server().await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let composition = script(
+        &server,
+        r#"pub async fn guardian(call, params) {
+            let v = allow_below("n", read(call, "a").await.unwrap(), 0.9);
+            if v.is_abstain() { deny("below", "fell through") } else { v }
+        }"#,
+        false,
+    );
+    let composed = adjudicate(composition, guardian, critical_request()).await;
+    assert!(
+        matches!(&composed.decided, Decided::Deny { node, fail_closed: None, .. } if node == "below"),
+        "{:?}",
+        composed.decided
+    );
+}
+
+#[tokio::test]
+async fn a_script_with_no_llm_stage_fails_closed_on_a_critical_deletion() {
+    let server = idle_server().await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let composition = script(
+        &server,
+        r#"pub async fn guardian(call, params) {
+            allow_below("n", read(call, "a").await.unwrap(), 0.9)
+        }"#,
+        false,
+    );
+    let composed = adjudicate(composition, guardian, critical_request()).await;
+    assert_eq!(fail_closed(&composed), Some(FailClosed::Unparseable));
+}
+
+#[tokio::test]
+async fn a_safe_score_on_a_critical_deletion_falls_through_to_the_guardian() {
+    let (endpoint, guardian) =
+        slow_guardian(deny("Destroy Pre-existing Files"), Duration::ZERO).await;
+    let params = [("allow_threshold", number(0.01))];
+    let server = screen_server(SAFE.0, SAFE.1, SAFE.2, Duration::ZERO).await;
+    let composed = adjudicate(
+        preset(&server, &params, false),
+        guardian.clone(),
+        critical_request(),
+    )
+    .await;
+    assert_eq!(endpoint.calls().await, 1, "the guardian was asked");
+    assert_eq!(adjudication(composed).decision, Decision::Deny);
+
+    let composed = adjudicate(
+        preset(&server, &params, false),
+        guardian,
+        Arc::new(request("rm -rf build", true)),
+    )
+    .await;
+    assert!(
+        matches!(composed.decided, Decided::Allow { .. }),
+        "the same score still allows a call that names no critical place"
     );
 }
 

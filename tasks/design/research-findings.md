@@ -20,7 +20,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   injected content can argue to the classifier directly. A separate server-side probe scans
   incoming tool *results* for suspicious content before the agent reads them.
 - **Decision order**: explicit `deny` rules → explicit `ask` rules (always prompt, even in auto) →
-  read-only skip → critical-path removals (`rm -rf /`, `~`) always prompt, never auto-approved → classifier.
+  read-only skip → critical-path removals (`rm -rf /`, `~`) always prompt, never auto-approved → classifier. (Fontaine deviates: it has no critical-path step; the guardian denies them from a harness fact.)
 - **Fail-closed**: if the classifier request fails, times out, or returns no parseable verdict, the
   action is **denied**, never run unreviewed.
 - **Denial UX**: the agent receives the denial reason (e.g. `[Data Exfiltration]`, `[Production

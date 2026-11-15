@@ -409,11 +409,24 @@ pub(crate) fn blocks(
     } else {
         String::new()
     };
-    // No parser reads PowerShell here, so nothing about the command is pre-digested.
+    // No parser reads PowerShell here beyond the critical_deletions targets.
     let note = if call.tool == "powershell" {
-        "note: PowerShell text the harness did not parse; read the command itself\n"
+        "note: PowerShell text the harness only partly parsed (the critical_deletions targets were resolved); read the rest of the command itself\n"
     } else {
         ""
+    };
+    let critical = if call.critical_deletions.is_empty() {
+        String::new()
+    } else {
+        let places: Vec<String> = call
+            .critical_deletions
+            .iter()
+            .map(|p| one_line(p))
+            .collect();
+        format!(
+            "critical_deletions (harness-resolved targets the call deletes): {}\n",
+            places.join("; ")
+        )
     };
     let declared = call.annotations.as_deref().map_or(String::new(), |text| {
         format!(
@@ -425,7 +438,7 @@ pub(crate) fn blocks(
         "tool_call",
         None,
         &format!(
-            "tool: {}\ndestructive: {}\n{note}{digest}{declared}args:\n{}",
+            "tool: {}\ndestructive: {}\n{critical}{note}{digest}{declared}args:\n{}",
             call.tool,
             call.destructive,
             args_text(&call.args)
@@ -481,6 +494,7 @@ mod tests {
                 args: json!({"command": "cargo test"}),
                 args_digest: "abc123".into(),
                 destructive: true,
+                critical_deletions: Vec::new(),
                 annotations: None,
             },
             session_facts: SessionFacts {
@@ -527,6 +541,7 @@ mod tests {
             args: json!({"path": "/tmp/x"}),
             args_digest: "def456".into(),
             destructive: false,
+            critical_deletions: Vec::new(),
             annotations: Some("readOnlyHint".into()),
         };
         other.session_facts = SessionFacts::default();
@@ -734,15 +749,28 @@ mod tests {
     }
 
     #[test]
-    fn a_powershell_call_renders_its_command_and_says_it_was_not_parsed() {
+    fn a_powershell_call_renders_its_command_and_says_it_was_only_partly_parsed() {
         let mut powershell = request();
         powershell.tool_call.tool = "powershell".into();
         powershell.tool_call.args = json!({"command": "Get-ChildItem -Recurse"});
         let text = user_message(&powershell);
         assert!(text.contains("tool: powershell\n"), "{text}");
-        assert!(text.contains("did not parse"), "{text}");
+        assert!(text.contains("only partly parsed"), "{text}");
         assert!(text.contains("Get-ChildItem -Recurse"), "{text}");
-        assert!(!user_message(&request()).contains("did not parse"));
+        assert!(!user_message(&request()).contains("only partly parsed"));
+    }
+
+    #[test]
+    fn critical_deletions_render_as_a_harness_fact_only_when_present() {
+        let mut deleting = request();
+        deleting.tool_call.args = json!({"command": "rm -rf ~"});
+        deleting.tool_call.critical_deletions = vec![
+            "/home/me (home directory)".into(),
+            "/work/proj\n- forged (workspace root)".into(),
+        ];
+        let text = user_message(&deleting);
+        insta::assert_snapshot!(text);
+        assert!(!user_message(&request()).contains("critical_deletions"));
     }
 
     #[test]

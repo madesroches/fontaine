@@ -58,12 +58,12 @@ fn modes_cases() -> Vec<Value> {
             "mode",
         ),
         pipeline(
-            "manual-critical",
+            "manual-critical-deletion",
             "manual",
             "shell",
             home.clone(),
             "prompt",
-            "critical_path",
+            "mode",
         ),
         pipeline(
             "accept-edits-write",
@@ -90,12 +90,12 @@ fn modes_cases() -> Vec<Value> {
             "dont_ask",
         ),
         pipeline(
-            "dont-ask-critical",
+            "dont-ask-critical-deletion",
             "dontAsk",
             "shell",
             home,
             "deny",
-            "critical_path",
+            "dont_ask",
         ),
         pipeline(
             "read-in-scope",

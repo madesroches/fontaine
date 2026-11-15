@@ -97,9 +97,10 @@ fn shell(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
     analysis.commands.iter().any(destructive_command)
 }
 
-/// Indices of the operands that are text, not files: what `printf` and `echo` print, and the
-/// script of `sed` and `awk`. A format string or an `s/a/b/` script has slashes and backslashes
-/// but names no path, and listing it as one shows the guardian a path nothing touches.
+/// Indices of the operands that are text, not files: what `printf` and `echo` print, the script
+/// of `sed` and `awk` and the pattern of `grep` and `rg`. A format string, an `s/a/b/` script or a
+/// `\.d$` pattern has slashes and backslashes but names no path, and listing it as one shows the
+/// guardian a path nothing touches.
 fn text_operands(program: &str, args: &[Option<&str>]) -> Vec<usize> {
     let name = program.rsplit('/').next().unwrap_or(program);
     let is_option = |arg: &Option<&str>| arg.is_some_and(|a| a.starts_with('-'));
@@ -137,8 +138,132 @@ fn text_operands(program: &str, args: &[Option<&str>]) -> Vec<usize> {
             }
             text
         }
+        "grep" | "egrep" | "fgrep" | "rg" => search_text_operands(name == "rg", args),
         _ => Vec::new(),
     }
+}
+
+/// Options of `grep` that take a value, short and long.
+const GREP_VALUE_SHORT: &str = "efmABCdD";
+const GREP_VALUE_LONG: &[&str] = &[
+    "--regexp",
+    "--file",
+    "--max-count",
+    "--include",
+    "--exclude",
+    "--exclude-dir",
+    "--exclude-from",
+    "--after-context",
+    "--before-context",
+    "--context",
+    "--directories",
+    "--devices",
+    "--label",
+    "--binary-files",
+];
+/// Options of `rg` that take a value, short and long.
+const RG_VALUE_SHORT: &str = "efgmMjrtTABCEd";
+const RG_VALUE_LONG: &[&str] = &[
+    "--regexp",
+    "--file",
+    "--glob",
+    "--iglob",
+    "--max-count",
+    "--max-columns",
+    "--max-depth",
+    "--max-filesize",
+    "--threads",
+    "--replace",
+    "--type",
+    "--type-not",
+    "--type-add",
+    "--type-clear",
+    "--after-context",
+    "--before-context",
+    "--context",
+    "--encoding",
+    "--sort",
+    "--sortr",
+    "--pre",
+    "--pre-glob",
+    "--ignore-file",
+    "--path-separator",
+    "--engine",
+    "--color",
+    "--colors",
+    "--context-separator",
+    "--field-context-separator",
+    "--field-match-separator",
+    "--dfa-size-limit",
+    "--regex-size-limit",
+];
+/// Options whose value names a file, which stays a path.
+const FILE_VALUED: &[&str] = &["--file", "--exclude-from", "--ignore-file"];
+
+/// The pattern of a `grep`-like command and the values of its options, as text. The first
+/// operand is the pattern unless `-e`/`--regexp` or `-f`/`--file` gave it. The option tables are
+/// this module's own: the pre-classifier's cover only what its fast path allows.
+fn search_text_operands(rg: bool, args: &[Option<&str>]) -> Vec<usize> {
+    let (short_values, long_values) = if rg {
+        (RG_VALUE_SHORT, RG_VALUE_LONG)
+    } else {
+        (GREP_VALUE_SHORT, GREP_VALUE_LONG)
+    };
+    let mut text = Vec::new();
+    let mut positional = Vec::new();
+    let mut explicit = false;
+    let mut at = 0;
+    while at < args.len() {
+        // `rg --files` and `rg --type-list` take no pattern: every positional is a path.
+        if rg && matches!(args[at], Some("--files" | "--type-list")) {
+            explicit = true;
+        }
+        let Some(arg) = args[at] else {
+            positional.push(at);
+            at += 1;
+            continue;
+        };
+        if arg == "--" {
+            positional.extend(at + 1..args.len());
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, attached) = match long.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (long, false),
+            };
+            let name = format!("--{name}");
+            if long_values.contains(&name.as_str()) {
+                explicit |= matches!(name.as_str(), "--regexp" | "--file");
+                if !attached {
+                    if !FILE_VALUED.contains(&name.as_str()) {
+                        text.push(at + 1);
+                    }
+                    at += 1;
+                }
+            }
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            // A bundle such as `-ie pat` ends at the first option that takes a value.
+            let flags: Vec<char> = arg.chars().skip(1).collect();
+            if let Some(found) = flags.iter().position(|c| short_values.contains(*c)) {
+                let flag = flags[found];
+                explicit |= matches!(flag, 'e' | 'f');
+                if found + 1 == flags.len() {
+                    if flag != 'f' {
+                        text.push(at + 1);
+                    }
+                    at += 1;
+                }
+            }
+        } else {
+            positional.push(at);
+        }
+        at += 1;
+    }
+    if !explicit && let Some(&first) = positional.first() {
+        text.push(first);
+    }
+    text
 }
 
 fn words(command: &SimpleCommand) -> Option<Vec<String>> {

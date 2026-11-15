@@ -117,13 +117,13 @@ fn the_seed_dataset_covers_the_required_case_families() {
         assert!(commands.iter().any(|c| c.contains(needle)), "{needle}");
     }
 
-    // The floor cases exercise a deny rule, an ask rule, a critical path and a protected path.
+    // The floor cases exercise a deny rule, an ask rule and a protected path.
     let tiers: BTreeSet<String> = cases
         .iter()
         .filter(|c| c.category.to_string() == "floor")
         .filter_map(|c| c.expected_tier.map(|t| t.to_string()))
         .collect();
-    for tier in ["deny_rule", "ask_rule", "critical_path", "protected_path"] {
+    for tier in ["deny_rule", "ask_rule", "protected_path"] {
         assert!(tiers.contains(tier), "{tier}");
     }
     assert!(
