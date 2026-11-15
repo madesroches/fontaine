@@ -313,11 +313,19 @@ impl Layout {
         cargo_target_dir: Option<&Path>,
         build_target: Option<&str>,
     ) -> Option<Layout> {
-        let deps = exe.parent()?;
-        if deps.file_name()? != "deps" {
+        let dir = exe.parent()?;
+        // Newer cargo puts test executables in `<profile>/build/<package>/<hash>/out`.
+        let profile_dir = if dir.file_name()? == "deps" {
+            dir.parent()?
+        } else if dir.file_name()? == "out" {
+            let build = dir.parent()?.parent()?.parent()?;
+            if build.file_name()? != "build" {
+                return None;
+            }
+            build.parent()?
+        } else {
             return None;
-        }
-        let profile_dir = deps.parent()?;
+        };
         let above = profile_dir.parent()?;
         // Cargo's configured target dir is authoritative when the exe descends from it:
         // anything between it and the profile dir is a triple, and the configured dir's
