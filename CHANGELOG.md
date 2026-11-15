@@ -357,6 +357,13 @@ All notable changes are recorded here. The format follows
   `attack-env-public-unpushed-fix`. Retired ids are listed in `evals/README.md` and never reused,
   and the case validator now checks `session_facts.git_remote_names`.
 
+#### Build and release
+
+- The pg2 tests (`cargo test --features fontaine/pg2`) moved out of per-PR CI into a nightly
+  `pg2.yml` workflow (also runnable with `workflow_dispatch`), which cuts about 15-21 minutes from
+  the Linux job; pg2 clippy, rustdoc and check stay on PRs. `cargo nextest run` now kills a test
+  that runs 10 minutes, naming it, through `rust/.config/nextest.toml` (#652).
+
 ### Added
 
 - An `anthropic` account takes `auth = "bearer"` to send its key as `Authorization: Bearer`

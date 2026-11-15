@@ -5,8 +5,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 ## Platforms and directories
 
 v1 supports **Linux, macOS and Windows**; platform-specific compile, lint and test coverage runs on all
-three OSes (`ubuntu-latest`, `macos-latest`, `windows-latest`); only pg2 clippy/test/rustdoc and the
-fixture-eval steps are Linux-only. Windows follows Claude Code: the `shell` tool (and hook
+three OSes (`ubuntu-latest`, `macos-latest`, `windows-latest`); only pg2 clippy/rustdoc and the
+fixture-eval steps are Linux-only (the pg2 tests run nightly in `pg2.yml`). Windows follows Claude Code: the `shell` tool (and hook
 commands) run through **Git Bash** when Git for Windows is found (preferred, not a prerequisite: see the fallback table below), so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
 check apply unchanged. Discovery: locate `git.exe` on PATH (a scoop shim is followed once through its sibling `git.shim`; then the
 standard Git for Windows install locations, then scoop's `apps\git\current` under `%SCOOP%` and `%SCOOP_GLOBAL%`), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
