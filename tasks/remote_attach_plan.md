@@ -182,7 +182,7 @@ attach.
 The host publishes its NodeId and home relay URL via iroh address lookup under the persistent key
 only when `[remote] relay = "default"`; the client dials the stored NodeId with lookup enabled, falling
 back to the stored last-known addresses. `attach` reads only the user-scope `[remote] relay` and
-adds the lookup resolvers only when it is `default`; with `disabled` it dials the stored
+adds the lookup resolvers (`PkarrResolver`, `DnsAddressLookup`; no publisher) only when it is `default`; with `disabled` it dials the stored
 last-known addresses only and queries no lookup service. A self-hosted address lookup service is out of scope:
 direct-only users reattach via stored addresses. Tickets still carry
 addresses for the first pairing so no lookup is needed to pair.
@@ -210,9 +210,11 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    `Prompt`/`Input` it consumes; define `RemoteEvent` and prove a client `App` built purely from
    events renders an identical transcript to the host in a `TestBackend` test. If events cannot
    cover a surface, record it as a limitation in docs and drop it from the snapshot.
-2. `fontaine-remote`: use `presets::N0` (Minimal plus PkarrPublisher/PkarrResolver/DnsAddressLookup,
-   `relay_mode` overridden as today) only for `RelayMode::Default`; `Disabled` and `Custom` keep
-   `presets::Minimal` (server and client both use Minimal today); no change to `rust/Cargo.toml` features
+2. `fontaine-remote`: the host endpoint uses `presets::N0` (Minimal plus PkarrPublisher/PkarrResolver/DnsAddressLookup,
+   `relay_mode` overridden as today) only for `RelayMode::Default`; the attaching client stays on
+   `presets::Minimal` and, only for `RelayMode::Default`, adds `PkarrResolver::n0_dns()` and
+   `DnsAddressLookup::n0_dns()` (no publisher, so it never publishes its own NodeId or home relay);
+   `Disabled` and `Custom` keep `presets::Minimal` on both; no change to `rust/Cargo.toml` features
    (`tls-ring` suffices); new `protocol` messages and ALPN; `paired` data type (`PairedDevices`);
    store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; remove one-shot `send`.
@@ -274,7 +276,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   and quitting the host UI ends the session and denies the call as today.
 - AFK: the event ring defaults to 4096 events; a gap beyond it sends a full snapshot.
 - AFK: `[remote] relay = "default"` also publishes the host NodeId and home relay URL to iroh's
-  address-lookup service, a metadata exposure beyond relay use; `relay = "disabled"` publishes
+  address-lookup service (the attaching client only resolves, never publishes), a metadata exposure beyond relay use; `relay = "disabled"` publishes
   nothing. The master plan Decision (`tasks/fontaine_harness_plan.md`, remote relay) is updated,
   and `docs/remote.md` and `docs/configuration.md` cover the exposure.
 
@@ -312,7 +314,7 @@ test relay): pair → confirm → attach → reattach by NodeId with no ticket; 
 reconnect with `Resume`; superseded connection; a revoked NodeId's `Resume` gets `NotPaired` and its live connection
 gets `Revoked`. Unit (`attach_cmd.rs`): every `Reason` (incl. `NotPaired`, `PairingDeclined`,
 `PairingTimeout`, `Revoked`, `Superseded`) maps to its `attach --message` exit code. A real network
-catches NAT/relay behaviour and address-lookup rediscovery a loopback test cannot; manual. No test endpoint publishes to an address-lookup service: N0 applies only to `RelayMode::Default`, and the in-process test relay uses `RelayMode::Custom` (Minimal).
+catches NAT/relay behaviour and address-lookup rediscovery a loopback test cannot; manual.
 
 ## Manual Verification
 
