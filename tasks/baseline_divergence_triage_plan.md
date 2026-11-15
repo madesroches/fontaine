@@ -49,6 +49,7 @@ Fontaine pipeline change with its tests.
 - The 2026-10-21 decision "shell parsing ... anything not exactly one simple command falls through"
   (master plan `### Permissions`) covers pipes and chains only implicitly; no dated line names pipes or chains for the Tier 0.5 fast path
   (the 2026-11-14 #635 line covers allow-rule matching only).
+- #660 (#654) has landed: the floor is now `deny → ask → protected-path`.
 - Phase 3's step "confirm the protected-path list and the Tier 0.5 allowlist table against
   `claude -p`" (`tasks/completed/phases/phase3_pipeline_tui.md`) was only partly done.
 - `claude` is `2.1.325 (Claude Code)` here (raw `claude --version` output); the existing baselines were recorded with 2.1.309.
@@ -79,14 +80,16 @@ Order matters: the capture tooling is fixed first, then the data, then triage.
   WebFetch cases, plus any re-captured divergence case such as `spawn-agent-ask-rule`).
   `--filter` matches only a kind or category glob, not a case id, so a per-category run also re-poses
   already-good cases; those extra live runs are expected and their records are discarded. The merge takes
-  only an explicit allow-list of re-capture ids from each scratch file (`jq` select on `case_id`). New records carry
+  only the §2 allow-list ids from each scratch file (`jq` select on `case_id`). New records carry
   `claude: "2.1.325 (Claude Code)"`.
 
 ### 2. Live capture (needs the logged-in `claude` CLI; never CI)
 
 If `claude -p` is unavailable or not logged in, stop and report; never fabricate records.
-Capture the ten refused ids, the 30 never-captured ids listed in Current State, plus `floor-ask-rule` and
-`floor-ask-rule-dont-ask` with `--filter` (one run per category), review each record by hand against the
+The merge allow-list is: the ten refused ids, the 30 never-captured ids listed in Current State,
+`floor-ask-rule`, `floor-ask-rule-dont-ask`, `floor-protected-path-edit`, `spawn-agent-ask-rule`,
+`spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask`.
+Capture these with `--filter` (one run per category), review each record by hand against the
 raw stream-json to confirm the call was attempted and the outcome is a permission denial, not a validation
 error. The `/etc/fontaine-eval` and `/usr/share/fontaine-eval` targets do not exist on the host, so check
 those records for a file-missing validation artifact, as for `floor-protected-path-edit`. Record a reason
@@ -101,7 +104,7 @@ For each, gather evidence with direct `claude -p` runs in a scratch workspace, t
 | `tier05-pipe`, `tier05-cat-then-git-status` | Observe Claude Code's behavior for `ls \| wc -l`, `cat a && git status`, and negative controls (`ls \| sh`, `cat a && rm b`). Note Claude Code approves per-subcommand for read-only chains. | Gather evidence and a recommendation; **leave the keep-or-change call to the maintainer**; a "change" answer would also mean revising the golden
 adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions` line stating the current deviation (pipes/chains go to the guardian) with the recommendation marked as pending maintainer confirmation. No classifier change in this work. Reason for the deviation: allowing read-only pipes and chains widens the fast path past one-simple-command soundness. |
 | `spawn-agent-ask-rule` | Run `claude -p` with `ask: ["Agent"]` and a call that passes Agent argument validation (valid `subagent_type`, `description`, `prompt`); check whether the call reaches a permission check. | Re-capture with the §1 mapping; if Claude Code still does not reach a permission check, a dated Decisions line. Also re-capture `spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask` after the Agent mapping, to check whether they were the same unmapped-argument artifact; they already cite a dated Decision, kept unless the re-capture changes the outcome. |
-| `floor-protected-path-edit` | The baseline is probably a capture artifact (no `workspace`, so the target file is absent). Re-pose it and the like-for-like `.claude/settings.json` check in `acceptEdits` with the target file present in the workspace; the dataset case needs a `workspace.files` entry to be capturable, and the `.fontaine/settings.toml` content must contain the case's `old_text` exactly once (e.g. `"a\n"`), since Claude Code's Edit requires `old_string` to occur exactly once before any permission check. A re-captured manual record (maps to headless `default`) shows only the generic default denial; the meaningful `acceptEdits` protection check is a direct `claude -p` run recorded in Results and the PR table, not a baseline record. Check whether Claude Code protects `.fontaine/settings.toml` (it should not; it protects `.git`, `.claude`, etc.). | Only after the re-pose: Decisions line (Fontaine-specific by design) or a fix; add a dataset case only if a Claude Code-equivalent protected-path case adds coverage. |
+| `floor-protected-path-edit` | The baseline is probably a capture artifact (no `workspace`, so the target file is absent). Re-pose it and the like-for-like `.claude/settings.json` check in `acceptEdits` with the target file present in the workspace; the dataset case needs a `workspace.files` entry to be capturable, and the `.fontaine/settings.toml` content must contain the case's `old_text` exactly once (e.g. `"a\n"`), since Claude Code's Edit requires `old_string` to occur exactly once before any permission check. A re-captured manual record (maps to headless `default`) shows only the generic default denial; the meaningful `acceptEdits` protection check is a direct `claude -p` run recorded in Results and the PR table, not a baseline record. For the like-for-like `.claude/settings.json` check, the new content must pass Claude Code's settings schema (e.g. `{}` to `{"env":{}}`): a schema-invalid edit (`{"x":1}`) is rejected with "settings.json validation failed" and `permission_denials: []`, which reads as allowed. Check each direct run's tool_result for a validation error before recording its outcome. Check whether Claude Code protects `.fontaine/settings.toml` (it should not; it protects `.git`, `.claude`, etc.). | Only after the re-pose: Decisions line (Fontaine-specific by design) or a fix; add a dataset case only if a Claude Code-equivalent protected-path case adds coverage. |
 | `tier05-out-of-scope-cwd` | The case uses Fontaine's `cwd` argument, which Claude Code lacks. Run directly with `claude -p` a single command reading an existing out-of-workspace file (e.g. `cat /etc/hostname`) and record it in Results. | Record a dated Decisions line naming Fontaine's `cwd` argument. |
 | `spawn-agent-deny-rule` | Needs a valid Agent call (as above). | Capture, or a recorded reason. |
 
@@ -110,7 +113,7 @@ adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions`
 - Protected paths: take the list from `PROTECTED_DIRS`/`PROTECTED_FILES` in
   `rust/fontaine-core/src/floor.rs` and `docs/permissions.md`; for each entry write via `claude -p` in
   a scratch workspace (Edit/Write in `acceptEdits` only, with the target file existing; headless
-  `default` denies every Edit/Write) and record whether Claude Code prompts. Each entry and its result goes in the PR body table; entries
+  `default` denies every Edit/Write) and record whether Claude Code prompts. New content for `.claude/settings.json` (and any other schema-checked Claude Code file) must pass Claude Code's settings schema (e.g. `{}` to `{"env":{}}`), and each run's tool_result is checked for a validation error before its outcome is recorded. Each entry and its result goes in the PR body table; entries
   where Fontaine is stricter or looser become Decisions lines or fixes. The table notes that the
   home-directory, config/data-dir and `notebook_edit` protections (`docs/permissions.md:53-61`) are not
   covered by the scratch-workspace check, because an out-of-root home write prompts in Claude Code anyway.
@@ -141,7 +144,7 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
    `rust/fontaine-evals/src/baseline.rs`: `webfetch` gets a default `prompt` in `claude_args`; `agent`
    mapping unconditionally (see §1); the shared `render_prompt` rewording (keeping "Call the X tool
    exactly once"), with its test in `rust/fontaine-evals/tests/baseline.rs` updated; unit tests there.
-2. Run live captures (all 30 capturable never-captured ids too) to scratch files; verify raw streams; merge into `evals/baselines/pipeline.jsonl`.
+2. Run live captures for the §2 merge allow-list to scratch files; verify raw streams; merge only those ids into `evals/baselines/pipeline.jsonl`.
 3. Run the direct `claude -p` investigations (pipe/chain, spawn ask, protected paths, allowlist) in
    scratch workspaces; keep a results table.
 4. Apply any resulting Fontaine fixes with tests; otherwise add dated `## Decisions` lines at the end
@@ -195,8 +198,6 @@ the stream-json for the attempted call, merge, then `cargo run -p fontaine-evals
 ../evals/dataset --guardian none --out <run.json>` and `baseline diff ../evals/baselines/pipeline.jsonl
 <run.json>`; expect only DIFFs that carry a Decisions line. Not automated: it needs live model
 behavior.
-
-#660 (#654) has landed: the floor is now `deny → ask → protected-path`.
 
 ## Open Questions
 
