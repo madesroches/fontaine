@@ -41,7 +41,7 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   crates (`tasks`, `effort`, `schedule`, `checkpoint`, `tools`), which is why each tree keeps its
   own namespace instead of being flattened.
 - The embedder-facing facade (`SessionBuilder`, `Session`, `Event`, `HostTool`, and curated
-  re-exports of `Approver`, `PermissionMode`, `HookDecision` and the like) sits at the crate root
+  re-exports of `Approver`, `PermissionMode`, `CallbackHook`, `HookTransport`, `HookEvent` and the like) sits at the crate root
   and in a few top-level modules (`fontaine_sdk::permissions`, `::config`, ...), so the docs lead
   with the facade. The module trees stay `pub` for the binary, the TUI and the evals, but only the
   root facade is the documented, semver-stable surface; the rustdoc landing page says so, and the
@@ -61,7 +61,7 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   `docs/evals.md` and `docs/guardian.md`;
   fixes the `example_bin("fontaine-core"|"fontaine-tools", ...)` call sites and the `#[path]`
   includes of the other crates' tests and examples; and re-points the `pg2` feature from
-  `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`. It lands as its own commit, ahead of any
+  `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`; it also rewrites crate names in code and doc comments (`tools/gate.rs:2`, `todo.rs:55`, `skill.rs:15`, `agents/runner.rs:2`, the `cargo test -p fontaine-guardian --features pg2` line in `scanner/pg2.rs`) and renames the `#[cfg(feature = "composition")]` sites (guardian `lib.rs`, `tests/composition.rs`) to `guardian-composition`. It lands as its own commit, ahead of any
   behavior change, so the tests are the proof it changed nothing.
 - The Rune scripting dependency of `fontaine-guardian` stays behind the SDK's `guardian-composition` feature (the old `composition` feature of
   `fontaine-guardian`, which core enabled, so it is on by default). The guardian's `pg2` feature
@@ -120,8 +120,7 @@ Decisions that shape this surface:
   `Absent` backed by `DenyAll`, as the CLI does (every would-prompt is a denial). `Present` is not exposed: it means "a person at a
   terminal". The approver is reached only where the TUI would ask a person, after the floor, hooks,
   rules, mode and guardian, and is never offered "always allow" (existing `Delegate` semantics).
-- **Host tools.** `HostTool` is a trait (`name`, `description`, JSON-schema `parameters`, async
-  `call(args) -> Result<String, ToolExecutionError>`, with rig's `ToolExecutionError` re-exported from the SDK, the error type `guard_callback` already works in). A host tool
+- **Host tools.** `HostTool` is a trait (`name`, `description`, JSON-schema `parameters`, `fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<String, ToolExecutionError>>` (object-safe for `Arc<dyn HostTool>`, like `Approver::approve` and `HookTransport::call`), with rig's `ToolExecutionError` re-exported from the SDK, the error type `guard_callback` already works in). A host tool
   declares no risk: risk lives in the descriptor table, never on the tool, so every host tool is
   registered as `RiskClass::Arbitrary`, like SDK MCP tools. A host tool's name is chosen at
   runtime, so it cannot go through `ExtensionTool::new<T: Tool>` / `register_extension` (compile-time
@@ -154,6 +153,8 @@ Decisions that shape this surface:
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
   writes to stderr only through the `Approver::warn`/`notice` defaults (the `DenyAll` used without an approver), which an embedder replaces by supplying an approver;
   the PromptGuard download message in `scanner_stage` goes through `notice` when embedded.
+- **Builder validation.** `build()` applies the CLI's checks as `EmbedError::Config`: `max_turns > 0`,
+  `max_budget_usd` finite and non-negative, `json_schema` a JSON object convertible to a `Schema`.
 
 ### Assembly extraction
 
@@ -184,7 +185,10 @@ at `build`). `build()` also returns `EmbedError::Credentials` when `guardian_log
 mode is Auto/Afk (the check `run_session` makes first, which otherwise returns 1 with empty `Turn`
 streams). The staged-plugin swap (`plugin_auto_update::apply_staged`, run by `prepare_session` when
 `!cli.print`) stays in the CLI, in the binary crate, and runs before the SDK's plugin load (interactive only).
-Unreadable input likewise surfaces as an error.
+
+The assemble functions return the `AgentRuntime` and `guardian_login`, and take a hook that edits the
+`AgentSetup` before `AgentRuntime::new` (the `tweak` of `start_headless`, which `claude_compat::run`
+uses to set the approver, `human_channel`, `callback_hooks`, `host_mcp` and `root_tools`).
 
 ### Session over the run loop
 
@@ -202,12 +206,6 @@ origin. An interrupt sets the shared `Cancel` and `run_session` never clears it,
 input source calls `cancel.reset()` as it hands over each new message, as the SDK router does;
 `InterruptHandle` wraps the same `Cancel`. `send` pushes a prompt on the channel; `close()`
 drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_end`).
-
-### Non-Rust languages
-
-No new protocol. The two stdio routes stay as they are. The docs page states which to choose:
-`headless-v1` (Fontaine-native, flat events, no approval callback) vs Claude Agent SDK mode
-(Claude's message shapes, `canUseTool`, hooks, SDK MCP servers).
 
 ## Implementation Steps
 
@@ -229,7 +227,8 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
    `resolve_models`, `start_scanner`, `requested_mode`/`session_mode`, the trust check, `AgentSetup`
    construction, plus the `connect_mcp(&[])` call, the `guardian_login` lookup and the unpriced-model
    `max_budget_usd` refusal from `start_headless`/`run_headless`) from `fontaine/src/lib.rs` into
-   `fontaine-sdk::assemble`; `SessionBuilder::build` runs them and the CLI calls it; the
+   `fontaine-sdk::assemble`, whose functions return the `AgentRuntime` and `guardian_login` and keep a
+   pre-build `AgentSetup` tweak hook; the CLI, `claude_compat` and the TUI path call them; the
    staged-plugin swap stays in the CLI. No behavior change.
 5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
@@ -238,7 +237,7 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
    `tools/tests/guarded.rs`, at their post-merge paths under `fontaine-sdk`); update the `AgentSetup` literal sites (`fontaine/src/lib.rs`,
    `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-tui/src/ui/tests.rs`,
    `fontaine-tui/tests/common/mod.rs`, ...); extend the choke-point test to cover host tools.
-6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over `AgentRuntime::new` and the
+6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over the step 4 `assemble` functions (`SessionBuilder::build` calls them) and the
    run loop moved in step 3, not over `drive`: `Session` runs `run_session` on a task with a
    channel-backed, `long_lived()` `InputSource`; events reach each `Turn` through an `EventSink`;
    the task owns the runtime and returns it; `close()` drops the input, awaits the task and takes the runtime back before `fire_session_end`; the input source resets
@@ -272,23 +271,28 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 - 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` alone.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
 - 2026-11-14: `AgentSetup` is not exposed directly to embedders: only the root facade is semver-stable.
+- 2026-11-14: Provider warnings go through the process-global `providers::warn::set_sink` (latest session wins), so with several embedded sessions they reach the most recently built session's approver.
+- 2026-11-14: The SDK crate is named `fontaine-sdk`: Rust crate names are hyphenated, and the issue frames it as SDK parity. The bare name `fontaine` stays the binary's package, so no release plumbing is renamed.
 
 ## Documentation
 
 New `docs/embedding.md` (choosing a route, builder walkthrough, approver, host tools, security
-guarantees the builder cannot loosen; `builtin_tools` must also name every host tool to keep).
+guarantees the builder cannot loosen; `builtin_tools` must also name every host tool to keep; the
+`HookTransport` JSON contract; provider warnings reach the most recently built session's approver;
+`[telemetry]` export is installed by the binary only (`telemetry::install` in `fontaine/src/lib.rs`),
+so an embedded session's tracing goes to the embedder's subscriber).
 `docs/telemetry.md` and `tasks/design/observability.md` list `host` as a `tool_source` value. Cross-links from `agent-sdk.md` and `headless.md`; crate
 table in `architecture.md`. Docs describe current behavior only.
 
 ## Testing Strategy
 
-Unit tests for builder validation and defaults (no approver → `Absent`; mode mapping; resume/fork).
+Unit tests for builder validation (including `max_turns`, `max_budget_usd`, `json_schema`) and defaults (no approver → `Absent`; mode mapping; resume/fork).
 Integration tests with `rig_core::test_utils` deterministic models, no live APIs:
 - wiring: builder plus approver gives `HumanChannel::Delegate`, and a prompt reaches the approver
   (`fontaine-sdk/tests/permissions_delegate.rs` covers the delegate semantics);
 - `build()` rejects a host tool named like a descriptor row, a built-in or `mcp__*`, duplicating
   another host tool, or outside `[A-Za-z0-9_-]`, with `EmbedError::Config` (unit test);
-- a host callback hook can tighten but its allow is ignored;
+- `hook()` lands in `AgentSetup::callback_hooks` (unit test; the tighten-only, allow-ignored semantics are covered by `fontaine-sdk/tests/permissions_delegate.rs`);
 - a host tool call is guardian-judged in `auto` and prompts in `manual`;
 - a recorded `fontaine -p` run and an
   embedded run of the same scripted model produce the same event sequence, including with
