@@ -46,9 +46,11 @@ or reads on docs.rs. The current
   trees are `#[doc(hidden)]`-free so links in the facade's docs resolve.
 - The merge is mechanical: `git mv` the trees, `fontaine_core::` -> `fontaine_sdk::core::` (and
   likewise) across the roughly 340 files that import them, and the four `Cargo.toml` dependency
-  lists fold into one. It also rewrites every `fontaine_{core,tools,agents,guardian}::` path inside the four moved trees
+  lists fold into one. It first rewrites each moved tree's own `crate::X` paths (code and intra-doc links) to
+  `crate::<tree>::X` (e.g. core's `use crate::tools::{...}` in `agent/build.rs` becomes `crate::core::tools`), and only
+  then every `fontaine_{core,tools,agents,guardian}::` path inside the four moved trees
   (core uses `fontaine_guardian::`; agents uses `fontaine_tools::` in registry/spawn/tasks/tree) to
-  `crate::{core,tools,agents,guardian}::`;
+  `crate::{core,tools,agents,guardian}::`, so the second pass's output is not rewritten again;
   moves `fontaine-core/prompts/` to `fontaine-sdk/prompts/core/` (`include_str!("../../prompts/core/...")` in
   `core/prompt.rs`, `core/goal.rs`), `fontaine-guardian/prompts/` to `fontaine-sdk/prompts/guardian/` and
   `fontaine-guardian/data/` to `fontaine-sdk/data/` (`include_str!("../../prompts/guardian/...")` and
@@ -151,7 +153,7 @@ Decisions that shape this surface:
   facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
-  writes no stderr lines in an embedded session: the assembly warnings reach the approver's `warn` from `build()`, the run loop's lines reach the approver's `warn`
+  writes no stderr lines when an approver is supplied (without one, `DenyAll`'s stderr defaults apply): the assembly warnings reach the approver's `warn` from `build()`, the run loop's lines reach the approver's `warn`
   through the embedded channel sink, and the PromptGuard download message in `scanner_stage`
   through the `StartParams` notice callback the embedded session sets; without an approver the
   `DenyAll` defaults apply, which an embedder replaces by supplying one.
@@ -230,7 +232,7 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    spawns compiles. The CLI calls it. No behavior change in CLI output.
 4. Move session assembly (`load_config`, `resolve_roots`, `open_session`, `prepare_session`,
    `resolve_models`, `start_scanner`, `requested_mode`/`session_mode`, the trust check, `AgentSetup`
-   construction, plus the `connect_mcp(&[])` call, the `guardian_login` lookup and the unpriced-model
+   construction (the SDK's config loader has no telemetry wrapper; the CLI keeps `telemetry::with_debug_only` around its call), plus the `connect_mcp(&[])` call, the `guardian_login` lookup and the unpriced-model
    `max_budget_usd` refusal from `start_headless`/`run_headless`) from `fontaine/src/lib.rs` into
    `fontaine-sdk::assemble`, whose functions return the `AgentRuntime` and `guardian_login` and keep a
    pre-build `AgentSetup` tweak hook; the CLI, `claude_compat` and the TUI path call them; the
@@ -244,7 +246,7 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    `tools/tests/guarded.rs`, at their post-merge paths under `fontaine-sdk`); update the `AgentSetup` literal sites (the SDK `assemble` module,
    `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-tui/src/ui/tests.rs`,
    `fontaine-tui/tests/common/mod.rs`, ...), and the `RegistryParams` literal sites the new field breaks
-   (`fontaine-sdk/tests/core_choke_point.rs`, the `params` helper, and `fontaine-sdk/tests/core_extensions.rs:437`); extend the choke-point test to cover host tools.
+   (`fontaine-sdk/tests/core_choke_point.rs`, the `params` helper, and `fontaine-sdk/tests/extensions.rs:437`); extend the choke-point test to cover host tools.
 6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over the step 4 `assemble` functions (`SessionBuilder::build` calls them) and the
    run loop moved in step 3, not over `drive`: `Session` runs `run_session` on a task with a
    channel-backed, `long_lived()` `InputSource`; events reach each `Turn` through an `EventSink`;
@@ -261,8 +263,9 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
 - every `Cargo.toml` and import in `fontaine`, `fontaine-tui`, `fontaine-evals`
 - `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine/Cargo.toml`
 - `rust/fontaine-sdk/src/core/agent.rs`, `core/agent/build.rs`, `core/agent/setup.rs`,
-  `core/tools.rs`, `tools/src/guarded.rs`, `tools/src/risk.rs`, `tools/src/mcp/register.rs`,
-  `tools/tests/guarded.rs` (the `guard_callback` callers) and the choke-point test (host tools)
+  `core/tools.rs`, `tools/guarded.rs`, `tools/risk.rs`, `tools/mcp/register.rs` (all under
+  `fontaine-sdk/src/`), `fontaine-sdk/tests/guarded.rs` (the `guard_callback` callers) and
+  `fontaine-sdk/tests/core_choke_point.rs` (host tools)
 - `docs/telemetry.md` and `tasks/design/observability.md` (new `host` value of `tool_source`)
 - `fontaine-evals/src/runner.rs`, `evals/README.md`, `docs/evals.md`, `docs/guardian.md`
   (`fontaine-guardian/` paths)
@@ -309,5 +312,3 @@ Integration tests with `rig_core::test_utils` deterministic models, no live APIs
   both sides use the same wiremock `Endpoint` script (`rust/fontaine/tests/common/mod.rs`) and set the same `include_partial_messages` flag;
 - interrupt ends a turn with the same `result` as Claude SDK mode's (`interrupted_outcome`, router; the CLI cannot interrupt), and a turn after an interrupted turn
   runs normally.
-The existing headless, resume, SDK-compat and cassette suites are the regression net for the
-assembly move.
