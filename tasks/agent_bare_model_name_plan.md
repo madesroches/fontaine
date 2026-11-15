@@ -13,8 +13,7 @@ listings, preferring the main model's account.
 ## Current State
 
 - `ModelSpec::parse` (`rust/fontaine-agents/src/registry.rs`) turns any text without `/` that is a
-  valid role name into `ModelSpec::Named`. A bare model name is indistinguishable from a role
-  there, so parsing stays unchanged.
+  valid role name into `ModelSpec::Named`.
 - `ChildContext::model_for` (`rust/fontaine-core/src/child_runner.rs`) resolves `Named` through
   `RoleChains::chain_for` -> `Roles::entries_of`, whose `unknown()` yields the error
   ("`x` is not a defined model role; defined roles: ...").
@@ -27,15 +26,13 @@ listings, preferring the main model's account.
 
 ## Design
 
-A role always wins over a bare name (existing configs keep their meaning).
-
 In `ChildContext::model_for`, for `ModelSpec::Named(name)` when `self.roles` has no role `name`,
 call a new `Switcher::bare_model(name, main)`:
 
 1. Test `name` against `main.listing.models` (already in hand in `model_for`; exact match only, as
    `<account>/<model>` validation does). On a hit choose the main account with no `listings`
    call, so the spawn never waits on other accounts' network calls.
-2. Only on a miss take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`;
+2. Only on a miss (step 1 already tested the main listing, so `pick_bare` never needs the main account) take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`;
    the main account (and accounts with an explicit `models` list) is free; the others are listed
    concurrently under the 10s `LISTING_TIMEOUT`, so an unknown name can block a spawn up to 10s.
    Collect accounts whose `models` is `Ok` and contains `name` exactly.
@@ -49,7 +46,9 @@ The unknown-name error reuses `Roles::unknown`'s text for both its forms (the em
 model name an account offers), and mentions accounts whose listing failed. The existing
 assertion in `parallel_agents.rs` (~781-786, spawn with bare "sonnet", expects "not a defined
 model role") stays valid. The role-only message stays for the `/model` and agent-file paths that
-share `Roles::entries_of`; the new error is produced in `model_for`.
+share `Roles::entries_of`; the new error is produced in `model_for`. `Roles::unknown`
+(`model_roles.rs:117`) is private, so it becomes `pub(crate)` (or a small `Roles` method returns the
+role-only text) for `bare_model` to extend.
 
 The `parameters` description in `spawn.rs` gains "or a bare model name an account offers".
 
@@ -57,16 +56,19 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 
 1. `models.rs`: add `Switcher::bare_model` returning `Result<ModelRef, String>` with the
    resolution order above; unit-testable through a pure helper
-   `pick_bare(name, main_account, &[AccountListing]) -> Result<ModelRef, String>`.
-2. `child_runner.rs`: in `model_for`, route `Named(name)` with no matching role to `bare_model`.
-3. `spawn.rs`: update the `model` parameter description.
-4. `docs/agents.md`: update the `model` row and the model-resolution prose; `CHANGELOG.md` entry.
-5. Tests (below).
+   `pick_bare(name, &[AccountListing]) -> Result<ModelRef, String>`.
+2. `model_roles.rs`: make `Roles::unknown` `pub(crate)` (or add a small `Roles` method returning the
+   role-only text) so `bare_model` can extend it.
+3. `child_runner.rs`: in `model_for`, route `Named(name)` with no matching role to `bare_model`.
+4. `spawn.rs`: update the `model` parameter description.
+5. `docs/agents.md`: update the `model` row and the model-resolution prose; `CHANGELOG.md` entry.
+6. Tests (below).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/models.rs`
 - `rust/fontaine-core/src/child_runner.rs`
+- `rust/fontaine-core/src/model_roles.rs`
 - `rust/fontaine-agents/src/spawn.rs`
 - `rust/fontaine/tests/parallel_agents.rs`
 - `docs/agents.md`, `CHANGELOG.md`
@@ -79,8 +81,8 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 
 ## Testing Strategy
 
-- Unit: `pick_bare` (miss path) - a main-account hit needs no `listings` call (checked at `bare_model`/`model_for`); single non-main account
-  chosen; several non-main accounts and no main -> error listing candidates; none -> error;
+- Unit: `pick_bare` (miss path) - single non-main account
+  chosen; several accounts -> error listing candidates; none -> error;
   accounts whose listing failed are skipped.
 - Integration (`parallel_agents.rs`, wiremock-backed headless run, no live APIs): an `agent` call
   with `model` set to a bare name the endpoint lists starts the child on that model (request body
@@ -88,7 +90,5 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
   "sonnet" case at `parallel_agents.rs:739` rather than duplicating it; the mock endpoint must
   answer account listings); a defined
   role of the same name as a model still wins.
-
-## Documentation
-
-`docs/agents.md` (`model` row and resolution prose); the tool description; `CHANGELOG.md`.
+- Integration, main-hit path (`parallel_agents.rs`, `bare_name_main_account_hit_without_listings`): the
+  endpoint lists the model on the main account and no other account is configured; the child starts on it.
