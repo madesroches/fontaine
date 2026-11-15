@@ -40,7 +40,7 @@ Chosen option: mention the cost in `/effort` output (the issue's first option).
 
 ## Implementation Steps
 
-1. `fontaine-core/src/models.rs`: add `prompt_caching` to `ModelHandle`, set it in `resolve_main_model`.
+1. `fontaine-core/src/models.rs`: add `prompt_caching` to `ModelHandle`, initialise it `false` in both `ModelHandle::new` and the `guardian_from_client` literal, and set it on the handle in `resolve_main_model` after `from_client`.
 2. `fontaine-tui/src/ui/commands/model.rs` and `ui/mod.rs`: add `effort_cache_warning`, make `effort()` async and call it.
 3. Docs and changelog.
 
