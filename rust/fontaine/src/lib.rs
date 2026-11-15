@@ -725,8 +725,8 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     };
     Ok(headless::Options {
         prompt: cli.prompt.clone(),
-        input_format: cli.input_format,
-        output_format: cli.output_format,
+        input_format: cli.input_format.into(),
+        output_format: cli.output_format.into(),
         include_partial_messages: cli.include_partial_messages,
         max_turns: cli.max_turns,
         max_budget_usd: cli.max_budget_usd,

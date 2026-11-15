@@ -32,8 +32,9 @@ use self::control::{Attached, Control, Facts, Shared};
 use self::mcp::SdkServers;
 use self::router::{Command, Next, Router};
 use self::translate::ClaudeSink;
-use crate::headless::{self, Cancel, InputSource};
+use crate::headless;
 use crate::{Cli, Dirs, Host, SessionPrep, start_headless};
+use fontaine_sdk::run::{Cancel, InputSource, run_session};
 
 /// Puts the servers `--mcp-config` declared into the configuration at the CLI scope, where they
 /// start without asking. With `--strict-mcp-config` nothing else starts.
@@ -348,7 +349,7 @@ pub async fn run(
     router.attach(runtime.steering.clone(), true);
 
     let mut sink = ClaudeSink::new(router.clone(), partial);
-    let code = headless::run_session(
+    let code = run_session(
         options,
         &mut runtime,
         &dirs.data,

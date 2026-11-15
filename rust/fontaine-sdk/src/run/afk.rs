@@ -1,30 +1,10 @@
 //! What `-p --afk` adds to the result: the `afk` object, built from the same report the
 //! terminal shows, and the outcomes that make a run fail.
 
-use fontaine_sdk::core::afk_report::{AfkOutcome, AfkReport};
-use serde_json::{Value, json};
+use crate::core::afk_report::{AfkOutcome, AfkReport};
+use serde_json::Value;
 
 use super::{Outcome, Subtype};
-
-/// The `afk` object of the `result` event.
-pub(super) fn result_object(report: &AfkReport) -> Value {
-    let temperature = &report.temperature;
-    json!({
-        "outcome": report.outcome.as_str(),
-        "counts": report.counts,
-        "temperature": {
-            "current": temperature.current,
-            "peak": temperature.peak,
-            "ceiling": temperature.ceiling,
-            "contributing": temperature.contributing,
-        },
-        "review": {
-            "links": report.review.links,
-            "assessment": report.review.assessment,
-        },
-        "timeline": report.timeline,
-    })
-}
 
 /// Why a run that ended this way exits 1 whatever its turns answered.
 pub(super) fn failure(report: &AfkReport) -> Option<String> {

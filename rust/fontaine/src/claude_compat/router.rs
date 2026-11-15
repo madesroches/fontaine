@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::wire::{self, Inbound};
-use crate::headless::Cancel;
+use fontaine_sdk::run::Cancel;
 
 /// Why a request to the host got no answer. Every one is a denial for the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]

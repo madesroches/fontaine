@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn the_hook_input_reaches_the_host_under_claudes_tool_name() {
         use super::super::router::{ControlHandler, Router};
-        use crate::headless::Cancel;
+        use fontaine_sdk::run::Cancel;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         struct Quiet;

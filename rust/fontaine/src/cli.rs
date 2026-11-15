@@ -553,3 +553,22 @@ pub enum InputFormat {
     Text,
     StreamJson,
 }
+
+impl From<InputFormat> for fontaine_sdk::run::InputFormat {
+    fn from(format: InputFormat) -> Self {
+        match format {
+            InputFormat::Text => Self::Text,
+            InputFormat::StreamJson => Self::StreamJson,
+        }
+    }
+}
+
+impl From<OutputFormat> for fontaine_sdk::run::OutputFormat {
+    fn from(format: OutputFormat) -> Self {
+        match format {
+            OutputFormat::Text => Self::Text,
+            OutputFormat::Json => Self::Json,
+            OutputFormat::StreamJson => Self::StreamJson,
+        }
+    }
+}

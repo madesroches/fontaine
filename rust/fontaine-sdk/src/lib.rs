@@ -3,5 +3,7 @@
 
 pub mod agents;
 pub mod core;
+pub mod events;
 pub mod guardian;
+pub mod run;
 pub mod tools;

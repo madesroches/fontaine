@@ -1,13 +1,11 @@
 //! `-p "/goal ..."`: the one slash command headless understands. The loop that runs the goal's
 //! turns is in the parent module; this holds what describes a goal to the consumer.
 
-use fontaine_sdk::core::agent::AgentRuntime;
-use fontaine_sdk::core::goal::{GoalArg, Judgment, Summary, parse_goal_arg};
-use fontaine_sdk::core::ledger::GoalEvent;
-use fontaine_sdk::core::turn::TurnOutcome;
-use serde_json::{Value, json};
-
-use super::{Outcome, Subtype, event};
+use super::{GoalReport, Outcome, Subtype};
+use crate::core::agent::AgentRuntime;
+use crate::core::goal::{GoalArg, Summary, parse_goal_arg};
+use crate::core::ledger::GoalEvent;
+use crate::core::turn::TurnOutcome;
 
 /// The argument of `/goal` when `text` is that command: `/goal` followed by whitespace or the
 /// end. Any other slash command is an ordinary prompt here.
@@ -19,34 +17,15 @@ pub(super) fn command(text: &str) -> Option<GoalArg> {
     Some(parse_goal_arg(rest))
 }
 
-/// How a goal stood when a message ended: the `goal` object of the `result` event.
-pub(super) struct GoalReport {
-    condition: String,
-    status: &'static str,
-    evaluations: u32,
-    reason: Option<String>,
-}
-
-impl GoalReport {
-    pub(super) fn json(&self) -> Value {
-        json!({
-            "condition": self.condition,
-            "status": self.status,
-            "evaluations": self.evaluations,
-            "reason": self.reason,
-        })
-    }
-
-    /// Whether the run did not finish what it was asked: the goal ended impossible or paused.
-    pub(super) fn failure(&self) -> Option<String> {
-        match self.status {
-            "impossible" | "paused" => Some(format!(
-                "goal {}: {}",
-                self.status,
-                self.reason.as_deref().unwrap_or("no reason given")
-            )),
-            _ => None,
-        }
+/// Whether the run did not finish what it was asked: the goal ended impossible or paused.
+pub(super) fn failure(report: &GoalReport) -> Option<String> {
+    match report.status {
+        "impossible" | "paused" => Some(format!(
+            "goal {}: {}",
+            report.status,
+            report.reason.as_deref().unwrap_or("no reason given")
+        )),
+        _ => None,
     }
 }
 
@@ -130,22 +109,4 @@ pub(super) fn turn_end(outcome: &Outcome) -> TurnOutcome {
         Subtype::MaxBudget => TurnOutcome::Stopped,
         Subtype::Execution | Subtype::UsageLimit => TurnOutcome::Failed(message.into()),
     }
-}
-
-/// The `goal` stream-json event of one evaluation.
-pub(super) fn evaluation_event(
-    session_id: &str,
-    judgment: Option<Judgment>,
-    reason: &str,
-    evaluations: u32,
-) -> Value {
-    event(
-        "goal",
-        session_id,
-        json!({
-            "verdict": judgment.map_or("failed", Judgment::as_str),
-            "reason": reason,
-            "evaluations": evaluations,
-        }),
-    )
 }

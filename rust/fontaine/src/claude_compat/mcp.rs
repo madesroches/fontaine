@@ -85,7 +85,7 @@ async fn forward<W: AsyncWrite + Unpin>(
 mod tests {
     use super::super::router::ControlHandler;
     use super::*;
-    use crate::headless::Cancel;
+    use fontaine_sdk::run::Cancel;
     use futures::future::BoxFuture;
     use tokio::io::{AsyncBufReadExt, BufReader};
 

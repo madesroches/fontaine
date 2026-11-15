@@ -19,7 +19,8 @@ use super::wire::{
     ApiMessage, Assistant, PermissionDenied, ResultMessage, StreamEvent, SystemInit,
     UserToolResults,
 };
-use crate::headless::{EventSink, Outcome, ResultInfo, Subtype, session_cost};
+use fontaine_sdk::events::{Outcome, Subtype, main_usage, session_cost};
+use fontaine_sdk::run::{EventSink, PauseObserver, ResultInfo};
 
 /// A builtin's canonical Claude name; any other tool keeps its own.
 pub fn wire_name(tool: &str) -> String {
@@ -529,10 +530,14 @@ impl ClaudeSink {
 }
 
 impl EventSink for ClaudeSink {
+    fn notice(&mut self, message: &str) {
+        eprintln!("fontaine: {message}");
+    }
+
     fn session_start(&mut self, _runtime: &AgentRuntime, _data_dir: &Path) {}
 
     fn turn_start(&mut self, runtime: &AgentRuntime, _data_dir: &Path) {
-        self.turn_base = crate::headless::main_usage(runtime);
+        self.turn_base = main_usage(runtime);
         let model = runtime.models.main.reference.to_string();
         self.translator.begin(&runtime.session.id, &model);
         let mcp_servers = runtime
@@ -596,7 +601,7 @@ impl EventSink for ClaudeSink {
         self.router.send(to_value(&message));
     }
 
-    fn usage_observer(&self, _session_id: &str) -> Option<crate::headless::PauseObserver> {
+    fn usage_observer(&self, _session_id: &str) -> Option<PauseObserver> {
         None
     }
 
@@ -849,7 +854,7 @@ mod tests {
         let mut t = Translator::new(false);
         t.begin("sid", "m");
         t.event(&SessionEvent::Assistant("done".into()));
-        let outcome = crate::headless::interrupted_for_tests();
+        let outcome = Outcome::interrupted(std::time::Instant::now(), Vec::new());
         let finish = finish_of(&t, &outcome, true);
         assert_eq!(finish.subtype, "success");
 
