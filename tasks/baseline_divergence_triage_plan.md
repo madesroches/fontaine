@@ -27,8 +27,8 @@ Fontaine pipeline change with its tests.
   `tier05-git-status-porcelain`, `tier05-git-log-paths`, `tier05-git-push`, `tier05-git-diff-ext-diff`.
   8 are skipped by design: 6 `send_message`/`board_update` cases (no Claude Code tool name) and the 2
   `*-symlink-home-rule` cases (the `../home` symlink target does not exist next to the capture scratch dir).
-- Ten of the ids that pass the skip check were attempted and refused or failed: `floor-critical-deletion-home-manual`, `-dont-ask`, `-allow-rule` (`rm -rf ~`,
-  `rm -rf /`; the model refuses to emit them; `-allow-rule` now expects allow/allow_rule), `tier05-chain-curl-sh`, `-command-substitution-rm`,
+- Ten of the ids that pass the skip check were attempted and refused or failed: `floor-critical-deletion-home-manual`, `floor-critical-deletion-dont-ask`,
+  `floor-critical-deletion-allow-rule` (`rm -rf ~`, `rm -rf /`; the model refuses to emit them; `floor-critical-deletion-allow-rule` now expects allow/allow_rule), `tier05-chain-curl-sh`, `-command-substitution-rm`,
   `-parameter-expansion`, `-brace-expansion-escape`, `-brace-expansion-rm-root`, `-dont-ask-chain`,
   and `spawn-agent-deny-rule`.
 - `floor-ask-rule` / `floor-ask-rule-dont-ask` (`evals/dataset/floor.jsonl`) pose `webfetch` with
@@ -102,9 +102,9 @@ For each, gather evidence with direct `claude -p` runs in a scratch workspace, t
 | Case | Investigation | Resolution |
 |---|---|---|
 | `tier05-pipe`, `tier05-cat-then-git-status` | Observe Claude Code's behavior for `ls \| wc -l`, `cat a && git status`, and negative controls (`ls \| sh`, `cat a && rm b`). Note Claude Code approves per-subcommand for read-only chains. | Gather evidence and a recommendation; **leave the keep-or-change call to the maintainer**; a "change" answer would also mean revising the golden
-adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions` line stating the current deviation (pipes/chains go to the guardian) with the recommendation marked as pending maintainer confirmation. No classifier change in this work. Reason for the deviation: allowing read-only pipes and chains widens the fast path past one-simple-command soundness. |
+adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions` line stating the current deviation (pipes and chains fall through the Tier 0.5 fast path: mode prompt, or the guardian in auto/afk) with the recommendation marked as pending maintainer confirmation. No classifier change in this work. Reason for the deviation: allowing read-only pipes and chains widens the fast path past one-simple-command soundness. |
 | `spawn-agent-ask-rule` | Run `claude -p` with `ask: ["Agent"]` and a call that passes Agent argument validation (valid `subagent_type`, `description`, `prompt`); check whether the call reaches a permission check. | Re-capture with the §1 mapping; if Claude Code still does not reach a permission check, a dated Decisions line. Also re-capture `spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask` after the Agent mapping, to check whether they were the same unmapped-argument artifact; they already cite a dated Decision, kept unless the re-capture changes the outcome. |
-| `floor-protected-path-edit` | The baseline is probably a capture artifact (no `workspace`, so the target file is absent). Re-pose it and the like-for-like `.claude/settings.json` check in `acceptEdits` with the target file present in the workspace; the dataset case needs a `workspace.files` entry to be capturable, and the `.fontaine/settings.toml` content must contain the case's `old_text` exactly once (e.g. `"a\n"`), since Claude Code's Edit requires `old_string` to occur exactly once before any permission check. A re-captured manual record (maps to headless `default`) shows only the generic default denial; the meaningful `acceptEdits` protection check is a direct `claude -p` run recorded in Results and the PR table, not a baseline record. For the like-for-like `.claude/settings.json` check, the new content must pass Claude Code's settings schema (e.g. `{}` to `{"env":{}}`): a schema-invalid edit (`{"x":1}`) is rejected with "settings.json validation failed" and `permission_denials: []`, which reads as allowed. Check each direct run's tool_result for a validation error before recording its outcome. Check whether Claude Code protects `.fontaine/settings.toml` (it should not; it protects `.git`, `.claude`, etc.). | Only after the re-pose: Decisions line (Fontaine-specific by design) or a fix; add a dataset case only if a Claude Code-equivalent protected-path case adds coverage. |
+| `floor-protected-path-edit` | The baseline is probably a capture artifact (no `workspace`, so the target file is absent). Re-pose it in `acceptEdits` with the target file present in the workspace; the dataset case needs a `workspace.files` entry to be capturable, and the `.fontaine/settings.toml` content must contain the case's `old_text` exactly once (e.g. `"a\n"`), since Claude Code's Edit requires `old_string` to occur exactly once before any permission check. A re-captured manual record (maps to headless `default`) shows only the generic default denial; the meaningful `acceptEdits` protection check is a direct `claude -p` run recorded in Results and the PR table, not a baseline record. The `.claude/settings.json` check is covered by the §4 per-entry run (see §4 for the schema requirement). Check whether Claude Code protects `.fontaine/settings.toml` (it should not; it protects `.git`, `.claude`, etc.). | Only after the re-pose: Decisions line (Fontaine-specific by design) or a fix; add a dataset case only if a Claude Code-equivalent protected-path case adds coverage. |
 | `tier05-out-of-scope-cwd` | The case uses Fontaine's `cwd` argument, which Claude Code lacks. Run directly with `claude -p` a single command reading an existing out-of-workspace file (e.g. `cat /etc/hostname`) and record it in Results. | Record a dated Decisions line naming Fontaine's `cwd` argument. |
 | `spawn-agent-deny-rule` | Needs a valid Agent call (as above). | Capture, or a recorded reason. |
 
@@ -131,7 +131,7 @@ adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions`
 ### 5. Verify and record
 
 Run `--guardian none` over the dataset, then `baseline diff` against the updated baseline; every
-remaining DIFF must map to a dated Decisions line or a fix. `baseline diff` ignores run cases without a
+remaining DIFF must map to a dated Decisions line or a fix. `--guardian none` skips auto-mode cases, so their baselines print `UNMATCHED`; that is expected for exactly the four auto-mode allow-list ids (`spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`, `floor-external-read-auto-no-guardian`, `floor-external-write-auto-no-guardian`). Compare those by hand against Fontaine's documented auto behavior (or a guardian run); any divergence gets a Decisions line like a DIFF. Any other UNMATCHED id is a failure. `baseline diff` ignores run cases without a
 baseline, so also compare the dataset's pipeline ids with the baseline `case_id`s (jq/shell); each missing
 id needs a recorded reason. Update the #101 annotation in the master plan's `### Release readiness`
 item (`tasks/fontaine_harness_plan.md:134-135`) and the checkbox in GitHub issue #80's body to say #101
@@ -154,7 +154,7 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
    merge-by-case_id step; update `tasks/design/testing.md` (`:33-34`, `:41`) and add the `CHANGELOG.md`
    `[Unreleased]` entry.
 6. Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, the `--guardian none` eval and
-   `baseline diff` and the coverage check; summarize in the PR body (per-case table, protected-path and allowlist results,
+   `baseline diff` (every DIFF mapped; UNMATCHED only for the four auto-mode ids, compared by hand per §5) and the coverage check; summarize in the PR body (per-case table, protected-path and allowlist results,
    uncaptured cases with reasons).
 7. Update the #101 annotation in the master plan's `### Release readiness` item (`:134-135`) and the
    #80 issue body checkbox to say #101 is resolved; do not close #80 (see §5 for the `:103` line).
@@ -196,7 +196,7 @@ documented behavior.
 Ordered, from `rust/`: run each capture command from the issue handoff to a scratchpad file, inspect
 the stream-json for the attempted call, merge, then `cargo run -p fontaine-evals -- --dataset
 ../evals/dataset --guardian none --out <run.json>` and `baseline diff ../evals/baselines/pipeline.jsonl
-<run.json>`; expect only DIFFs that carry a Decisions line. Not automated: it needs live model
+<run.json>`; expect only DIFFs that carry a Decisions line, and UNMATCHED only for the four auto-mode ids (compared by hand, see §5). Not automated: it needs live model
 behavior.
 
 ## Open Questions
