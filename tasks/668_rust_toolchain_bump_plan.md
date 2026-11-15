@@ -21,6 +21,12 @@ release when implementing) and fix whatever new lints or warnings it brings.
 ## Design
 Change the two version literals to the new release, then make the gates green.
 
+Cargo 1.100 places test executables under `target/<profile>/build/<pkg>/<hash>/out/` instead of
+`target/<profile>/deps/`. `fontaine-testkit`'s `Layout::from_exe_with` now accepts both layouts
+(the `out` form must sit three levels under a `build` dir, else it is rejected), and
+`mcp_resources_headless` finds its example through `example_bin` rather than a path next to the
+test exe.
+
 ## Implementation Steps
 1. Install the new toolchain (`rustup toolchain install <ver>`).
 2. Set `channel` in `rust/rust-toolchain.toml` and `rust-version` in `rust/Cargo.toml` to it.
@@ -38,6 +44,9 @@ Change the two version literals to the new release, then make the gates green.
 - `rust/rust-toolchain.toml`
 - `rust/Cargo.toml`
 - `tasks/fontaine_harness_plan.md`
+- `rust/fontaine-testkit/src/lib.rs` and `rust/fontaine/tests/mcp_resources_headless.rs`: Cargo
+  1.100 moved test executables to `build/<pkg>/<hash>/out/`, which broke layout detection and the
+  example lookup.
 - Any source files needing lint fixes.
 
 ## Trade-offs
@@ -46,4 +55,6 @@ current convention.
 
 ## Testing Strategy
 The existing gates (fmt, clippy on Linux and Windows targets, rustdoc, tests, deny) are the
-verification; no new tests.
+verification, plus new `fontaine-testkit` unit tests for the `build/<pkg>/<hash>/out` layout: no
+triple, with triple, configured `CARGO_TARGET_DIR`, rejection when the third ancestor is not
+`build`, and rejection of a too-shallow path.
