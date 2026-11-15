@@ -98,6 +98,7 @@ fn request() -> AdjudicationRequest {
             args_digest: "digest".into(),
             args: json!({"url": "https://example.com"}),
             destructive: false,
+            critical_deletions: vec![],
             annotations: None,
         },
         session_facts: SessionFacts::default(),

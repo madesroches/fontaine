@@ -401,7 +401,6 @@ async fn an_allow_rule_never_passes_the_floor() {
     let cases = [
         ("read", json!({"path": ".env"}), Tier::DenyRule),
         ("shell", shell("git push"), Tier::AskRule),
-        ("shell", shell("rm -rf /"), Tier::CriticalPath),
         (
             "write",
             json!({"path": ".git/config", "content": "x"}),
@@ -557,7 +556,6 @@ async fn floor_forced_and_non_simple_prompts_offer_no_grants() {
     std::fs::write(rig.work().join(".env"), "x").unwrap();
     for (tool, args) in [
         ("read", json!({"path": ".env"})),
-        ("shell", shell("rm -rf /")),
         ("write", json!({"path": ".git/config", "content": "x"})),
         ("shell", shell("touch a; touch b")),
         ("shell", shell("touch $X")),
@@ -881,21 +879,4 @@ async fn a_shell_deny_rule_stops_a_monitor_and_an_allow_rule_for_the_shell_does_
     assert!(!allowed(&d), "a shell allow rule does not allow monitor");
     let d = rig.check("shell", shell("touch x")).await;
     assert!(allowed(&d));
-}
-
-#[tokio::test]
-async fn the_floor_applies_to_monitor_as_it_does_to_the_shell() {
-    let allow_all = "[permissions]\nallow = [\"shell\", \"shell(rm *)\", \"monitor\"]\n";
-    let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
-    for tool in ["shell", "monitor"] {
-        let d = rig
-            .check(tool, json!({"command": "rm -rf /", "description": "d"}))
-            .await;
-        assert!(!allowed(&d), "{tool}");
-        assert_eq!(
-            rig.audit().last().unwrap().tier,
-            Tier::CriticalPath,
-            "{tool}"
-        );
-    }
 }

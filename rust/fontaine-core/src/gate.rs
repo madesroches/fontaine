@@ -205,7 +205,7 @@ pub struct StateParams {
     pub audit: Arc<AuditLog>,
     /// Told once when the audit log or the ledger cannot be written.
     pub approver: Arc<dyn Approver>,
-    /// The user's home directory, for `~/` rules and the critical-path check.
+    /// The user's home directory, for `~/` rules and the `critical_deletions` the guardian is told.
     pub home: Option<PathBuf>,
     /// Fontaine's own config and data directories, which file writes never reach unprompted.
     pub protected_dirs: Vec<PathBuf>,

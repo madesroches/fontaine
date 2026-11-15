@@ -1095,6 +1095,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_ledger_record_with_the_retired_critical_path_tier_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(LEDGER_DIR)).unwrap();
+        std::fs::write(
+            dir.path().join(LEDGER_DIR).join(LEDGER_FILE),
+            concat!(
+                r#"{"seq":0,"ts_ms":1,"kind":"action","tool":"shell","agent":"main","tier":"critical_path"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let entries = Ledger::open(dir.path()).unwrap().read().unwrap();
+        assert!(matches!(
+            &entries[0].record,
+            Record::Action {
+                tier: Some(Tier::ProtectedPath),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn a_ledger_written_before_plan_mode_left_still_opens() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(LEDGER_DIR)).unwrap();

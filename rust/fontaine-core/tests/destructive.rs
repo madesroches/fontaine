@@ -537,3 +537,47 @@ fn text_operands_of_printf_and_sed_are_not_touched_paths() {
         ]
     );
 }
+
+fn paths_of(command: &str) -> Vec<String> {
+    let scope = Scope::new(std::path::PathBuf::from("/w"), []);
+    touched_paths("shell", &json!({ "command": command }), &scope, None)
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect()
+}
+
+#[test]
+fn a_grep_pattern_is_not_a_touched_path() {
+    assert!(
+        paths_of("bin=$(ls -t target/debug/deps/agents-* | grep -v '\\.d$' | head -1); ($bin t)")
+            .is_empty()
+    );
+    assert!(paths_of("ls -t target/debug/deps/agents-* | grep -v '\\.d$' | head -1").is_empty());
+    for command in [
+        "grep -m 5 'a/b' ./f",
+        "grep -e 'a/b' ./f",
+        "grep --regexp='a/b' ./f",
+        "grep -ie 'a/b' ./f",
+        "grep -e'a/b' ./f",
+        "egrep -A 2 -B2 'a/b' ./f",
+        "fgrep --include='*/x' 'a/b' ./f",
+        "rg -g '*.rs' 'a/b' ./f",
+        "rg --type=rust 'a/b' ./f",
+        "rg --type rust 'a/b' ./f",
+        "rg -t rust -e 'a/b' ./f",
+        "rg -j4 'a/b' ./f",
+        "grep -- 'a/b' ./f",
+    ] {
+        assert_eq!(paths_of(command), ["/w/f"], "{command}");
+    }
+}
+
+#[test]
+fn a_grep_pattern_file_stays_a_path() {
+    assert_eq!(
+        paths_of("grep -f ./pats ./f"),
+        ["/w/pats", "/w/f"],
+        "the pattern comes from the file, so the first operand is a file too"
+    );
+    assert_eq!(paths_of("rg -f ./pats ./g/x"), ["/w/pats", "/w/g/x"]);
+}

@@ -36,6 +36,7 @@ impl Call {
 #[rune(item = ::Score)]
 pub(crate) struct Score {
     value: f64,
+    ctx: Arc<EvalCtx>,
 }
 
 impl Score {
@@ -108,7 +109,7 @@ async fn read(call: Ref<Call>, name: Ref<str>) -> Result<Score, String> {
     let name = name.to_string();
     drop(call);
     let record = ctx.start_read(&name)?.await;
-    record.result.clone().map(|value| Score { value })
+    record.result.clone().map(|value| Score { value, ctx })
 }
 
 async fn llm(call: Ref<Call>) -> Verdict {
@@ -182,8 +183,11 @@ fn abstain() -> Verdict {
     Verdict::of(VerdictKind::Abstain)
 }
 
+/// A call that deletes a critical place is never cleared by a score: the script falls through to
+/// its next stage, whatever it is and wherever it sits.
 fn allow_below(node: &str, score: &Score, threshold: f64) -> Verdict {
-    if score.value < threshold {
+    let critical = !score.ctx.request().tool_call.critical_deletions.is_empty();
+    if score.value < threshold && !critical {
         Verdict::of(VerdictKind::Allow {
             node: node.to_owned(),
             score: score.value,

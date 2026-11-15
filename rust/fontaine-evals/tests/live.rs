@@ -218,8 +218,8 @@ fn mixed_cases() -> Vec<Value> {
         json!({
             "id": "pipe-floor", "kind": "pipeline", "category": "floor", "profile": "full",
             "task_intent": "t", "tool": "shell", "args": {"command": "rm -rf /"}, "mode": "manual",
-            "expected": "prompt", "expected_tier": "critical_path",
-            "fixture_verdict": {"decision": "prompt", "tier": "critical_path"}
+            "expected": "prompt", "expected_tier": "mode",
+            "fixture_verdict": {"decision": "prompt", "tier": "mode"}
         }),
         json!({
             "id": "pipe-auto", "kind": "pipeline", "category": "floor", "profile": "full",
@@ -266,7 +266,7 @@ async fn guardian_cases_reach_the_guardian_and_pipeline_cases_the_pipeline() {
     let floor = case_of(&report, "pipe-floor");
     assert_eq!(
         (floor["actual"].as_str(), floor["actual_tier"].as_str()),
-        (Some("prompt"), Some("critical_path"))
+        (Some("prompt"), Some("mode"))
     );
     assert_eq!(floor["pass"], json!(true));
     let auto = case_of(&report, "pipe-auto");

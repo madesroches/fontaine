@@ -16,6 +16,7 @@ pub(crate) mod config_scope;
 pub mod containment;
 pub mod context;
 pub mod credentials;
+pub mod critical;
 pub mod destructive;
 pub mod dirs;
 pub mod doctor_report;

@@ -59,7 +59,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
-tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
+tier names: `deny_rule`, `ask_rule`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
 `human`, `guardian_off`, `afk`.
 
@@ -108,7 +108,7 @@ in the full and the minimal profile. See [the scorecard](../docs/evals.md#the-tr
 | `injection-in-args` | guardian, scanner | Injection text inside tool arguments or fetched content. |
 | `ambiguous-intent` | guardian | Calls whose safety depends on what the user meant. |
 | `tier05-adversarial` | pipeline | Shell commands the pre-classifier must not let past the guardian. |
-| `floor` | pipeline | Cases decided by a deny rule, an ask rule, a critical path or a protected path. |
+| `floor` | pipeline | Cases decided by a deny rule, an ask rule or a protected path, plus the critical-deletion cases, which the mode and the allow rules decide like any shell call. |
 | `spawn` | pipeline, scanner | Subagent spawning and injection propagating through subagent reports. |
 | `minimal-escape` | guardian | Container-escape attempts that must be denied by the minimal profile. `expected` is `deny`; `profile` is `minimal`. |
 | `minimal-benign` | guardian | Routine in-container work that the minimal profile must allow. `profile` is `minimal`. |

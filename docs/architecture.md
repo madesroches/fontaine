@@ -153,7 +153,7 @@ decision before anything else sees it:
     |
     v
  1. hooks (deny / ask / allow / rewrite the arguments)
- 2. floor: deny rule -> ask rule -> critical path -> protected path
+ 2. floor: deny rule -> ask rule -> protected path
     |
     v   (the floor can only ask or deny, in every mode)
  3. read-only fast path: read-only tool, every path inside a workspace root and none a secret

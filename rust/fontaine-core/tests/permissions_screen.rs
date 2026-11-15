@@ -334,13 +334,18 @@ async fn shadow_mode_records_the_score_and_never_changes_the_decision() {
 async fn the_screen_never_sees_a_call_the_floor_or_the_fast_path_settled() {
     let server = risky(0.99).await;
     let fake = fake_guardian(allow_verdict());
-    let rig = rig(fake.guardian.clone(), false, stage(&server, false));
-    // A tier-05 command and a critical path: neither is the guardian's to judge.
+    let rig = Rig::with(
+        Options::new(Auto)
+            .guardian(fake.guardian.clone())
+            .settings("[permissions]\nask = [\"shell(npm publish)\"]\n"),
+    );
+    rig.state.set_composition(Some(stage(&server, false)));
+    // A tier-05 command and an ask rule: neither is the guardian's to judge.
     assert!(allowed(&rig.check("shell", shell("ls")).await));
     rig.approver.answer(Answer::Deny { feedback: None });
-    rig.check("shell", shell("rm -rf /")).await;
+    rig.check("shell", shell("npm publish")).await;
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
-    assert_eq!(rig.audit()[1].tier, Tier::CriticalPath);
+    assert_eq!(rig.audit()[1].tier, Tier::AskRule);
 }
 
 #[tokio::test]

@@ -155,6 +155,7 @@ fn request() -> AdjudicationRequest {
             args_digest: "digest".into(),
             args: json!({"command": "cargo test"}),
             destructive: false,
+            critical_deletions: vec![],
             annotations: None,
         },
         session_facts: SessionFacts::default(),

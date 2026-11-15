@@ -50,14 +50,6 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    - a `[permissions] deny` rule: denied.
    - an `ask` rule, a hook's ask, or an MCP tool its server
      [marked as requiring your approval](mcp.md#requiring-approval-for-a-tool): asks.
-   - **critical path**: a `shell` command that removes the file system root, a top-level
-     directory, your home directory, a workspace root or a parent of one asks. The command is
-     parsed with a real shell parser, and every `rm` and `rmdir` word in any segment of a list,
-     pipe or substitution is inspected. The string a launcher runs as a command line (`sh -c`,
-     `su -c`, `watch`, `flock -c`, `script -c`, `env -S`, `ssh host`) is parsed too; other quoted
-     text is data. A command name built from an expansion counts as critical.
-     A target that cannot be resolved (a variable, a glob, a tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
-     not one simple command all count as critical.
    - **protected path**: `write`, `edit` and `notebook_edit` on a path with a component named `.git`, `.vscode`,
      `.idea`, `.husky`, `.fontaine` or `.claude`, or whose file name is `.gitconfig`, `.gitmodules`,
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
@@ -69,7 +61,12 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      prompt, for a path the file tools can reach.
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs. In `auto` an `ask`
-   rule, a server's approval marker and a critical path still ask you: no verdict approves them.
+   rule and a server's approval marker still ask you: no verdict approves them.
+
+   A `shell`, `monitor` or `powershell` call that deletes the file system root, a top-level
+   directory, your home directory, a workspace root or a parent of one is not a floor outcome: it
+   goes on like any other shell call, and in `auto` the [guardian](guardian.md#what-the-guardian-sees)
+   is told which of those places it names (`critical_deletions`) and denies it in either profile.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`, `lsp`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. A `read`, `grep` or `lsp`
    of a [secret file](tools.md#what-earns-the-read-only-fast-path) does not: it goes on to
@@ -158,7 +155,7 @@ tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that d
 `decision` (`allow`, `deny` or `prompt`), the rule and its source, and the latency. A human's answer
 to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
-`tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
+`tier` is one of `deny_rule`, `ask_rule`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
 `guardian`, `dont_ask`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on),
 `afk` (a temperature stop denied the call, or the record is an AFK toggle), `bug_draft` (a
@@ -200,7 +197,7 @@ channel (`human_channel`), next to the unchanged `headless` flag.
 started with `run_in_background`, is not asked about again. `job_output` is read-only and names no
 path, so it takes the fast path. `job_cancel` is an `arbitrary` tool that can only signal a process
 or stop a subagent this session started, by id. `monitor` is an `arbitrary` tool with `shell`'s command analysis: the
-critical-path floor, the destructive class and `shell` deny and ask rules (and hook matchers) cover
+destructive class, the `critical_deletions` fact and `shell` deny and ask rules (and hook matchers) cover
 it, so a `shell(git push)` deny also stops a `monitor` that runs `git push`. An allow rule does not
 cross over: `shell(...)` allows are for `shell` only, and the read-only pre-classifier never
 allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the guardian judge it. In
@@ -319,8 +316,9 @@ contributed a rule, for example `shell(rm) [user]`; a plugin rule reads `[plugin
 
 ### Allow rules
 
-An allow rule acts after the floor and never past it: a deny, ask, critical-path or protected-path
-outcome stands whatever allow says. A matching allow rule skips the
+An allow rule acts after the floor and never past it: a deny, ask or protected-path
+outcome stands whatever allow says. The floor does not look at what a shell command deletes, so an
+allow rule that matches `rm -rf /` approves it, as it approves any call it matches. A matching allow rule skips the
 prompt in `manual` and `acceptEdits`, pre-approves in `dontAsk`, and skips the guardian in `auto`.
 
 While `auto` is on, **broad code-execution allow rules are suspended**: a bare `shell` or `agent`,
@@ -360,28 +358,13 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
   prohibition cannot be stepped around by switching language; a `shell(git push)` rule does not
   match a `powershell` call, and an allow rule covers only the tool it names. In `auto` a bare
   `powershell` allow is set aside, as a bare `shell` allow is.
-- **The critical-path floor reads `Remove-Item`.** A `powershell` call that deletes a critical
-  path (a drive root, a top-level directory, your home directory, a workspace root or a parent of
-  one) is stopped for a human in every mode, as for `shell`. The check is a token scan, not a
-  PowerShell parser, and it errs toward prompting. A call is critical when it contains:
-  - a deleter (`Remove-Item`, `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`) whose target is a
-    critical path, a variable, a subexpression or comes from a pipeline, a deleter inside a chain,
-    block or `if`, or a deleter with an option the scan does not know;
-  - any `::Delete` or `.Delete…(` call, whatever its target, `$ExecutionContext…InvokeProvider.Item.Remove(`,
-    `ForEach-Object Delete`, and
-    `Invoke-CimMethod` or `Invoke-WmiMethod` (`icim`, `iwmi`) with a `Delete…` method name;
-  - code the scan cannot read: a nested interpreter (`pwsh`, `powershell`, `cmd`), `iex`,
-    `Invoke-Expression`, `Invoke-Command` (`icm`), `-c`, `-Command`, `-enc`, `-ec` or
-    `-EncodedCommand` on any command, `[scriptblock]::Create`, `.InvokeScript(`,
-    `.NewScriptBlock(`, and `-ComObject`;
-  - a `&` or `.` call operator whose command is not a literal word, or a trailing `&` that
-    starts a background job;
-  - a `Set-Alias` or `New-Alias` (`sal`, `nal`) whose value is a variable or expression;
-  - a quoted string that contains a deleter's name, or a deleter with no target word, so
-    `git commit -m "rm unused imports"` stops for a human in every mode.
-
-  A deleter with a plain, literal target inside the workspace is not critical. Targets on other
-  providers (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.
+- **`Remove-Item` targets reach the guardian.** A `powershell` call whose deleter (`Remove-Item`,
+  `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`) names a drive root, a top-level directory, your home
+  directory, a workspace root or a parent of one by a literal path carries it to the guardian as
+  `critical_deletions`, as for `shell`. The scan is a token reader, not a PowerShell parser: a
+  variable, a subexpression, a wildcard, a pipeline, a nested interpreter or a computed command
+  name adds nothing, and the guardian reads the command itself. Targets on other providers
+  (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.
 - **Trusted skills.** A plugin skill you [trusted](extensions.md#trusted-skills) lends its specific
   `allowed-tools` as allows for the turn, after the floor, deny and ask rules and hooks. Its
   wildcard shell rules (`Bash(git *)`, a bare `Bash`) are not allows in any mode: they reach the

@@ -229,7 +229,7 @@ reconnected as in the terminal UI.
 ## Denials
 
 Nothing prompts in a headless run. Every outcome that would ask a human, such as an `ask` rule, a
-critical-path or protected-path call, or a call the mode does not pre-approve, becomes a denial
+protected-path call, or a call the mode does not pre-approve, becomes a denial
 that is returned to the model as the tool result; the run continues and exits 0. A
 plain `-p` run has no external approval delegate. A host that wants to answer those prompts uses
 [Agent SDK mode](agent-sdk.md), where `canUseTool` is a human channel that sits after the same
@@ -287,7 +287,7 @@ these is one line, in the order the run produces them. The table lists the kinds
 | `result` | At the end of every turn | see below |
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
-`critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`,
+`protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`,
 `screen`, `guardian`, `dont_ask`, `human`, `guardian_off`, `afk`, `bug_draft` or `bug_report`. The audit log records the same values.
 
 Every `gate_decision` also carries `afk` (whether [AFK mode](afk.md) was on) and `converted`, which

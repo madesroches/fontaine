@@ -14,6 +14,7 @@ use fontaine_core::permissions::{Answer, DenyAll, UnavailableChoice};
 use fontaine_core::tier::Tier;
 use fontaine_guardian::Settings;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 fn shell(command: &str) -> Value {
     json!({"command": command})
@@ -353,33 +354,78 @@ async fn an_ask_rule_forces_the_human_even_in_auto_and_denies_in_dont_ask() {
     assert_eq!(fake.calls(), 0);
 }
 
+/// What the guardian was sent for the last call.
+fn sent(fake: &common::pipeline::Fake) -> String {
+    format!("{:?}", fake.mock.requests().last().expect("a request"))
+}
+
 #[tokio::test]
-async fn critical_paths_force_the_human_and_no_verdict_approves_them() {
+async fn a_critical_deletion_reaches_the_guardian_with_the_resolved_target() {
     let fake = fake_guardian(allow_verdict());
-    let rig = auto_rig(&fake, "");
-    for command in [
-        "rm -rf /",
-        "rm -rf .",
-        "rm -rf $(pick)",
-        "rm -rf \"unterminated",
-        "ls && rm -rf ~",
-        "rm -rf *",
-    ] {
-        let asked = rig.approver.asked();
-        let d = rig.check("shell", shell(command)).await;
-        assert!(!allowed(&d), "{command}");
-        assert_eq!(rig.approver.asked(), asked + 1, "{command}");
-        assert_eq!(
-            rig.approver.last_request().tier,
-            Tier::CriticalPath,
-            "{command}"
-        );
+    let mut options = Options::new(Auto).guardian(fake.guardian.clone());
+    options.home = Some(PathBuf::from("/home/me"));
+    let rig = Rig::with(options);
+    for (at, (tool, command)) in [
+        ("shell", "rm -rf /"),
+        ("shell", "rm -rf ~"),
+        ("shell", "ls && rm -rf /usr"),
+        ("monitor", "rm -rf /"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let args = json!({"command": command, "description": "d"});
+        assert!(allowed(&rig.check(tool, args).await), "{command}");
+        assert_eq!(fake.calls(), at + 1, "{command}");
+        assert!(sent(&fake).contains("critical_deletions"), "{command}");
     }
-    assert_eq!(fake.calls(), 0);
-    // A human who says yes is the only way through.
-    rig.approver.answer(Answer::AllowOnce);
-    assert!(allowed(&rig.check("shell", shell("rm -rf /")).await));
-    assert_eq!(fake.calls(), 0);
+    let rig = auto_rig(&fake, "");
+    let before = fake.calls();
+    rig.check("shell", shell("rm -rf build")).await;
+    assert_eq!(fake.calls(), before + 1);
+    assert!(!sent(&fake).contains("critical_deletions"));
+}
+
+#[tokio::test]
+async fn workspace_roots_their_parents_and_the_home_directory_are_named_to_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap().join("home");
+    std::fs::create_dir_all(home.join("docs")).unwrap();
+    let mut options = Options::new(Auto)
+        .guardian(fake.guardian.clone())
+        .settings("");
+    options.home = Some(home.clone());
+    let rig = Rig::with(options);
+    let work = rig.work().to_path_buf();
+    let parent = work.parent().unwrap().to_path_buf();
+    for (command, kind) in [
+        (format!("rm -rf '{}'", work.display()), "workspace root"),
+        (
+            format!("rm -rf '{}'", parent.display()),
+            "parent of a workspace root",
+        ),
+        ("rm -rf .".to_string(), "workspace root"),
+        ("rm -rf ..".to_string(), "parent of a workspace root"),
+        (format!("rm -rf '{}'", home.display()), "home directory"),
+    ] {
+        rig.check("shell", shell(&command)).await;
+        assert!(sent(&fake).contains(&format!("({kind})")), "{command}");
+    }
+    rig.check("shell", shell(&format!("rm -rf '{}/docs'", home.display())))
+        .await;
+    assert!(!sent(&fake).contains("critical_deletions"));
+}
+
+#[tokio::test]
+async fn a_critical_deletion_is_denied_by_the_guardian_not_the_floor() {
+    let fake = fake_guardian(verdict_json("deny", "Destroy Pre-existing Files", 0.99));
+    let rig = auto_rig(&fake, "");
+    let d = rig.check("shell", shell("rm -rf /")).await;
+    assert!(!allowed(&d));
+    assert_eq!(fake.calls(), 1);
+    assert_eq!(last(&rig).tier, Tier::Guardian);
+    assert_eq!(rig.approver.asked(), 0);
 }
 
 #[tokio::test]
@@ -538,7 +584,7 @@ async fn broad_code_execution_rules_are_suspended_while_auto_is_on() {
 }
 
 #[tokio::test]
-async fn a_narrow_allow_rule_never_passes_an_ask_rule_or_a_critical_path() {
+async fn a_narrow_allow_rule_never_passes_an_ask_rule_and_does_pass_a_critical_deletion() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(
         &fake,
@@ -547,9 +593,9 @@ async fn a_narrow_allow_rule_never_passes_an_ask_rule_or_a_critical_path() {
     rig.approver.answer(Answer::Deny { feedback: None });
     assert!(!allowed(&rig.check("shell", shell("npm test")).await));
     assert_eq!(rig.approver.last_request().tier, Tier::AskRule);
-    rig.approver.answer(Answer::Deny { feedback: None });
-    assert!(!allowed(&rig.check("shell", shell("rm -rf /")).await));
-    assert_eq!(rig.approver.last_request().tier, Tier::CriticalPath);
+    // The user's own narrow grant approves it: the accepted cost of leaving the floor.
+    assert!(allowed(&rig.check("shell", shell("rm -rf /")).await));
+    assert_eq!(last(&rig).tier, Tier::AllowRule);
     assert_eq!(fake.calls(), 0);
 }
 

@@ -158,7 +158,7 @@ mod tests {
             tool_use_id: None,
             args: serde_json::json!({ "command": "ls" }),
             summary: "ls".into(),
-            tier: fontaine_core::tier::Tier::CriticalPath,
+            tier: fontaine_core::tier::Tier::AskRule,
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,

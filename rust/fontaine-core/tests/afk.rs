@@ -6,7 +6,9 @@ mod common;
 
 use std::sync::Arc;
 
-use common::pipeline::{Options, Rig, allowed, denied_message, fake_guardian, verdict_json};
+use common::pipeline::{
+    Options, Rig, allow_verdict, allowed, denied_message, fake_guardian, verdict_json,
+};
 use fontaine_agents::mode::Ladder;
 use fontaine_core::afk_report::{AfkSource, OutcomeStatus, build_latest};
 use fontaine_core::audit::{Converted, Decision};
@@ -66,7 +68,7 @@ async fn a_denial_ends_in_the_attended_sentence_until_afk_is_on_and_then_in_the_
 }
 
 #[tokio::test]
-async fn an_ask_rule_a_critical_path_and_a_protected_path_keep_their_tier_and_become_denials() {
+async fn an_ask_rule_keeps_its_tier_and_becomes_a_denial_with_nothing_prompting() {
     let rig =
         Rig::with(Options::new(Manual).settings("[permissions]\nask = [\"shell(npm publish)\"]\n"));
     afk_on(&rig);
@@ -78,13 +80,6 @@ async fn an_ask_rule_a_critical_path_and_a_protected_path_keep_their_tier_and_be
         (Tier::AskRule, Some(Converted::AskRule))
     );
     assert!(record.rule.as_deref().unwrap().contains("npm publish"));
-
-    rig.check("shell", shell("rm -rf /")).await;
-    let record = last_record(&rig);
-    assert_eq!(
-        (record.tier, record.converted),
-        (Tier::CriticalPath, Some(Converted::Floor))
-    );
 
     rig.check(
         "write",
@@ -412,7 +407,37 @@ async fn afk_decides_as_auto_with_nobody_to_ask() {
     assert_eq!(rig.approver.asked(), 0);
 
     rig.check("shell", shell("rm -rf /")).await;
-    assert_eq!(last_record(&rig).tier, Tier::CriticalPath);
+    assert_eq!(
+        fake.calls(),
+        2,
+        "a critical deletion is the guardian's to judge"
+    );
+    assert_eq!(last_record(&rig).tier, Tier::Guardian);
+}
+
+#[tokio::test]
+async fn commands_with_an_unresolved_name_reach_the_guardian_in_afk_instead_of_a_floor_denial() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Manual).guardian(fake.guardian.clone()));
+    afk_on(&rig);
+    for (at, command) in [
+        "bin=$(ls -t target/debug/deps/agents-* | grep -v '\\.d$' | head -1); ($bin t)",
+        "while pgrep -x rustc >/dev/null; do sleep 3; done",
+        "BIN=$(ls -t x); ($BIN t --exact)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let decision = rig.check("shell", shell(command)).await;
+        assert!(allowed(&decision), "{command}");
+        assert_eq!(fake.calls(), at + 1, "{command}");
+        let record = last_record(&rig);
+        assert_eq!(
+            (record.tier, record.decision, record.converted),
+            (Tier::Guardian, Decision::Allow, None),
+            "{command}"
+        );
+    }
 }
 
 #[tokio::test]

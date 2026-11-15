@@ -115,7 +115,7 @@ pub fn severity_weight(facts: &DenialFacts<'_>) -> f64 {
             Some(Tier::Guardian) if facts.converted != Some(Converted::BreakerPaused) => {
                 take(facts.rule.map_or(Severity::Medium, label_severity).weight());
             }
-            Some(Tier::Screen | Tier::DenyRule | Tier::CriticalPath | Tier::ProtectedPath) => {
+            Some(Tier::Screen | Tier::DenyRule | Tier::ProtectedPath) => {
                 take(Severity::Medium.weight())
             }
             _ => {}
@@ -1011,12 +1011,7 @@ mod tests {
 
     #[test]
     fn floor_and_screen_denials_are_medium_and_other_tiers_low() {
-        for tier in [
-            Tier::DenyRule,
-            Tier::CriticalPath,
-            Tier::ProtectedPath,
-            Tier::Screen,
-        ] {
+        for tier in [Tier::DenyRule, Tier::ProtectedPath, Tier::Screen] {
             assert!(
                 (severity_weight(&facts(tier, "x")) - 2.0).abs() < 1e-9,
                 "{tier:?}"

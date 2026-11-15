@@ -207,7 +207,7 @@ command = "/home/me/.config/fontaine/hooks/answer.sh"
 - **`deny`** denies the call. **`ask`** forces the human prompt like an `ask` rule (a denial in
   `dontAsk` and headless runs).
 - **`allow` is an allow rule, no more.** It acts after the floor and never past it: a deny rule, an
-  ask rule, a critical path or a protected path still stands. It also only counts where an allow
+  ask rule or a protected path still stands. It also only counts where an allow
   rule's matcher would match, so a `shell(git *)` hook does not allow `ls && git push`. In `auto`
   a hook with a narrow matcher skips the guardian, and a hook with a broad one (no matcher, or one
   that is a [suspended allow rule](permissions.md#allow-rules)) is suspended and the guardian
