@@ -47,6 +47,7 @@ impl<P> Line<P> {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)] // events are short-lived values, and boxing would leak into the public variants
 pub enum Event {
     Init(Line<Init>),
     Assistant(Line<Text>),

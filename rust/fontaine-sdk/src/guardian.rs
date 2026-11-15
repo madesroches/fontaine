@@ -1,6 +1,7 @@
 //! The guardian: a separate, tool-less model conversation that judges one tool call at a time
 //! and answers with a typed verdict. Every outcome that is not a verdict is a denial. This
-//! crate has no knowledge of the harness around it, so another harness can embed it.
+//! module imports nothing from `core`, `tools` or `agents` (a test enforces it), so it stays
+//! liftable into another harness.
 
 mod breaker;
 mod cache;
@@ -8,6 +9,7 @@ pub mod composition;
 pub mod critique;
 pub mod env_scan;
 pub mod evasion;
+#[allow(clippy::module_inception)] // the type keeps the module's name
 mod guardian;
 pub mod models;
 mod profile;

@@ -661,6 +661,9 @@ pub fn agent_setup(
     }
 }
 
+/// Receives a line the assembly would otherwise print.
+pub type NoticeFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// What [`start_headless`] needs beside the prepared session.
 pub struct HeadlessStart<'a> {
     pub config: &'a Config,
@@ -670,7 +673,7 @@ pub struct HeadlessStart<'a> {
     pub model_override: Option<&'a str>,
     pub setup: SetupParams,
     /// Receives the PromptGuard download line; with none it goes to stderr.
-    pub scanner_notice: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub scanner_notice: Option<NoticeFn>,
     /// What the budget cap is called where the caller set it, for the refusal that names it.
     pub budget_name: &'a str,
 }
