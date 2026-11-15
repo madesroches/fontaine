@@ -79,7 +79,7 @@ jobs:
       # baseline; keep it only where the restore run is at least 3 min faster, with `save-if`
       # on main only.
       - name: Cache dependencies
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && runner.os != 'Windows'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -105,7 +105,15 @@ jobs:
 
       - name: Build tests
         if: needs.changes.outputs.code == 'true'
-        run: cargo test --no-run
+        run: cargo test --no-run --timings
+
+      # Temporary (#652): where the build time goes, per OS.
+      - name: Upload build timings
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: timings-${{ runner.os }}
+          path: rust/target/cargo-timings/cargo-timing.html
 
       - name: Test
         if: needs.changes.outputs.code == 'true'
