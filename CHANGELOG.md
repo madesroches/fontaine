@@ -23,6 +23,13 @@ All notable changes are recorded here. The format follows
 - The `agent` tool's `model` accepts a bare model name (#663): when no role has the name, the main
   account's listing is tried, then accounts with an explicit `models` list, with no extra network
   calls. Names with `.` or `:` still need `<account>/<model>`.
+- `baseline capture` (#101): `webfetch` is posed with a default `prompt` and `agent` arguments are
+  mapped to Claude Code's (`subagent_type`, `description`), so those calls pass Claude Code's
+  validation; a `write` rule with a specifier becomes an `Edit` rule and the case's settings also go
+  in as `--settings` (a project `allow` rule is ignored in a headless run); one shared prompt wording
+  frames the call as a permission-system verification step. `evals/baselines/pipeline.jsonl` now holds
+  66 records recorded with `claude` 2.1.325 and every divergence is fixed or recorded in the plan's
+  Decisions; `floor-protected-path-edit` gains the `.fontaine/settings.toml` workspace file it needs.
 - Goal token and wall-clock budgets (#444): `[goal] max_tokens` and `[goal] max_duration_secs`
   (user scope, unset by default) pause an unattended goal stretch when its tokens, priced or not, or
   its elapsed time pass the cap, checked at the evaluation boundary like `max_turns`. A stretch can

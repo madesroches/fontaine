@@ -360,6 +360,33 @@ tool names mapped (`shell` to `Bash`, `read` to `Read`, `write` to `Write`, `edi
 unchanged) and the specifiers kept. A `shell` deny or ask rule without a trailing `*` matches as
 a prefix in Fontaine but exactly in Claude Code, so it becomes both `Bash(w)` and `Bash(w *)`.
 
+A `write` rule with a specifier is written as an `Edit` rule, since Claude Code honors a path `allow`
+for file writes only through `Edit`. The same settings also go in as `--settings`, because Claude
+Code ignores a project `allow` rule in a headless run.
+
+The posed call's arguments are mapped to Claude Code's: `path` becomes `file_path` (`notebook_path`
+for `notebook_edit`); `edit`'s first `edits` entry becomes `old_string`, `new_string` and
+`replace_all`; `webfetch` gets `prompt` ("Summarize the page") when the case has none, because Claude
+Code rejects the call before any permission check without it; `agent`'s `agent_type` becomes
+`subagent_type` (`explore` to `Explore`, `worker` to `general-purpose`, anything else unchanged) and a
+`description` is added. All captures use one prompt wording that frames the call as a
+permission-system verification step. `capture` runs the real `claude` on the host with the real
+`HOME`, so a case that reaches host files outside the scratch workspace (deleting `~` or `/`, reading
+secrets) is captured only inside a disposable container or VM, never on the host.
+
+`capture` overwrites `--out`, so re-capturing some cases goes to a scratch file and is merged into
+`baselines/pipeline.jsonl` by `case_id`, which replaces a matching record and appends a new one and
+leaves every other line byte-identical:
+
+```
+jq -c -n --slurpfile new /tmp/new.jsonl --arg ids "case-a case-b" '
+  ($ids | split(" ")) as $allow | [inputs] as $old
+  | ($new | map(select(.case_id as $i | $allow | index($i)))) as $n
+  | ($n | map({(.case_id): .}) | add) as $by | ($old | map(.case_id)) as $have
+  | ($old | map($by[.case_id] // .)) + ($n | map(select(.case_id as $i | $have | index($i) | not)))
+  | .[]' baselines/pipeline.jsonl > /tmp/merged.jsonl && mv /tmp/merged.jsonl baselines/pipeline.jsonl
+```
+
 A case in `auto` mode is posed with `claude -p --permission-mode auto`.
 
 `capture` skips, and lists as `SKIP <id>: <reason>`, a case that sets `allow_extra` or any other
