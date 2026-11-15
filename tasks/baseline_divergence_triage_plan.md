@@ -115,8 +115,8 @@ adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions`
 
 - Protected paths: take the list from `PROTECTED_DIRS`/`PROTECTED_FILES` in
   `rust/fontaine-core/src/floor.rs` and `docs/permissions.md`; for each entry write via `claude -p` in
-  a scratch workspace (Edit/Write in `acceptEdits` only, with the target file existing; headless
-  `default` denies every Edit/Write) and record whether Claude Code prompts. New content for `.claude/settings.json` (and any other schema-checked Claude Code file) must pass Claude Code's settings schema (e.g. `{}` to `{"env":{}}`), and each run's tool_result is checked for a validation error before its outcome is recorded. Each entry and its result goes in the PR body table; entries
+  a scratch workspace (Edit/Write in `acceptEdits` only, with the target file existing, and the scratch workspace `git init`-ed for the `.git` entry; headless
+  `default` denies every Edit/Write) and record whether Claude Code prompts. New content for `.claude/settings.json` and `.claude/settings.local.json` (the schema-checked targets) must pass Claude Code's settings schema (e.g. `{}` to `{"env":{}}`), and each run's tool_result is checked for a validation error before its outcome is recorded. Each entry and its result goes in the PR body table; entries
   where Fontaine is stricter or looser become Decisions lines or fixes. The table notes that the
   home-directory, config/data-dir and `notebook_edit` protections (`docs/permissions.md:53-61`) are not
   covered by the scratch-workspace check, because an out-of-root home write prompts in Claude Code anyway.
