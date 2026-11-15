@@ -52,10 +52,17 @@ attach.
   Resume { last_seq: Option<u64> }`. Authentication of a device is the iroh connection's
   authenticated remote NodeId, never a field the client writes.
 - Client → host: `Prompt{message_id, text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, reply}`,
-  `Interrupt`, `Slash{message_id, line}`, `Ping`. Host → client: `Snapshot{seq, part, of, state}`, `Event{seq, event}`,
-  `ApprovalRequest{id, …}`, `Question{id, …}`, `Notice{severity, text}`, `Resolved{id}`,
+  `Interrupt`, `Slash{message_id, line}`, `Ping`. On the wire, `ApprovalAnswer.answer` is one of the
+  choices offered by the open approval (an index/label from its `choices`) plus optional deny
+  feedback; the host validates it against the open approval's choices and converts it with
+  `Approval::answer_for` (`fontaine-tui/src/approval.rs`) as `answer_text` does today. It is never a
+  raw core `Answer`, and `AllowUpdated` is unreachable from a device.
+  Host → client: `Snapshot{seq, part, of, state}`, `Event{seq, event}`, `Notice{severity, text}`,
   `Accepted{message_id}`, `PromptRejected{message_id, reason}`, `Paired`, `Rejected{reason}`,
-  `Bye`.
+  `Ping`, `Bye`. Dialog open, close and resolved are `RemoteEvent`s inside `Event{seq, …}`, so they
+  replay on `Resume`; a device that resumes while a dialog is open sees it re-sent in the replay or
+  snapshot. `Snapshot.state` is a `String` holding a slice of the serialized snapshot, sized so the
+  escaped frame fits the 4 MiB cap; only `Event.event` is an opaque `serde_json::Value`.
 - `Reason` gains `NotPaired`, `PairingDeclined`, `PairingTimeout`, `Revoked`, `Superseded` to
   the existing ticket reasons. Version mismatch is `UnsupportedVersion`.
 - Event payloads (`RemoteEvent`) are a serde mirror of what the host UI loop already feeds its
@@ -115,9 +122,9 @@ attach.
     `remote: { node, message_id }`).
 - Approvals, questions and elicitations keep going through `ChannelApprover` and the UI loop;
   devices see dialogs only through `RemoteEvent`. Typed device answers (`ApprovalAnswer`,
-  `QuestionReply`) are a loop input applied to the open `App` dialog by `id` (as
-  `take_remote_answer`/`answer_remote_dialog` do today), replacing #627's exact-label text
-  mapping. A typed answer is accepted only for a dialog of kind approval or question; the
+  `QuestionReply`) are a loop input applied to the open `App` dialog, matched against the open dialog's `id` (the `RemoteDialog.id`
+  already present), replacing today's kind-plus-label matching in `answer_remote_dialog` and
+  #627's exact-label text mapping. A typed answer is accepted only for a dialog of kind approval or question; the
   device-answerable dialogs are exactly those two. Elicitation, guardian-unavailable,
   usage-pause, server prompts, the `/afk review` confirmation, the pairing confirmation and the
   `/guardian-disable` confirmation are local-only: a device sees them as a "waiting on the host"
@@ -126,8 +133,8 @@ attach.
   `Steering::open_dialog`/`take_dialog_answer` and the `held` filter no longer apply to device
   entries: a device `Prompt` sent while a dialog is open is queued like any other message and
   never answers the dialog. The first answer wins (local or any device) because the loop sends the oneshot once;
-  the other devices get a `Resolved{id}` event that closes their dialog. The answering device's NodeId goes in the ledger and audit
-  record: the answer reaching the permission pipeline carries an optional `RemoteSender` (beside the `Answer` on the approver reply), and `permissions.rs` writes it on `Record::Approval`/`Record::Denial` (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit `explanation`. Audit records for device activity use tool name `remote`.
+  the other devices get a resolved `RemoteEvent` that closes their dialog. The answering device's NodeId goes in the ledger and audit
+  record: the answer reaching the permission pipeline carries an optional `RemoteSender` (beside the `Answer` on the approver reply), and `permissions.rs` writes it on `Record::Approval`/`Record::Denial` (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit `explanation`. For an approval or question answer, `message_id` in that `RemoteSender` holds the dialog `id`. The same carrier travels with the `QuestionReply` and fills the existing `remote` field of the `Record::UserMessage{origin: Dialog}` that `HumanQuestions::ask` writes. Audit records for device activity use tool name `remote`.
   A device `ApprovalAnswer`/`QuestionReply` is refused (notice to that device, audit record, dialog left pending) while the local approval is typing feedback or the question panel is mid-edit, so a device answer never discards the local person's half-typed input. A device disconnect closes only that device's
   dialog; the local approval stays pending (if the host UI is quit, the session ends and the
   call is denied as today). A dropped connection never approves. `Prompt` lines that happen to
@@ -210,7 +217,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; remove one-shot `send`.
 3. `fontaine-core`: the answer reaching the permission pipeline carries an optional `RemoteSender`
-   (beside the `Answer` on the approver reply); `permissions.rs` writes it on `Record::Approval`/`Record::Denial`
+   (beside the `Answer` on the approver reply) and the `QuestionReply` carries it too, so `questions.rs` fills `remote` on the dialog `Record::UserMessage`; `permissions.rs` writes it on `Record::Approval`/`Record::Denial`
    (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit explanation; no schema break (serde-defaulted optional fields);
    `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
 4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, typed device
@@ -221,7 +228,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    guardian-toggle/AFK-review plumbing (`Ui::remote_confirm`, the remote fields on
    `GuardianToggle` in gate.rs, the GuardianDisable/AfkReview remote-dialog kinds in app.rs,
    `confirm_prompt::REMOTE_ANSWERS`), status indicator
-   with device count, a unit test that a device answer is refused while the local approval is typing feedback or the question panel is mid-edit, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
+   with device count, a unit test that a device answer is refused while the local approval is typing feedback or the question panel is mid-edit, a unit test that a choice not offered by the open approval is refused and leaves the dialog pending, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
    `ticket_prompt.rs` for attach.
 5. `fontaine`: `--remote` flag, `attach` and `remote devices|revoke` subcommands, remove
    `send_cmd.rs`, wire client key/hosts files.
@@ -238,7 +245,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   `rust/fontaine-tui/tests/remote.rs` (rewrite for attach: it drives #627 via
   `fontaine_remote::send` and pins the exact-label dialog answer and remote guardian-disable
   behaviour, both removed), `rust/fontaine-tui/src/ticket_prompt.rs` (mentions `fontaine send`)
-- `rust/fontaine-core/src/{audit,gate,ledger,permissions,steering}.rs` (answering-device identity; dialog hold; audit tool name `remote_inbox` → `remote` in gate.rs)
+- `rust/fontaine-core/src/{audit,gate,ledger,permissions,questions,steering}.rs` (answering-device identity; dialog hold; audit tool name `remote_inbox` → `remote` in gate.rs)
 - `rust/fontaine/src/{cli,lib,main}.rs`, new `attach_cmd.rs`, delete `send_cmd.rs`
 - `rust/Cargo.toml`, crate manifests, `rust/deny.toml` if licenses change
 - `AGENTS.md`, `SECURITY.md`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`,
