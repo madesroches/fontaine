@@ -72,6 +72,7 @@ async fn started(
         env: &env,
         guardian: None,
         model_base_url: base_url,
+        notice: None,
     })
     .await
 }

@@ -419,6 +419,7 @@ impl World {
             callback_hooks: Vec::new(),
             session_agents: Vec::new(),
             host_mcp: None,
+            host_tools: Vec::new(),
             root_tools: None,
             afk: false,
             scheduling: true,

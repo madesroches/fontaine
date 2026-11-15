@@ -11,6 +11,7 @@ pub mod error_chain;
 pub mod gate;
 pub mod git_bash;
 pub mod guarded;
+pub mod host;
 pub mod jobs;
 pub mod kills;
 pub mod live;

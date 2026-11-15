@@ -30,6 +30,7 @@ use fontaine_sdk::tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_sdk::tools::descriptor::{TOOLS, find};
 use fontaine_sdk::tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_sdk::tools::guarded::Guard;
+use fontaine_sdk::tools::host::HostTool;
 use fontaine_sdk::tools::mcp::{DeferMode, Deferral, LoadedSets, McpOptions, connect_transport};
 use fontaine_sdk::tools::models_tool::{ModelSource, ModelsTool};
 use fontaine_sdk::tools::result_pipeline::ResultPipeline;
@@ -43,7 +44,7 @@ use fontaine_sdk::tools::todo::{TodoError, TodoItem, TodoStore, TodoTool};
 use fontaine_sdk::tools::tool_search::ToolSearchTool;
 use futures::future::BoxFuture;
 use rig_agent::tool::server::ToolServer;
-use rig_core::tool::ToolContext;
+use rig_core::tool::{ToolContext, ToolExecutionError};
 use rmcp::ServiceExt;
 use server::{Double, echo_tool, lookup_tool};
 
@@ -234,6 +235,7 @@ fn params(rig: &Rig) -> RegistryParams {
         wait_wake: None,
         network: Default::default(),
         extension: Some(extension()),
+        host_tools: Vec::new(),
         pre_images: None,
         kills: Arc::new(fontaine_sdk::tools::kills::KillSwitches::new()),
     }
@@ -849,4 +851,98 @@ async fn a_closed_connection_takes_its_tools_out_of_the_deferral_registry() {
     assert!(deferral.is_registered("mcp__double__echo"));
     connected.mute();
     assert!(!deferral.is_registered("mcp__double__echo"));
+}
+
+struct Echo {
+    ran: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl HostTool for Echo {
+    fn name(&self) -> &str {
+        "host_echo"
+    }
+
+    fn description(&self) -> &str {
+        "echoes"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    fn call<'a>(
+        &'a self,
+        args: serde_json::Value,
+    ) -> BoxFuture<'a, Result<String, ToolExecutionError>> {
+        Box::pin(async move {
+            self.ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(format!("echo {args}"))
+        })
+    }
+}
+
+fn host_params(rig: &Rig) -> (RegistryParams, Arc<std::sync::atomic::AtomicUsize>) {
+    let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = params(rig);
+    p.host_tools = vec![("host_echo", Arc::new(Echo { ran: ran.clone() }))];
+    (p, ran)
+}
+
+#[test]
+fn a_host_tool_is_registered_as_arbitrary_from_the_host_source() {
+    let rig = Rig::new(Manual);
+    let (p, _) = host_params(&rig);
+    let tools = registry(p).unwrap();
+    let tool = tools.iter().find(|t| t.name == "host_echo").unwrap();
+    assert_eq!(tool.risk, RiskClass::Arbitrary);
+    assert_eq!(tool.source, fontaine_sdk::tools::risk::ToolSource::Host);
+    assert_eq!(tool.source.as_str(), "host");
+    // Every other tool still has its descriptor row and class.
+    for other in tools.iter().filter(|t| t.name != "host_echo") {
+        assert_eq!(
+            Some(other.risk),
+            registered_risk(other.name),
+            "{}",
+            other.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_host_tool_call_takes_the_gate_and_never_runs_unless_it_allows() {
+    let rig = Rig::new(Manual);
+    let (p, ran) = host_params(&rig);
+    let handle = ToolServer::new().run();
+    for tool in registry(p).unwrap() {
+        handle.add_dynamic_tool(tool.tool);
+    }
+    // Manual mode asks, and the scripted approver says no.
+    let denied = call(&handle, "host_echo").await.unwrap_err();
+    assert!(denied.contains("denied"), "{denied}");
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let record = rig
+        .audit()
+        .into_iter()
+        .find(|r| r.tool == "host_echo")
+        .unwrap();
+    assert_eq!(record.tier, Tier::Mode);
+
+    rig.approver
+        .answer(fontaine_sdk::core::permissions::Answer::AllowOnce);
+    assert_eq!(call(&handle, "host_echo").await.unwrap(), "echo {}");
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn dont_ask_mode_refuses_a_host_tool_without_asking_anyone() {
+    let rig = Rig::new(PermissionMode::DontAsk);
+    let (p, ran) = host_params(&rig);
+    let handle = ToolServer::new().run();
+    for tool in registry(p).unwrap() {
+        handle.add_dynamic_tool(tool.tool);
+    }
+    assert!(call(&handle, "host_echo").await.is_err());
+    assert_eq!(rig.approver.asked(), 0);
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

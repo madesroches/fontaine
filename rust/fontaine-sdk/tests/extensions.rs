@@ -459,6 +459,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         wait_wake: None,
         network: Default::default(),
         extension: None,
+        host_tools: Vec::new(),
         pre_images: None,
         kills: Arc::new(fontaine_sdk::tools::kills::KillSwitches::new()),
     })

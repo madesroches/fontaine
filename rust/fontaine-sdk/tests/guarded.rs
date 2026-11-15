@@ -247,6 +247,7 @@ fn mcp_tool(
             kills: None,
         },
         false,
+        fontaine_sdk::tools::risk::ToolSource::Mcp,
     );
     (runs, tool)
 }
@@ -579,6 +580,7 @@ async fn an_mcp_callback_is_never_saved() {
             kills: None,
         },
         false,
+        fontaine_sdk::tools::risk::ToolSource::Mcp,
     );
     tool.run_with(&mut as_root(), json!({"path": "/tmp/x"}))
         .await

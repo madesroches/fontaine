@@ -315,6 +315,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
             steering: p.steering.clone(),
         })),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
+        host_tools: p.setup.host_tools.clone(),
         pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
         kills: p.kills.clone(),
     })

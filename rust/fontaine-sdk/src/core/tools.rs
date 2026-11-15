@@ -7,7 +7,8 @@ use crate::tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
 use crate::tools::checkpoint::PreImages;
 use crate::tools::gate::ToolGate;
 use crate::tools::git_bash::GitBash;
-use crate::tools::guarded::{Guard, GuardedTool};
+use crate::tools::guarded::{Guard, GuardedTool, guard_callback};
+use crate::tools::host::HostTool;
 use crate::tools::jobs::{AgentKills, AgentWaits, Jobs, WaitWake};
 use crate::tools::kills::KillSwitches;
 use crate::tools::mcp::McpResourceQueries;
@@ -122,6 +123,8 @@ pub struct RegistryParams {
     /// What ends a `job_output` wait early.
     pub wait_wake: Option<Arc<dyn WaitWake>>,
     pub extension: Option<ExtensionTools>,
+    /// The embedding program's tools, by the name `AgentSetup::host_tools` leaked once.
+    pub host_tools: Vec<(&'static str, Arc<dyn HostTool>)>,
     /// Saves a file before `write` or `edit` changes it; `None` saves nothing.
     pub pre_images: Option<Arc<dyn PreImages>>,
     /// The session's kill switches: every guarded tool refuses a killed agent's call.
@@ -138,6 +141,36 @@ fn register_extension<T: Tool + 'static>(tool: T, guard: &Guard) -> Registered {
         risk: guarded.risk(),
         source: ToolSource::Builtin,
         tool: guarded.into_dynamic(),
+    }
+}
+
+/// A host tool behind the same gate as every other. Its risk is never the host's to declare, so it
+/// is the riskiest class, like an MCP tool.
+fn register_host(name: &'static str, tool: Arc<dyn HostTool>, guard: &Guard) -> Registered {
+    let definition = rig_core::completion::ToolDefinition::new(
+        rig_core::message::ToolName::new(name).expect("`build` checked the name is not empty"),
+        tool.description(),
+        tool.parameters(),
+    );
+    let callback: Arc<dyn rig_core::serve::adapters::ToolCallback> = Arc::new(
+        move |_context: &mut rig_core::tool::ToolContext, args: serde_json::Value| {
+            let tool = tool.clone();
+            Box::pin(async move { tool.call(args).await.map(rig_core::tool::ToolOutput::text) })
+                as rig_core::wasm_compat::WasmBoxedFuture<'_, _>
+        },
+    );
+    Registered {
+        name,
+        risk: RiskClass::Arbitrary,
+        source: ToolSource::Host,
+        tool: guard_callback(
+            definition,
+            callback,
+            RiskClass::Arbitrary,
+            guard.clone(),
+            false,
+            ToolSource::Host,
+        ),
     }
 }
 
@@ -184,5 +217,11 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
     if let Some(extension) = params.extension {
         tools.extend(extension.0.into_iter().map(|register| (register.0)(&guard)));
     }
+    tools.extend(
+        params
+            .host_tools
+            .into_iter()
+            .map(|(name, tool)| register_host(name, tool, &guard)),
+    );
     Ok(tools)
 }

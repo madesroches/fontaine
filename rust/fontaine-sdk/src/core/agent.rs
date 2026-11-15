@@ -156,6 +156,10 @@ pub struct AgentSetup {
     pub session_agents: Vec<AgentType>,
     /// MCP servers that live in the host program.
     pub host_mcp: Option<HostMcp>,
+    /// Tools that live in the host program, each under a name already checked and leaked once so
+    /// a plugin reload registers it again without leaking another. Every call is gated as an
+    /// arbitrary-risk tool.
+    pub host_tools: Vec<(&'static str, Arc<dyn crate::tools::host::HostTool>)>,
     /// The builtin tools the root agent is built with; `None` is all of them. A subagent can
     /// never have a tool its parent lacks, so this bounds every agent.
     pub root_tools: Option<Vec<String>>,
@@ -318,6 +322,7 @@ pub(crate) struct Setup {
     /// The agent types a host program defined, which every rebuild of the types includes.
     session_agents: Vec<AgentType>,
     host_mcp: Option<HostMcp>,
+    host_tools: Vec<(&'static str, Arc<dyn crate::tools::host::HostTool>)>,
     root_tools: Option<Vec<String>>,
     env: EnvLookup,
     /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild

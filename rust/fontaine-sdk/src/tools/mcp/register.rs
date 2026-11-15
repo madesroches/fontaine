@@ -17,7 +17,7 @@ use super::servers::signals_transport_failure;
 use crate::tools::gate::{AgentId, ROOT_AGENT};
 use crate::tools::guarded::{Guard, guard_callback};
 use crate::tools::lock::lock_recovering;
-use crate::tools::risk::RiskClass;
+use crate::tools::risk::{RiskClass, ToolSource};
 use rig_core::message::ToolName;
 use rig_core::serve::adapters::ToolCallback;
 use rig_core::tool::{DynamicTool, ManagedToolSink, ManagedToolToken, ToolContext};
@@ -199,6 +199,7 @@ impl<S> GuardedSink<S> {
                 RiskClass::Arbitrary,
                 self.guard.clone(),
                 requires_user_interaction,
+                ToolSource::Mcp,
             )
             .with_liveness(move || probe.is_live()),
         )

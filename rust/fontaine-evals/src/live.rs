@@ -673,6 +673,7 @@ pub async fn start_scanner(live: &Live) -> scanner_stage::ScannerStart {
         env: &env,
         guardian: Some(&live.scanner_model),
         model_base_url: None,
+        notice: None,
     })
     .await
 }

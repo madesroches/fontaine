@@ -26,6 +26,8 @@ impl RiskClass {
 pub enum ToolSource {
     Builtin,
     Mcp,
+    /// A tool the embedding program registered.
+    Host,
 }
 
 impl ToolSource {
@@ -33,6 +35,7 @@ impl ToolSource {
         match self {
             ToolSource::Builtin => "builtin",
             ToolSource::Mcp => "mcp",
+            ToolSource::Host => "host",
         }
     }
 }

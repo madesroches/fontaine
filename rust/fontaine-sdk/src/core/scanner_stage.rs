@@ -172,6 +172,9 @@ pub struct StartParams<'a> {
     /// Where `pg2` downloads its files from; `None` is Hugging Face. A parameter so tests can
     /// point it at a stand-in.
     pub model_base_url: Option<&'a str>,
+    /// Receives the line that says `pg2` is downloading its model. With none it goes to stderr,
+    /// ahead of the terminal UI, so a slow first start does not look hung.
+    pub notice: Option<&'a (dyn Fn(&str) + Send + Sync)>,
 }
 
 /// Sets up the scanner `[guardian] scanner` selects. Nothing here stops a session from
@@ -255,13 +258,16 @@ async fn start_pg2(params: &StartParams<'_>, timeout: Duration) -> ScannerStart 
             let dir = scanner_model::default_dir(params.data_dir);
             let token = (params.env)(token_var).and_then(|v| v.into_string().ok());
             let base_url = params.model_base_url.unwrap_or(scanner_model::BASE_URL);
-            // Straight to stderr rather than a returned notice: it must show before the TUI takes
-            // the terminal, so a slow first start does not look hung.
+            // Not a returned notice: it must show before the TUI takes the terminal.
             if token.is_some() && !scanner_model::missing(&dir).is_empty() {
-                eprintln!(
-                    "fontaine: downloading PromptGuard 2 to {} (first start only)...",
+                let line = format!(
+                    "downloading PromptGuard 2 to {} (first start only)...",
                     dir.display()
                 );
+                match params.notice {
+                    Some(notice) => notice(&line),
+                    None => eprintln!("fontaine: {line}"),
+                }
             }
             let network = match params.config.loaded_network(None) {
                 Ok(network) => network,

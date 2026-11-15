@@ -484,14 +484,15 @@ impl<T: Tool> Tool for GuardedTool<T> {
     }
 }
 
-/// An MCP tool behind the same gate: the callback runs only after the gate allows the call.
-/// The tool keeps its original definition.
+/// An MCP or host tool behind the same gate: the callback runs only after the gate allows the
+/// call. The tool keeps its original definition.
 pub fn guard_callback(
     definition: ToolDefinition,
     callback: Arc<dyn ToolCallback>,
     risk: RiskClass,
     guard: Guard,
     requires_user_interaction: bool,
+    source: ToolSource,
 ) -> DynamicTool {
     let ToolDefinition {
         name,
@@ -517,7 +518,7 @@ pub fn guard_callback(
                 Meta {
                     name: &label,
                     risk,
-                    source: ToolSource::Mcp,
+                    source,
                     annotations: declared.as_deref(),
                     requires_user_interaction,
                 },

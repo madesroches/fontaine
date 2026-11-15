@@ -973,6 +973,7 @@ pub(super) fn retained(
         headless: setup.headless,
         session_agents: setup.session_agents.clone(),
         host_mcp: setup.host_mcp.clone(),
+        host_tools: setup.host_tools.clone(),
         root_tools: setup.root_tools.clone(),
         env: setup.env.clone(),
         searxng: Arc::default(),

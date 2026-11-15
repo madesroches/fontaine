@@ -2,7 +2,9 @@
 //! evals; the documented, stable surface is the crate root.
 
 pub mod agents;
+pub mod assemble;
 pub mod core;
+pub mod error;
 pub mod events;
 pub mod guardian;
 pub mod run;
