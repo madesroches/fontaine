@@ -44,8 +44,7 @@ OS's PR check completes within 20 min of wall-clock latency.
    nightly is green, documented as a readiness step in CONTRIBUTING `## Releasing` and not
    enforced in `release.yml`. The job sets `timeout-minutes` (e.g. 60) as its hang guard, since it
    runs `cargo test`, not nextest, and `defaults.run.working-directory: rust`.
-2. **Keep the cheap pg2 checks on PRs** (`Clippy (pg2)`, `Rustdoc (pg2)`, and `Check (pg2)` on
-   macOS/Windows) so the feature keeps compiling. Remove the "Before Test (pg2)" comment.
+2. **Keep `Clippy (pg2)`, `Rustdoc (pg2)` and `Check (pg2)` on PRs**; remove the "Before Test (pg2)" comment.
 3. **Nextest hang guard**: add `rust/.config/nextest.toml` with `slow-timeout = { period = "60s",
    terminate-after = 10 }` in the default profile (a test running 10 min is killed and named), with a
    `ci` profile only if the default must differ. Per-test overrides are added only if the PR run
@@ -55,9 +54,10 @@ OS's PR check completes within 20 min of wall-clock latency.
    without `Swatinem/rust-cache@v2` (workspace `rust`). During the experiment use `save-if: true`
    (a PR run with `save-if` main-only never saves, so the with-cache leg would always be a cold
    miss) and measure two runs per OS: the first seeds the cache, the second restores it. Keep it
-   only on an OS where the restore run wins by a clear margin, otherwise leave it off; for any
+   only on an OS where the restore run (a run where the cache hit) is at least 3 minutes faster than the
+   no-cache run on that OS, otherwise leave it off; for any
    cache that is kept, set `save-if` to main-only. Any kept cache must be sized against the 10 GB
-   per-repo cap (three OSes plus `sdk-compat` share it).
+   per-repo cap (the three OSes share it).
 5. **Fit the 20 min budget**: first root-cause, then choose levers. Take a per-step breakdown of a
    current Windows run (`gh run view <id> --json jobs`) to find what grew from 17m22 after #180 to
    ~43 min, and do the same for macOS and Linux. Removing the pg2 test step only helps Linux, so it
@@ -76,6 +76,10 @@ OS's PR check completes within 20 min of wall-clock latency.
    `ci.yml`.
 2. In `ci.yml`: delete the `Test (pg2)` step and the "Before Test (pg2)" comment.
 3. Add `rust/.config/nextest.toml` with the slow-timeout.
+3a. Temporarily add a `pull_request` trigger to `pg2.yml` limited to `paths: ['.github/workflows/pg2.yml']`
+   so the workflow runs on the PR and a YAML error cannot reach `main` unexercised; confirm it is green.
+   Remove that trigger in the final commit before merge (the merged file keeps only `schedule` and
+   `workflow_dispatch`).
 4. Push the branch; take the per-step breakdown (Design 5), run the with/without cache experiment
    (Design 4: `save-if: true`, seed run then restore run), apply only measured levers, compare job durations to the 20 min target and the
    issue baseline, and record the numbers in the PR description.
@@ -104,9 +108,11 @@ OS's PR check completes within 20 min of wall-clock latency.
 
 - 2026-11-14 (user): the latency target is 20 min per PR run on every OS.
 - 2026-11-14: pg2 tests leave per-PR CI; pg2 clippy, rustdoc and check stay. (Issue #652 decision.)
-- 2026-11-14 AFK: no `rust-cache` unconditionally; it is a with/without experiment on the PR and is kept only on an OS where it wins by a clear margin, because PR #180 measured cold runs beating cached ones on every OS.
+- 2026-11-14 AFK: no `rust-cache` unconditionally; it is a with/without experiment on the PR and is kept only on an OS where the cache-hit restore run is at least 3 min faster than the no-cache run, because PR #180 measured cold runs beating cached ones on every OS.
 - 2026-11-14 AFK: `deny`, rustdoc, signing and evals are not split into new jobs; reason: keeps cross-OS coverage and the required-check set unchanged, as #180 also declined splitting.
 - 2026-11-14 AFK: `pg2.yml` runs on `schedule` and `workflow_dispatch` only (no path-filtered push); the release gate (latest nightly green) is a manual check documented in CONTRIBUTING, accepted and not enforced in `release.yml`.
+- 2026-11-14 AFK: `pg2.yml` gets a temporary `pull_request` trigger limited to `paths: ['.github/workflows/pg2.yml']` during the PR so it is exercised before merge, and the trigger is removed in the final commit; reason: schedule/dispatch only exist on the default branch, so a YAML error would otherwise reach `main` unexercised, and no permanent trigger is left.
+- 2026-11-14 AFK: "wins by a clear margin" means the cache-hit restore run is at least 3 min faster than the no-cache run on that OS; otherwise the cache stays off (the default); reason: the margin was undefined and the conservative reading keeps #180's no-cache result unless the gain is substantial.
 
 ## Documentation
 
@@ -122,17 +128,18 @@ OS's PR check completes within 20 min of wall-clock latency.
 ## Testing Strategy
 
 Workflow YAML cannot be unit tested. Verification is the PR's own CI run: all required checks stay
-green and the step timings are compared against the issue baseline. `cargo nextest run` locally
-confirms the nextest config parses (`cargo nextest show-config test-groups` or a plain run). The
-pg2 workflow is exercised by `workflow_dispatch` after merge.
+green and the step timings are compared against the issue baseline. A plain `cargo nextest run` locally
+(or `cargo nextest list`) confirms the nextest config parses. The
+pg2 workflow is exercised on the PR through the temporary path-limited `pull_request` trigger
+(Implementation step 3a), and again by `workflow_dispatch` after merge.
 
 ## Manual Verification
 
 1. After merge, trigger `gh workflow run pg2.yml` and confirm it completes green: the schedule and
-   dispatch triggers only exist on the default branch, so this cannot run on the PR.
+   dispatch triggers only exist on the default branch, so only the temporary PR trigger could run it
+   before merge. Also confirm the merged file no longer has the `pull_request` trigger.
 2. If a cache was kept on any OS (with `save-if` main-only), confirm the first `main` push saves it
-   and the next run restores it (cache step log shows a hit). The experiment's hit was already
-   observed on the PR's second run.
+   and the next run restores it (cache step log shows a hit).
 
 ## Open Questions
 
