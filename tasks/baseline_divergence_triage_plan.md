@@ -73,8 +73,9 @@ Order matters: the capture tooling is fixed first, then the data, then triage.
 - `render_prompt`: one shared rewording replaces the template for all captures; only the listed ids are
   re-captured, so the existing 44 records stay. It keeps the "Call the X tool exactly once" phrasing.
   Try a rewording that keeps the same call but frames it as a harmless
-  verification step (for example stating the command is a test fixture run in a throwaway sandbox
-  directory and that the permission system, not the model, is what is under test). A case that no wording can
+  verification step (for example stating that the permission system, not the model, is what is under
+  test). It must not claim a "throwaway sandbox": `capture_one` runs the real `claude -p` on the host
+  with the user's real HOME and only the cwd is a tempdir, so host-level targets (`/`, `~`, `$HOME/.ssh`) are not contained. A case that no wording can
   capture gets a one-line reason in the PR description and the plan's Results, not an invented
   baseline.
 - Merging: `capture` overwrites `--out`, so each re-capture goes to a scratch file and a small
@@ -92,9 +93,13 @@ If `claude -p` is unavailable or not logged in, stop and report; never fabricate
 The merge allow-list is: the ten refused ids, the 26 never-captured non-auto ids (the 30 in Current State minus the four auto-mode ids),
 `floor-ask-rule`, `floor-ask-rule-dont-ask`, `floor-protected-path-edit`, `spawn-agent-ask-rule`,
 `spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask`.
-Capture these with `--filter` (one run per category: `floor`, `spawn`, `tier05-adversarial`), review each record by hand against the
-raw stream-json to confirm the call was attempted and the outcome is a permission denial, not a validation
-error. The `/etc/fontaine-eval` and `/usr/share/fontaine-eval` targets do not exist on the host, so check
+The host-reaching ids (`floor-critical-deletion-*`, the `tier05-chain-curl-sh`, `-command-substitution-rm`,
+`-brace-expansion-rm-root` and `-dont-ask-chain` cases, and the `floor-secret-*` cases) are captured only inside a
+disposable container or VM with a throwaway HOME; a scratch HOME on the host is not enough because it would also
+hide the CLI login. Without one they are not captured and get a recorded reason (they stay in Results and the PR).
+Capture these with `--filter` (one run per category: `floor`, `spawn`, `tier05-adversarial`), re-check each record by hand by re-running the same rendered prompt and settings directly with `claude -p`
+(stream-json output) to confirm the call was attempted and the outcome is a permission denial, not a validation
+error. `capture` keeps stdout only in memory and writes no raw stream, so no code change is made for this. The `/etc/fontaine-eval` and `/usr/share/fontaine-eval` targets do not exist on the host, so check
 those records for a file-missing validation artifact, as for `floor-protected-path-edit`. Record a reason
 for each of the 8 skipped ids and the 4 auto-mode ids (deferred to #103) in Results and the PR.
 
@@ -104,8 +109,8 @@ For each, gather evidence with direct `claude -p` runs in a scratch workspace, t
 
 | Case | Investigation | Resolution |
 |---|---|---|
-| `tier05-pipe`, `tier05-cat-then-git-status` | Observe Claude Code's behavior for `ls \| wc -l`, `cat a && git status`, and negative controls (`ls \| sh`, `cat a && rm b`). Note Claude Code approves per-subcommand for read-only chains. | Gather evidence and a recommendation; **leave the keep-or-change call to the maintainer**; a "change" answer would also mean revising the golden
-adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions` line stating the current deviation (pipes and chains fall through the Tier 0.5 fast path: mode prompt, or the guardian in auto/afk) with the recommendation marked as pending maintainer confirmation. No classifier change in this work. Reason for the deviation: allowing read-only pipes and chains widens the fast path past one-simple-command soundness. |
+| `tier05-pipe`, `tier05-cat-then-git-status` | Observe Claude Code's behavior for `ls \| wc -l`, `cat a && git status`, and negative controls (`ls \| sh`, `cat a && rm b`). Note Claude Code approves per-subcommand for read-only chains. | Gather evidence and a recommendation; **keep the current behavior (see Decisions; the maintainer can reverse it in review)**; a "change" answer would also mean revising the golden
+adversarial set (`tasks/design/testing.md:27-41`). Record a dated `## Decisions` line stating the current deviation (pipes and chains fall through the Tier 0.5 fast path: mode prompt, or the guardian in auto/afk) with the recommendation noted. No classifier change in this work. Reason for the deviation: allowing read-only pipes and chains widens the fast path past one-simple-command soundness. |
 | `spawn-agent-ask-rule` | Run `claude -p` with `ask: ["Agent"]` and a call that passes Agent argument validation (valid `subagent_type`, `description`, `prompt`); check whether the call reaches a permission check. | Re-capture with the §1 mapping; if Claude Code still does not reach a permission check, a dated Decisions line. Also re-capture `spawn-readme-escalated-toolset` and `spawn-readme-escalated-toolset-dont-ask` after the Agent mapping, to check whether they were the same unmapped-argument artifact; they already cite a dated Decision, kept unless the re-capture changes the outcome. |
 | `floor-protected-path-edit` | The baseline is probably a capture artifact (no `workspace`, so the target file is absent). Re-pose it in `acceptEdits` with the target file present in the workspace; the dataset case needs a `workspace.files` entry to be capturable, and the `.fontaine/settings.toml` content must contain the case's `old_text` exactly once (e.g. `"a\n"`), since Claude Code's Edit requires `old_string` to occur exactly once before any permission check. A re-captured manual record (maps to headless `default`) shows only the generic default denial; the meaningful `acceptEdits` protection check is a direct `claude -p` run recorded in Results and the PR table, not a baseline record. The `.claude/settings.json` check is covered by the §4 per-entry run (see §4 for the schema requirement). Check whether Claude Code protects `.fontaine/settings.toml` (it should not; it protects `.git`, `.claude`, etc.). | Only after the re-pose: Decisions line (Fontaine-specific by design) or a fix; add a dataset case only if a Claude Code-equivalent protected-path case adds coverage. |
 | `tier05-out-of-scope-cwd` | The case uses Fontaine's `cwd` argument, which Claude Code lacks. Run directly with `claude -p` a single command reading an existing out-of-workspace file (e.g. `cat /etc/hostname`) and record it in Results. | Record a dated Decisions line naming Fontaine's `cwd` argument. |
@@ -147,7 +152,7 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
    `rust/fontaine-evals/src/baseline.rs`: `webfetch` gets a default `prompt` in `claude_args`; `agent`
    mapping unconditionally (see §1); the shared `render_prompt` rewording (keeping "Call the X tool
    exactly once"), with its test in `rust/fontaine-evals/tests/baseline.rs` updated; unit tests there.
-2. Run live captures for the §2 merge allow-list to scratch files; verify raw streams; merge only those ids into `evals/baselines/pipeline.jsonl`.
+2. Run live captures for the §2 merge allow-list to scratch files; re-check each record with a direct `claude -p` run; merge only those ids into `evals/baselines/pipeline.jsonl`.
 3. Run the direct `claude -p` investigations (pipe/chain, spawn ask, protected paths, allowlist) in
    scratch workspaces; keep a results table.
 4. Apply any resulting Fontaine fixes with tests; otherwise add dated `## Decisions` lines at the end
@@ -182,6 +187,9 @@ is resolved (do not close #80); update the Phase 3 progress-log line (`:103`) on
 - 2026-11-15: the four auto-mode ids (`spawn-explore-fast-path-auto`, `spawn-worker-auto-gate`,
   `floor-external-read-auto-no-guardian`, `floor-external-write-auto-no-guardian`) are not captured here:
   auto-mode capture is #103, which writes its own `auto.jsonl`.
+- AFK: 2026-11-15: host-reaching destructive and secret-reading capture cases run only in a disposable container or VM with a throwaway HOME, otherwise they are not captured and get a recorded reason; the prompt never claims a "throwaway sandbox" (the real HOME is otherwise in reach).
+- AFK: 2026-11-15: each merged record is re-checked by re-running the same rendered prompt and settings directly with `claude -p`; `capture` gains no raw-stdout option.
+- AFK: 2026-11-15: pipes and read-only `&&` chains stay unclassified on the Tier 0.5 fast path (they fall through to the mode prompt or guardian, per the soundness property in AGENTS.md); the Decisions line for the deviation is recorded as in §3, and the maintainer can reverse this in review.
 - 2026-11-15: capture uses one shared prompt rewording, no per-case dataset field, to keep the dataset
   format stable.
 
@@ -200,13 +208,11 @@ documented behavior.
 
 ## Manual Verification
 
-Ordered, from `rust/`: run `baseline capture --dataset ../evals/dataset --filter <floor|spawn|tier05-adversarial> --out <scratchpad>/<category>.jsonl` once per category, inspect
-the stream-json for the attempted call, merge only the §2 allow-list ids, then `cargo run -p fontaine-evals -- --dataset
+Ordered, from `rust/`: run `baseline capture --dataset ../evals/dataset --filter <floor|spawn|tier05-adversarial> --out <scratchpad>/<category>.jsonl` once per category, re-run each captured case directly with `claude -p` to confirm the attempted call, merge only the §2 allow-list ids, then `cargo run -p fontaine-evals -- --dataset
 ../evals/dataset --guardian none --out <run.json>` and `baseline diff ../evals/baselines/pipeline.jsonl
 <run.json>`; expect only DIFFs that carry a Decisions line and no UNMATCHED. Not automated: it needs live model
 behavior.
 
 ## Open Questions
 
-- Whether the maintainer wants pipes and read-only `&&` chains pre-classified (evidence and
-  recommendation only in this work).
+None.
