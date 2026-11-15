@@ -58,7 +58,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               anything else falls through) AND argv[0]+subcommand ∈ curated read-only set
               (`ls`, `pwd`, `wc`, `file`, `rg`/`grep`, `cat`/`head`/`tail`, plus the curated read-only
               `git` subcommands `status`, `diff`, `log`, `show`, `ls-files`, `branch`, `rev-parse`, `tag`;
-              any other git invocation goes to the guardian) AND every argument word is literal text only (plain or quoted; no parameter expansion `$…`/`${…}`, no tilde, no brace pattern, no unquoted glob chars — brush-parser brace expansion is detected via `parse_brace_expansions`) AND every remaining token is either a path argument passing
+              any other git invocation goes to the guardian; the curated git subcommands run in-process and never spawn `git`, so repo-config commands such as `core.fsmonitor` never execute) AND every argument word is literal text only (plain or quoted; no parameter expansion `$…`/`${…}`, no tilde, no brace pattern, no unquoted glob chars — brush-parser brace expansion is detected via `parse_brace_expansions`) AND every remaining token is either a path argument passing
               the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
               never qualify) or a flag on a per-command read-only flag allowlist — any flag not
               explicitly allowlisted for that command, any glob/`~`/wildcard token, or any

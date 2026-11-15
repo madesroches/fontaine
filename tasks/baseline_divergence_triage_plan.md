@@ -274,7 +274,7 @@ whose new content was a valid `{"env":{}}`) for every entry: `.git` (also nested
 config/data-dir and `notebook_edit` protections are not covered: an out-of-root home write prompts in
 Claude Code anyway.
 
-### Tier 0.5 allowlist (`default` mode, 105 entries)
+### Tier 0.5 allowlist (`default` mode, 103 allowlist entries plus 2 non-allowlisted probes)
 
 98 auto-approved. Prompted by Claude Code though Fontaine fast-paths them (Fontaine looser, recorded):
 `file -m`, `file --magic-file`, `rg --file`, `rg --ignore-file`, `rg -N`, `rg -s`, `rg -x`. Approved by

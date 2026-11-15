@@ -38,7 +38,7 @@ never pre-classified), non-allowlisted and write-capable flags (`file -f`/`--fil
 reads → guardian), `file -m`/`--magic-file`, `rg -f`/`--file`/`--ignore-file` and `grep -f`/`--file` (an in-scope value pre-classifies, an out-of-scope value falls through to the guardian), `rg --pre`,
 `git diff --output`/`--ext-diff`, `sort -o out`, `git log --output` → guardian), a relative path
 under an out-of-scope `cwd` (falls through), redirections and backgrounding (`ls > out.txt`,
-`ls &`), and git config-execution cases (a repo `.git/config` with `core.fsmonitor = <cmd>`; one with `log.showSignature = true` plus `gpg.program = <cmd>`; one with a `.gitattributes` filter driver — `git status` / `git log` / `git diff` fast-path as curated read-only subcommands, expected allow and recorded `allowed` by `claude -p`).
+`ls &`), and git config-execution cases (a repo `.git/config` with `core.fsmonitor = <cmd>`; one with `log.showSignature = true` plus `gpg.program = <cmd>`; one with a `.gitattributes` filter driver — `git status` / `git log` / `git diff` fast-path as curated read-only subcommands, expected allow and recorded `allowed` by `claude -p`; safe because the fast path runs them in-process through `gix` and never spawns `git`, so none of those programs executes).
 
 Integration tests drive the core through headless `-p` against scripted `wiremock` endpoints (shared helper `rust/fontaine/tests/common/mod.rs`, [Phase 1](../completed/phases/phase1_model_headless.md); fail-closed runs in [Phase 4](../completed/phases/phase4_guardian.md)).
 `rig-cassette` record/replay covers full runs against real provider wire behavior; the harness

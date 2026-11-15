@@ -61,9 +61,9 @@ pub fn claude_tool(tool: &str) -> Option<String> {
         .map(|(_, theirs)| (*theirs).to_string())
 }
 
-/// A Fontaine rule as Claude Code rules. A `write` rule with a specifier is an `Edit` rule. A `shell` deny or ask rule without a trailing `*` is a
-/// prefix match in Fontaine but exact in Claude Code, so it becomes both `Bash(w)` and
-/// `Bash(w *)`.
+/// A Fontaine rule as Claude Code rules. A `write` rule with a specifier is an `Edit` rule. A
+/// `shell` deny or ask rule without a trailing `*` is a prefix match in Fontaine but exact in
+/// Claude Code, so it becomes both `Bash(w)` and `Bash(w *)`.
 pub fn claude_rules(posture: &str, rule: &str) -> Result<Vec<String>, String> {
     let parsed = parse_rule(rule).map_err(|e| e.to_string())?;
     let tool = claude_tool(&parsed.tool).ok_or_else(|| {
