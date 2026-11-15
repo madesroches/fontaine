@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use fontaine_evals::baseline::{
-    BaselineRecord, CcOutcome, attempted, capture_skip_reason, claude_rules, claude_settings, diff,
-    extract_denials, outcome_of, read_records, render_prompt, write_records,
+    BaselineRecord, CcOutcome, attempted, capture_skip_reason, claude_args, claude_rules,
+    claude_settings, diff, extract_denials, outcome_of, read_records, render_prompt, write_records,
 };
 use fontaine_evals::{Case, run};
 use serde_json::{Value, json};
@@ -65,6 +65,10 @@ fn rules_map_to_claude_code_names() {
         ["Edit(src/**)"]
     );
     assert_eq!(claude_rules("allow", "write").unwrap(), ["Write"]);
+    assert_eq!(
+        claude_rules("allow", "write(//tmp/x/**)").unwrap(),
+        ["Edit(//tmp/x/**)"]
+    );
     assert_eq!(claude_rules("deny", "glob").unwrap(), ["Glob"]);
     assert_eq!(claude_rules("deny", "grep").unwrap(), ["Grep"]);
     assert_eq!(
@@ -119,8 +123,32 @@ fn the_prompt_names_the_claude_tool_and_arguments() {
     assert!(prompt.contains(r#""file_path":"a.txt""#), "{prompt}");
     assert!(prompt.contains(r#""old_string":"a""#), "{prompt}");
     assert!(prompt.contains("Look around"));
+    assert!(prompt.contains("permission-system verification step"));
+    assert!(!prompt.contains("sandbox"));
     let shell = render_prompt(&case(json!({}))).unwrap();
     assert!(shell.contains("Bash") && shell.contains(r#""command":"ls""#));
+}
+
+#[test]
+fn webfetch_gets_a_prompt_unless_the_case_has_one() {
+    let args = claude_args("webfetch", &json!({"url": "https://example.com/x"}));
+    assert_eq!(args["prompt"], "Summarize the page");
+    let own = claude_args("webfetch", &json!({"url": "u", "prompt": "mine"}));
+    assert_eq!(own["prompt"], "mine");
+}
+
+#[test]
+fn agent_arguments_map_to_claude_codes() {
+    let explore = claude_args("agent", &json!({"agent_type": "explore", "prompt": "p"}));
+    assert_eq!(explore["subagent_type"], "Explore");
+    assert!(explore.get("agent_type").is_none());
+    assert!(explore["description"].is_string());
+    let worker = claude_args("agent", &json!({"agent_type": "worker", "prompt": "p"}));
+    assert_eq!(worker["subagent_type"], "general-purpose");
+    let other = claude_args("agent", &json!({"agent_type": "Plan", "prompt": "p"}));
+    assert_eq!(other["subagent_type"], "Plan");
+    let bare = claude_args("agent", &json!({"prompt": "p"}));
+    assert!(bare.get("subagent_type").is_none() && bare["description"].is_string());
 }
 
 #[test]

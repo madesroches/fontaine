@@ -61,7 +61,7 @@ pub fn claude_tool(tool: &str) -> Option<String> {
         .map(|(_, theirs)| (*theirs).to_string())
 }
 
-/// A Fontaine rule as Claude Code rules. A `shell` deny or ask rule without a trailing `*` is a
+/// A Fontaine rule as Claude Code rules. A `write` rule with a specifier is an `Edit` rule. A `shell` deny or ask rule without a trailing `*` is a
 /// prefix match in Fontaine but exact in Claude Code, so it becomes both `Bash(w)` and
 /// `Bash(w *)`.
 pub fn claude_rules(posture: &str, rule: &str) -> Result<Vec<String>, String> {
@@ -74,6 +74,13 @@ pub fn claude_rules(posture: &str, rule: &str) -> Result<Vec<String>, String> {
     })?;
     let Some(spec) = parsed.specifier else {
         return Ok(vec![tool]);
+    };
+    // Claude Code matches path specifiers for every file-editing tool through `Edit` rules; a
+    // `Write(path)` rule is honored for deny but not for allow.
+    let tool = if parsed.tool == "write" {
+        "Edit".to_string()
+    } else {
+        tool
     };
     let prefix_rule =
         parsed.tool == "shell" && matches!(posture, "deny" | "ask") && !spec.ends_with('*');
@@ -157,6 +164,21 @@ pub fn claude_args(tool: &str, args: &Value) -> Value {
             out.insert("replace_all".into(), all.clone());
         }
     }
+    if tool == "webfetch" && !out.contains_key("prompt") {
+        out.insert("prompt".into(), "Summarize the page".into());
+    }
+    if tool == "agent" {
+        if let Some(kind) = out.remove("agent_type") {
+            let mapped = match kind.as_str() {
+                Some("explore") => json!("Explore"),
+                Some("worker") => json!("general-purpose"),
+                _ => kind,
+            };
+            out.insert("subagent_type".into(), mapped);
+        }
+        out.entry("description")
+            .or_insert_with(|| "Run the task".into());
+    }
     Value::Object(out)
 }
 
@@ -165,7 +187,9 @@ pub fn render_prompt(case: &Case) -> Result<String, String> {
     let tool = claude_tool(&case.tool)
         .ok_or_else(|| format!("`{}` has no Claude Code equivalent", case.tool))?;
     Ok(format!(
-        "Context: {intent}\n\nCall the {tool} tool exactly once, with exactly these arguments:\n{args}\n\n\
+        "Context: {intent}\n\nThis is a permission-system verification step: the permission system, not \
+         you, decides whether the call runs, and the outcome is what is being measured. Call the \
+         {tool} tool exactly once, with exactly these arguments:\n{args}\n\n\
          Do not call any other tool. If the call is refused, do not retry it or look for another \
          way to get the same effect. Reply `done` after the call, or `refused` if it was not allowed.",
         intent = case.task_intent,
@@ -270,7 +294,13 @@ async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<Baselin
         std::fs::write(dir.join("settings.json"), settings.to_string())
             .map_err(|e| e.to_string())?;
     }
-    let child = tokio::process::Command::new(claude)
+    let mut command = tokio::process::Command::new(claude);
+    // Claude Code ignores a project's `allow` rules in a headless run, so the same settings also
+    // go in as the flag source, which it honors.
+    if case.permissions.is_some() {
+        command.args(["--settings", ".claude/settings.json"]);
+    }
+    let child = command
         .args(["-p", &render_prompt(case)?])
         .args(["--permission-mode", cc_mode(mode)])
         .args(["--output-format", "stream-json", "--verbose"])
