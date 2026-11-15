@@ -113,7 +113,10 @@ Decisions that shape this surface:
 - **Event stream = `headless-v1`.** `Event` is a typed, `#[non_exhaustive]` enum with one variant
   per output kind (12 of the 13 kinds of the closed `oneOf`: all except `user_input`, the input
   line, which `HeadlessV1Sink` never prints; no notice kind). It lives in
-  `fontaine_sdk::events`, and `HeadlessV1Sink` becomes a thin writer of
+  `fontaine_sdk::events`, together with the whole `SessionEvent` -> `Event` conversion (assistant,
+  assistant_delta with the `include_partial_messages` gate, tool_call, tool_result, model_call and
+  `gate_decision_event`, besides init/result/usage/goal/afk). `HeadlessV1Sink` and the embedded
+  channel sink both call it, and `HeadlessV1Sink` becomes a thin writer of
   `serde_json::to_string(&event)`. `Event` serializes untagged (or by hand-written `Serialize`),
   each struct declaring its payload fields first and `type`, `schema_version`, `session_id` last,
   matching `event()` in `headless.rs` (serde_json `preserve_order`); a `#[serde(tag = "type")]`
@@ -139,8 +142,8 @@ Decisions that shape this surface:
   `edit`/`write`/`notebook_edit`, `descriptor::find` for path-free, `afk_report.rs`,
   `spawn_changes_state`), so `build()` rejects with `EmbedError::Config` a host tool whose name
   matches a descriptor row or the `mcp__` prefix, or duplicates another host tool, or any name outside `[A-Za-z0-9_-]`, empty, or longer than 64 characters. The registry change is
-  additive: a `host_tools: Vec<Arc<dyn HostTool>>` field on `AgentSetup`, kept in the retained
-  setup so plugin reloads rebuild it, and subject to `root_tools`/toolset cutting like built-ins, so
+  additive: a `host_tools: Vec<(&'static str, Arc<dyn HostTool>)>` field on `AgentSetup` (the name leaked once in
+  `build()`), kept in the retained setup so plugin reloads rebuild it without leaking again, and subject to `root_tools`/toolset cutting like built-ins, so
   a subagent never has a host tool its parent lacks.
 - **No way to loosen security.** The builder exposes no guardian-off switch, no floor override, no
   `bypass` mode and no project-scope loosening. Project settings still load as tighten-only; user
@@ -153,10 +156,8 @@ Decisions that shape this surface:
   facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
-  writes no stderr lines when an approver is supplied (without one, `DenyAll`'s stderr defaults apply): the assembly warnings reach the approver's `warn` from `build()`, the run loop's lines reach the approver's `warn`
-  through the embedded channel sink, and the PromptGuard download message in `scanner_stage`
-  through the `StartParams` notice callback the embedded session sets; without an approver the
-  `DenyAll` defaults apply, which an embedder replaces by supplying one.
+  writes nothing to stderr itself; every line goes through the approver's `warn`, whose trait default writes to stderr unless the embedder overrides it (`DenyAll`'s defaults apply when no approver is supplied): the assembly warnings reach it from `build()`, the run loop's lines through the embedded channel sink, and the PromptGuard download message in `scanner_stage`
+  through the `StartParams` notice callback the embedded session sets.
 - **Builder validation.** `build()` applies the CLI's checks as `EmbedError::Config`: `max_turns > 0`,
   `max_budget_usd` finite and non-negative, `json_schema` a JSON object convertible to a `Schema`.
 
@@ -220,7 +221,9 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    with only the listed renames and snapshot re-accepts; no assertion changes.
 2. Define typed `Event` structs for the 12 output kinds (all but `user_input`) in `fontaine-sdk::events` and move their
    builders (`init_event`, `result_event`, `usage_event`, the goal and AFK helpers, `Outcome`/`Usage`)
-   out of `fontaine/src/headless.rs`; make `Outcome`, `Usage` and `Subtype` and their fields public; rewire `HeadlessV1Sink`. First capture today's builder output for each of the 12 kinds as literal
+   and the whole `SessionEvent` -> `Event` conversion (assistant, assistant_delta with the
+   `include_partial_messages` gate, tool_call, tool_result, model_call, `gate_decision_event`)
+   out of `fontaine/src/headless.rs`, so `HeadlessV1Sink` and the embedded channel sink share it; make `Outcome`, `Usage` and `Subtype` and their fields public; rewire `HeadlessV1Sink`. First capture today's builder output for each of the 12 kinds as literal
    strings, then add the unit test that serializes each `Event` variant built from fixed values and
    asserts equality with them.
 3. Move the headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel, `EventSink`,
@@ -238,7 +241,9 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    pre-build `AgentSetup` tweak hook; the CLI, `claude_compat` and the TUI path call them; the
    staged-plugin swap stays in the CLI. `scanner_stage::StartParams` gains an optional notice callback for
    the PromptGuard download line (`scanner_stage.rs:261`, a direct `eprintln!` today): embedded sessions
-   set it to the approver's `warn`, the CLI leaves it unset so its stderr line stays. No behavior change.
+   set it to the approver's `warn`, the CLI leaves it unset so its stderr line stays. Update the other `StartParams` literal sites
+   (`fontaine-sdk/tests/core_scanner_model.rs:67`, pg2 only, and `fontaine-evals/src/live.rs:653`).
+   No behavior change.
 5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
    `guard_callback` (new `ToolSource` parameter, new `ToolSource::Host`) at `RiskClass::Arbitrary`;
@@ -263,9 +268,13 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
 - every `Cargo.toml` and import in `fontaine`, `fontaine-tui`, `fontaine-evals`
 - `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine/Cargo.toml`
 - `rust/fontaine-sdk/src/core/agent.rs`, `core/agent/build.rs`, `core/agent/setup.rs`,
-  `core/tools.rs`, `tools/guarded.rs`, `tools/risk.rs`, `tools/mcp/register.rs` (all under
+  `core/tools.rs`, `core/scanner_stage.rs`, `tools/guarded.rs`, `tools/risk.rs`, `tools/mcp/register.rs` (all under
   `fontaine-sdk/src/`), `fontaine-sdk/tests/guarded.rs` (the `guard_callback` callers) and
   `fontaine-sdk/tests/core_choke_point.rs` (host tools)
+- the `scanner_stage::StartParams` literal sites (`fontaine-sdk/tests/core_scanner_model.rs`,
+  `fontaine-evals/src/live.rs`) and the `AgentSetup`/`RegistryParams` literal sites
+  (`fontaine-tui/src/ui/tests.rs`, `fontaine-tui/tests/common/mod.rs`,
+  `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-sdk/tests/extensions.rs`)
 - `docs/telemetry.md` and `tasks/design/observability.md` (new `host` value of `tool_source`)
 - `fontaine-evals/src/runner.rs`, `evals/README.md`, `docs/evals.md`, `docs/guardian.md`
   (`fontaine-guardian/` paths)
