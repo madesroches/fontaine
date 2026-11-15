@@ -51,10 +51,10 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   lists fold into one. It also rewrites every `fontaine_{core,tools,agents,guardian}::` path inside the four moved trees
   (core uses `fontaine_guardian::`; agents uses `fontaine_tools::` in registry/spawn/tasks/tree) to
   `crate::{core,tools,agents,guardian}::`;
-  moves `fontaine-core/prompts/` to `fontaine-sdk/prompts/core/` (`include_str!("../../../prompts/core/...")` in
+  moves `fontaine-core/prompts/` to `fontaine-sdk/prompts/core/` (`include_str!("../../prompts/core/...")` in
   `core/prompt.rs`, `core/goal.rs`), `fontaine-guardian/prompts/` to `fontaine-sdk/prompts/guardian/` and
-  `fontaine-guardian/data/` to `fontaine-sdk/data/` (`include_str!("../../../prompts/guardian/...")` and
-  `"../../../data/guardian_models.toml"` in `guardian/{critique,env_scan,evasion,profile,scanner,models}.rs`); fixes the `../../../research/`
+  `fontaine-guardian/data/` to `fontaine-sdk/data/` (`include_str!("../../prompts/guardian/...")` and
+  `"../../data/guardian_models.toml"` in `guardian/{critique,env_scan,evasion,profile,scanner,models}.rs`); fixes the `../../../research/`
   include in core's `usage_limit.rs` for the extra directory level; renames and re-accepts the 7
   insta snapshots in `fontaine-guardian/src/snapshots` (`fontaine_guardian__prompt_builder__tests__...`);
   renames the colliding integration tests (`choke_point.rs`, `lsp.rs`, `network.rs`, `scanner.rs`,
