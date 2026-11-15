@@ -96,6 +96,16 @@ Keep the target recognition and drop the "cannot be shown not to" branches:
   (`a_missing_home_makes_home_targets_critical`, :993-1000, and the wildcard ones) are rewritten to
   assert an empty result. The existing `rm -rf {/,x}` brace case: brush yields a
   non-literal word, so it adds nothing, and the guardian sees the raw command.
+- Home-relative targets count as literal for this walk: `~`, `~/<literal>`, `$HOME`, `${HOME}`
+  (bare or double-quoted) and `$HOME/<literal>` resolve against `CriticalEnv.home`, as
+  `expand_home` does for PowerShell. `ShellWord` (`fontaine-tools/src/preclassify.rs:28`) gains
+  `pub home_relative: Option<String>`: the rest of the word after the home prefix (empty or
+  `/...`) when the word is exactly one bare-`~` tilde expansion or one modifier-free `HOME`
+  parameter expansion followed only by glob-free literal text; `literal` stays `None` for it.
+  `~user` and any other expansion leave it `None`. The walk reads every command even when
+  `unanalyzed` is set (tilde and parameter expansion set it). `$HOME` forms resolve only when the
+  analysis has no assignment (`analysis.assignments`), since `HOME=/tmp; rm -rf $HOME` would be
+  misread; with no home in `CriticalEnv` they add nothing.
 - `ToolCallSummary` (`fontaine-guardian/src/request.rs`) gains
   `pub critical_deletions: Vec<String>`. Its doc comment says the harness computes it from the call
   itself, as for `destructive`. The core fills it where it builds the summary
@@ -105,10 +115,14 @@ Keep the target recognition and drop the "cannot be shown not to" branches:
   (e.g. `fontaine-guardian/src/{profile.rs,screen.rs}`, `fontaine-guardian/tests/common/mod.rs`,
   `fontaine-core/tests/{account_session,claude_subscription,opencode_go,ollama_schema}.rs`,
   `fontaine-evals/src/live.rs`).
-- Full profile: the `Destroy Pre-existing Files` entry (`rules.rs:42`) gains a sentence: a
-  `critical_deletions` entry is a harness-resolved deletion of the file system root, a top-level
-  directory, the home directory or a workspace root or its parent, and it is this rule whatever the
-  user's messages say.
+- Full profile: a new `DEFAULT_HARD_DENY` entry (`rules.rs:33`) under the existing
+  `Destroy Pre-existing Files` label: a `critical_deletions` entry is a harness-resolved deletion
+  of the file system root, a top-level directory, the home directory or a workspace root or its
+  parent, and it is always Deny, whatever the user's messages say. Hard deny already shares labels
+  with soft deny (`Data Exfiltration`, `Download+Execute`, `Tunnel/Reverse Shell`,
+  `Secret Exposure`), so `RuleLabel`, AFK severity and the eval categories do not change, and
+  hard-deny defaults are always kept (`List::keeps_defaults`), so no user list removes it. The
+  soft-deny `Destroy Pre-existing Files` entry (`rules.rs:42`) is unchanged.
 - Minimal profile: `guardian_minimal.md` gains a sibling item after `class=bind-mount-symlink` in its "Containment integrity" list
   (rule `Container Escape`), `class=host-data-delete`: a `critical_deletions` entry deletes a
   workspace root or the host data mounted around it, and the Deny explanation ends with
@@ -140,9 +154,13 @@ without a version bump, as it did for `plan_block`: no event can carry it any mo
 
 `text_operands` (`destructive.rs:103`) learns `grep`, `egrep`, `fgrep` and `rg`: with no `-e`/
 `--regexp`/`-f`/`--file`, the first non-option operand is the pattern (text). The value after
-`-e`/`--regexp` is always text. Option skipping is per program: the value-taking options come from
-the preclassifier's grep/rg Spec tables (`preclassify.rs:758-813`), including the `--opt=value`
-and `-Xvalue` forms, and an attached `-e`/`--regexp=` counts as an explicit pattern. This uses the
+`-e`/`--regexp` is always text. Option skipping is per program: `destructive.rs` keeps its own list
+of value-taking options for grep/egrep/fgrep (`-e`, `-f`, `-m`, `-A`, `-B`, `-C`, `-d`, `-D`,
+`--regexp`, `--file`, `--max-count`, `--include`, `--exclude`, `--exclude-dir`, ...) and rg (`-e`,
+`-f`, `-g`, `--glob`, `-m`, `-M`, `-j`, `-r`, `-t`, `--type`, `-T`, `--type-not`, `-A`, `-B`, `-C`,
+...), including the `--opt=value` and `-Xvalue` forms, and an attached `-e`/`--regexp=` counts as
+an explicit pattern. It does not reuse the preclassifier's private fast-path Spec tables, which
+omit options the fast path does not allow. This uses the
 same index-based logic as the `sed -e` branch. No other shell-word handling changes. The issue's
 glob-prefix path (`.../deps/agents-`) cannot be produced by current code: a glob word is
 non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal words
@@ -153,7 +171,9 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 
 1. **Critical-target analysis.** Create `rust/fontaine-core/src/critical.rs` and
    `critical/powershell.rs` by moving `CriticalEnv`, `DELETERS`, `is_critical*`, `same_path`,
-   `starts_with` and the target walk out of `floor.rs`/`floor/powershell.rs`. Reshape `scan`/`check_targets`
+   `starts_with` and the target walk out of `floor.rs`/`floor/powershell.rs`. Add
+   `ShellWord.home_relative` in `fontaine-tools/src/preclassify.rs` and resolve it in the walk
+   (§2). Reshape `scan`/`check_targets`
    to collect recognized critical targets instead of returning the first reason, and delete the
    unresolvable branches. `floor.rs`'s module doc and remaining code cover only the protected-path and
    secret-path helpers. Port the existing critical-path unit tests: recognized cases now assert the
@@ -163,7 +183,8 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
    with `CriticalEnv { scope: &state.scope(), home: state.home.as_deref() }`, the home the floor uses
    today (`gate.rs:424`, `permissions.rs:1109`).
 3. **Guardian request and prompts.** Add the field to `request.rs`, render it in
-   `prompt_builder.rs`, extend `rules.rs:42` and `guardian_minimal.md`, and update the snapshots
+   `prompt_builder.rs`, add the `Destroy Pre-existing Files` hard-deny entry to `rules.rs` and the
+   item to `guardian_minimal.md`, and update the snapshots
    that gain the fact (only new snapshot cases should differ). Reword the `prompt_builder.rs:411-416`
    note "PowerShell text the harness did not parse; read the command itself" (and its "nothing
    pre-digested" comment), e.g. "only the `critical_deletions` targets were resolved; read the rest
@@ -198,6 +219,7 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 - `docs/schemas/headless-v1.schema.json`
 - `rust/fontaine-evals/src/live.rs`; every other `ToolCallSummary` literal:
   `fontaine-guardian/src/{profile.rs,screen.rs}`, `fontaine-guardian/tests/common/mod.rs`
+- `rust/fontaine-tools/src/preclassify.rs` (`ShellWord.home_relative`, with tests)
 - Code comments: `rust/fontaine-core/src/permissions.rs:3` (module doc),
   `rust/fontaine-core/src/gate.rs:208` (the `home` doc, which should cite `critical_deletions`),
   `rust/fontaine-tools/src/preclassify.rs:2-3`
@@ -240,6 +262,9 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 - Accepted risk: a user `allow` rule or a hook `allow` now approves a literal `rm -rf /` in
   manual/acceptEdits/dontAsk, in auto (narrow rules only; broad code-execution rules stay
   suspended) and in AFK (any rule). It is the user's own grant. Claude Code refuses this.
+- AFK: 2026-11-15: the full profile's critical-deletion rule is a new `DEFAULT_HARD_DENY` entry under the existing `Destroy Pre-existing Files` label, not a soft-deny addition, because the issue asks for the guardian to deny such calls and a soft deny would let a user message naming the target clear `rm -rf ~`; reusing the label leaves `RuleLabel`, AFK severity and eval categories unchanged.
+- AFK: 2026-11-15: shell `~`, `~/<literal>` and `$HOME`/`${HOME}` deletion targets resolve against `CriticalEnv.home` through a new `ShellWord.home_relative` field (`$HOME` only when the command has no assignment), because otherwise `rm -rf ~`, the most likely critical deletion, carries no `critical_deletions` fact once the floor's unreadable-command branch is gone.
+- AFK: 2026-11-15: `destructive.rs` keeps its own value-taking option list for grep/egrep/fgrep/rg instead of reusing the preclassifier's private, fast-path-only Spec tables, which miss `-e`, `-m`, `-g`, `--type` and others and would read `grep -m 5 pat f` as pattern `5`.
 
 ## Security invariants
 
@@ -272,11 +297,15 @@ deterministic stop, it does not add a loosening key. `AGENTS.md:58-61` (the comp
 
 Unit tests (`critical.rs`, `critical/powershell.rs`):
 - Recognized targets return their resolved path and kind: `rm -rf /`, a literal home
-  path (`rm -rf /home/me`), a workspace root, a parent of it, a symlink to home, `Remove-Item C:\`, a cwd-relative `..`.
+  path (`rm -rf /home/me`), `rm -rf ~`, `rm -rf ~/`, `rm -rf $HOME`, `rm -rf "${HOME}"`, a workspace root, a parent of it, a symlink to home, `Remove-Item C:\`, a cwd-relative `..`.
 - The #654 commands return nothing:
   `bin=$(ls -t target/debug/deps/agents-* | grep -v '\.d$' | head -1); ($bin t)`,
   `while pgrep -x rustc >/dev/null; do sleep 3; done`, `BIN=$(ls -t x); ($BIN t --exact)`; so do
-  `X=rm; $X -rf ~`, `${X}m -rf /`, `ls;rm x`, `find . -exec rm {} +`.
+  `X=rm; $X -rf ~`, `${X}m -rf /`, `ls;rm x`, `find . -exec rm {} +`, `rm -rf ~other`,
+  `rm -rf ~/x` (not critical), `HOME=/tmp; rm -rf $HOME`, and `rm -rf ~` with no home in
+  `CriticalEnv`.
+- Preclassifier: `home_relative` is `Some("")` for `~`/`$HOME`/`"${HOME}"`, `Some("/x")` for
+  `~/x`, and `None` for `~user`, `${HOME:-/}`, `~/*` and `$HOMEX`.
 
 Pipeline integration tests (`fontaine-core/tests`, scripted guardian):
 - **Regression for #654**: in AFK `auto` with a fixture guardian that allows, each of the three
@@ -291,6 +320,8 @@ Pipeline integration tests (`fontaine-core/tests`, scripted guardian):
   allow rule, and an allow rule now approves `rm -rf /` (the accepted risk, pinned).
 - An old `critical_path` audit line and ledger record read back as `protected_path`.
 - `touched_paths` for the issue's first command is empty (no `\.d$` path, no glob-prefix path).
+  `grep -m 5 'a/b' ./f`, `grep -e 'a/b' ./f`, `rg -g '*.rs' 'a/b' ./f` and `rg --type=rust 'a/b' ./f`
+  list only `./f`.
 
 Guardian:
 - `fontaine-guardian/tests/composition.rs`, beside `allow_below_under_the_threshold_allows` (:661),
