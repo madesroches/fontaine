@@ -29,13 +29,13 @@ listings, preferring the main model's account.
 In `ChildContext::model_for`, for `ModelSpec::Named(name)` when `self.roles` has no role `name`,
 call a new `Switcher::bare_model(name, main)`:
 
-1. Test `name` against `main.listing.models` (already in hand in `model_for`; exact match only, as
-   `<account>/<model>` validation does). On a hit choose the main account with no `listings`
+1. Test `name` against `main.listing.models` (already in hand in `model_for`; tested with the account kind's `lists` check, the predicate
+   `Switcher::main` uses, e.g. Ollama accepts `:latest` suffixes, not literal string equality). On a hit choose the main account with no `listings`
    call, so the spawn never waits on other accounts' network calls.
-2. Only on a miss (step 1 already tested the main listing, so `pick_bare` never needs the main account) take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`;
+2. Only on a miss take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`;
    the main account (and accounts with an explicit `models` list) is free; the others are listed
    concurrently under the 10s `LISTING_TIMEOUT`, so an unknown name can block a spawn up to 10s.
-   Collect accounts whose `models` is `Ok` and contains `name` exactly.
+   Collect accounts whose `models` is `Ok` and offers `name` by the same `lists` check. `pick_bare` skips no account; the main account simply won't match.
 3. If exactly one account offers it, choose it. Else if several, error listing the
    `<account>/<model>` candidates. If none, error.
 4. The result is a `ModelRef`; continue as `ModelSpec::Model` does (`switcher.main(ref)`), with
@@ -47,8 +47,7 @@ model name an account offers), and mentions accounts whose listing failed. The e
 assertion in `parallel_agents.rs` (~781-786, spawn with bare "sonnet", expects "not a defined
 model role") stays valid. The role-only message stays for the `/model` and agent-file paths that
 share `Roles::entries_of`; the new error is produced in `model_for`. `Roles::unknown`
-(`model_roles.rs:117`) is private, so it becomes `pub(crate)` (or a small `Roles` method returns the
-role-only text) for `bare_model` to extend.
+(`model_roles.rs:117`) is private, so it becomes `pub(crate)` for `bare_model` to extend.
 
 The `parameters` description in `spawn.rs` gains "or a bare model name an account offers".
 
@@ -57,8 +56,7 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 1. `models.rs`: add `Switcher::bare_model` returning `Result<ModelRef, String>` with the
    resolution order above; unit-testable through a pure helper
    `pick_bare(name, &[AccountListing]) -> Result<ModelRef, String>`.
-2. `model_roles.rs`: make `Roles::unknown` `pub(crate)` (or add a small `Roles` method returning the
-   role-only text) so `bare_model` can extend it.
+2. `model_roles.rs`: make `Roles::unknown` `pub(crate)` so `bare_model` can extend it.
 3. `child_runner.rs`: in `model_for`, route `Named(name)` with no matching role to `bare_model`.
 4. `spawn.rs`: update the `model` parameter description.
 5. `docs/agents.md`: update the `model` row and the model-resolution prose; `CHANGELOG.md` entry.
@@ -82,13 +80,12 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 ## Testing Strategy
 
 - Unit: `pick_bare` (miss path) - single non-main account
-  chosen; several accounts -> error listing candidates; none -> error;
+  chosen (this test adds a second account without a `models` list); several accounts -> error listing candidates; none -> error;
   accounts whose listing failed are skipped.
 - Integration (`parallel_agents.rs`, wiremock-backed headless run, no live APIs): an `agent` call
   with `model` set to a bare name the endpoint lists starts the child on that model (request body
   carries it); an unknown bare name returns the error listing roles and accepted forms (extends the existing
-  "sonnet" case at `parallel_agents.rs:739` rather than duplicating it; the mock endpoint must
-  answer account listings); a defined
-  role of the same name as a model still wins.
-- Integration, main-hit path (`parallel_agents.rs`, `bare_name_main_account_hit_without_listings`): the
-  endpoint lists the model on the main account and no other account is configured; the child starts on it.
+  "sonnet" case at `parallel_agents.rs:739` rather than duplicating it; the "sonnet" case needs no extra account, since the existing `mock` account has an
+  explicit `models` list). The first case also covers the main-account hit: the endpoint lists the
+  model on the main account and no other account is configured.
+- Unit (`pick_bare`/`model_for`): a defined role of the same name as a model wins.
