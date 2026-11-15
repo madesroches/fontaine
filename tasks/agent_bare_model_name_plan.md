@@ -29,26 +29,25 @@ listings, preferring the main model's account.
 
 A role always wins over a bare name (existing configs keep their meaning).
 
-In `ChildContext::model_for`, for `ModelSpec::Named(name)` when `self.roles` has no role `name`
-(and `name` is not a role the user defined), call a new `Switcher::bare_model(name, main)`:
+In `ChildContext::model_for`, for `ModelSpec::Named(name)` when `self.roles` has no role `name`,
+call a new `Switcher::bare_model(name, main)`:
 
-1. Take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`; the main
-   account's listing is already fetched, so it costs no call.
-2. Collect accounts whose `models` is `Ok` and contains `name` exactly.
+1. Take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`; only the main
+   account (and accounts with an explicit `models` list) is free; the others are listed
+   concurrently under the 10s `LISTING_TIMEOUT`, so an unknown name can block a spawn up to 10s.
+2. Collect accounts whose `models` is `Ok` and contains `name` exactly (exact match only, as
+   `<account>/<model>` validation does).
 3. If the main model's account is among them, choose it. Else if exactly one account offers it,
    choose it. Else if several, error listing the `<account>/<model>` candidates. If none, error.
 4. The result is a `ModelRef`; continue as `ModelSpec::Model` does (`switcher.main(ref)`), with
    no `ChildList` (a one-entry choice, like a lone reference).
 
-Errors (unknown name) list the defined roles, the other accepted forms (`$main`,
-`$guardian_default`, `<account>/<model>`, a bare model name an account offers) so the message
-is no longer roles-only. The role-only message stays for the `/model` and agent-file paths that
+The unknown-name error keeps the "`x` is not a defined model role; defined roles: ..." prefix
+and appends the other accepted forms (`$main`, `$guardian_default`, `<account>/<model>`, a bare
+model name an account offers), and mentions accounts whose listing failed. The existing
+assertion in `parallel_agents.rs` (~781-786, spawn with bare "sonnet", expects "not a defined
+model role") stays valid. The role-only message stays for the `/model` and agent-file paths that
 share `Roles::entries_of`; the new error is produced in `model_for`.
-
-Nothing loosens: the child's mode is still computed from the parent's, `$guardian_default` and the
-guardian model are untouched, and project agent files still cannot override the model
-(`accepts_model_override`). Agent-file `model:` fields keep the existing role/reference rules
-(a bare name in a project file stays a role lookup; no new route for repository content).
 
 The `parameters` description in `spawn.rs` gains "or a bare model name an account offers".
 
@@ -56,7 +55,7 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 
 1. `models.rs`: add `Switcher::bare_model` returning `Result<ModelRef, String>` with the
    resolution order above; unit-testable through a pure helper
-   `pick_bare(name, main_account, &[AccountListing]) -> Result<ModelRef, BareError>`.
+   `pick_bare(name, main_account, &[AccountListing]) -> Result<ModelRef, String>`.
 2. `child_runner.rs`: in `model_for`, route `Named(name)` with no matching role to `bare_model`.
 3. `spawn.rs`: update the `model` parameter description.
 4. `docs/agents.md`: update the `model` row and the model-resolution prose; `CHANGELOG.md` entry.
@@ -70,14 +69,11 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 - `rust/fontaine/tests/parallel_agents.rs`
 - `docs/agents.md`, `CHANGELOG.md`
 
-## Trade-offs
-
-- Resolving in `ModelSpec::parse` would need listings (async, I/O); parse is pure and shared by
-  config. Resolving at `model_for` keeps parse unchanged.
-- Adding a `ModelSpec::Bare` variant would touch every match on the enum; the role-miss fallback
-  needs none.
-
 ## Decisions
+
+- Bare-name resolution lives at `model_for`, not in `ModelSpec::parse`, and there is no `ModelSpec::Bare`.
+- A role always wins over a bare name.
+- Agent-file `model:` keeps the role/reference rules, so repository content gets no new route.
 
 ## Testing Strategy
 
@@ -86,14 +82,11 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
   accounts whose listing failed are skipped.
 - Integration (`parallel_agents.rs`, wiremock-backed headless run, no live APIs): an `agent` call
   with `model` set to a bare name the endpoint lists starts the child on that model (request body
-  carries it); an unknown bare name returns the error listing roles and accepted forms; a defined
+  carries it); an unknown bare name returns the error listing roles and accepted forms (extends the existing
+  "sonnet" case at `parallel_agents.rs:739` rather than duplicating it; the mock endpoint must
+  answer account listings); a defined
   role of the same name as a model still wins.
 
 ## Documentation
 
 `docs/agents.md` (`model` row and resolution prose); the tool description; `CHANGELOG.md`.
-
-## Open Questions
-
-- Should an exact-match only be required, or also the provider-normalised ids (e.g. dated
-  suffixes)? Plan: exact match only, as `<account>/<model>` validation does.
