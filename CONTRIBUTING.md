@@ -27,9 +27,10 @@ cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
 CI runs `cargo fmt --check`, clippy, `cargo test`, rustdoc with warnings denied, `cargo deny check` and the `--guardian none` eval
 on Linux, macOS and Windows; the two `fixture` eval runs, the "Release signing" step (the real minisign CLI and the
-`.github/scripts/` signing scripts against disposable keys), plus clippy, tests and rustdoc with
+`.github/scripts/` signing scripts against disposable keys), plus clippy and rustdoc with
 `--features fontaine/pg2`, run on Linux only (macOS and Windows get a `cargo check --features
-fontaine/pg2`). Pull requests that touch only `tasks/` or `AGENTS.md` skip the Rust
+fontaine/pg2`). The pg2 tests (`cargo test --features fontaine/pg2`) run nightly and on
+`workflow_dispatch` in `.github/workflows/pg2.yml`, not on pull requests. Pull requests that touch only `tasks/` or `AGENTS.md` skip the Rust
 steps. The last command above is a local check that the Windows code compiles. Tests never call
 live model APIs.
 
@@ -83,6 +84,8 @@ behalf.
 
 1. Every release-readiness item in the release's tracking issue except cutting the tag itself is
    ticked. For 0.1.0 that is #80, mirrored in the master plan's `## Remaining work`.
+   The latest nightly `pg2` workflow run on `main` is also green (check it by hand; `release.yml`
+   does not enforce it, and a pg2 failure does not block the dev channel).
 2. Bump `[workspace.package] version` in `rust/Cargo.toml` if needed. For 0.1.0 it is already
    `0.1.0`.
 3. In the release commit, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh,

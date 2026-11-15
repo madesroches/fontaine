@@ -81,6 +81,22 @@ fn build_and_copy(package: &str, name: &str) -> PathBuf {
     });
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
+    // Cargo sets these for the test process only (OUT_DIR when the package has a build script). A build script that tracks one
+    // (`CARGO_MANIFEST_DIR` for ring) makes the nested build disagree with the outer one's
+    // fingerprints, so each rebuilds the dependency tree the other left behind, every run.
+    for (key, _) in std::env::vars_os() {
+        let key_text = key.to_string_lossy();
+        if key_text.starts_with("CARGO_PKG_")
+            || key_text.starts_with("CARGO_MANIFEST_")
+            || key_text.starts_with("CARGO_BIN_EXE_")
+            || matches!(
+                key_text.as_ref(),
+                "CARGO_CRATE_NAME" | "CARGO_PRIMARY_PACKAGE" | "CARGO_TARGET_TMPDIR" | "OUT_DIR"
+            )
+        {
+            cmd.env_remove(&key);
+        }
+    }
     // The nested build uses default features: cargo does not export the outer invocation's
     // feature selection (no CARGO_FEATURE_* vars) or its default-feature state to the test
     // process, so a feature-matched build is impossible to request reliably. The outer

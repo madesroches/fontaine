@@ -107,7 +107,6 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --workspace
 
-      # Before "Test (pg2)", which cleans the target dir.
       - name: Rustdoc (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         env:
@@ -618,13 +617,6 @@ jobs:
           FONTAINE_SIGNING_FIXTURE_DIR="$pristine" cargo test -p fontaine --lib \
             release_signature::tests::cli_interop -- --ignored --exact 2>&1 | tee "$work/interop.log"
           grep -q 'test result: ok. 1 passed' "$work/interop.log"
-
-      - name: Test (pg2)
-        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
-        # The default-feature test binaries are not reused by this build and would not fit beside it.
-        run: |
-          cargo clean
-          cargo test --features fontaine/pg2
 
       - name: Check (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os != 'Linux'
