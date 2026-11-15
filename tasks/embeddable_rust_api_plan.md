@@ -84,7 +84,7 @@ impl SessionBuilder {
     pub fn max_turns(self, n: usize) -> Self;       pub fn max_budget_usd(self, usd: f64) -> Self;
     pub fn allowed_tools(self, rules: Vec<String>) -> Self;  // CLI-scope allow rules, below the floor
     pub fn disallowed_tools(self, rules: Vec<String>) -> Self;
-    pub fn builtin_tools(self, names: Vec<String>) -> Self;  // maps to AgentSetup::root_tools
+    pub fn builtin_tools(self, names: Vec<String>) -> Self;  // maps to AgentSetup::root_tools; must also name every host tool to keep
     pub fn add_dir(self, dir: PathBuf) -> Self;
     pub fn resume(self, id: SessionRef) -> Self;    // Continue | Id(String), plus .fork()
     pub fn approver(self, a: Arc<dyn Approver>) -> Self;     // sets HumanChannel::Delegate
@@ -174,9 +174,15 @@ maps from its `InputFormat`/`OutputFormat`. The `pub(crate)` items `claude_compa
 (`EventSink`, `ResultInfo`, `Outcome`, `Subtype`, `session_cost`, `main_usage`, `Cancel`) become
 public in the SDK tree. Every `eprintln!` in the moved loop (announce, `run_session` and the rest)
 goes through the approver's `warn`/`notice` or an `EventSink` hook that `HeadlessV1Sink` writes to
-stderr, so CLI output is unchanged. The `Absent` case is backed by an SDK-owned silent approver
-whose `warn`/`notice` print nothing (replacing `DenyAll`'s stderr `notice`), unless the embedder
-supplies its own.
+stderr, so CLI output is unchanged. The `Absent` case of `SessionBuilder` is backed by an SDK-owned silent approver
+whose `warn`/`notice` print nothing, unless the embedder supplies its own. This is the
+`SessionBuilder` default only; the CLI keeps `DenyAll`, so its stderr output is unchanged.
+
+The startup steps of `start_headless`/`run_headless` that `prepare_session` does not cover move
+too, and `SessionBuilder::build` runs them: `runtime.connect_mcp(&[])` after `AgentRuntime::new`
+(so configured MCP servers connect), the `guardian_login` lookup that `run_session` takes as a
+parameter, and the refusal of `max_budget_usd` when the model has no known price (an `EmbedError`
+at `build`).
 
 ### Session over the run loop
 
@@ -184,7 +190,12 @@ supplies its own.
 session start, announces and calls `sink.session_start` once, and a failed turn ends the run unless
 `InputSource::long_lived()`. So `Session` runs `run_session` on a task fed by a channel-backed
 `InputSource` with `long_lived() = true` (like `claude_compat`'s `SdkInput`), and events flow
-through an `EventSink` into each `Turn`'s stream. `send` pushes a prompt on the channel; `close()`
+through a channel-backed `EventSink` that sends typed `Event`s (the usage observer included) into
+each `Turn`'s stream; `HeadlessV1Sink` is the CLI's sink only. `Session` passes the stream-json
+output format (so the Json/Text stdout tail of `run_session` never runs) and the stream-json input
+origin. An interrupt sets the shared `Cancel` and `run_session` never clears it, so the channel-backed
+input source calls `cancel.reset()` as it hands over each new message, as the SDK router does;
+`InterruptHandle` wraps the same `Cancel`. `send` pushes a prompt on the channel; `close()`
 drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_end`).
 
 ### Non-Rust languages
@@ -206,22 +217,29 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 3. Move the headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel, `EventSink`,
    `InputSource`, and `Options` with SDK-owned format enums) from `fontaine/src/headless.rs` into
    the SDK; make the items `claude_compat` imports public; route every `eprintln!` through the
-   approver's `warn`/`notice` or an `EventSink` hook, and back `Absent` with a silent SDK approver
-   (see Assembly extraction). The CLI calls it. No behavior change in CLI output.
+   approver's `warn`/`notice` or an `EventSink` hook, and back the `SessionBuilder` default `Absent`
+   with a silent SDK approver (the CLI keeps `DenyAll`; see Assembly extraction). Tighten
+   `Ctx.pending` and the two `wait_for_news` parameters from `&dyn Fn() -> bool` to
+   `&(dyn Fn() -> bool + Sync)` so the `run_session` future is `Send` and the task `Session`
+   spawns compiles. The CLI calls it. No behavior change in CLI output.
 4. Move session assembly (`load_config`, `resolve_roots`, `open_session`, `prepare_session`,
    `resolve_models`, `start_scanner`, `requested_mode`/`session_mode`, the trust check, `AgentSetup`
-   construction) from `fontaine/src/lib.rs` into `fontaine-sdk::assemble`; the CLI calls it. No
+   construction, plus the `connect_mcp(&[])` call, the `guardian_login` lookup and the unpriced-model
+   `max_budget_usd` refusal from `start_headless`/`run_headless`) from `fontaine/src/lib.rs` into
+   `fontaine-sdk::assemble`; `SessionBuilder::build` runs them and the CLI calls it. No
    behavior change.
 5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
    `guard_callback` (new `ToolSource` parameter, new `ToolSource::Host`) at `RiskClass::Arbitrary`;
-   validate names in `build()`; update the `AgentSetup` literal sites (`fontaine/src/lib.rs`,
+   validate names in `build()`; update the `guard_callback` callers (`tools/src/mcp/register.rs`,
+   `tools/tests/guarded.rs`, at their post-merge paths under `fontaine-sdk`); update the `AgentSetup` literal sites (`fontaine/src/lib.rs`,
    `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-tui/src/ui/tests.rs`,
    `fontaine-tui/tests/common/mod.rs`, ...); extend the choke-point test to cover host tools.
 6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over `AgentRuntime::new` and the
    run loop moved in step 3, not over `drive`: `Session` runs `run_session` on a task with a
    channel-backed, `long_lived()` `InputSource`; events reach each `Turn` through an `EventSink`;
-   `close()` drops the input and awaits the task before `fire_session_end`.
+   `close()` drops the input and awaits the task before `fire_session_end`; the input source resets
+   the shared `Cancel` per message, and `InterruptHandle` wraps it.
 7. Add `fontaine-sdk/examples/embed.rs` (a 30-line program: builder, approver, one host tool, print
    events) and `docs/embedding.md`; link it from `docs/SUMMARY.md`, `docs/index.md`, and the
    architecture crate table; add a `CHANGELOG.md` entry; record the Decisions in the master plan.
@@ -234,7 +252,9 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
   `fontaine-testkit`
 - `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine/Cargo.toml`
 - `rust/fontaine-sdk/src/core/agent.rs`, `core/agent/build.rs`, `core/agent/setup.rs`,
-  `core/tools.rs`, `tools/src/guarded.rs`, `tools/src/risk.rs` and the choke-point test (host tools)
+  `core/tools.rs`, `tools/src/guarded.rs`, `tools/src/risk.rs`, `tools/src/mcp/register.rs`,
+  `tools/tests/guarded.rs` (the `guard_callback` callers) and the choke-point test (host tools)
+- `docs/telemetry.md` and `tasks/design/observability.md` (new `host` value of `tool_source`)
 - `fontaine-evals/src/runner.rs`, `evals/README.md`, `docs/evals.md`, `docs/guardian.md`
   (`fontaine-guardian/` paths)
 - `docs/embedding.md` (new), `docs/SUMMARY.md`, `docs/index.md`, `docs/architecture.md`,
@@ -259,7 +279,8 @@ No new protocol. The two stdio routes stay as they are. The docs page states whi
 ## Documentation
 
 New `docs/embedding.md` (choosing a route, builder walkthrough, approver, host tools, security
-guarantees the builder cannot loosen). Cross-links from `agent-sdk.md` and `headless.md`; crate
+guarantees the builder cannot loosen; `builtin_tools` must also name every host tool to keep).
+`docs/telemetry.md` and `tasks/design/observability.md` list `host` as a `tool_source` value. Cross-links from `agent-sdk.md` and `headless.md`; crate
 table in `architecture.md`. Docs describe current behavior only.
 
 ## Testing Strategy
@@ -274,7 +295,9 @@ Integration tests with `rig_core::test_utils` deterministic models, no live APIs
 - a host tool call is guardian-judged in `auto` and prompts in `manual`;
 - `Event` JSON validates against `headless-v1.schema.json`, and a recorded `fontaine -p` run and an
   embedded run of the same scripted model produce the same event sequence, including with
-  `max_turns`, `max_budget_usd` and `json_schema` set;
-- interrupt ends a turn with the same `result` as the CLI.
+  `max_turns`, `max_budget_usd` and `json_schema` set; the `fontaine -p` side is a subprocess, so
+  both sides use the same wiremock `Endpoint` script (`rust/fontaine/tests/common/mod.rs`);
+- interrupt ends a turn with the same `result` as the CLI, and a turn after an interrupted turn
+  runs normally.
 The existing headless, resume, SDK-compat and cassette suites are the regression net for the
 assembly move.
