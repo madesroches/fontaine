@@ -20,6 +20,9 @@ All notable changes are recorded here. The format follows
 - `/effort` cache-cost warning (#632): changing the level mid-session on an account that caches
   prompts, once the conversation has content, adds a notice that the next request may re-read the
   conversation uncached because a changed effort can invalidate the prompt cache.
+- The `agent` tool's `model` accepts a bare model name (#663): when no role has the name, the main
+  account's listing is tried, then accounts with an explicit `models` list, with no extra network
+  calls. Names with `.` or `:` still need `<account>/<model>`.
 - Goal token and wall-clock budgets (#444): `[goal] max_tokens` and `[goal] max_duration_secs`
   (user scope, unset by default) pause an unattended goal stretch when its tokens, priced or not, or
   its elapsed time pass the cap, checked at the evaluation boundary like `max_turns`. A stretch can

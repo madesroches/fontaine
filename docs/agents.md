@@ -11,7 +11,7 @@ and asynchronous tasks, with stricter permission rules.
 |---|---|
 | `agent_type` | One of the [agent types](#agent-types). Required. |
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
-| `model` | Optional: a [role](configuration.md#modelsroles) name, `$main`, `$guardian_default` or `<account>/<model>`. The tool's description lists the session's roles, so the model can choose one. |
+| `model` | Optional: a [role](configuration.md#modelsroles) name, `$main`, `$guardian_default`, `<account>/<model>`, or a bare model name such as `claude-sonnet-5-5`. A role of that name wins; otherwise the main account's model list is tried, then the accounts with an explicit `models` list (no other account is queried). A name offered by several accounts is an error listing the `<account>/<model>` choices, and a name with `.` or `:` (`gpt-4.1`, `llama3:8b`) must be written `<account>/<model>`. The tool's description lists the session's roles, so the model can choose one. |
 | `name` | Optional [name](#naming-a-subagent) for the subagent. |
 
 The call returns `{"agent_id": "agent-1", "name": "explore-1"}` at once and the subagent runs alongside its parent and

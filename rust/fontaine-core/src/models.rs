@@ -1292,6 +1292,78 @@ impl Switcher {
         }
         out
     }
+
+    /// The model a bare name stands for when no role has that name: the main account's listing
+    /// first, then the accounts with an explicit `models` list. No account is listed over the
+    /// network, so a model-chosen string never fans out to credentialed endpoints.
+    pub fn bare_model(
+        &self,
+        name: &str,
+        main: &ModelRef,
+        main_kind: AccountKind,
+        main_models: &[String],
+    ) -> Result<ModelRef, String> {
+        let explicit: Vec<(&str, AccountKind, &[String])> = self
+            .config
+            .accounts
+            .iter()
+            .filter(|(account, _)| **account != main.account)
+            .filter(|(_, account)| !account.kind.provider().requires_discovery())
+            .filter_map(|(account, a)| Some((account.as_str(), a.kind, a.models.as_deref()?)))
+            .collect();
+        pick_bare(
+            name,
+            (&main.account, main_kind, main_models),
+            &explicit,
+            &self.roles.unknown(name),
+        )
+    }
+}
+
+/// Picks the account that offers the bare model `name` from the candidates that cost no
+/// network call. The main account wins on a hit; otherwise exactly one other account must offer it.
+fn pick_bare(
+    name: &str,
+    main: (&str, AccountKind, &[String]),
+    explicit: &[(&str, AccountKind, &[String])],
+    unknown: &str,
+) -> Result<ModelRef, String> {
+    let (main_account, main_kind, main_models) = main;
+    let reference = |account: &str, models: &[String]| ModelRef {
+        account: account.to_string(),
+        model: models
+            .iter()
+            .find(|id| id.as_str() == name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string()),
+    };
+    if lists(main_kind, main_models, name) {
+        return Ok(reference(main_account, main_models));
+    }
+    let offers: Vec<ModelRef> = explicit
+        .iter()
+        .filter(|(_, kind, models)| lists(*kind, models, name))
+        .map(|(account, _, models)| reference(account, models))
+        .collect();
+    match offers.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => {
+            let checked: Vec<&str> = std::iter::once(main_account)
+                .chain(explicit.iter().map(|(account, _, _)| *account))
+                .collect();
+            Err(format!(
+                "{unknown}; or use `$main`, `$guardian_default`, `<account>/<model>` or a bare model name the main account or an account with a `models` list offers (checked accounts: {}); for any other model use `<account>/<model>`",
+                checked.join(", ")
+            ))
+        }
+        many => Err(format!(
+            "`{name}` is offered by several accounts: {}; use one `<account>/<model>`",
+            many.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// The check `/login` runs for an account whose login an external program owns: connect the
@@ -1332,4 +1404,76 @@ pub(crate) async fn external_check(
         "`{name}` is ready: {} model(s) available through the external login",
         models.models.len()
     ))
+}
+
+#[cfg(test)]
+mod bare_tests {
+    use super::*;
+
+    fn kind() -> AccountKind {
+        AccountKind::named("openai-compatible")
+    }
+
+    fn ids(models: &[&str]) -> Vec<String> {
+        models.iter().map(|m| m.to_string()).collect()
+    }
+
+    #[test]
+    fn the_main_account_wins_without_consulting_the_others() {
+        let main = ids(&["sonnet-x"]);
+        let other = ids(&["sonnet-x"]);
+        let got = pick_bare(
+            "sonnet-x",
+            ("a", kind(), &main),
+            &[("b", kind(), &other)],
+            "unknown",
+        );
+        assert_eq!(got.unwrap().to_string(), "a/sonnet-x");
+    }
+
+    #[test]
+    fn one_explicit_list_account_is_chosen_on_a_main_miss() {
+        let main = ids(&["other"]);
+        let b = ids(&["m1"]);
+        let got = pick_bare("m1", ("a", kind(), &main), &[("b", kind(), &b)], "unknown");
+        assert_eq!(got.unwrap().to_string(), "b/m1");
+    }
+
+    #[test]
+    fn several_offering_accounts_are_an_error_listing_the_candidates() {
+        let main = ids(&[]);
+        let b = ids(&["m1"]);
+        let c = ids(&["m1"]);
+        let err = pick_bare(
+            "m1",
+            ("a", kind(), &main),
+            &[("b", kind(), &b), ("c", kind(), &c)],
+            "unknown",
+        )
+        .unwrap_err();
+        assert!(err.contains("b/m1") && err.contains("c/m1"), "{err}");
+    }
+
+    #[test]
+    fn no_offer_names_the_checked_accounts_and_the_reference_form() {
+        let main = ids(&["x"]);
+        let b = ids(&["y"]);
+        let err = pick_bare(
+            "m1",
+            ("a", kind(), &main),
+            &[("b", kind(), &b)],
+            "`m1` is not a defined model role",
+        )
+        .unwrap_err();
+        assert!(err.contains("not a defined model role"), "{err}");
+        assert!(err.contains("checked accounts: a, b"), "{err}");
+        assert!(err.contains("<account>/<model>"), "{err}");
+    }
+
+    #[test]
+    fn an_account_outside_the_candidates_is_not_consulted() {
+        let main = ids(&[]);
+        let err = pick_bare("m1", ("a", kind(), &main), &[], "unknown").unwrap_err();
+        assert!(err.contains("checked accounts: a"), "{err}");
+    }
 }

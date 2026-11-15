@@ -114,7 +114,7 @@ impl Roles {
         Ok(out)
     }
 
-    fn unknown(&self, name: &str) -> String {
+    pub(crate) fn unknown(&self, name: &str) -> String {
         if name == MAIN_ROLE {
             return MAIN_UNDEFINED.to_string();
         }
