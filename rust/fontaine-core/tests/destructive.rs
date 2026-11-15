@@ -554,32 +554,32 @@ fn a_grep_pattern_is_not_a_touched_path() {
     );
     assert!(paths_of("ls -t target/debug/deps/agents-* | grep -v '\\.d$' | head -1").is_empty());
     for command in [
-        "grep -m 5 'a/b' ./f",
-        "grep -e 'a/b' ./f",
-        "grep --regexp='a/b' ./f",
-        "grep -ie 'a/b' ./f",
-        "grep -e'a/b' ./f",
-        "egrep -A 2 -B2 'a/b' ./f",
-        "fgrep --include='*/x' 'a/b' ./f",
-        "rg -g '*.rs' 'a/b' ./f",
-        "rg --type=rust 'a/b' ./f",
-        "rg --type rust 'a/b' ./f",
-        "rg -t rust -e 'a/b' ./f",
-        "rg -j4 'a/b' ./f",
-        "grep -- 'a/b' ./f",
+        "grep -m 5 'a/b' sub/f",
+        "grep -e 'a/b' sub/f",
+        "grep --regexp='a/b' sub/f",
+        "grep -ie 'a/b' sub/f",
+        "grep -e'a/b' sub/f",
+        "egrep -A 2 -B2 'a/b' sub/f",
+        "fgrep --include='*/x' 'a/b' sub/f",
+        "rg -g '*.rs' 'a/b' sub/f",
+        "rg --type=rust 'a/b' sub/f",
+        "rg --type rust 'a/b' sub/f",
+        "rg -t rust -e 'a/b' sub/f",
+        "rg -j4 'a/b' sub/f",
+        "grep -- 'a/b' sub/f",
     ] {
-        assert_eq!(paths_of(command), ["/w/f"], "{command}");
+        assert_eq!(paths_of(command), ["/w/sub/f"], "{command}");
     }
 }
 
 #[test]
 fn a_grep_pattern_file_stays_a_path() {
     assert_eq!(
-        paths_of("grep -f ./pats ./f"),
-        ["/w/pats", "/w/f"],
+        paths_of("grep -f sub/pats sub/f"),
+        ["/w/sub/pats", "/w/sub/f"],
         "the pattern comes from the file, so the first operand is a file too"
     );
-    assert_eq!(paths_of("rg -f ./pats ./g/x"), ["/w/pats", "/w/g/x"]);
+    assert_eq!(paths_of("rg -f sub/pats g/x"), ["/w/sub/pats", "/w/g/x"]);
 }
 
 #[test]
