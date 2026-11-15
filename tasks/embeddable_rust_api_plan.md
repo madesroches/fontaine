@@ -68,10 +68,7 @@ or reads on docs.rs. The current
   behavior change; the suites pass with only the listed renames and snapshot re-accepts, no assertion changes.
 - The Rune scripting dependency of `fontaine-guardian` becomes a non-optional dependency of the SDK: core uses
   `guardian::composition` unconditionally, so a feature to turn it off could not compile. The guardian's `pg2` feature
-  folds into the SDK's existing `pg2` feature. The guardian is no longer a separately liftable crate; a consumer
-  wanting only the guardian pins an older `fontaine-guardian` release or vendors the module. What stays enforced is
-  module independence: `guardian/**` names no `crate::{core,tools,agents}` path, and `tools/**` and `agents/**` name
-  no `crate::core` path, checked by a test that scans those source trees. `AGENTS.md`'s lift-out rule is reworded to
+  folds into the SDK's existing `pg2` feature. `AGENTS.md`'s lift-out rule is reworded to
   "keep the SDK's `guardian` module dependency-light and free of `core`/`tools`/`agents` imports (test-enforced)".
 - Out of the SDK: `fontaine-tui`, `fontaine-remote`, `fontaine-evals`, `fontaine-testkit` and the
   `fontaine` binary. `fontaine-tui`, `fontaine-evals` and the binary depend on the SDK.
@@ -257,7 +254,7 @@ guard into the task so it outlives the run; the task ends on its own. `SessionEn
    staged-plugin swap stays in the CLI. `scanner_stage::StartParams` gains an optional notice callback for
    the PromptGuard download line (`scanner_stage.rs:261`, a direct `eprintln!` today): embedded sessions
    set it to the approver's `warn`, the CLI leaves it unset so its stderr line stays. Update the other `StartParams` literal sites
-   (`fontaine-sdk/tests/core_scanner_model.rs:67`, pg2 only, and `fontaine-evals/src/live.rs:653`).
+   (`fontaine-sdk/tests/scanner_model.rs:67`, pg2 only, and `fontaine-evals/src/live.rs:668`).
    No behavior change.
 5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
@@ -286,7 +283,7 @@ guard into the task so it outlives the run; the task ends on its own. `SessionEn
   `core/tools.rs`, `core/scanner_stage.rs`, `tools/guarded.rs`, `tools/risk.rs`, `tools/mcp/register.rs` (all under
   `fontaine-sdk/src/`), `fontaine-sdk/tests/guarded.rs` (the `guard_callback` callers) and
   `fontaine-sdk/tests/core_choke_point.rs` (host tools)
-- the `scanner_stage::StartParams` literal sites (`fontaine-sdk/tests/core_scanner_model.rs`,
+- the `scanner_stage::StartParams` literal sites (`fontaine-sdk/tests/scanner_model.rs`,
   `fontaine-evals/src/live.rs`) and the `AgentSetup`/`RegistryParams` literal sites
   (`fontaine-tui/src/ui/tests.rs`, `fontaine-tui/tests/common/mod.rs`,
   `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-sdk/tests/extensions.rs`)
@@ -302,13 +299,12 @@ guard into the task so it outlives the run; the task ends on its own. `SessionEn
 ## Decisions
 
 - 2026-11-14: Rust embedding is a typed, in-process facade whose event stream serializes to `headless-v1` unchanged; foreign languages use the existing stdio surfaces, with no third protocol.
-- 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become its modules in this same change. Deviates from the guardian crate's lift-out rule: the guardian is no longer separately liftable (a guardian-only consumer pins an older `fontaine-guardian` release or vendors the module); its independence is kept by a test that forbids `crate::{core,tools,agents}` paths in the guardian module.
+- 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become its modules in this same change. Deviates from the guardian crate's lift-out rule: the guardian is no longer separately liftable (a guardian-only consumer pins an older `fontaine-guardian` release or vendors the module); its independence is kept by a test that forbids `crate::{core,tools,agents}` paths in the guardian module. Rune is a non-optional SDK dependency because core uses `guardian::composition` unconditionally.
 - 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` alone.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
 - 2026-11-14: `AgentSetup` stays reachable through the `pub` `core` tree but is not part of the semver-stable root facade.
 - 2026-11-14: Provider warnings go through the process-global `providers::warn::set_sink` (latest session wins), so with several embedded sessions they reach the most recently built session's approver.
 - 2026-11-14: The SDK crate is named `fontaine-sdk`: Rust crate names are hyphenated, and the issue frames it as SDK parity. The bare name `fontaine` stays the binary's package, so no release plumbing is renamed.
-- 2026-11-14: AFK: The guardian is not separately liftable after the merge and has no "default features off" path (core uses `guardian::composition` unconditionally, so Rune is a non-optional SDK dependency); guardian independence is kept by a test forbidding `crate::{core,tools,agents}` paths in `guardian/**` and `crate::core` in `tools/**`/`agents/**`.
 - 2026-11-14: AFK: Host tools keep bare names and are not addressable by permission rules, `allowed_tools`/`disallowed_tools`, agent-type `tools` lists or hook matchers; `build()` rejects host-tool names in `allowed_tools`/`disallowed_tools`, and `hook()` and the approver tighten them. Deviates from Claude Code, where custom tools are MCP tools and rule-addressable: extending rule parsing to host tools is left for later.
 - 2026-11-14: AFK: One persistent event channel feeds Turns in order: `init` is the first item of the first Turn, each Turn ends after its `result`, between-turn events go to the next Turn, a dropped Turn drains to its `result`, `send` after the task exited yields `Err(EmbedError::Runtime)`, and `close()` returns the trailing `afk_report` as `Result<Option<AfkReport>, EmbedError>`.
 - 2026-11-14: AFK: Dropping a `Session` without `close()` triggers the shared `Cancel`, closes the input and moves the `Scratch` guard into the task; `SessionEnd` hooks fire only through `close()`.
