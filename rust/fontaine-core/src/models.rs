@@ -1303,14 +1303,7 @@ impl Switcher {
         main_kind: AccountKind,
         main_models: &[String],
     ) -> Result<ModelRef, String> {
-        let explicit: Vec<(&str, AccountKind, &[String])> = self
-            .config
-            .accounts
-            .iter()
-            .filter(|(account, _)| **account != main.account)
-            .filter(|(_, account)| !account.kind.provider().requires_discovery())
-            .filter_map(|(account, a)| Some((account.as_str(), a.kind, a.models.as_deref()?)))
-            .collect();
+        let explicit = explicit_candidates(&self.config, &main.account);
         pick_bare(
             name,
             (&main.account, main_kind, main_models),
@@ -1318,6 +1311,21 @@ impl Switcher {
             &self.roles.unknown(name),
         )
     }
+}
+
+/// The accounts besides the main one that can answer a bare model name without a network call:
+/// those with an explicit `models` list, discovery-kind accounts excluded.
+fn explicit_candidates<'a>(
+    config: &'a Config,
+    main_account: &str,
+) -> Vec<(&'a str, AccountKind, &'a [String])> {
+    config
+        .accounts
+        .iter()
+        .filter(|(account, _)| account.as_str() != main_account)
+        .filter(|(_, account)| !account.kind.provider().requires_discovery())
+        .filter_map(|(account, a)| Some((account.as_str(), a.kind, a.models.as_deref()?)))
+        .collect()
 }
 
 /// Picks the account that offers the bare model `name` from the candidates that cost no
@@ -1329,21 +1337,17 @@ fn pick_bare(
     unknown: &str,
 ) -> Result<ModelRef, String> {
     let (main_account, main_kind, main_models) = main;
-    let reference = |account: &str, models: &[String]| ModelRef {
+    let reference = |account: &str| ModelRef {
         account: account.to_string(),
-        model: models
-            .iter()
-            .find(|id| id.as_str() == name)
-            .cloned()
-            .unwrap_or_else(|| name.to_string()),
+        model: name.to_string(),
     };
     if lists(main_kind, main_models, name) {
-        return Ok(reference(main_account, main_models));
+        return Ok(reference(main_account));
     }
     let offers: Vec<ModelRef> = explicit
         .iter()
         .filter(|(_, kind, models)| lists(*kind, models, name))
-        .map(|(account, _, models)| reference(account, models))
+        .map(|(account, _, _)| reference(account))
         .collect();
     match offers.as_slice() {
         [one] => Ok(one.clone()),
@@ -1471,9 +1475,24 @@ mod bare_tests {
     }
 
     #[test]
-    fn an_account_outside_the_candidates_is_not_consulted() {
-        let main = ids(&[]);
-        let err = pick_bare("m1", ("a", kind(), &main), &[], "unknown").unwrap_err();
-        assert!(err.contains("checked accounts: a"), "{err}");
+    fn candidates_leave_out_the_main_account_discovery_kinds_and_accounts_without_a_models_list() {
+        let account = |toml: &str| -> Account { toml::from_str(toml).unwrap() };
+        let mut config = Config::defaults(std::env::temp_dir());
+        for (name, body) in [
+            ("main", "kind = \"openai-compatible\"\nmodels = [\"m\"]"),
+            ("listed", "kind = \"openai-compatible\"\nmodels = [\"m\"]"),
+            ("unlisted", "kind = \"openai-compatible\""),
+            (
+                "discovered",
+                "kind = \"claude-subscription\"\nmodels = [\"m\"]",
+            ),
+        ] {
+            config.accounts.insert(name.to_string(), account(body));
+        }
+        let names: Vec<&str> = explicit_candidates(&config, "main")
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(names, ["listed"]);
     }
 }

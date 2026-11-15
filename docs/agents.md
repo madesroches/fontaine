@@ -119,7 +119,9 @@ accounts offer, or the session model when there is none; it is opt-in — no bui
 
 A `model` may be a [role](configuration.md#modelsroles) name (`coding`), a list of references and
 roles, or an `<account>/<model>`; a role your `[models.roles]` does not define is an error in a user
-file or `[agents.types]` and a spawn error when the model passes it. Every subagent started on one
+file or `[agents.types]`; when the model passes one, the name is tried as a bare model name (the
+main account, then accounts with an explicit `models` list) and is a spawn error only when none
+offers it. Every subagent started on one
 role shares the role's current entry: when the entry in use runs out of quota and a subagent moves to
 the next one, the others, and later spawns, start on the entry that worked. A subagent on `$main`
 moves for itself and leaves the main conversation's entry alone. When every entry of its list is

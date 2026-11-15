@@ -838,6 +838,38 @@ async fn a_bare_model_name_the_main_account_offers_starts_the_child_on_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_role_named_like_a_listed_model_wins_over_the_bare_model() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "agent",
+                        json!({"agent_type": "explore", "prompt": "child-P: ok", "model": "other"}),
+                    ),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new("child-P", vec![Turn::text("P done")]),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "\n[models.roles]\nother = [\"mock/scripted\"]\n");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let bodies = requests_with(&endpoint, "child-P").await;
+    assert!(!bodies.is_empty(), "the child made no request");
+    assert!(
+        bodies.iter().all(|b| b.contains("\"model\":\"scripted\"")),
+        "{bodies:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn send_message_reaches_main_marked_with_the_senders_id_and_the_sender_is_told_queued() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
