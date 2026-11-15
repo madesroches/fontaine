@@ -69,6 +69,43 @@ OS's PR check completes within 20 min of wall-clock latency.
    is still over 20 min after pg2 removal and the measured levers, the PR description reports the
    miss and the remaining cause rather than shipping silently.
 
+6. **Fix the slow tests, not the timeout.** Measured locally with nextest 0.9.149 (13 min for the full
+   run, 80 tests flagged slow, none close to the 10 min guard): the slow tests cluster in
+   `fontaine::claude_subscription` (12, over 60s), `fontaine-core::claude_subscription` (11, over
+   60s), `fontaine-tui::agents` (9), `fontaine-tui::hooks` (3) and `fontaine-core::afk` (1). The
+   `fontaine-tui` ones take about 60s, 120s or 180s, i.e. multiples of 60s, and a lone
+   `a_server_in_the_users_own_settings_starts_without_asking` takes 60.3s although its body is a
+   400 ms sleep plus a wait for the idle prompt, so each `World::run` seems to wait out a fixed
+   60s. Ruled out: the nested `cargo build` in `fontaine-testkit::example_bin` (60s with the
+   example already built), the session-start file index (the workspace is a tempdir), and the
+   `World` wait loops (capped at 10s). Not yet found: what the 60s waits on (candidates: a 60s
+   constant on the teardown path of `drive`, MCP/hook shutdown waiting on `touch_marker`, which
+   never speaks MCP and sleeps 300 ms). Find it by sampling a running test (`strace -f` or
+   `/proc/<pid>/task/*/stack`), fix the cause in the code or the harness, then repeat for the
+   `claude_subscription` and `afk` tests. Raising `terminate-after` or adding per-test overrides is
+   not an acceptable substitute.
+
+   Root cause (2026-11-14, found and fixed): the slowness was not an MCP/hook timeout. Every test
+   that calls `fontaine_testkit::example_bin` ran a nested `cargo build -p <pkg> --example <name>`
+   that was never a no-op. The test process inherits variables cargo sets only for it
+   (`CARGO_MANIFEST_DIR`, `CARGO_PKG_*`, `OUT_DIR` for a package with a build script). `ring`'s
+   build script tracks them, so the nested cargo saw different env than the outer `cargo test`
+   build, marked `ring` and everything above it dirty, and recompiled (~45 s, ~90 s of CPU). The
+   next outer build then saw the nested one's env and rebuilt it again, so the two ping-ponged on
+   every run. Parallel test processes queued on cargo's build-dir lock, which gives the
+   60 s / 120 s / 180 s multiples. Verified with `CARGO_LOG=cargo::core::compiler::fingerprint=info`
+   ("Dirty ring: the env variable CARGO_MANIFEST_DIR changed", then "OUT_DIR changed").
+   Ruled out on the way: the 30 s MCP `CONNECT_TIMEOUT` (the test takes 1.2 s run as a binary;
+   `start_service` already returns on child EOF), `ANSWER_GRACE`, `QuotaPoller`, the `World`
+   harness and the terminal reader.
+
+   Fix: `example_bin` removes `CARGO_PKG_*`, `CARGO_MANIFEST_*`, `CARGO_BIN_EXE_*`,
+   `CARGO_CRATE_NAME`, `CARGO_PRIMARY_PACKAGE`, `CARGO_TARGET_TMPDIR` and `OUT_DIR` from the
+   nested command. Measured locally: `a_server_in_the_users_own_settings_starts_without_asking`
+   36 s to 1.1 s; `a_credit_billed_model_is_refused` 54 s to 0.5 s. Full `cargo nextest run`:
+   13 min with 80 slow tests before; 5 min 33 s with 23 slow in the first run after the fix (it
+   includes the one-off rebuild); steady state 1 min 58 s with no slow test.
+
 ## Implementation Steps
 
 1. Add `.github/workflows/pg2.yml` (schedule, dispatch) running the pg2 test with the same env
@@ -83,7 +120,9 @@ OS's PR check completes within 20 min of wall-clock latency.
 4. Push the branch; take the per-step breakdown (Design 5), run the with/without cache experiment
    (Design 4: `save-if: true`, seed run then restore run), apply only measured levers, compare job durations to the 20 min target and the
    issue baseline, and record the numbers in the PR description.
-5. Update docs and the master plan (below).
+5. Find and fix the cause of the slow tests (Design 6); re-run `cargo nextest run` and record the
+   slow-test count and total time before and after in the PR description.
+6. Update docs and the master plan (below).
 
 ## Files to Modify
 
@@ -107,6 +146,8 @@ OS's PR check completes within 20 min of wall-clock latency.
 ## Decisions
 
 - 2026-11-14 (user): the latency target is 20 min per PR run on every OS.
+- 2026-11-14: the slow tests' cause was the nested example build rebuilding on inherited cargo env (see Design 6); the nested build stays as the fallback and CI's `Build tests` step already builds the examples first.
+- 2026-11-14 (user): slow tests are fixed at their cause; raising `terminate-after` or adding per-test overrides is rejected as lazy.
 - 2026-11-14: pg2 tests leave per-PR CI; pg2 clippy, rustdoc and check stay. (Issue #652 decision.)
 - 2026-11-14 AFK: no `rust-cache` unconditionally; it is a with/without experiment on the PR and is kept only on an OS where the cache-hit restore run is at least 3 min faster than the no-cache run, because PR #180 measured cold runs beating cached ones on every OS.
 - 2026-11-14 AFK: `deny`, rustdoc, signing and evals are not split into new jobs; reason: keeps cross-OS coverage and the required-check set unchanged, as #180 also declined splitting.
