@@ -192,7 +192,13 @@ fn judge(
     {
         return;
     }
-    if text.contains(['*', '?', '[']) {
+    // The `?` of a verbatim or device prefix (`\\?\C:\...`, what `canonicalize` returns on
+    // Windows) is not a wildcard; `-LiteralPath` deletes through it.
+    let wildcards = text
+        .strip_prefix(r"\\?\")
+        .or_else(|| text.strip_prefix(r"\\.\"))
+        .unwrap_or(text);
+    if wildcards.contains(['*', '?', '[']) {
         return;
     }
     if moved && !(Path::new(text).is_absolute() || text.starts_with(['/', '\\'])) {
@@ -621,6 +627,7 @@ mod tests {
             r"Remove-Item C:\Users\ME\PROJ",
             r"Remove-Item C:/Users/me",
             r"Remove-Item \\server\share",
+            r"Remove-Item \\?\C:\Windows",
             r"Remove-Item .\..",
             r"Remove-Item C:\Users\me\proj\..",
         ] {
