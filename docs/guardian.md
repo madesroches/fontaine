@@ -318,7 +318,10 @@ one counts), the request lists it as the resolved path and its kind, such as `/h
 directory)`. A target the harness cannot resolve (a variable, a glob, an expanded command name, a
 launcher such as `xargs`) adds nothing: the guardian reads the raw command and judges it under
 `Destroy Pre-existing Files`, which covers a recursive delete whose target the call does not make
-clear. A listed deletion is always denied, in both profiles and whatever your messages say: the
+clear. A deletion whose target resolves inside the workspace roots is not that rule, whether or not
+the target is `pre_existing` or `git_tracked` (a glob with a literal part inside the roots counts as
+inside); `.git` and anything under it, a target the call does not make clear and a target outside the
+roots are still judged under it, as are truncations and no-content overwrites. A listed deletion is always denied, in both profiles and whatever your messages say: the
 full profile's hard deny (under the `Destroy Pre-existing Files` label, kept whatever you put in
 `[auto_mode]`) and the minimal profile's `class=host-data-delete` (rule `Container Escape`). A
 composition's `allow_below` never allows such a call: it abstains, so the script falls through to
@@ -428,7 +431,8 @@ than the window makes that read fail.
 ### The screen preset
 
 The default shape is an allow screen in front of the LLM guardian, run in sequence: the screen goes
-first; if it allows the call, the call is allowed; everything it does not allow goes to the LLM
+first; if it allows the call, the call is allowed, unless the call has a `critical_deletions` target
+(see [Failing closed](#failing-closed)), which the screen never allows; everything it does not allow goes to the LLM
 guardian, which reviews it. The screen does not stop or escalate on its own unless you set
 `stop_threshold`. A call it cannot judge goes to the guardian too: a timeout, an HTTP error, an
 unreachable daemon, an answer that is not yes or no, or a read that failed while others succeeded.
@@ -494,7 +498,7 @@ On a `typesafe/` model `allow_threshold` has a default (stopping is opt-in), so 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian. |
+| `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian, unless it has a `critical_deletions` target (see [Failing closed](#failing-closed)). |
 | `stop_threshold` | none | Unset: the screen never escalates, and every call it does not allow goes to the LLM guardian. Set, a call whose risk reaches it is escalated, as a guardian escalation is. |
 | `allow` | `true` | `allow = false` switches the allow path off and ignores `allow_threshold`. |
 
@@ -619,7 +623,8 @@ model agree that it is clearly safe:
   score is at or above `steering_veto`.
 
 The call is allowed when the hardened read's risk is below `allow_threshold`, the steering score is
-below the veto and the stop read did not stop it. Without the detector, one steering sentence in a
+below the veto, the stop read did not stop it and the call has no `critical_deletions` target (see
+[Failing closed](#failing-closed)). Without the detector, one steering sentence in a
 call's arguments moved most of the should-not-allow cases in the measured set below the skip
 threshold, which is why the allow path has its own prompt and a veto.
 

@@ -1,7 +1,7 @@
 //! The deletions of critical places a call carries, as evidence for the guardian: the file system
 //! root, a top-level directory, the home directory, a workspace root or a parent of one. Only a
 //! deleter operand the walk can read as a literal path counts; whatever it cannot resolve (an
-//! expanded command name, a launcher, a chain) adds nothing and is judged from the raw command.
+//! expanded command name or target, targets a launcher supplies at run time, a glob) adds nothing and is judged from the raw command.
 //! The walk runs on parsed commands and resolved paths, never on a pattern over raw arguments.
 
 use std::path::{Path, PathBuf};
