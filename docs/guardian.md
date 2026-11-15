@@ -665,7 +665,7 @@ without an import; the language itself is documented at rune-rs.github.io.
 | `first_decisive([futures])` | future of verdict | Polls all at once and returns the first verdict that is not an abstain, the earlier in the list winning a tie; the rest are dropped. All abstaining abstains. |
 | `std::future::join((a, b))` | tuple of results | Runs futures together; a script that awaits one after the other runs them in sequence. |
 | `escalate(node, reason)`, `deny(node, reason)`, `abstain()` | verdict | `node` names the deciding step in the audit record's `rule`. |
-| `allow_below(node, score, threshold)` | verdict | An allow if `score.value() < threshold`, else an abstain. It also abstains for a call with a [`critical_deletions`](#the-verdict) target, whatever the score. The only way for a script to allow a call. |
+| `allow_below(node, score, threshold)` | verdict | An allow if `score.value() < threshold`, else an abstain. It also abstains for a call with a [`critical_deletions`](#failing-closed) target, whatever the score. The only way for a script to allow a call. |
 | `verdict.is_abstain()`, `verdict.is_allow()` | `bool` | For sequencing. |
 
 `params` is an object holding `[guardian.composition.params]`: numbers (as floats), strings and

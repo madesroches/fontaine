@@ -39,7 +39,9 @@ pub fn critical_powershell(command: &str, base: &Path, env: &CriticalEnv<'_>) ->
         let Token::Word { text, .. } = token else {
             continue;
         };
-        if DELETERS.contains(&command_name(text).as_str()) {
+        // A deleter's name anywhere else is an argument (`echo rm C:\`).
+        let at_command = at == 0 || matches!(tokens[at - 1], Token::Sep(c) if c != ',');
+        if at_command && DELETERS.contains(&command_name(text).as_str()) {
             collect_operands(&tokens[at + 1..], base, env, &mut found);
         }
     }
@@ -487,6 +489,8 @@ mod tests {
             "echo trim",
             "Get-ChildItem .\\arm.txt",
             "git rm src/a.rs",
+            "git rm -r --cached C:\\",
+            "echo rm C:\\",
         ] {
             assert_eq!(found(command), Vec::<String>::new(), "{command}");
         }

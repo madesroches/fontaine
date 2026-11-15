@@ -214,6 +214,10 @@ fn search_text_operands(rg: bool, args: &[Option<&str>]) -> Vec<usize> {
     let mut explicit = false;
     let mut at = 0;
     while at < args.len() {
+        // `rg --files` and `rg --type-list` take no pattern: every positional is a path.
+        if rg && matches!(args[at], Some("--files" | "--type-list")) {
+            explicit = true;
+        }
         let Some(arg) = args[at] else {
             positional.push(at);
             at += 1;

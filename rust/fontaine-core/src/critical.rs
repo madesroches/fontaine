@@ -48,46 +48,101 @@ fn critical_shell(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Vec<Stri
     let analysis = analyze(command);
     let mut found = Vec::new();
     for simple in &analysis.commands {
-        for (at, word) in simple.words.iter().enumerate() {
-            if !is_deleter(word) {
+        let Some(at) = deleter_position(&simple.words) else {
+            continue;
+        };
+        let mut options_ended = false;
+        for operand in &simple.words[at + 1..] {
+            let text = operand.literal.as_deref();
+            if !options_ended && text == Some("--") {
+                options_ended = true;
                 continue;
             }
-            let mut options_ended = false;
-            for operand in &simple.words[at + 1..] {
-                let text = operand.literal.as_deref();
-                if !options_ended && text == Some("--") {
-                    options_ended = true;
-                    continue;
-                }
-                if !options_ended && text.is_some_and(|t| t.starts_with('-')) {
-                    continue;
-                }
-                let target = match text {
-                    Some(text) => Some(text.to_string()),
-                    None => home_target(operand, analysis.assignments, env),
-                };
-                if let Some(place) = target.and_then(|t| critical_target(&t, base, env))
-                    && !found.contains(&place)
-                {
-                    found.push(place);
-                }
+            if !options_ended && text.is_some_and(|t| t.starts_with('-')) {
+                continue;
+            }
+            let target = match text {
+                Some(text) => Some(text.to_string()),
+                None => home_target(operand, analysis.assignments, env),
+            };
+            if let Some(place) = target.and_then(|t| critical_target(&t, base, env))
+                && !found.contains(&place)
+            {
+                found.push(place);
             }
         }
     }
     found
 }
 
-fn is_deleter(word: &ShellWord) -> bool {
-    word.literal
-        .as_deref()
-        .is_some_and(|text| DELETERS.contains(&&*program_name(text)))
+/// Argv wrappers that run the command after their own options and arguments: the options that
+/// take a value, and how many positional arguments precede the command.
+const WRAPPERS: [(&str, &[&str], usize); 12] = [
+    (
+        "sudo",
+        &["-u", "-g", "-h", "-p", "-C", "-T", "-r", "-t", "-U"],
+        0,
+    ),
+    ("doas", &["-u", "-C"], 0),
+    ("env", &["-u", "-C", "-S"], 0),
+    ("timeout", &["-s", "-k"], 1),
+    ("nice", &["-n"], 0),
+    ("nohup", &[], 0),
+    ("command", &[], 0),
+    ("exec", &["-a"], 0),
+    ("time", &["-f", "-o"], 0),
+    ("stdbuf", &["-i", "-o", "-e"], 0),
+    ("ionice", &["-c", "-n", "-p", "-t"], 0),
+    ("chrt", &[], 1),
+];
+
+/// Value options of `xargs`, which runs its command with literal arguments of its own.
+const XARGS_VALUE_OPTIONS: [&str; 8] = ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"];
+
+/// The index of the word that is a deleter in command position: the first word, or the first one
+/// after a chain of wrappers. A deleter's name anywhere else is an argument (`grep -w rm /etc`,
+/// `git rm`).
+fn deleter_position(words: &[ShellWord]) -> Option<usize> {
+    let mut at = 0;
+    loop {
+        let name = program_name(words.get(at)?.literal.as_deref()?);
+        if DELETERS.contains(&&*name) {
+            return Some(at);
+        }
+        let (value_options, positionals): (&[&str], usize) = if name == "xargs" {
+            (&XARGS_VALUE_OPTIONS, 0)
+        } else {
+            let (_, value_options, positionals) =
+                WRAPPERS.iter().find(|(wrapper, ..)| *wrapper == &*name)?;
+            (value_options, *positionals)
+        };
+        at += 1;
+        let mut left = positionals;
+        loop {
+            let text = words.get(at)?.literal.as_deref()?;
+            if text == "--" {
+                at += 1;
+                break;
+            }
+            if text.starts_with('-') && text.len() > 1 {
+                at += if value_options.contains(&text) { 2 } else { 1 };
+            } else if name == "env" && text.contains('=') {
+                at += 1;
+            } else if left > 0 {
+                left -= 1;
+                at += 1;
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 /// A word that starts with the home directory, as the path it names. `$HOME` can be reassigned
 /// by the command itself, so it counts only when nothing in the command assigns anything.
 fn home_target(word: &ShellWord, assignments: bool, env: &CriticalEnv<'_>) -> Option<String> {
     let rest = word.home_relative.as_deref()?;
-    if assignments && !word.raw.starts_with('~') {
+    if assignments {
         return None;
     }
     let home = env.home?.to_string_lossy();
@@ -221,6 +276,10 @@ mod tests {
             ("rm -rf -- /", "/ (file system root)"),
             ("rmdir /tmp", "/tmp (top-level directory)"),
             ("sudo rm -rf /", "/ (file system root)"),
+            ("sudo env A=1 rm -rf /", "/ (file system root)"),
+            ("timeout 5 rm -rf /", "/ (file system root)"),
+            ("nice -n 5 rm -rf /", "/ (file system root)"),
+            ("xargs rm -rf /", "/ (file system root)"),
             ("ls; rm -rf /", "/ (file system root)"),
             ("echo $(rm -rf /)", "/ (file system root)"),
             ("sh -c 'rm -rf /'", "/ (file system root)"),
@@ -281,6 +340,11 @@ mod tests {
             "rm -r 'unterminated",
             "X=r; ${X}m -rf /",
             "$(printf r)m -rf ~",
+            "HOME=/tmp/x; rm -rf ~",
+            "grep -rw rm /etc",
+            "echo rm /",
+            "which rm /usr",
+            "git rm -r --cached .",
             "rm x",
             "rm -rf build",
             "rm -rf /home/me/proj/target",
