@@ -36,6 +36,8 @@ enum Token {
     Word {
         text: String,
         quoted: bool,
+        /// Some part is single-quoted, where PowerShell expands no variable.
+        single: bool,
         plain_head: usize,
     },
     Sep(char),
@@ -91,12 +93,13 @@ fn collect_operands(
 ) {
     let mut at = 0;
     while at < rest.len() {
-        let (text, quoted, plain_head) = match &rest[at] {
+        let (text, quoted, single, plain_head) = match &rest[at] {
             Token::Word {
                 text,
                 quoted,
+                single,
                 plain_head,
-            } => (text.as_str(), *quoted, *plain_head),
+            } => (text.as_str(), *quoted, *single, *plain_head),
             Token::Sep(',') => {
                 at += 1;
                 continue;
@@ -110,7 +113,7 @@ fn collect_operands(
             && text.starts_with('-')
             && text[1..].starts_with(|c: char| c.is_ascii_alphabetic());
         if !is_option {
-            judge(text, base, moved, env, found);
+            judge(text, !single, base, moved, env, found);
             continue;
         }
         let (name, inline) = match text[1..].split_once(':') {
@@ -123,26 +126,27 @@ fn collect_operands(
         if SWITCHES.contains(&known) {
             continue;
         }
-        let mut values: Vec<&str> = Vec::new();
+        // Each value with whether its variables expand.
+        let mut values: Vec<(&str, bool)> = Vec::new();
         match inline {
-            Some(value) if !value.is_empty() => values.push(value),
+            Some(value) if !value.is_empty() => values.push((value, !single)),
             _ => {
-                if let Some(Token::Word { text, .. }) = rest.get(at) {
-                    values.push(text);
+                if let Some(Token::Word { text, single, .. }) = rest.get(at) {
+                    values.push((text, !single));
                     at += 1;
                 }
             }
         }
         // A comma list continues the value.
-        while let (Some(Token::Sep(',')), Some(Token::Word { text, .. })) =
+        while let (Some(Token::Sep(',')), Some(Token::Word { text, single, .. })) =
             (rest.get(at), rest.get(at + 1))
         {
-            values.push(text);
+            values.push((text, !single));
             at += 2;
         }
         if TARGET_PARAMS.contains(&known) {
-            for value in values {
-                judge(value, base, moved, env, found);
+            for (value, expands) in values {
+                judge(value, expands, base, moved, env, found);
             }
         }
     }
@@ -164,10 +168,18 @@ fn known_parameter(name: &str) -> Option<&'static str> {
 }
 
 /// Adds `operand` to `found` when it is a literal path that names a critical place. A wildcard,
-/// an expansion and a home-relative path with no known home add nothing.
-fn judge(operand: &str, base: &Path, moved: bool, env: &CriticalEnv<'_>, found: &mut Vec<String>) {
+/// an expansion and a home-relative path with no known home add nothing. `expands` is whether
+/// PowerShell would expand variables in the word.
+fn judge(
+    operand: &str,
+    expands: bool,
+    base: &Path,
+    moved: bool,
+    env: &CriticalEnv<'_>,
+    found: &mut Vec<String>,
+) {
     let home = env.home.map(Path::to_string_lossy);
-    let Expanded::Text(expanded) = expand_home(operand, home.as_deref()) else {
+    let Expanded::Text(expanded) = expand_home(operand, expands, home.as_deref()) else {
         return;
     };
     let text = expanded.as_str();
@@ -198,10 +210,14 @@ enum Expanded {
     NoHome,
 }
 
-/// `$env:USERPROFILE`, `$HOME`, `~` and `%USERPROFILE%` at the start of `operand`, replaced
-/// by the home directory.
-fn expand_home(operand: &str, home: Option<&str>) -> Expanded {
-    for prefix in ["$env:userprofile", "$home", "~", "%userprofile%"] {
+/// `$env:USERPROFILE`, `$HOME` and `~` at the start of `operand`, replaced by the home directory.
+/// Variables are left alone when `variables` is false (a single-quoted word); `~` is the
+/// provider's, so quotes do not stop it.
+fn expand_home(operand: &str, variables: bool, home: Option<&str>) -> Expanded {
+    for prefix in ["$env:userprofile", "$home", "~"] {
+        if !variables && prefix.starts_with('$') {
+            continue;
+        }
         let Some(head) = operand.get(..prefix.len()) else {
             continue;
         };
@@ -258,6 +274,7 @@ fn tokenize(text: &str) -> Vec<Token> {
             }
         } else if is_single_quote(c) {
             word.open_quote();
+            word.single = true;
             while let Some(inner) = chars.next() {
                 if !is_single_quote(inner) || chars.next_if(|next| is_single_quote(*next)).is_some()
                 {
@@ -321,6 +338,7 @@ struct Pending {
     text: String,
     started: bool,
     quoted: bool,
+    single: bool,
     plain_head: Option<usize>,
 }
 
@@ -338,6 +356,7 @@ impl Pending {
                 plain_head: self.plain_head.unwrap_or(text.len()),
                 text,
                 quoted: self.quoted,
+                single: self.single,
             });
         }
         *self = Pending::default();
@@ -419,7 +438,7 @@ mod tests {
             "del $env:userprofile".to_string(),
             "Remove-Item ~ -Recurse".to_string(),
             "Remove-Item $HOME".to_string(),
-            "Remove-Item %USERPROFILE%".to_string(),
+            "Remove-Item \"$HOME\"".to_string(),
             format!("Remove-Item $env:USERPROFILE{sep}.."),
             "Remove-Item .".to_string(),
             "Remove-Item ..".to_string(),
@@ -462,6 +481,9 @@ mod tests {
             "Remove-Item $env:TEMP\\x",
             "Remove-Item $PWD",
             "Remove-Item %TEMP%\\x",
+            "Remove-Item %USERPROFILE%",
+            "Remove-Item -Recurse '$HOME'",
+            "Remove-Item -Path:'$env:USERPROFILE'",
             "Remove-Item @files",
             "Remove-Item -Path (Join-Path a b)",
             "Get-ChildItem | Remove-Item",

@@ -1,7 +1,8 @@
 //! The deletions of critical places a call carries, as evidence for the guardian: the file system
 //! root, a top-level directory, the home directory, a workspace root or a parent of one. Only a
 //! deleter operand the walk can read as a literal path counts; whatever it cannot resolve (an
-//! expanded command name or target, targets a launcher supplies at run time, a glob) adds nothing and is judged from the raw command.
+//! expanded command name or target, targets a launcher supplies at run time, a glob) adds nothing
+//! and is judged from the raw command.
 //! The walk runs on parsed commands and resolved paths, never on a pattern over raw arguments.
 
 use std::path::{Path, PathBuf};
@@ -96,23 +97,78 @@ fn is_absolute_operand(text: &str) -> bool {
 
 /// Argv wrappers that run the command after their own options and arguments: the options that
 /// take a value, and how many positional arguments precede the command.
-const WRAPPERS: [(&str, &[&str], usize); 12] = [
+const WRAPPERS: [(&str, &[&str], usize); 19] = [
     (
         "sudo",
-        &["-u", "-g", "-h", "-p", "-C", "-T", "-r", "-t", "-U"],
+        &[
+            "-u",
+            "-g",
+            "-h",
+            "-p",
+            "-C",
+            "-T",
+            "-r",
+            "-t",
+            "-U",
+            "--user",
+            "--group",
+            "--host",
+            "--prompt",
+            "--chroot",
+            "--chdir",
+            "--close-from",
+            "--role",
+            "--type",
+            "--other-user",
+            "--command-timeout",
+        ],
         0,
     ),
     ("doas", &["-u", "-C"], 0),
-    ("env", &["-u", "-C", "-S"], 0),
-    ("timeout", &["-s", "-k"], 1),
-    ("nice", &["-n"], 0),
+    (
+        "env",
+        &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
+        0,
+    ),
+    ("timeout", &["-s", "-k", "--signal", "--kill-after"], 1),
+    ("nice", &["-n", "--adjustment"], 0),
     ("nohup", &[], 0),
     ("command", &[], 0),
     ("exec", &["-a"], 0),
-    ("time", &["-f", "-o"], 0),
-    ("stdbuf", &["-i", "-o", "-e"], 0),
-    ("ionice", &["-c", "-n", "-p", "-t"], 0),
+    ("time", &["-f", "-o", "--format", "--output"], 0),
+    (
+        "stdbuf",
+        &["-i", "-o", "-e", "--input", "--output", "--error"],
+        0,
+    ),
+    (
+        "ionice",
+        &["-c", "-n", "-p", "-t", "--class", "--classdata", "--pid"],
+        0,
+    ),
     ("chrt", &[], 1),
+    ("setsid", &[], 0),
+    (
+        "flock",
+        &["-w", "-E", "--wait", "--timeout", "--conflict-exit-code"],
+        1,
+    ),
+    ("busybox", &[], 0),
+    (
+        "strace",
+        &[
+            "-o", "-e", "-p", "-s", "-u", "-E", "-P", "-a", "-I", "-O", "-S", "-b", "-X", "-U",
+        ],
+        0,
+    ),
+    (
+        "ltrace",
+        &["-o", "-e", "-p", "-s", "-u", "-n", "-a", "-A", "-l", "-w"],
+        0,
+    ),
+    // The mask is a positional unless `-c` gives a list instead.
+    ("taskset", &["-c", "--cpu-list"], 1),
+    ("unbuffer", &[], 0),
 ];
 
 /// Value options of `xargs`, which runs its command with literal arguments of its own.
@@ -146,6 +202,9 @@ fn deleter_position(words: &[ShellWord]) -> Option<usize> {
             // `command -v rm /usr` only prints.
             if name == "command" && text.starts_with('-') && text[1..].contains(['v', 'V']) {
                 return None;
+            }
+            if name == "taskset" && matches!(text, "-c" | "--cpu-list") {
+                left = 0;
             }
             if text.starts_with('-') && text.len() > 1 {
                 at += if value_options.contains(&text) { 2 } else { 1 };
@@ -309,6 +368,23 @@ mod tests {
             ("sudo env A=1 rm -rf /", "/ (file system root)"),
             ("timeout 5 rm -rf /", "/ (file system root)"),
             ("nice -n 5 rm -rf /", "/ (file system root)"),
+            ("sudo --user root rm -rf /", "/ (file system root)"),
+            ("timeout --signal KILL 5 rm -rf /", "/ (file system root)"),
+            ("nice --adjustment 5 rm -rf /", "/ (file system root)"),
+            ("setsid rm -rf ~", "/home/me (home directory)"),
+            ("flock /tmp/l rm -rf /", "/ (file system root)"),
+            ("flock -w 5 /tmp/l rm -rf /", "/ (file system root)"),
+            ("busybox rm -rf /", "/ (file system root)"),
+            ("strace rm -rf /", "/ (file system root)"),
+            (
+                "strace -o out -e trace=file rm -rf /",
+                "/ (file system root)",
+            ),
+            ("ltrace rm -rf /", "/ (file system root)"),
+            ("taskset 1 rm -rf /", "/ (file system root)"),
+            ("taskset -c 0,1 rm -rf /", "/ (file system root)"),
+            ("chrt -f 10 rm -rf /", "/ (file system root)"),
+            ("unbuffer rm -rf /", "/ (file system root)"),
             ("xargs rm -rf /", "/ (file system root)"),
             ("ls; rm -rf /", "/ (file system root)"),
             ("echo $(rm -rf /)", "/ (file system root)"),

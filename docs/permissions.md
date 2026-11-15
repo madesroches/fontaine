@@ -362,7 +362,8 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
   `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`) names a drive root, a top-level directory, your home
   directory, a workspace root or a parent of one by a literal path carries it to the guardian as
   `critical_deletions`, as for `shell`. The scan is a token reader, not a PowerShell parser: the home forms
-  (`~`, `$HOME`, `$env:USERPROFILE`, `%USERPROFILE%`) are resolved, but any other variable, a
+  (`~`, `$HOME`, `$env:USERPROFILE`) are resolved (variables in a single-quoted word are literal text), but any other variable, a
+  cmd-style `%VAR%`, a
   subexpression, a wildcard, targets piped in, a relative target after a `Set-Location` or `cd`, a
   nested interpreter or a computed command name adds nothing, and the guardian reads the command itself. Targets on other providers
   (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.
