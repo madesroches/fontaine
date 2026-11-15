@@ -154,6 +154,28 @@ OS's PR check completes within 20 min of wall-clock latency.
 - 2026-11-14 AFK: `pg2.yml` runs on `schedule` and `workflow_dispatch` only (no path-filtered push); the release gate (latest nightly green) is a manual check documented in CONTRIBUTING, accepted and not enforced in `release.yml`.
 - 2026-11-14 AFK: `pg2.yml` gets a temporary `pull_request` trigger limited to `paths: ['.github/workflows/pg2.yml']` during the PR so it is exercised before merge, and the trigger is removed in the final commit; reason: schedule/dispatch only exist on the default branch, so a YAML error would otherwise reach `main` unexercised, and no permanent trigger is left.
 - 2026-11-14 AFK: "wins by a clear margin" means the cache-hit restore run is at least 3 min faster than the no-cache run on that OS; otherwise the cache stays off (the default); reason: the margin was undefined and the conservative reading keeps #180's no-cache result unless the gain is substantial.
+- 2026-11-15: `rust-cache` is kept on Linux and macOS (restore run 11 and 12 min faster, past the 3 min bar) and off on Windows (restore run 31 s slower); `save-if` is main-only, so a PR restores `main`'s cache and never saves. Combined size about 3 GB of the 10 GB cap (Windows is not cached).
+- 2026-11-15: the Linux disk cleanup removes its four directories in parallel (it took 125 s serially).
+- 2026-11-15: Windows is still over 20 min and is reported as a miss; disabling Defender real-time scanning was tried and blocked by the permission check, so it is not in the workflow.
+
+## Results (2026-11-15)
+
+Per-PR job wall-clock, baseline = run 43668889036 (after the slow-test fix and pg2 removal, no
+cache); cache runs on PR #656:
+
+| OS | No cache | Seed run | Restore run | With cache + `timings` upload |
+|---|---|---|---|---|
+| ubuntu | 24m31s | 29m21s | 13m32s | 17m00s |
+| macOS | 33m30s | 32m48s | 21m45s | 17m19s |
+| windows | 25m00s | 25m57s | 25m31s | 25m17s (cache off) |
+
+Linux and macOS meet the 20 min target. Windows misses it by about 5 min: it compiles 745 units
+against macOS's 221 (the `windows-*` crates), and the cache did not help there (clippy 218 s to
+114 s, but `Build tests` 488 s to 661 s). Remaining Windows time: clippy 3.6 min, build 8.1 min,
+`Test` 9.4 min on 4 cores (the nextest run is 118 s on a 12-core machine, so it is CPU-bound, not
+slow tests: the 9-12 tests flagged slow on the runners are contention). Cache sizes: 1.5 GB
+Linux, 1.5 GB macOS, 1.6 GB Windows, about 4.6 GB of the 10 GB cap. Open: a Windows lever
+(Defender exclusion or a Dev Drive, which needs a decision) or accepting the miss.
 
 ## Documentation
 
