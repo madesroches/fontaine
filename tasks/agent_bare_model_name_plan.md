@@ -32,18 +32,20 @@ A role always wins over a bare name (existing configs keep their meaning).
 In `ChildContext::model_for`, for `ModelSpec::Named(name)` when `self.roles` has no role `name`,
 call a new `Switcher::bare_model(name, main)`:
 
-1. Take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`; only the main
-   account (and accounts with an explicit `models` list) is free; the others are listed
+1. Test `name` against `main.listing.models` (already in hand in `model_for`; exact match only, as
+   `<account>/<model>` validation does). On a hit choose the main account with no `listings`
+   call, so the spawn never waits on other accounts' network calls.
+2. Only on a miss take `switcher.listings(Some((&main.handle.reference, &main.listing)), None)`;
+   the main account (and accounts with an explicit `models` list) is free; the others are listed
    concurrently under the 10s `LISTING_TIMEOUT`, so an unknown name can block a spawn up to 10s.
-2. Collect accounts whose `models` is `Ok` and contains `name` exactly (exact match only, as
-   `<account>/<model>` validation does).
-3. If the main model's account is among them, choose it. Else if exactly one account offers it,
-   choose it. Else if several, error listing the `<account>/<model>` candidates. If none, error.
+   Collect accounts whose `models` is `Ok` and contains `name` exactly.
+3. If exactly one account offers it, choose it. Else if several, error listing the
+   `<account>/<model>` candidates. If none, error.
 4. The result is a `ModelRef`; continue as `ModelSpec::Model` does (`switcher.main(ref)`), with
    no `ChildList` (a one-entry choice, like a lone reference).
 
-The unknown-name error keeps the "`x` is not a defined model role; defined roles: ..." prefix
-and appends the other accepted forms (`$main`, `$guardian_default`, `<account>/<model>`, a bare
+The unknown-name error reuses `Roles::unknown`'s text for both its forms (the empty-roles form
+"define roles under `[models.roles]`" and the "defined roles: ..." form) and appends the other accepted forms (`$main`, `$guardian_default`, `<account>/<model>`, a bare
 model name an account offers), and mentions accounts whose listing failed. The existing
 assertion in `parallel_agents.rs` (~781-786, spawn with bare "sonnet", expects "not a defined
 model role") stays valid. The role-only message stays for the `/model` and agent-file paths that
@@ -77,7 +79,7 @@ The `parameters` description in `spawn.rs` gains "or a bare model name an accoun
 
 ## Testing Strategy
 
-- Unit: `pick_bare` - main account preferred when several offer the name; single non-main account
+- Unit: `pick_bare` (miss path) - a main-account hit needs no `listings` call (checked at `bare_model`/`model_for`); single non-main account
   chosen; several non-main accounts and no main -> error listing candidates; none -> error;
   accounts whose listing failed are skipped.
 - Integration (`parallel_agents.rs`, wiremock-backed headless run, no live APIs): an `agent` call
