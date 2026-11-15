@@ -39,9 +39,9 @@ attach.
 ### 1. Protocol (`fontaine-remote`, still core-free)
 
 - New ALPN `fontaine/attach/1`; the `fontaine/send/1` ALPN, `Request/Response` one-shot types
-  and `client::send` are removed (see Decisions). Framing (`read_frame`/`write_frame`) is reused
-  with attach-specific limits: on the attach stream `FRAME_TIMEOUT` (10 s) covers only the body
-  read once a 4-byte prefix has arrived, never the wait for the prefix. Both sides send `Ping`
+  and `client::send` are removed (see Decisions). Framing (`read_frame`/`write_frame`) is reused;
+  `read_frame` gains a frame-cap parameter and a mode that applies `FRAME_TIMEOUT` (10 s) only to the body
+  read once the 4-byte prefix has arrived, never the wait for the prefix; the handshake keeps the current behaviour. Both sides send `Ping`
   every 15 s; a side that has received nothing for 45 s closes the connection as lost. The attach
   ALPN has its own frame caps: 4 MiB host → client, 64 KiB client → host. A `Snapshot` larger
   than the host → client cap is sent as consecutive `Snapshot{seq, part, of, state}` chunks each
@@ -52,7 +52,7 @@ attach.
   Resume { last_seq: Option<u64> }`. Authentication of a device is the iroh connection's
   authenticated remote NodeId, never a field the client writes.
 - Client → host: `Prompt{message_id, text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, reply}`,
-  `Interrupt`, `Slash{line}`, `Ping`. Host → client: `Snapshot{seq, part, of, state}`, `Event{seq, event}`,
+  `Interrupt`, `Slash{message_id, line}`, `Ping`. Host → client: `Snapshot{seq, part, of, state}`, `Event{seq, event}`,
   `ApprovalRequest{id, …}`, `Question{id, …}`, `Notice{severity, text}`, `Resolved{id}`,
   `Accepted{message_id}`, `PromptRejected{message_id, reason}`, `Paired`, `Rejected{reason}`,
   `Bye`.
@@ -127,7 +127,8 @@ attach.
   entries: a device `Prompt` sent while a dialog is open is queued like any other message and
   never answers the dialog. The first answer wins (local or any device) because the loop sends the oneshot once;
   the other devices get a `Resolved{id}` event that closes their dialog. The answering device's NodeId goes in the ledger and audit
-  record (`remote` field, audit `explanation`). A device disconnect closes only that device's
+  record: the answer reaching the permission pipeline carries an optional `RemoteSender` (beside the `Answer` on the approver reply), and `permissions.rs` writes it on `Record::Approval`/`Record::Denial` (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit `explanation`. Audit records for device activity use tool name `remote`.
+  A device `ApprovalAnswer`/`QuestionReply` is refused (notice to that device, audit record, dialog left pending) while the local approval is typing feedback or the question panel is mid-edit, so a device answer never discards the local person's half-typed input. A device disconnect closes only that device's
   dialog; the local approval stays pending (if the host UI is quit, the session ends and the
   call is denied as today). A dropped connection never approves. `Prompt` lines that happen to
   read `y` stay ordinary messages.
@@ -171,13 +172,12 @@ attach.
 
 ### 5. Rediscovery
 
-The host publishes its NodeId and addresses via iroh address lookup under the persistent key
+The host publishes its NodeId and home relay URL via iroh address lookup under the persistent key
 only when `[remote] relay = "default"`; the client dials the stored NodeId with lookup enabled, falling
 back to the stored last-known addresses. `attach` reads only the user-scope `[remote] relay` and
 adds the lookup resolvers only when it is `default`; with `disabled` it dials the stored
 last-known addresses only and queries no lookup service. A self-hosted address lookup service is out of scope:
-direct-only users reattach via stored addresses. `relay = "disabled"` stays direct-only and publishes
-nothing (documented: rediscovery then works only on a reachable address). Tickets still carry
+direct-only users reattach via stored addresses. Tickets still carry
 addresses for the first pairing so no lookup is needed to pair.
 
 ### 6. Enabling
@@ -204,13 +204,14 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    events renders an identical transcript to the host in a `TestBackend` test. If events cannot
    cover a surface, record it as a limitation in docs and drop it from the snapshot.
 2. `fontaine-remote`: use `presets::N0` (Minimal plus PkarrPublisher/PkarrResolver/DnsAddressLookup,
-   `relay_mode` overridden as today) for `relay = "default"` and keep `presets::Minimal` for
-   `disabled` (server and client both use Minimal today); no change to `rust/Cargo.toml` features
+   `relay_mode` overridden as today) only for `RelayMode::Default`; `Disabled` and `Custom` keep
+   `presets::Minimal` (server and client both use Minimal today); no change to `rust/Cargo.toml` features
    (`tls-ring` suffices); new `protocol` messages and ALPN; `paired` data type (`PairedDevices`);
    store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; remove one-shot `send`.
-3. `fontaine-core`: audit/ledger helpers for the answering device (`remote` on approval
-   outcome records if absent); no schema break (serde-defaulted optional fields);
+3. `fontaine-core`: the answer reaching the permission pipeline carries an optional `RemoteSender`
+   (beside the `Answer` on the approver reply); `permissions.rs` writes it on `Record::Approval`/`Record::Denial`
+   (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit explanation; no schema break (serde-defaulted optional fields);
    `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
 4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, typed device
    answers as a loop input (first answer wins), the key/paired-file store implementation over
@@ -220,7 +221,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    guardian-toggle/AFK-review plumbing (`Ui::remote_confirm`, the remote fields on
    `GuardianToggle` in gate.rs, the GuardianDisable/AfkReview remote-dialog kinds in app.rs,
    `confirm_prompt::REMOTE_ANSWERS`), status indicator
-   with device count, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
+   with device count, a unit test that a device answer is refused while the local approval is typing feedback or the question panel is mid-edit, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
    `ticket_prompt.rs` for attach.
 5. `fontaine`: `--remote` flag, `attach` and `remote devices|revoke` subcommands, remove
    `send_cmd.rs`, wire client key/hosts files.
@@ -237,7 +238,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   `rust/fontaine-tui/tests/remote.rs` (rewrite for attach: it drives #627 via
   `fontaine_remote::send` and pins the exact-label dialog answer and remote guardian-disable
   behaviour, both removed), `rust/fontaine-tui/src/ticket_prompt.rs` (mentions `fontaine send`)
-- `rust/fontaine-core/src/{audit,gate,ledger,steering}.rs` (answering-device identity; dialog hold)
+- `rust/fontaine-core/src/{audit,gate,ledger,permissions,steering}.rs` (answering-device identity; dialog hold; audit tool name `remote_inbox` → `remote` in gate.rs)
 - `rust/fontaine/src/{cli,lib,main}.rs`, new `attach_cmd.rs`, delete `send_cmd.rs`
 - `rust/Cargo.toml`, crate manifests, `rust/deny.toml` if licenses change
 - `AGENTS.md`, `SECURITY.md`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`,
@@ -265,12 +266,10 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
 - AFK: a device disconnect closes only that device's dialog; the local approval stays pending,
   and quitting the host UI ends the session and denies the call as today.
 - AFK: the event ring defaults to 4096 events; a gap beyond it sends a full snapshot.
-- AFK: `[remote] relay = "default"` also publishes the host NodeId and addresses to iroh's
+- AFK: `[remote] relay = "default"` also publishes the host NodeId and home relay URL to iroh's
   address-lookup service, a metadata exposure beyond relay use; `relay = "disabled"` publishes
   nothing. The master plan Decision (`tasks/fontaine_harness_plan.md`, remote relay) is updated,
   and `docs/remote.md` and `docs/configuration.md` cover the exposure.
-- AFK: `paired_devices.json` and the host key are user-scope data-dir files; project scope
-  cannot read, write or influence them.
 
 ## Documentation
 
@@ -278,14 +277,12 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
 reconnect, trust model, relay privacy, rediscovery limits, `attach --message` and exit codes);
 update `SUMMARY.md`, `index.md`, `tui.md`, `guardian.md`, `afk.md`, `terminal.md`,
 `configuration.md` (relay = default also publishes to address lookup), `agents.md`;
-`docs/remote.md` and `docs/configuration.md` also state that `attach` reads only the user-scope
-`[remote] relay`, uses lookup resolvers only when it is `default`, and with `disabled` dials
-stored last-known addresses only; CHANGELOG entry noting the removal of `fontaine send`.
+CHANGELOG entry noting the removal of `fontaine send`.
 
 Master plan (`tasks/fontaine_harness_plan.md`) entries that go stale and must be updated: the
 workspace-layout line for `fontaine-remote` (~234), the guardian-disable Decision (~766-768), the
 ticket-line-is-presumed-user Decision (~851), the `/remote-inbox on|off|status|ticket` Decision
-(~1330) and the relay Decision (~507). This plan's own deviations (pairing replaces
+(~1330; also note the audit tool name changes from `remote_inbox` to `remote`) and the relay Decision (~507). This plan's own deviations (pairing replaces
 ticket-as-user, `fontaine send` removed, devices refused `/guardian-disable`, local-only pairing
 confirmation) are recorded as dated lines in the matching master-plan Decisions subsections.
 
@@ -308,7 +305,7 @@ test relay): pair → confirm → attach → reattach by NodeId with no ticket; 
 reconnect with `Resume`; superseded connection; a revoked NodeId's `Resume` gets `NotPaired` and its live connection
 gets `Revoked`. Unit (`attach_cmd.rs`): every `Reason` (incl. `NotPaired`, `PairingDeclined`,
 `PairingTimeout`, `Revoked`, `Superseded`) maps to its `attach --message` exit code. A real network
-catches NAT/relay behaviour and address-lookup rediscovery a loopback test cannot; manual.
+catches NAT/relay behaviour and address-lookup rediscovery a loopback test cannot; manual. No test endpoint publishes to an address-lookup service: N0 applies only to `RelayMode::Default`, and the in-process test relay uses `RelayMode::Custom` (Minimal).
 
 ## Manual Verification
 
