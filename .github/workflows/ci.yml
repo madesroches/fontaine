@@ -71,6 +71,13 @@ jobs:
           done
           wait
 
+      # Defender scans every compiler output and every process the tests spawn; the runner is
+      # ephemeral.
+      - name: Disable Defender real-time scanning
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - name: Install the pinned toolchain
         if: needs.changes.outputs.code == 'true'
         run: rustup toolchain install
