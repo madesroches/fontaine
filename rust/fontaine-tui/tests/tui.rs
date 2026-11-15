@@ -304,7 +304,7 @@ fn absolute_rule(tool: &str, path: &std::path::Path) -> String {
 // ---------------------------------------------------------------------------------------
 
 use common::{verdict, verdict_endpoint};
-use fontaine_core::config::PermissionMode;
+use fontaine_sdk::core::config::PermissionMode;
 
 fn ledger_text(w: &World) -> String {
     w.ledger_text()
@@ -801,7 +801,7 @@ async fn clear_erases_the_old_conversation_from_the_screen_and_scrollback() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_warnings_open_the_conversation_as_warning_entries() {
-    use fontaine_core::Notice;
+    use fontaine_sdk::core::Notice;
     // Off, so the web-search-unavailable warning is not among those the test orders.
     let mut w = World::new(vec![]).with_cli_settings("[websearch]\nbackend = \"off\"\n");
     w.startup = vec![Notice::warning(
@@ -842,7 +842,7 @@ async fn startup_warnings_open_the_conversation_as_warning_entries() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn notices_from_outside_the_session_show_up_and_wait_across_a_session_switch() {
-    use fontaine_core::Notice;
+    use fontaine_sdk::core::Notice;
     let (tx, feed) = fontaine_tui::notice_feed();
     let mut w = World::new(vec![]);
     w.feed = Some(feed);
@@ -875,7 +875,7 @@ async fn notices_from_outside_the_session_show_up_and_wait_across_a_session_swit
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ascii_glyphs_replace_the_warning_mark_when_asked() {
-    use fontaine_core::Notice;
+    use fontaine_sdk::core::Notice;
     let mut w = World::new(vec![]);
     w.env = vec![("FONTAINE_ASCII_GLYPHS".into(), "1".into())];
     w.startup = vec![Notice::warning("heads up", None)];

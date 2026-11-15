@@ -7,18 +7,18 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::extensions::{self, Scope};
-use fontaine_core::notice::Notice;
-use fontaine_core::plugin_ops::{
+use fontaine_sdk::core::dirs::{self, Dirs};
+use fontaine_sdk::core::extensions::{self, Scope};
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::plugin_ops::{
     self, EnvRef, Fetch, commit_install, commit_update, marketplace_line, prepare_install,
     prepare_update,
 };
-use fontaine_core::plugins::{self, InstalledPlugin, PluginContext, Registry, checkout_dir};
-use fontaine_core::skill_trust;
+use fontaine_sdk::core::plugins::{self, InstalledPlugin, PluginContext, Registry, checkout_dir};
+use fontaine_sdk::core::skill_trust;
 
 // The shared helpers live in core; the auto-update pass and its tests reach them from here.
-pub(crate) use fontaine_core::plugin_ops::{
+pub(crate) use fontaine_sdk::core::plugin_ops::{
     INTERACTIVE_GIT, MarketplaceFetch, MarketplaceOutcome, PluginFetch, PluginOutcome,
     UNATTENDED_GIT, Workdir, fetch_marketplace, fetch_plugin, read_catalog, remove_dir,
 };
@@ -73,12 +73,12 @@ fn fail<T>(message: impl std::fmt::Display) -> Result<T, String> {
     Err(message.to_string())
 }
 
-fn lock_registry(config_dir: &Path) -> Result<fontaine_core::file_lock::FileLock, String> {
-    fontaine_core::file_lock::lock(&plugins::registry_path(config_dir)).map_err(|e| {
+fn lock_registry(config_dir: &Path) -> Result<fontaine_sdk::core::file_lock::FileLock, String> {
+    fontaine_sdk::core::file_lock::lock(&plugins::registry_path(config_dir)).map_err(|e| {
         format!(
             "cannot lock {}: {}",
             plugins::registry_path(config_dir).display(),
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })
 }
@@ -216,7 +216,7 @@ pub(crate) fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String
         skill_trust::trust(&dirs.config, to_trust).map_err(|e| {
             format!(
                 "the plugin is installed, but the trust was not recorded: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )
         })?;
         println!(

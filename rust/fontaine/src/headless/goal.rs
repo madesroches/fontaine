@@ -1,10 +1,10 @@
 //! `-p "/goal ..."`: the one slash command headless understands. The loop that runs the goal's
 //! turns is in the parent module; this holds what describes a goal to the consumer.
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::goal::{GoalArg, Judgment, Summary, parse_goal_arg};
-use fontaine_core::ledger::GoalEvent;
-use fontaine_core::turn::TurnOutcome;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::goal::{GoalArg, Judgment, Summary, parse_goal_arg};
+use fontaine_sdk::core::ledger::GoalEvent;
+use fontaine_sdk::core::turn::TurnOutcome;
 use serde_json::{Value, json};
 
 use super::{Outcome, Subtype, event};

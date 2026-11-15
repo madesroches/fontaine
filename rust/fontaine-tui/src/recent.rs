@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use fontaine_core::models::ModelRef;
-use fontaine_core::owner_only;
+use fontaine_sdk::core::models::ModelRef;
+use fontaine_sdk::core::owner_only;
 use serde_json::{Value, json};
 
 use crate::model_picker::PickerPurpose;

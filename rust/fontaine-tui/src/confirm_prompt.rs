@@ -204,7 +204,7 @@ mod tests {
         );
         assert_eq!(rows(setup.footer()), ["y saves them · n discards them"]);
 
-        let skill = fontaine_core::extensions::Skill {
+        let skill = fontaine_sdk::core::extensions::Skill {
             name: "p:pr".into(),
             description: "d".into(),
             body: String::new(),
@@ -214,7 +214,7 @@ mod tests {
             allowed_tools: Vec::new(),
             declared_tools: Vec::new(),
             digest: "sha256:new".into(),
-            scope: fontaine_core::extensions::Scope::User,
+            scope: fontaine_sdk::core::extensions::Scope::User,
             path: "/c/pr/SKILL.md".into(),
         };
         let trust = crate::skill_trust_prompt::new(

@@ -4,7 +4,7 @@ mod common;
 
 use common::routed::{Route, Turn, start};
 use common::{Ui, World, text_turn, tool_turn};
-use fontaine_core::config::PermissionMode;
+use fontaine_sdk::core::config::PermissionMode;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 

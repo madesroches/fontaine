@@ -6,10 +6,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_core::config::{HookEvent, MatcherKind};
-use fontaine_core::extensions::map_tool_entry;
-use fontaine_core::permissions::HookError;
-use fontaine_core::user_hooks::{CallbackHook, HookTransport};
+use fontaine_sdk::core::config::{HookEvent, MatcherKind};
+use fontaine_sdk::core::extensions::map_tool_entry;
+use fontaine_sdk::core::permissions::HookError;
+use fontaine_sdk::core::user_hooks::{CallbackHook, HookTransport};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 

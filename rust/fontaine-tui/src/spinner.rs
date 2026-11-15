@@ -2,9 +2,9 @@
 //! is working. Pure functions of `App`, which carries the frame and the turn clock, so nothing
 //! here reads a clock.
 
-use fontaine_core::turn::SessionEvent;
-use fontaine_tools::display::compact_count;
-use fontaine_tools::jobs::format_age;
+use fontaine_sdk::core::turn::SessionEvent;
+use fontaine_sdk::tools::display::compact_count;
+use fontaine_sdk::tools::jobs::format_age;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Duration;
@@ -251,8 +251,8 @@ pub fn tick(app: &App) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::agent_list::ListRow;
-    use fontaine_agents::runner::ChildStatus;
-    use fontaine_core::config::{PermissionMode, ThemeName};
+    use fontaine_sdk::agents::runner::ChildStatus;
+    use fontaine_sdk::core::config::{PermissionMode, ThemeName};
     use rig_core::completion::Usage;
 
     fn running_app() -> App {
@@ -476,7 +476,7 @@ mod tests {
     fn prompts_that_wait_on_the_human_hide_it_and_a_picker_does_not() {
         let mut app = running_app();
         let (reply, _choice) = tokio::sync::oneshot::channel();
-        let info = fontaine_core::permissions::GuardianUnavailable {
+        let info = fontaine_sdk::core::permissions::GuardianUnavailable {
             model: "a/b".into(),
             reason: "no key".into(),
             tool: "shell".into(),
@@ -504,8 +504,8 @@ mod tests {
         assert_eq!(text(&lines(&app, 120)[0]), format!("· {line} (1m05s)"));
         let (reply, _choice) = tokio::sync::oneshot::channel();
         app.usage_pause_prompt = Some(crate::usage_prompt::UsagePausePrompt::new(
-            fontaine_core::usage_pause::PauseInfo::new(
-                fontaine_core::quota::UsageRole::Main,
+            fontaine_sdk::core::usage_pause::PauseInfo::new(
+                fontaine_sdk::core::quota::UsageRole::Main,
                 "work",
                 None,
             ),

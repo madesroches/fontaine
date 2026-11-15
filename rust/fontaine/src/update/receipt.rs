@@ -169,7 +169,7 @@ pub fn write_version(path: &Path, version: &str) -> Result<(), WriteError> {
     object.insert("version".to_string(), Value::String(version.to_string()));
     let mut text = serde_json::to_string_pretty(&value).map_err(WriteError::Parse)?;
     text.push('\n');
-    fontaine_core::owner_only::write_atomic_keeping_mode(path, text.as_bytes())
+    fontaine_sdk::core::owner_only::write_atomic_keeping_mode(path, text.as_bytes())
         .map_err(WriteError::Io)
 }
 

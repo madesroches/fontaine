@@ -1,10 +1,10 @@
 use crate::config_panel::{ConfigKey, ConfigPanel, saved_status, value_label};
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::config::{Config, Slot, ThemeName};
-use fontaine_core::config_catalog::{self, Applies, ModelSlot, Running};
-use fontaine_core::models::GuardianChoice;
-use fontaine_core::user_config;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::config::{Config, Slot, ThemeName};
+use fontaine_sdk::core::config_catalog::{self, Applies, ModelSlot, Running};
+use fontaine_sdk::core::models::GuardianChoice;
+use fontaine_sdk::core::user_config;
 
 /// The scope that outranks the user file for `path`, whose value therefore wins from the next
 /// launch whatever a save to the user file says.
@@ -64,7 +64,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 return;
             }
             Err(e) => {
-                let why = fontaine_tools::error_chain::chain(&e);
+                let why = fontaine_sdk::tools::error_chain::chain(&e);
                 self.config_report(|panel| panel.failed(&why), || format!("not saved: {why}"));
                 return;
             }

@@ -3,7 +3,7 @@ mod common;
 use clap::Parser;
 use common::{Endpoint, Sandbox, Turn, Wire, write};
 use fontaine::cli::{AutoModeAction, Cli, Command, ReportFormat};
-use fontaine_guardian::List;
+use fontaine_sdk::guardian::List;
 use serde_json::Value;
 
 async fn setup() -> (Sandbox, Endpoint) {

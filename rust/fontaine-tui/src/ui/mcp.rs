@@ -2,7 +2,7 @@ use crate::commands::{McpRequest, parse_mcp};
 use crate::reports::McpState;
 use crate::server_prompt;
 use crate::{Action, App, Ui};
-use fontaine_core::agent::{AgentRuntime, McpServerState, ReconnectTarget};
+use fontaine_sdk::core::agent::{AgentRuntime, McpServerState, ReconnectTarget};
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// The servers `/mcp` lists, by name: the ones that were never started (left off, or
@@ -99,7 +99,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Err(e) => self.app.transcript.error(format!(
                         "could not remember the approval of `{}`: {}",
                         plan.name,
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     )),
                 }
                 approved.push(plan.name.clone());

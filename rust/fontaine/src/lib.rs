@@ -26,25 +26,25 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use fontaine_core::agent::SessionOrigin;
-use fontaine_core::agent::{AgentRuntime, AgentSetup};
-use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
-use fontaine_core::containment;
-use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::extensions::{self, Extensions};
-use fontaine_core::memory;
-use fontaine_core::models::{self, Models, ResolveParams, Switcher};
-use fontaine_core::notice::Notice;
-use fontaine_core::permissions::{DenyAll, HumanChannel};
-use fontaine_core::plugins;
-use fontaine_core::scanner_stage::{self, ScannerStart};
-use fontaine_core::scratch::{self, Scratch};
-use fontaine_core::session::{self, Session, SessionError};
-use fontaine_core::tools;
-use fontaine_core::trust;
-use fontaine_core::workspace::{self, RootSource};
-use fontaine_tools::git_bash::GitBash;
-use fontaine_tools::powershell::PowerShellSettings;
+use fontaine_sdk::core::agent::SessionOrigin;
+use fontaine_sdk::core::agent::{AgentRuntime, AgentSetup};
+use fontaine_sdk::core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
+use fontaine_sdk::core::containment;
+use fontaine_sdk::core::dirs::{self, Dirs};
+use fontaine_sdk::core::extensions::{self, Extensions};
+use fontaine_sdk::core::memory;
+use fontaine_sdk::core::models::{self, Models, ResolveParams, Switcher};
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::permissions::{DenyAll, HumanChannel};
+use fontaine_sdk::core::plugins;
+use fontaine_sdk::core::scanner_stage::{self, ScannerStart};
+use fontaine_sdk::core::scratch::{self, Scratch};
+use fontaine_sdk::core::session::{self, Session, SessionError};
+use fontaine_sdk::core::tools;
+use fontaine_sdk::core::trust;
+use fontaine_sdk::core::workspace::{self, RootSource};
+use fontaine_sdk::tools::git_bash::GitBash;
+use fontaine_sdk::tools::powershell::PowerShellSettings;
 use fontaine_tui::accessibility;
 use fontaine_tui::theme::Theme;
 use rig_core::schemars::Schema;
@@ -82,7 +82,7 @@ impl Host {
     }
 }
 
-pub const EXIT_CONFIG: u8 = fontaine_core::config::CONFIG_EXIT_CODE;
+pub const EXIT_CONFIG: u8 = fontaine_sdk::core::config::CONFIG_EXIT_CODE;
 
 fn usage_code(message: impl std::fmt::Display) -> u8 {
     eprintln!("fontaine: {message}");
@@ -217,7 +217,7 @@ fn apply_cd(cli: &Cli, host: &mut Host) -> Result<(), u8> {
         Err(e) => Err(usage_code(format!(
             "--cd {}: {}",
             dir.display(),
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         ))),
     }
 }
@@ -227,15 +227,17 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     let hooks = config
         .hooks
         .iter()
-        .filter(|(event, _)| event.project_scope() == fontaine_core::config::ProjectScope::Loads)
+        .filter(|(event, _)| {
+            event.project_scope() == fontaine_sdk::core::config::ProjectScope::Loads
+        })
         .flat_map(|(_, hooks)| hooks)
         .filter(|hook| hook.origin.is_project())
         // `build()` drops http and prompt hooks from the shared project file. Those in
         // `settings.local.toml` are counted, though a demoted (tracked, no-git or outside-work-tree)
         // one stays untrusted and still has them dropped.
         .filter(|hook| {
-            hook.kind == fontaine_core::config::HandlerKind::Command
-                || hook.origin.slot != fontaine_core::config::Slot::Project
+            hook.kind == fontaine_sdk::core::config::HandlerKind::Command
+                || hook.origin.slot != fontaine_sdk::core::config::Slot::Project
         })
         .count();
     let servers = config
@@ -307,14 +309,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     // The Claude CLI adapter starts this executable as its inert tool inventory; the mode is
     // hidden and takes no part in the command line.
     if let Some(manifest) =
-        fontaine_core::providers::claude_subscription::inventory::from_args(args.clone())
+        fontaine_sdk::core::providers::claude_subscription::inventory::from_args(args.clone())
     {
-        return match fontaine_core::providers::claude_subscription::inventory::serve(&manifest) {
+        return match fontaine_sdk::core::providers::claude_subscription::inventory::serve(&manifest)
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!(
                     "fontaine: the tool inventory failed: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 );
                 ExitCode::from(1)
             }
@@ -693,10 +696,10 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     }
     let max_usage_wait = match &cli.max_usage_wait {
         None => None,
-        Some(text) => match fontaine_core::duration::parse_duration(text) {
+        Some(text) => match fontaine_sdk::core::duration::parse_duration(text) {
             Some(wait)
                 if !wait.is_zero()
-                    && wait.as_secs() <= fontaine_core::config::MAX_USAGE_WAIT_SECS =>
+                    && wait.as_secs() <= fontaine_sdk::core::config::MAX_USAGE_WAIT_SECS =>
             {
                 Some(wait)
             }
@@ -782,7 +785,7 @@ fn open_session(
             warnings.push(Notice::warning(
                 format!(
                     "the session was not named: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ),
                 None,
             ));
@@ -883,7 +886,7 @@ fn prepare_session(
             warnings.push(Notice::warning(
                 format!(
                     "no scratch directory for this session: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ),
                 None,
             ));
@@ -901,7 +904,7 @@ fn prepare_session(
                 warnings.push(Notice::warning(
                     format!(
                         "auto memory is off for this session: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     ),
                     None,
                 ));
@@ -1016,12 +1019,12 @@ struct Shells {
 /// `FONTAINE_POWERSHELL_PATH`, which is why discovery found no PowerShell when one is set.
 #[cfg(any(windows, test))]
 fn choose_shells(
-    git_bash: Result<GitBash, fontaine_tools::git_bash::GitBashError>,
+    git_bash: Result<GitBash, fontaine_sdk::tools::git_bash::GitBashError>,
     powershell: Option<PowerShellSettings>,
     powershell_override: Option<OsString>,
 ) -> Result<Shells, String> {
-    use fontaine_tools::git_bash::{GitBashError, OVERRIDE_VAR as GIT_BASH_VAR};
-    use fontaine_tools::powershell::OVERRIDE_VAR as POWERSHELL_VAR;
+    use fontaine_sdk::tools::git_bash::{GitBashError, OVERRIDE_VAR as GIT_BASH_VAR};
+    use fontaine_sdk::tools::powershell::OVERRIDE_VAR as POWERSHELL_VAR;
     match (git_bash, powershell) {
         (Ok(git_bash), powershell) => Ok(Shells {
             git_bash: Some(git_bash),
@@ -1047,17 +1050,18 @@ fn choose_shells(
 /// Git Bash and PowerShell on Windows; elsewhere neither, since `sh` is native.
 #[cfg(windows)]
 fn shells(host: &Host) -> Result<Shells, u8> {
-    let git_bash = fontaine_tools::git_bash::discover(&fontaine_tools::git_bash::Probe {
+    let git_bash = fontaine_sdk::tools::git_bash::discover(&fontaine_sdk::tools::git_bash::Probe {
         env: &*host.env,
         is_file: &|path| path.is_file(),
         read_file: &|path| std::fs::read_to_string(path).ok(),
     });
-    let powershell = fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
-        env: &*host.env,
-        is_file: &|path| path.is_file(),
-    });
+    let powershell =
+        fontaine_sdk::tools::powershell::discover(&fontaine_sdk::tools::powershell::Probe {
+            env: &*host.env,
+            is_file: &|path| path.is_file(),
+        });
     let powershell_override =
-        (host.env)(fontaine_tools::powershell::OVERRIDE_VAR).filter(|value| !value.is_empty());
+        (host.env)(fontaine_sdk::tools::powershell::OVERRIDE_VAR).filter(|value| !value.is_empty());
     choose_shells(git_bash, powershell, powershell_override).map_err(usage_code)
 }
 
@@ -1154,7 +1158,7 @@ fn start_self_update(
             let _ = notices.send(Notice::warning(
                 format!(
                     "automatic update did not start: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ),
                 None,
             ));
@@ -1164,7 +1168,7 @@ fn start_self_update(
 
 /// The environment, looked up live on every call: the Claude CLI adapter checks for conflicting
 /// variables before each request, so a variable set after startup must be seen.
-fn shared_env(host: &Host) -> fontaine_core::agent::EnvLookup {
+fn shared_env(host: &Host) -> fontaine_sdk::core::agent::EnvLookup {
     host.env.clone()
 }
 
@@ -1202,7 +1206,7 @@ fn agent_setup(
     if let Some(wait) = cli
         .max_usage_wait
         .as_deref()
-        .and_then(fontaine_core::duration::parse_duration)
+        .and_then(fontaine_sdk::core::duration::parse_duration)
     {
         config.headless.max_usage_wait_secs = wait.as_secs();
     }
@@ -1290,7 +1294,7 @@ async fn run_headless(
 /// A headless session built and ready to run.
 struct Started {
     runtime: AgentRuntime,
-    guardian_login: Option<(String, fontaine_core::providers::ExternalLogin)>,
+    guardian_login: Option<(String, fontaine_sdk::core::providers::ExternalLogin)>,
 }
 
 /// Resolves the models, starts the scanner and builds the runtime of a headless session. `tweak`
@@ -1343,7 +1347,7 @@ async fn start_headless(
     let runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
+            eprintln!("fontaine: {}", fontaine_sdk::tools::error_chain::chain(&e));
             return Err(1);
         }
     };
@@ -1368,7 +1372,7 @@ fn signed_out_login(
     error: &models::ModelError,
     model_override: Option<&str>,
     host: &Host,
-) -> Option<(String, fontaine_core::providers::ExternalLogin)> {
+) -> Option<(String, fontaine_sdk::core::providers::ExternalLogin)> {
     if !error.is_not_signed_in() {
         return None;
     }
@@ -1434,7 +1438,7 @@ async fn run_interactive(
                     bail(&prep);
                     eprintln!(
                         "fontaine: cannot show the setup screen: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     );
                     eprintln!("fontaine: {error}");
                     return Outcome::Done(error.exit_code());
@@ -1521,7 +1525,7 @@ mod trust_tests {
 
 #[cfg(test)]
 mod tests {
-    use fontaine_tools::git_bash::GitBashError;
+    use fontaine_sdk::tools::git_bash::GitBashError;
     use std::path::PathBuf;
 
     use super::*;

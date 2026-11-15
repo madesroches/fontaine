@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::time::Instant;
 
-use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
+use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, Offers};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -253,7 +253,7 @@ impl Approval {
     pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let who = match self.request.agent.as_str() {
-            "" | fontaine_tools::gate::ROOT_AGENT => String::new(),
+            "" | fontaine_sdk::tools::gate::ROOT_AGENT => String::new(),
             agent if self.request.agent_name.is_empty() => format!(" ({agent})"),
             agent => format!(" ({}, {agent})", self.request.agent_name),
         };
@@ -298,7 +298,10 @@ impl Approval {
                 _ => "rule the lasting answers would add",
             };
             for piece in wrap(
-                &format!("{what}: {}", fontaine_tools::display::escape_controls(rule)),
+                &format!(
+                    "{what}: {}",
+                    fontaine_sdk::tools::display::escape_controls(rule)
+                ),
                 width,
             ) {
                 out.push(Line::styled(piece, dim));
@@ -321,7 +324,7 @@ impl Approval {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::preview::{DiffKind, DiffPreview};
+    use fontaine_sdk::core::preview::{DiffKind, DiffPreview};
 
     fn request() -> ApprovalRequest {
         ApprovalRequest {
@@ -331,7 +334,7 @@ mod tests {
             tool_use_id: None,
             args: serde_json::Value::Null,
             summary: "ls".into(),
-            tier: fontaine_core::tier::Tier::Mode,
+            tier: fontaine_sdk::core::tier::Tier::Mode,
             reason: "r".into(),
             offers: Offers::default(),
             proposed_rule: None,
@@ -371,7 +374,7 @@ mod tests {
     }
 
     fn previewed(text: &str, hidden: usize) -> Approval {
-        use fontaine_core::preview::DiffLine;
+        use fontaine_sdk::core::preview::DiffLine;
         let mut req = request();
         req.tool = "edit".into();
         req.preview = Some(DiffPreview {

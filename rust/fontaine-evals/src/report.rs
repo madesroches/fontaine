@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use fontaine_guardian::models::{self, ModelEntry, ModelsFile, clears_bar};
+use fontaine_sdk::guardian::models::{self, ModelEntry, ModelsFile, clears_bar};
 use sha2::{Digest, Sha256};
 
 use crate::case::{Case, Category, Kind};
@@ -103,7 +103,7 @@ pub fn escape_class(explanation: &str) -> Option<String> {
 
 /// Today's date in UTC as `YYYY-MM-DD`.
 pub fn today() -> String {
-    fontaine_core::audit::now_rfc3339()[..10].to_string()
+    fontaine_sdk::core::audit::now_rfc3339()[..10].to_string()
 }
 
 /// The first 12 hex characters of a SHA-256 over the dataset's `*.jsonl` files in file-name order.

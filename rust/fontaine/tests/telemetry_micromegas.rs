@@ -4,7 +4,7 @@
 
 mod common;
 
-use fontaine_tools::lock::lock_recovering;
+use fontaine_sdk::tools::lock::lock_recovering;
 use std::sync::{Arc, Mutex};
 
 use common::{Endpoint, Sandbox, Turn, Wire};
@@ -95,12 +95,12 @@ fn capture_dispatch() -> Dispatch {
 
 /// The layer as the backend composes it: spans on, the content policy as the field hook, and
 /// the export filter in front.
-fn capture_dispatch_with(telemetry: fontaine_core::config::Telemetry) -> Dispatch {
+fn capture_dispatch_with(telemetry: fontaine_sdk::core::config::Telemetry) -> Dispatch {
     Dispatch::new(tracing_subscriber::registry().with(stock_layer(&telemetry, true)))
 }
 
 fn stock_layer(
-    telemetry: &fontaine_core::config::Telemetry,
+    telemetry: &fontaine_sdk::core::config::Telemetry,
     spans: bool,
 ) -> fontaine::telemetry::BoxLayer<tracing_subscriber::Registry> {
     fontaine::telemetry::filtered(
@@ -109,10 +109,10 @@ fn stock_layer(
     )
 }
 
-fn default_telemetry() -> fontaine_core::config::Telemetry {
+fn default_telemetry() -> fontaine_sdk::core::config::Telemetry {
     let w = tempfile::tempdir().unwrap();
     let dirs = tempfile::tempdir().unwrap();
-    fontaine_core::config::load(&fontaine_core::config::LoadParams {
+    fontaine_sdk::core::config::load(&fontaine_sdk::core::config::LoadParams {
         launch_dir: w.path(),
         config_dir: dirs.path(),
         data_dir: dirs.path(),
@@ -264,7 +264,9 @@ fn spans_outside_the_allowlist_are_not_exported() {
     );
 }
 
-fn content_span_properties(telemetry: fontaine_core::config::Telemetry) -> Vec<(String, String)> {
+fn content_span_properties(
+    telemetry: fontaine_sdk::core::config::Telemetry,
+) -> Vec<(String, String)> {
     let guard = init_in_memory_tracing();
     let dispatch = capture_dispatch_with(telemetry);
     with_stream(|| {

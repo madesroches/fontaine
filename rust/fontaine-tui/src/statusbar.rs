@@ -5,9 +5,9 @@ use std::fmt::Display;
 use std::path::Path;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::goal;
-use fontaine_core::quota::{AccountUsage, UsageRole};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::goal;
+use fontaine_sdk::core::quota::{AccountUsage, UsageRole};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -17,7 +17,7 @@ use ratatui::widgets::Paragraph;
 use crate::agents_panel::row_label;
 use crate::app::App;
 use crate::theme::Theme;
-use fontaine_core::keybindings::TuiAction;
+use fontaine_sdk::core::keybindings::TuiAction;
 
 /// The keystrokes bound to `action` as the hint strings show them; `None` when the action is
 /// unbound, so its hint is dropped.
@@ -356,7 +356,7 @@ mod tests {
     use std::time::SystemTime;
 
     use chrono::FixedOffset;
-    use fontaine_core::quota::{Quota, QuotaWindow};
+    use fontaine_sdk::core::quota::{Quota, QuotaWindow};
 
     use super::*;
 
@@ -436,7 +436,7 @@ mod tests {
     fn a_set_effort_follows_the_model_and_an_unset_one_shows_nothing() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         assert!(!bar(&app).contains("effort"), "{}", bar(&app));
-        app.effort = Some(fontaine_core::effort::Effort::High);
+        app.effort = Some(fontaine_sdk::core::effort::Effort::High);
         assert!(bar(&app).contains("· m · effort high ·"), "{}", bar(&app));
     }
 
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn the_vim_state_shows_and_unbound_hint_parts_drop() {
-        use fontaine_core::config::EditorMode;
+        use fontaine_sdk::core::config::EditorMode;
 
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.input.mode = EditorMode::Vim;
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn the_quota_sits_after_the_model_and_before_the_effort() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.effort = Some(fontaine_core::effort::Effort::High);
+        app.effort = Some(fontaine_sdk::core::effort::Effort::High);
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
         app.usage = vec![view(vec![
             window("month", 0.16, None),
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn the_guardian_segment_follows_the_main_one_before_the_effort() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.effort = Some(fontaine_core::effort::Effort::High);
+        app.effort = Some(fontaine_sdk::core::effort::Effort::High);
         app.usage = vec![
             view(vec![window("month", 0.16, None)]),
             usage(UsageRole::Guardian, vec![window("month", 0.8, None)]),
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn a_custom_line_replaces_the_built_in_hint() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
             line: "CUSTOM".into(),
         });
         let text = bar(&app);
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn a_message_replaces_the_custom_line() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
             line: "CUSTOM".into(),
         });
         app.attach_notice = Some("NOTICE".into());
@@ -811,7 +811,7 @@ mod tests {
     fn a_custom_line_keeps_the_guardian_off_badge_first() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.guardian_off = true;
-        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
             line: "custom".into(),
         });
         let text = bar(&app);
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn a_long_custom_line_is_truncated_from_the_left() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
             line: "a".repeat(200),
         });
         let text = bar(&app);

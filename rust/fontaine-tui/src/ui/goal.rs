@@ -5,10 +5,10 @@ use std::collections::VecDeque;
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::Path;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::goal::{Applied, Due, Judgment, Step};
-use fontaine_core::ledger::{GoalEvent, MessageOrigin};
-use fontaine_core::turn::TurnOutcome;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::goal::{Applied, Due, Judgment, Step};
+use fontaine_sdk::core::ledger::{GoalEvent, MessageOrigin};
+use fontaine_sdk::core::turn::TurnOutcome;
 
 use crate::ui::turn::{EndOfTurn, Serve, TurnEnd, end_of_turn};
 use crate::{App, Ui};
@@ -109,7 +109,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// Shows a verdict and hands back the turn it asks for, if any.
-    fn show_verdict(&mut self, applied: &Applied) -> Option<fontaine_core::goal::Continue> {
+    fn show_verdict(&mut self, applied: &Applied) -> Option<fontaine_sdk::core::goal::Continue> {
         let transcript = &mut self.app.transcript;
         match &applied.step {
             Step::Continue(next) => {

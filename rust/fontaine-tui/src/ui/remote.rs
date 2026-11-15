@@ -8,13 +8,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::Decision;
-use fontaine_core::config::RemoteRelay;
-use fontaine_core::ledger::{MessageOrigin, RemoteSender};
-use fontaine_core::steering::{DialogGuard, Retracted};
 use fontaine_remote::{RelayMode, RemoteServer, SystemClock};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::config::RemoteRelay;
+use fontaine_sdk::core::ledger::{MessageOrigin, RemoteSender};
+use fontaine_sdk::core::steering::{DialogGuard, Retracted};
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::app::RemoteDialog;
 use crate::remote::{RemoteCommand, RemoteHost, parse_remote_command};

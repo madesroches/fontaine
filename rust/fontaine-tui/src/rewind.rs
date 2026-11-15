@@ -2,7 +2,7 @@
 //! back, then for a code restore the files it would touch. It is pure state: the host loads the
 //! plan for a prompt the human picks and acts on the result.
 
-use fontaine_core::checkpoint::{PlannedFile, RewindPlan, RewindWhat, TurnSummary};
+use fontaine_sdk::core::checkpoint::{PlannedFile, RewindPlan, RewindWhat, TurnSummary};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -334,7 +334,7 @@ fn plan_lines(plan: &RewindPlan, width: usize) -> Vec<Line<'static>> {
 mod tests {
     use std::path::PathBuf;
 
-    use fontaine_core::checkpoint::{ContentHash, Step};
+    use fontaine_sdk::core::checkpoint::{ContentHash, Step};
     use ratatui::crossterm::event::KeyModifiers;
 
     use super::*;

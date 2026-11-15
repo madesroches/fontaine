@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use fontaine_core::line_reader::LineReader;
-use fontaine_tools::mcp::SdkTransportFactory;
+use fontaine_sdk::core::line_reader::LineReader;
+use fontaine_sdk::tools::mcp::SdkTransportFactory;
 use serde_json::{Value, json};
 use tokio::io::{AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::sync::Mutex;

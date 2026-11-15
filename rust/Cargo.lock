@@ -1927,12 +1927,9 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "dirs",
- "fontaine-agents",
- "fontaine-core",
- "fontaine-guardian",
  "fontaine-remote",
+ "fontaine-sdk",
  "fontaine-testkit",
- "fontaine-tools",
  "fontaine-tui",
  "futures",
  "jsonschema",
@@ -1968,74 +1965,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontaine-agents"
-version = "0.1.0"
-dependencies = [
- "fontaine-tools",
- "futures",
- "rig-core",
- "rig-tools",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "fontaine-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "crossterm",
- "dirs",
- "fontaine-agents",
- "fontaine-guardian",
- "fontaine-testkit",
- "fontaine-tools",
- "futures",
- "gix",
- "globset",
- "http",
- "ignore",
- "insta",
- "lsp-types",
- "reqwest",
- "rig-agent",
- "rig-core",
- "rig-memory",
- "rig-reqwest",
- "rig-tools",
- "rmcp",
- "schemars",
- "serde",
- "serde_jcs",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "tokio",
- "toml",
- "toml_edit",
- "tracing",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "wiremock",
- "yaml-rust2",
-]
-
-[[package]]
 name = "fontaine-evals"
 version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
- "fontaine-agents",
- "fontaine-core",
- "fontaine-guardian",
- "fontaine-tools",
+ "fontaine-sdk",
  "reqwest",
  "serde",
  "serde_json",
@@ -2044,31 +1979,6 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "fontaine-guardian"
-version = "0.1.0"
-dependencies = [
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "futures",
- "insta",
- "reqwest",
- "rig-agent",
- "rig-core",
- "rune",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokenizers",
- "tokio",
- "tracing",
- "url",
- "windows-sys 0.61.2",
  "wiremock",
 ]
 
@@ -2086,26 +1996,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontaine-testkit"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "fontaine-tools"
+name = "fontaine-sdk"
 version = "0.1.0"
 dependencies = [
  "async-lsp",
  "async-trait",
  "base64 0.22.1",
  "brush-parser",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chrono",
+ "crossterm",
+ "dirs",
  "fontaine-testkit",
  "futures",
+ "gix",
  "globset",
  "htmd",
  "http",
  "ignore",
+ "insta",
  "libc",
  "lsp-types",
  "rcgen",
@@ -2114,17 +2025,24 @@ dependencies = [
  "rig-agent",
  "rig-core",
  "rig-memory",
+ "rig-reqwest",
  "rig-rmcp",
  "rig-tools",
  "rmcp",
+ "rune",
  "rustls",
  "schemars",
  "serde",
+ "serde_jcs",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
+ "tokenizers",
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -2132,6 +2050,14 @@ dependencies = [
  "webpki-root-certs",
  "windows-sys 0.61.2",
  "wiremock",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "fontaine-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -2142,12 +2068,9 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "crossterm",
- "fontaine-agents",
- "fontaine-core",
- "fontaine-guardian",
  "fontaine-remote",
+ "fontaine-sdk",
  "fontaine-testkit",
- "fontaine-tools",
  "futures",
  "libc",
  "open",

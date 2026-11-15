@@ -220,7 +220,7 @@ async fn pass(
     server: &MockServer,
     signer: &Signer,
     now: SystemTime,
-) -> Vec<fontaine_core::notice::Notice> {
+) -> Vec<fontaine_sdk::core::notice::Notice> {
     let keys = signer.keys();
     let pass = Pass {
         data_dir: &install.data,
@@ -435,7 +435,7 @@ async fn a_pass_holding_the_lock_makes_a_second_one_stop() {
     let install = Install::new(OLD);
     serve_signed(&server, &signer, "dev-5", NEW).await;
     std::fs::create_dir_all(&install.data).unwrap();
-    let held = fontaine_core::file_lock::try_lock(&install.data.join(auto::LOCK_FILE))
+    let held = fontaine_sdk::core::file_lock::try_lock(&install.data.join(auto::LOCK_FILE))
         .unwrap()
         .unwrap();
     pass(&install, &server, &signer, SystemTime::now()).await;
@@ -766,7 +766,7 @@ fn a_second_helper_exits_at_once() {
     let rig = HelperRig::new();
     rig.stage_good(NEW);
     std::fs::create_dir_all(&rig.install.data).unwrap();
-    let held = fontaine_core::file_lock::try_lock(&rig.install.data.join(helper::HELPER_LOCK))
+    let held = fontaine_sdk::core::file_lock::try_lock(&rig.install.data.join(helper::HELPER_LOCK))
         .unwrap()
         .unwrap();
     assert_eq!(rig.run(0, Duration::from_secs(1)).0, Done::AlreadyRunning);
@@ -909,7 +909,7 @@ async fn windows_mode_stages_a_verified_build_and_starts_a_helper_without_replac
     // The next launch, with a stage waiting: a helper starts with no stamp, update.lock or network.
     let before = server.received_requests().await.unwrap().len();
     std::fs::remove_file(install.data.join(auto::STAMP_FILE)).unwrap();
-    let held = fontaine_core::file_lock::try_lock(&install.data.join(auto::LOCK_FILE))
+    let held = fontaine_sdk::core::file_lock::try_lock(&install.data.join(auto::LOCK_FILE))
         .unwrap()
         .unwrap();
     let notices = pass

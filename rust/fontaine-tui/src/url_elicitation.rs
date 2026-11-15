@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fontaine_tools::mcp::{ElicitReply, ElicitUrl, openable_url};
+use fontaine_sdk::tools::mcp::{ElicitReply, ElicitUrl, openable_url};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -200,7 +200,7 @@ impl UrlElicitationPanel {
 mod tests {
     use std::sync::Mutex;
 
-    use fontaine_tools::mcp::ElicitUrl;
+    use fontaine_sdk::tools::mcp::ElicitUrl;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
@@ -249,7 +249,7 @@ mod tests {
     }
 
     fn theme() -> Theme {
-        Theme::preset(fontaine_core::config::ThemeName::default())
+        Theme::preset(fontaine_sdk::core::config::ThemeName::default())
     }
 
     fn open(

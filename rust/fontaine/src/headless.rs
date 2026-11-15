@@ -9,27 +9,27 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use fontaine_core::RuntimeError;
-use fontaine_core::afk_report::{AfkOutcome, AfkReport, AfkSource};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::{Converted, Decision, DecisionRecord};
-use fontaine_core::config::{OnUsageLimit, PermissionMode};
-use fontaine_core::gate::UsageWait;
-use fontaine_core::goal::{Due, GoalArg, PauseReason, Step, first_turn_prompt};
-use fontaine_core::ledger::{MessageOrigin, Record};
-use fontaine_core::model_roles::Tried;
-use fontaine_core::providers::ExternalLogin;
-use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
-use fontaine_core::trust;
-use fontaine_core::turn::{
+use fontaine_sdk::core::RuntimeError;
+use fontaine_sdk::core::afk_report::{AfkOutcome, AfkReport, AfkSource};
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::audit::{Converted, Decision, DecisionRecord};
+use fontaine_sdk::core::config::{OnUsageLimit, PermissionMode};
+use fontaine_sdk::core::gate::UsageWait;
+use fontaine_sdk::core::goal::{Due, GoalArg, PauseReason, Step, first_turn_prompt};
+use fontaine_sdk::core::ledger::{MessageOrigin, Record};
+use fontaine_sdk::core::model_roles::Tried;
+use fontaine_sdk::core::providers::ExternalLogin;
+use fontaine_sdk::core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
+use fontaine_sdk::core::trust;
+use fontaine_sdk::core::turn::{
     Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, TurnParams, run_turn, user_message,
     wait_out_usage_limit,
 };
-use fontaine_core::turn_recovery::{Fallback, Unsettled};
-use fontaine_core::usage_ledger::{Bucket, UsageSource};
-use fontaine_core::usage_pause::{PauseEnd, PauseEvent, PauseInfo};
-use fontaine_core::user_hooks::PromptGate;
-use fontaine_tools::kills::KILL_SETTLE;
+use fontaine_sdk::core::turn_recovery::{Fallback, Unsettled};
+use fontaine_sdk::core::usage_ledger::{Bucket, UsageSource};
+use fontaine_sdk::core::usage_pause::{PauseEnd, PauseEvent, PauseInfo};
+use fontaine_sdk::core::user_hooks::PromptGate;
+use fontaine_sdk::tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -70,7 +70,7 @@ pub(crate) trait EventSink: Send {
     fn goal_evaluation(
         &mut self,
         _session_id: &str,
-        _judgment: Option<fontaine_core::goal::Judgment>,
+        _judgment: Option<fontaine_sdk::core::goal::Judgment>,
         _reason: &str,
         _evaluations: u32,
     ) {
@@ -268,7 +268,7 @@ impl EventSink for HeadlessV1Sink {
     fn goal_evaluation(
         &mut self,
         session_id: &str,
-        judgment: Option<fontaine_core::goal::Judgment>,
+        judgment: Option<fontaine_sdk::core::goal::Judgment>,
         reason: &str,
         evaluations: u32,
     ) {
@@ -592,7 +592,7 @@ async fn account_usage(runtime: &AgentRuntime, warned: &mut HashSet<String>) -> 
                     runtime.approver().warn(&format!(
                         "could not read the {} quota: {}",
                         source.name(),
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     ));
                 }
                 None
@@ -1052,7 +1052,8 @@ fn announce(runtime: &AgentRuntime) {
         if let Some(notice) = &runtime.models.main.facts_notice {
             eprintln!("fontaine: {notice}");
         }
-        if let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian
+        if let Some(fontaine_sdk::core::models::GuardianModel::Ready(handle)) =
+            &runtime.models.guardian
             && handle.reference != runtime.models.main.reference
             && let Some(notice) = &handle.facts_notice
         {
@@ -1068,7 +1069,7 @@ fn announce(runtime: &AgentRuntime) {
         && let Some(reason) = guardian.unavailable_reason()
     {
         let label = match &runtime.models.guardian {
-            Some(fontaine_core::models::GuardianModel::Unavailable {
+            Some(fontaine_sdk::core::models::GuardianModel::Unavailable {
                 not_signed_in: true,
                 ..
             }) => "GuardianNotSignedIn",
@@ -1210,7 +1211,7 @@ fn preflight_stop(detail: &str, e: &(dyn std::error::Error + 'static)) -> Outcom
         structured: None,
         error: Some(format!(
             "{detail}: {}",
-            fontaine_tools::error_chain::chain(e)
+            fontaine_sdk::tools::error_chain::chain(e)
         )),
         started: std::time::Instant::now(),
         denials: Vec::new(),
@@ -1454,7 +1455,7 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
                     subtype: Subtype::Execution,
                     text: String::new(),
                     structured: None,
-                    error: Some(fontaine_tools::error_chain::chain(&e)),
+                    error: Some(fontaine_sdk::tools::error_chain::chain(&e)),
                     started: std::time::Instant::now(),
                     denials: Vec::new(),
                 };
@@ -1576,7 +1577,7 @@ fn afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
         Err(e) => {
             runtime
                 .approver()
-                .warn(&fontaine_tools::error_chain::chain(&e));
+                .warn(&fontaine_sdk::tools::error_chain::chain(&e));
             None
         }
     }
@@ -1717,7 +1718,7 @@ pub(crate) async fn run_session<I: InputSource>(
                     structured: None,
                     error: Some(format!(
                         "the provider's web search could not be turned off, so the message was not run: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     )),
                     started: std::time::Instant::now(),
                     denials: Vec::new(),
@@ -1738,7 +1739,7 @@ pub(crate) async fn run_session<I: InputSource>(
             handled.outcome.subtype = Subtype::UsageLimit;
             handled.outcome.text.clear();
             handled.outcome.error = Some(
-                fontaine_core::gate::UsagePauseEnded {
+                fontaine_sdk::core::gate::UsagePauseEnded {
                     end: *end,
                     info: info.clone(),
                 }
@@ -1861,7 +1862,7 @@ pub(crate) async fn run_session<I: InputSource>(
 #[cfg(test)]
 mod tests {
     use super::{Outcome, Subtype, Usage, result_event, session_cost};
-    use fontaine_core::usage_ledger::{Bucket, UsageLedger, UsageSource};
+    use fontaine_sdk::core::usage_ledger::{Bucket, UsageLedger, UsageSource};
 
     #[test]
     fn session_cost_adds_the_guardian_and_subagents_and_is_null_only_when_none_is_priced() {

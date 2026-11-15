@@ -26,23 +26,23 @@ use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::usage_prompt::UsagePausePrompt;
 use crate::{Action, App, Command, Input, Prompt, Ui, parse_command};
 use crate::{StatuslineTrigger, reports, statusbar};
-use fontaine_core::afk_report::AfkSource;
-use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal, SuggestionInputs};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::gate::AfkRefusal;
-use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
-use fontaine_core::instructions;
-use fontaine_core::ledger::MessageOrigin;
-use fontaine_core::ledger::Record;
-use fontaine_core::notice::Notice;
-use fontaine_core::prompt;
-use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
-use fontaine_core::session;
-use fontaine_core::statusline::{self, StatuslineState};
-use fontaine_core::usage_ledger::UsageSource;
-use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::ROOT_AGENT;
-use fontaine_tools::lock::read_recovering;
+use fontaine_sdk::core::afk_report::AfkSource;
+use fontaine_sdk::core::agent::{AgentRuntime, Delivered, MessageRefusal, SuggestionInputs};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::gate::AfkRefusal;
+use fontaine_sdk::core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
+use fontaine_sdk::core::instructions;
+use fontaine_sdk::core::ledger::MessageOrigin;
+use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::prompt;
+use fontaine_sdk::core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
+use fontaine_sdk::core::session;
+use fontaine_sdk::core::statusline::{self, StatuslineState};
+use fontaine_sdk::core::usage_ledger::UsageSource;
+use fontaine_sdk::tools::error_chain::chain;
+use fontaine_sdk::tools::gate::ROOT_AGENT;
+use fontaine_sdk::tools::lock::read_recovering;
 use std::time::Duration;
 
 /// How often the agent list redraws while it lists anything.
@@ -67,7 +67,7 @@ fn soonest_tick(app: &App, waits: &[Option<Duration>]) -> Option<Duration> {
 /// The account of a guardian model that cannot be asked because nobody is signed in to it.
 fn signed_out_guardian_account(runtime: &AgentRuntime) -> Option<&str> {
     match &runtime.models.guardian {
-        Some(fontaine_core::models::GuardianModel::Unavailable {
+        Some(fontaine_sdk::core::models::GuardianModel::Unavailable {
             reference,
             not_signed_in: true,
             ..
@@ -147,7 +147,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app.attach_notice = Some(format!(
                     "could not copy to the clipboard: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ))
             }
         }
@@ -204,7 +204,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let scheduler = runtime.session.scheduler();
         let scheduling = runtime.config.schedule.enabled;
         self.app.bug_drafts = (runtime.config.feedback.drafts
-            == fontaine_core::config::DraftsMode::On)
+            == fontaine_sdk::core::config::DraftsMode::On)
             .then(|| self.pending_drafts.count(&self.data_dir))
             .filter(|n| *n > 0);
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
@@ -225,7 +225,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .saturating_sub(paused.saturating_sub(self.paused_base))
         });
         self.app.usage_pause_text = pause.info().map(|info| {
-            fontaine_core::usage_pause::status_line(
+            fontaine_sdk::core::usage_pause::status_line(
                 &info,
                 pause.next_check(),
                 std::time::SystemTime::now(),
@@ -462,7 +462,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// The list below the status line, from the tree as it stands now.
     fn refresh_agent_list(
         &mut self,
-        rows: &[fontaine_agents::tree::AgentRow],
+        rows: &[fontaine_sdk::agents::tree::AgentRow],
         task_owners: &HashSet<String>,
         main_writing: u64,
     ) {
@@ -486,7 +486,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// Brings the agents panel up to date with the tree and the jobs.
-    fn refresh_panel(&mut self, runtime: &AgentRuntime, rows: &[fontaine_agents::tree::AgentRow]) {
+    fn refresh_panel(
+        &mut self,
+        runtime: &AgentRuntime,
+        rows: &[fontaine_sdk::agents::tree::AgentRow],
+    ) {
         let panel_rows: Vec<PanelRow> = rows
             .iter()
             .map(|row| PanelRow {
@@ -579,7 +583,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .begin_usage_pause(UsagePausePrompt::new(*info, candidates, reply));
             }
             Prompt::Notice(severity, message) => {
-                if severity == fontaine_core::notice::Severity::Warning {
+                if severity == fontaine_sdk::core::notice::Severity::Warning {
                     self.app.remember_warning(&message);
                 }
                 self.app.transcript.push_notice(Notice {
@@ -605,7 +609,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             };
             match prompt {
                 Prompt::Notice(severity, message) => {
-                    if severity == fontaine_core::notice::Severity::Warning {
+                    if severity == fontaine_sdk::core::notice::Severity::Warning {
                         self.app.remember_warning(&message);
                     }
                     self.app.transcript.push_notice(Notice {
@@ -1189,8 +1193,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if size > MAX_ATTACHMENT_BYTES {
                     self.app.attach_notice = Some(format!(
                         "{label} is {} and was not attached: attachments are capped at {}",
-                        fontaine_tools::notebook::human_size(size),
-                        fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+                        fontaine_sdk::tools::notebook::human_size(size),
+                        fontaine_sdk::tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
                     ));
                     return;
                 }
@@ -1356,7 +1360,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         runtime.clear_prompt_context();
                         self.app
                             .transcript
-                            .error(fontaine_tools::error_chain::chain(&e));
+                            .error(fontaine_sdk::tools::error_chain::chain(&e));
                         return Continue(CommandOutcome::Done);
                     }
                     self.app
@@ -1722,20 +1726,20 @@ fn warn_once(warned: &mut std::collections::HashSet<String>, account: &str) -> b
 fn answer_unattended(prompt: Prompt) -> Result<(), Prompt> {
     match prompt {
         Prompt::Ask(_, reply) => {
-            let _ = reply.send(fontaine_core::permissions::Answer::Deny { feedback: None });
+            let _ = reply.send(fontaine_sdk::core::permissions::Answer::Deny { feedback: None });
         }
         Prompt::Unavailable(_, reply) => {
-            let _ = reply.send(fontaine_core::permissions::UnavailableChoice::Deny);
+            let _ = reply.send(fontaine_sdk::core::permissions::UnavailableChoice::Deny);
         }
         Prompt::Question(_, _, reply) => {
-            let _ = reply.send(fontaine_tools::ask_user::QuestionReply::Unavailable);
+            let _ = reply.send(fontaine_sdk::tools::ask_user::QuestionReply::Unavailable);
         }
         Prompt::Elicit(_, reply) => {
-            let _ = reply.send(fontaine_tools::mcp::ElicitReply::Cancel);
+            let _ = reply.send(fontaine_sdk::tools::mcp::ElicitReply::Cancel);
         }
         // Nobody can answer while AFK, so the pause runs to its deadline.
         Prompt::UsagePaused(_, reply) => {
-            let _ = reply.send(fontaine_core::permissions::PauseChoice::Wait);
+            let _ = reply.send(fontaine_sdk::core::permissions::PauseChoice::Wait);
         }
         other @ Prompt::Notice(..) => return Err(other),
     }

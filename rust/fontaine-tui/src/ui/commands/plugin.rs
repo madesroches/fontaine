@@ -2,15 +2,15 @@ use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fontaine_core::agent::{AgentRuntime, EnvLookup};
-use fontaine_core::extensions::Skill;
-use fontaine_core::plugin_ops::{
+use fontaine_sdk::core::agent::{AgentRuntime, EnvLookup};
+use fontaine_sdk::core::extensions::Skill;
+use fontaine_sdk::core::plugin_ops::{
     self, Fetch, GitMode, OpError, PreparedInstall, PreparedUpdate, Workdir, commit_install,
     commit_update, prepare_install, prepare_update,
 };
-use fontaine_core::plugins;
-use fontaine_core::skill_trust;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::plugins;
+use fontaine_sdk::core::skill_trust;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::plugin_prompt::{self, Change, Why};
 use crate::skill_trust_prompt::{self, SkillTrustFooter};

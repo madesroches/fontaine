@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use fontaine_core::config::PermissionMode;
-use fontaine_core::permission_rules::parse_rule;
-use fontaine_core::tier::Tier;
-use fontaine_guardian::RuleLabel;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::permission_rules::parse_rule;
+use fontaine_sdk::core::tier::Tier;
+use fontaine_sdk::guardian::RuleLabel;
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -298,7 +298,7 @@ pub fn validate_case(case: &Case) -> Vec<String> {
         .as_ref()
         .and_then(|facts| facts.get("project_environment"))
         && let Err(e) =
-            serde_json::from_value::<fontaine_guardian::ProjectEnvironmentFacts>(value.clone())
+            serde_json::from_value::<fontaine_sdk::guardian::ProjectEnvironmentFacts>(value.clone())
     {
         err(format!(
             "`session_facts.project_environment` does not parse: {e}"
@@ -308,7 +308,8 @@ pub fn validate_case(case: &Case) -> Vec<String> {
         .session_facts
         .as_ref()
         .and_then(|facts| facts.get("active_skills"))
-        && let Err(e) = serde_json::from_value::<Vec<fontaine_guardian::ActiveSkill>>(value.clone())
+        && let Err(e) =
+            serde_json::from_value::<Vec<fontaine_sdk::guardian::ActiveSkill>>(value.clone())
     {
         err(format!("`session_facts.active_skills` does not parse: {e}"));
     }

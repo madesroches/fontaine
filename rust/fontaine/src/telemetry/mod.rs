@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fontaine_core::config::{Config, TelemetryBackend};
-use fontaine_core::credentials::Credentials;
+use fontaine_sdk::core::config::{Config, TelemetryBackend};
+use fontaine_sdk::core::credentials::Credentials;
 use tracing::{Metadata, Subscriber};
 use tracing_subscriber::filter::{EnvFilter, filter_fn};
 use tracing_subscriber::fmt as tfmt;
@@ -72,7 +72,7 @@ impl DebugSink {
         let Some(path) = debug_file else {
             return Ok(None);
         };
-        let file = fontaine_core::owner_only::open(path, true).map_err(|e| {
+        let file = fontaine_sdk::core::owner_only::open(path, true).map_err(|e| {
             UsageError(format!(
                 "cannot open --debug-file {}: {e}",
                 PathBuf::from(path).display()

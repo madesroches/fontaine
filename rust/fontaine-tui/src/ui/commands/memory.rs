@@ -3,10 +3,10 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::instructions::MemoryKind;
-use fontaine_tools::error_chain::chain;
-use fontaine_tools::git_bash::{GitBash, base_path, sh_command};
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::instructions::MemoryKind;
+use fontaine_sdk::tools::error_chain::chain;
+use fontaine_sdk::tools::git_bash::{GitBash, base_path, sh_command};
 
 use crate::commands::memory_number;
 use crate::{App, Ui, reports};

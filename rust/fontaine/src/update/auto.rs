@@ -7,9 +7,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fontaine_core::file_lock;
-use fontaine_core::notice::Notice;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::file_lock;
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::tools::error_chain::chain;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::helper::{self, HelperArgs, Manifest};
@@ -128,7 +128,7 @@ pub fn append_log(
     })
     .to_string();
     line.push('\n');
-    let mut file = fontaine_core::owner_only::open(&data_dir.join(LOG_FILE), true)?;
+    let mut file = fontaine_sdk::core::owner_only::open(&data_dir.join(LOG_FILE), true)?;
     file.write_all(line.as_bytes())
 }
 
@@ -141,7 +141,7 @@ fn read_state(data_dir: &Path) -> serde_json::Value {
 }
 
 fn write_state(data_dir: &Path, state: &serde_json::Value) -> std::io::Result<()> {
-    fontaine_core::owner_only::write_atomic(
+    fontaine_sdk::core::owner_only::write_atomic(
         &data_dir.join(STATE_FILE),
         state.to_string().as_bytes(),
     )
@@ -226,7 +226,7 @@ pub fn write_marker(data_dir: &Path, marker: &Marker) -> std::io::Result<()> {
         "channel": marker.channel.as_str(),
     })
     .to_string();
-    fontaine_core::owner_only::write_atomic(&data_dir.join(MARKER_FILE), text.as_bytes())
+    fontaine_sdk::core::owner_only::write_atomic(&data_dir.join(MARKER_FILE), text.as_bytes())
 }
 
 fn read_marker(data_dir: &Path) -> Option<Marker> {
@@ -284,7 +284,7 @@ pub fn startup_notices(receipt_path: &Path, current_exe: &Path, data_dir: &Path)
 pub fn write_skip(data_dir: &Path, channel: Channel, version: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir)?;
     let text = serde_json::json!({"channel": channel.as_str(), "version": version}).to_string();
-    fontaine_core::owner_only::write_atomic(&data_dir.join(SKIP_FILE), text.as_bytes())
+    fontaine_sdk::core::owner_only::write_atomic(&data_dir.join(SKIP_FILE), text.as_bytes())
 }
 
 fn read_skip(data_dir: &Path, channel: Channel) -> Option<Build> {
@@ -543,7 +543,7 @@ pub(crate) fn spawn(
     data_dir: PathBuf,
     receipt_path: PathBuf,
     current_exe: PathBuf,
-    network: fontaine_tools::tls::LoadedNetwork,
+    network: fontaine_sdk::tools::tls::LoadedNetwork,
     notices: UnboundedSender<Notice>,
 ) {
     let sender = notices.clone();

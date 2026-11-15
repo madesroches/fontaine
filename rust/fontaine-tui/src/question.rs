@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionReply};
+use fontaine_sdk::tools::ask_user::{Question, QuestionAnswer, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -373,7 +373,7 @@ impl QuestionPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_tools::ask_user::QuestionOption;
+    use fontaine_sdk::tools::ask_user::QuestionOption;
     use ratatui::crossterm::event::KeyModifiers;
 
     fn option(label: &str) -> QuestionOption {

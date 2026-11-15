@@ -1,7 +1,7 @@
 //! What `-p --afk` adds to the result: the `afk` object, built from the same report the
 //! terminal shows, and the outcomes that make a run fail.
 
-use fontaine_core::afk_report::{AfkOutcome, AfkReport};
+use fontaine_sdk::core::afk_report::{AfkOutcome, AfkReport};
 use serde_json::{Value, json};
 
 use super::{Outcome, Subtype};

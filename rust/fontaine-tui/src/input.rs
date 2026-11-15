@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
-use fontaine_core::config::EditorMode;
+use fontaine_sdk::core::config::EditorMode;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rig_core::message::ImageMediaType;
 

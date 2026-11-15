@@ -376,7 +376,7 @@ async fn require_trust_loads_project_executables_in_a_trusted_workspace() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
     let s = Sandbox::compatible(&endpoint.url());
     require_trust(&s);
-    fontaine_core::trust::record(&s.data, &s.work).unwrap();
+    fontaine_sdk::core::trust::record(&s.data, &s.work).unwrap();
     project_settings(&s, &repo_server_settings());
     let out = s.headless(&["--output-format", "stream-json", "go"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);

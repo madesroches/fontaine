@@ -4,9 +4,9 @@
 
 use std::time::Instant;
 
-use fontaine_core::gate::DeniedCall;
-use fontaine_core::models::ModelRef;
-use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
+use fontaine_sdk::core::gate::DeniedCall;
+use fontaine_sdk::core::models::ModelRef;
+use fontaine_sdk::core::permissions::{GuardianUnavailable, UnavailableChoice};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;

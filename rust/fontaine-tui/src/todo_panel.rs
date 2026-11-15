@@ -1,7 +1,7 @@
 //! The task list the model keeps with `todo_write`: one line above the input while collapsed,
 //! every item while expanded, nothing while the list is empty.
 
-use fontaine_tools::todo::{TodoItem, TodoStatus};
+use fontaine_sdk::tools::todo::{TodoItem, TodoStatus};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::ui::turn::{Serve, TurnEnd};
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
+use fontaine_sdk::core::agent::AgentRuntime;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) fn add_dir(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path, path: &str) {
@@ -21,7 +21,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Err(e) => self.app.transcript.error(format!(
                 "/add-dir: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
         }
     }

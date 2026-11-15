@@ -6,10 +6,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::Decision;
-use fontaine_core::turn::SessionEvent;
-use fontaine_core::usage_ledger::Bucket;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::turn::SessionEvent;
+use fontaine_sdk::core::usage_ledger::Bucket;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -23,7 +23,7 @@ use crate::headless::{EventSink, Outcome, ResultInfo, Subtype, session_cost};
 
 /// A builtin's canonical Claude name; any other tool keeps its own.
 pub fn wire_name(tool: &str) -> String {
-    fontaine_tools::descriptor::find(tool)
+    fontaine_sdk::tools::descriptor::find(tool)
         .and_then(|descriptor| descriptor.claude.first())
         .map_or_else(|| tool.to_string(), |name| (*name).to_string())
 }
@@ -320,7 +320,7 @@ impl Translator {
                 // Child agents' records reach the root feed too, but only the root conversation
                 // is streamed, so a child's denial has no tool_use the host has seen.
                 if record.decision == Decision::Deny
-                    && record.agent_id == fontaine_tools::gate::ROOT_AGENT
+                    && record.agent_id == fontaine_sdk::tools::gate::ROOT_AGENT
                 {
                     let id = record.tool_use_id.clone().unwrap_or_default();
                     let (name, input) = self
@@ -540,9 +540,9 @@ impl EventSink for ClaudeSink {
             .into_iter()
             .map(|(name, state)| {
                 let status = match state {
-                    fontaine_core::agent::McpServerState::Connected { .. } => "connected",
-                    fontaine_core::agent::McpServerState::Reconnecting { .. } => "pending",
-                    fontaine_core::agent::McpServerState::Failed(_) => "failed",
+                    fontaine_sdk::core::agent::McpServerState::Connected { .. } => "connected",
+                    fontaine_sdk::core::agent::McpServerState::Reconnecting { .. } => "pending",
+                    fontaine_sdk::core::agent::McpServerState::Failed(_) => "failed",
                 };
                 json!({ "name": name, "status": status })
             })
@@ -820,12 +820,12 @@ mod tests {
         let mut t = Translator::new(false);
         t.begin("sid", "m");
         t.event(&call("t1", "shell"));
-        let mut record = fontaine_core::audit::DecisionRecord::new(
+        let mut record = fontaine_sdk::core::audit::DecisionRecord::new(
             "sid".into(),
             "root".into(),
             "shell".into(),
             "d".into(),
-            fontaine_core::tier::Tier::DenyRule,
+            fontaine_sdk::core::tier::Tier::DenyRule,
             Decision::Deny,
             "manual".into(),
             true,
@@ -917,12 +917,12 @@ mod tests {
     fn a_child_agents_deny_is_not_streamed_or_kept_for_the_result() {
         let mut t = Translator::new(false);
         t.begin("sid", "m");
-        let record = fontaine_core::audit::DecisionRecord::new(
+        let record = fontaine_sdk::core::audit::DecisionRecord::new(
             "sid".into(),
             "child-1".into(),
             "shell".into(),
             "d".into(),
-            fontaine_core::tier::Tier::DenyRule,
+            fontaine_sdk::core::tier::Tier::DenyRule,
             Decision::Deny,
             "manual".into(),
             true,

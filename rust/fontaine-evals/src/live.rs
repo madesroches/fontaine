@@ -1,6 +1,6 @@
 //! `--guardian live:<account>/<model>`: the same guardian the binary runs, asked about every
 //! `guardian` case, and the real permission pipeline behind it for every `pipeline` case. The
-//! account and its credential resolve through fontaine-core exactly as `fontaine -p` resolves
+//! account and its credential resolve through fontaine_sdk::core exactly as `fontaine -p` resolves
 //! them.
 
 use std::collections::HashMap;
@@ -8,21 +8,21 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_core::audit::args_digest;
-use fontaine_core::config::{self, CliRules, LoadParams};
-use fontaine_core::critical::{self, CriticalEnv};
-use fontaine_core::destructive::{self, Facts};
-use fontaine_core::dirs;
-use fontaine_core::ledger::LedgerView;
-use fontaine_core::models::{GuardianModel, Switcher};
-use fontaine_core::questions::ANSWER_LINE_PREFIX;
-use fontaine_core::scanner_stage::{self, Backend};
-use fontaine_guardian::composition::{Composition, Decided};
-use fontaine_guardian::{
+use fontaine_sdk::core::audit::args_digest;
+use fontaine_sdk::core::config::{self, CliRules, LoadParams};
+use fontaine_sdk::core::critical::{self, CriticalEnv};
+use fontaine_sdk::core::destructive::{self, Facts};
+use fontaine_sdk::core::dirs;
+use fontaine_sdk::core::ledger::LedgerView;
+use fontaine_sdk::core::models::{GuardianModel, Switcher};
+use fontaine_sdk::core::questions::ANSWER_LINE_PREFIX;
+use fontaine_sdk::core::scanner_stage::{self, Backend};
+use fontaine_sdk::guardian::composition::{Composition, Decided};
+use fontaine_sdk::guardian::{
     ActionTaken, AdjudicationRequest, DenialRecord, FixedProbe, Guardian, OutputMode, PreExistence,
     Profile, SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
 };
-use fontaine_tools::scope::Scope;
+use fontaine_sdk::tools::scope::Scope;
 use serde_json::Value;
 
 use crate::case::{Case, Category, MaterializeError, materialize};
@@ -48,12 +48,12 @@ pub struct Live {
     pub kind: &'static str,
     pub model: String,
     /// The provider's `/models` entry for the guardian model, when the endpoint offers it.
-    pub served: Option<fontaine_core::providers::ServedModel>,
+    pub served: Option<fontaine_sdk::core::providers::ServedModel>,
 }
 
 impl Live {
     /// What a screen read on `<account>/<model>` is asked through, when its account says.
-    pub fn screen_backend(&self, screen: &str) -> Option<fontaine_guardian::BackendKind> {
+    pub fn screen_backend(&self, screen: &str) -> Option<fontaine_sdk::guardian::BackendKind> {
         let account = screen
             .split_once('/')
             .map_or(screen, |(account, _)| account);
@@ -102,7 +102,7 @@ pub async fn connect(
         .accounts
         .values()
         .filter_map(|a| a.api_key_env.as_deref())
-        .chain(fontaine_core::providers::claude_subscription::inherited_env_names())
+        .chain(fontaine_sdk::core::providers::claude_subscription::inherited_env_names())
         .filter_map(|var| Some((var.to_string(), env(var)?)))
         .collect();
     let held = snapshot.clone();
@@ -134,7 +134,7 @@ pub async fn connect(
             None
         }
     };
-    let scrub_env = fontaine_core::tools::scrubbed_env(&config, std::iter::empty());
+    let scrub_env = fontaine_sdk::core::tools::scrubbed_env(&config, std::iter::empty());
     let settings = Settings {
         timeout: Duration::from_secs(config.guardian.timeout_secs),
         confidence_threshold: config.guardian.confidence_threshold,
@@ -220,7 +220,7 @@ pub fn add_composition(
     let base = config.guardian.composition.take();
     let composition = match args.script {
         None => config::GuardianComposition {
-            preset: Some(fontaine_guardian::composition::SCREEN.to_string()),
+            preset: Some(fontaine_sdk::guardian::composition::SCREEN.to_string()),
             script: None,
             script_source: None,
             model: args.screen.map(str::to_string),
@@ -256,9 +256,10 @@ pub fn add_composition(
     config::check_composition(&mut config, &user_path, &live.config_dir)
         .map_err(|e| e.to_string())?;
     let env = |name: &str| live.snapshot.get(name).cloned();
-    let stage = fontaine_core::agent::build_composition(&config, profile, &env, &live.data_dir)
-        .map_err(|e| fontaine_tools::error_chain::chain(&e))?
-        .expect("a composition was just configured");
+    let stage =
+        fontaine_sdk::core::agent::build_composition(&config, profile, &env, &live.data_dir)
+            .map_err(|e| fontaine_sdk::tools::error_chain::chain(&e))?
+            .expect("a composition was just configured");
     live.composition = Some(stage.composition);
     Ok(())
 }
@@ -397,7 +398,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
             session_facts.touched_paths.push(TouchedPath {
                 // Derived paths carry the same absence mark a session puts on them, so a
                 // first-save memory case is not posed as a possible overwrite.
-                absent: fontaine_core::adjudication::is_absent(&path),
+                absent: fontaine_sdk::core::adjudication::is_absent(&path),
                 path,
                 status: PreExistence::Unindexed,
                 in_scratch: false,
@@ -432,7 +433,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
     };
     let recent_from = messages
         .len()
-        .saturating_sub(fontaine_guardian::RECENT_USER_MESSAGES);
+        .saturating_sub(fontaine_sdk::guardian::RECENT_USER_MESSAGES);
     // As `adjudication::build` does for a recorded dialog answer: the screen never reads one.
     let screen_intent = messages
         .iter()
@@ -443,10 +444,10 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
                 .filter(|message| !message.starts_with(ANSWER_LINE_PREFIX))
                 .cloned()
                 .collect();
-            fontaine_guardian::ScreenIntent::from_kept(&kept)
+            fontaine_sdk::guardian::ScreenIntent::from_kept(&kept)
         });
     AdjudicationRequest {
-        task_intent: task_intent(&messages, fontaine_guardian::TASK_INTENT_CHARS),
+        task_intent: task_intent(&messages, fontaine_sdk::guardian::TASK_INTENT_CHARS),
         recent_user_messages: messages[recent_from..].to_vec(),
         screen_intent,
         agent_message_before_reply: case.agent_message_before_reply.clone(),
@@ -542,7 +543,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             None,
         ))));
     };
-    let composed = fontaine_guardian::composition::adjudicate(
+    let composed = fontaine_sdk::guardian::composition::adjudicate(
         composition.clone(),
         live.guardian.clone(),
         Arc::new(request.clone()),
@@ -627,7 +628,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
 /// A case the guardian model decided.
 fn verdict_result(
     case: &Case,
-    adjudication: &fontaine_guardian::Adjudication,
+    adjudication: &fontaine_sdk::guardian::Adjudication,
     latency_ms: u64,
     cascade: Option<CascadeStep>,
 ) -> CaseResult {
@@ -683,15 +684,15 @@ pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
     let content = case.tool_result.as_deref().unwrap_or_default();
     let scan = match backend {
         Backend::Ready(scanner) => scanner.scan(&case.tool, content).await,
-        Backend::Unavailable(reason) => fontaine_guardian::Scan::Failed {
+        Backend::Unavailable(reason) => fontaine_sdk::guardian::Scan::Failed {
             reason: reason.clone(),
         },
     };
     let latency_ms = started.elapsed().as_millis() as u64;
     let (actual, explanation, fail_closed) = match scan {
-        fontaine_guardian::Scan::Clean => ("clean", None, None),
-        fontaine_guardian::Scan::Flagged { reason } => ("flagged", Some(reason), None),
-        fontaine_guardian::Scan::Failed { reason } => {
+        fontaine_sdk::guardian::Scan::Clean => ("clean", None, None),
+        fontaine_sdk::guardian::Scan::Flagged { reason } => ("flagged", Some(reason), None),
+        fontaine_sdk::guardian::Scan::Failed { reason } => {
             ("flagged", Some(reason), Some("scanner_error".to_string()))
         }
     };

@@ -1,6 +1,6 @@
 use crate::{App, Ui};
-use fontaine_core::config::EditorMode;
-use fontaine_core::user_config;
+use fontaine_sdk::core::config::EditorMode;
+use fontaine_sdk::core::user_config;
 use toml_edit::Value;
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -21,7 +21,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     format!(
                         "could not save it to {}: {}",
                         path.display(),
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     )
                 }),
             None => Some("there is no user settings file to save it to".to_string()),

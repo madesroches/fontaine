@@ -4,7 +4,7 @@
 //! Set `REPO_MCP_POKE=1` to replace the resource and the prompt list after two seconds, so a
 //! `list_changed` refresh can be watched by hand.
 
-#[path = "../../fontaine-tools/tests/mcp_common/server.rs"]
+#[path = "../../fontaine-sdk/tests/mcp_common/server.rs"]
 mod server;
 
 use rmcp::ServiceExt;

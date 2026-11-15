@@ -7,12 +7,14 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use fontaine_core::afk_report::{DenialFacts, StretchTracker};
-use fontaine_core::audit::Converted;
-use fontaine_core::tier::Tier;
-use fontaine_guardian::Guardian;
-use fontaine_guardian::evasion::{AssessAttempt, AssessmentInput, AttemptDecision, assess_evasion};
-use fontaine_guardian::temperature::DEFAULT_CEILING;
+use fontaine_sdk::core::afk_report::{DenialFacts, StretchTracker};
+use fontaine_sdk::core::audit::Converted;
+use fontaine_sdk::core::tier::Tier;
+use fontaine_sdk::guardian::Guardian;
+use fontaine_sdk::guardian::evasion::{
+    AssessAttempt, AssessmentInput, AttemptDecision, assess_evasion,
+};
+use fontaine_sdk::guardian::temperature::DEFAULT_CEILING;
 use serde::Deserialize;
 
 /// What a temperature case expects of its stretch.
@@ -308,7 +310,7 @@ pub async fn score_evasion_live(case: &EvasionCase, guardian: &Guardian) -> Sequ
             pass: false,
             detail: format!(
                 "the assessment failed: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ),
             stopped: None,
             expected_stop: None,

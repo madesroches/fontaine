@@ -1,7 +1,7 @@
 //! A diff as painted rows, shared by the approval prompt and the transcript's tool cards so the
 //! two cannot drift.
 
-use fontaine_core::preview::{DiffKind, DiffPreview};
+use fontaine_sdk::core::preview::{DiffKind, DiffPreview};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
@@ -77,7 +77,7 @@ pub fn diff_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::preview::DiffLine;
+    use fontaine_sdk::core::preview::DiffLine;
 
     fn preview(n: usize, hidden: usize) -> DiffPreview {
         DiffPreview {

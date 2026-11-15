@@ -5,8 +5,8 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fontaine_core::config::{self, Config, LoadParams};
-use fontaine_core::dirs::Dirs;
+use fontaine_sdk::core::config::{self, Config, LoadParams};
+use fontaine_sdk::core::dirs::Dirs;
 use fontaine_tui::Input;
 use fontaine_tui::setup::{SetupParams, drive, drive_linear};
 use ratatui::Terminal;
@@ -156,7 +156,7 @@ async fn a_new_user_adds_an_account_logs_in_picks_a_model_and_the_session_starts
     assert!(config.accounts.contains_key("gw"));
     assert_eq!(
         config.model,
-        Some(fontaine_core::config::OneOrMany::One(
+        Some(fontaine_sdk::core::config::OneOrMany::One(
             "gw/gw-small".to_string()
         ))
     );
@@ -362,7 +362,7 @@ fn signed_out_claude(scenario: serde_json::Value) -> (Scratch, PathBuf) {
     (s, profile)
 }
 
-fn login_of(s: &Scratch) -> fontaine_core::providers::ExternalLogin {
+fn login_of(s: &Scratch) -> fontaine_sdk::core::providers::ExternalLogin {
     let config = s.config();
     let account = &config.accounts["claude"];
     account
@@ -370,7 +370,7 @@ fn login_of(s: &Scratch) -> fontaine_core::providers::ExternalLogin {
         .provider()
         .external_login(
             account,
-            &(Arc::new(|_: &str| None) as fontaine_core::models::SharedEnv),
+            &(Arc::new(|_: &str| None) as fontaine_sdk::core::models::SharedEnv),
         )
         .expect("the claude account has a login")
 }

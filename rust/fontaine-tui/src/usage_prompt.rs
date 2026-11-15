@@ -4,10 +4,10 @@
 
 use std::time::Instant;
 
-use fontaine_core::models::ModelRef;
-use fontaine_core::permissions::PauseChoice;
-use fontaine_core::quota::UsageRole;
-use fontaine_core::usage_pause::PauseInfo;
+use fontaine_sdk::core::models::ModelRef;
+use fontaine_sdk::core::permissions::PauseChoice;
+use fontaine_sdk::core::quota::UsageRole;
+use fontaine_sdk::core::usage_pause::PauseInfo;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -181,7 +181,7 @@ impl UsagePausePrompt {
 
 #[cfg(test)]
 mod tests {
-    use fontaine_core::usage_pause::PauseInfo;
+    use fontaine_sdk::core::usage_pause::PauseInfo;
     use ratatui::crossterm::event::KeyModifiers;
 
     use super::*;

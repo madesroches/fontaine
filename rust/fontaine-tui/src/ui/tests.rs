@@ -2,15 +2,15 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fontaine_agents::runner::ChildStatus;
-use fontaine_core::agent::{Delivered, MessageRefusal};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::notice::Severity;
-use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
-use fontaine_core::steering::{Queued, Retracted};
-use fontaine_core::tier::Tier;
-use fontaine_core::turn::{SessionEvent, TurnOutcome};
-use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_sdk::agents::runner::ChildStatus;
+use fontaine_sdk::core::agent::{Delivered, MessageRefusal};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::notice::Severity;
+use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, Offers};
+use fontaine_sdk::core::steering::{Queued, Retracted};
+use fontaine_sdk::core::tier::Tier;
+use fontaine_sdk::core::turn::{SessionEvent, TurnOutcome};
+use fontaine_sdk::tools::gate::ROOT_AGENT;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::oneshot;
 
@@ -75,12 +75,12 @@ fn the_spinner_tick_wins_only_while_it_shows() {
 
 fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
     let quota = [
-        fontaine_core::quota::QuotaPoller::new(),
-        fontaine_core::quota::QuotaPoller::new(),
+        fontaine_sdk::core::quota::QuotaPoller::new(),
+        fontaine_sdk::core::quota::QuotaPoller::new(),
     ];
     let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel();
     Ui {
-        hook_notifier: crate::notify::Notifier::new(fontaine_core::config::NotifyMethod::Off),
+        hook_notifier: crate::notify::Notifier::new(fontaine_sdk::core::config::NotifyMethod::Off),
         afk_stops: tokio::sync::watch::channel(0).1,
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
@@ -174,7 +174,7 @@ fn messages(texts: &[&str]) -> Vec<Retracted> {
 fn remote_entry(seq: u64, text: &str) -> Retracted {
     Retracted {
         seq,
-        remote: Some(fontaine_core::ledger::RemoteSender {
+        remote: Some(fontaine_sdk::core::ledger::RemoteSender {
             node: "node-abcdef0123456789".into(),
             message_id: format!("msg-{seq}"),
         }),
@@ -454,7 +454,7 @@ fn a_settled_turn_feeds_the_suggestion_inputs() {
 
 #[test]
 fn a_session_whose_ledger_cannot_be_read_is_refused_in_the_live_session() {
-    use fontaine_core::session::Session;
+    use fontaine_sdk::core::session::Session;
     const THEIRS: &str = "00000000-0000-4000-8000-0000000000aa";
     let data = tempfile::tempdir().expect("a temp dir");
     let theirs = Session::create(data.path(), THEIRS).expect("create the session");
@@ -621,8 +621,8 @@ fn a_failing_quota_warns_once_per_account() {
 mod usage {
     use std::sync::Arc;
 
-    use fontaine_core::RuntimeError;
-    use fontaine_core::quota::{Quota, QuotaSource, QuotaWindow, UsageRole};
+    use fontaine_sdk::core::RuntimeError;
+    use fontaine_sdk::core::quota::{Quota, QuotaSource, QuotaWindow, UsageRole};
     use futures::future::BoxFuture;
 
     use crate::ui::{usage_entries, usage_targets};
@@ -732,20 +732,29 @@ fn vim_toggles_the_input_mode_and_persists_the_choice() {
     ui.user_config = Some(file.clone());
 
     ui.vim();
-    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Vim);
+    assert_eq!(
+        ui.app.input.mode,
+        fontaine_sdk::core::config::EditorMode::Vim
+    );
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains("editor_mode = \"vim\""), "{saved}");
     assert!(saved.contains("theme = \"dark\""), "{saved}");
 
     ui.vim();
-    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Emacs);
+    assert_eq!(
+        ui.app.input.mode,
+        fontaine_sdk::core::config::EditorMode::Emacs
+    );
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains("editor_mode = \"emacs\""), "{saved}");
 
     // No user file: the toggle still applies to the session, and says it is not saved.
     ui.user_config = None;
     ui.vim();
-    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Vim);
+    assert_eq!(
+        ui.app.input.mode,
+        fontaine_sdk::core::config::EditorMode::Vim
+    );
     let notice = ui
         .app
         .transcript
@@ -776,7 +785,7 @@ fn keybindings_lists_every_action_with_its_effective_keys() {
             _ => None,
         })
         .expect("a notice");
-    for action in fontaine_core::keybindings::TuiAction::ALL {
+    for action in fontaine_sdk::core::keybindings::TuiAction::ALL {
         assert!(notice.contains(action.as_str()), "{notice}");
     }
     assert!(notice.contains("shift+tab"), "{notice}");
@@ -796,14 +805,14 @@ fn subagent_ask() -> (Prompt, oneshot::Receiver<Answer>) {
     (Prompt::Ask(request, reply), answer)
 }
 
-use fontaine_tools::mcp::{ElicitForm, ElicitReply, ElicitRequest};
+use fontaine_sdk::tools::mcp::{ElicitForm, ElicitReply, ElicitRequest};
 
 fn elicit_form() -> ElicitForm {
     ElicitForm {
         server: "srv".into(),
         id: String::new(),
         message: "Who?".into(),
-        schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
+        schema: fontaine_sdk::tools::mcp::elicitation::ElicitationSchema::builder()
             .required_string("name")
             .build()
             .unwrap(),
@@ -833,8 +842,8 @@ fn an_elicitation_whose_call_ended_while_it_queued_is_dropped_and_a_live_one_ope
 
 #[test]
 fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
-    use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
-    use fontaine_tools::ask_user::QuestionReply;
+    use fontaine_sdk::core::permissions::{GuardianUnavailable, UnavailableChoice};
+    use fontaine_sdk::tools::ask_user::QuestionReply;
 
     let (tx, rx) = unbounded_channel();
     let mut ui = ui(rx);
@@ -899,7 +908,7 @@ async fn interrupting_a_prompt_fetch_denies_and_drains_pending_prompts() {
 
     // Ctrl+C interrupts even with a dialog open; the pending fetch is what serve_while drops.
     let mut fetch = Box::pin(std::future::pending::<
-        Result<String, fontaine_core::RuntimeError>,
+        Result<String, fontaine_sdk::core::RuntimeError>,
     >());
     input_tx
         .send(Input::Key(KeyEvent::new(
@@ -932,15 +941,15 @@ async fn interrupting_a_prompt_fetch_denies_and_drains_pending_prompts() {
 }
 
 /// A whole runtime over an empty scripted model, for tests that serve keys and prompts.
-fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
-    use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup, SessionOrigin};
-    use fontaine_core::config::{AccountKind, LoadParams};
-    use fontaine_core::extensions;
-    use fontaine_core::models::{
+fn runtime() -> (fontaine_sdk::core::agent::AgentRuntime, tempfile::TempDir) {
+    use fontaine_sdk::core::agent::{AgentRuntime, AgentSetup, EnvLookup, SessionOrigin};
+    use fontaine_sdk::core::config::{AccountKind, LoadParams};
+    use fontaine_sdk::core::extensions;
+    use fontaine_sdk::core::models::{
         GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
     };
-    use fontaine_core::permissions::DenyAll;
-    use fontaine_core::session::Session;
+    use fontaine_sdk::core::permissions::DenyAll;
+    use fontaine_sdk::core::session::Session;
     use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
 
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -952,7 +961,7 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
         path
     };
     let (config_dir, data, work) = (dir("config"), dir("data"), dir("work"));
-    let config = fontaine_core::config::load(&LoadParams {
+    let config = fontaine_sdk::core::config::load(&LoadParams {
         launch_dir: &work,
         config_dir: &config_dir,
         data_dir: &data,
@@ -983,7 +992,9 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
         config_dir: config_dir.clone(),
         data_dir: data.clone(),
         models: Models {
-            main_chain: fontaine_core::model_roles::ModelChain::single(model.reference.clone()),
+            main_chain: fontaine_sdk::core::model_roles::ModelChain::single(
+                model.reference.clone(),
+            ),
             main: model.clone(),
             main_listing: Default::default(),
             guardian: Some(GuardianModel::Ready(model)),
@@ -998,14 +1009,14 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
         scrub_env: Vec::new(),
         git_bash: None,
         // Startup refuses to run on Windows with no shell; nothing here launches one.
-        powershell: cfg!(windows).then(|| fontaine_tools::powershell::PowerShellSettings {
+        powershell: cfg!(windows).then(|| fontaine_sdk::tools::powershell::PowerShellSettings {
             path: "powershell.exe".into(),
         }),
         system_prompt: None,
         append_system_prompt: None,
         json_schema: None,
         headless: false,
-        human_channel: fontaine_core::permissions::HumanChannel::Present,
+        human_channel: fontaine_sdk::core::permissions::HumanChannel::Present,
         callback_hooks: Vec::new(),
         session_agents: Vec::new(),
         host_mcp: None,
@@ -1015,7 +1026,7 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
         approver: Arc::new(DenyAll),
         home: None,
         user_config: None,
-        guardian_profile: fontaine_guardian::Profile::Full,
+        guardian_profile: fontaine_sdk::guardian::Profile::Full,
         notices: Vec::new(),
         startup_warnings: Vec::new(),
         scanner: Default::default(),
@@ -1035,8 +1046,8 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
 
 #[test]
 fn entering_afk_mode_closes_every_open_and_queued_prompt() {
-    use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
-    use fontaine_tools::ask_user::QuestionReply;
+    use fontaine_sdk::core::permissions::{GuardianUnavailable, UnavailableChoice};
+    use fontaine_sdk::tools::ask_user::QuestionReply;
 
     let (_tx, rx) = unbounded_channel();
     let mut ui = ui(rx);
@@ -1076,8 +1087,8 @@ fn entering_afk_mode_closes_every_open_and_queued_prompt() {
 
 #[tokio::test]
 async fn a_failed_pause_does_not_outlive_the_turn_that_met_it() {
-    use fontaine_core::quota::UsageRole;
-    use fontaine_core::usage_pause::PauseInfo;
+    use fontaine_sdk::core::quota::UsageRole;
+    use fontaine_sdk::core::usage_pause::PauseInfo;
     let (runtime, _tmp) = runtime();
     let (_tx, rx) = unbounded_channel();
     let mut ui = ui(rx);

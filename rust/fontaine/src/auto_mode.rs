@@ -6,22 +6,22 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fontaine_core::composition_offer::{self, Candidate, Offer, Posture};
-use fontaine_core::config::{Config, Slot};
-use fontaine_core::containment;
-use fontaine_core::dirs::Dirs;
-use fontaine_core::model_roles::{CRITIQUE_ROLE, ModelChain, SETUP_ROLE, fall_through_notice};
-use fontaine_core::models::{self, GuardianModel, ResolveParams, Switcher};
-use fontaine_core::project_env::discover::{self, SystemGh};
-use fontaine_core::project_env::sample;
-use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep};
-use fontaine_core::workspace::{self, RootSource};
-use fontaine_core::{audit, ledger, trust};
-use fontaine_guardian::critique::{self, CritiqueError};
-use fontaine_guardian::rules::{DEFAULTS_MARKER, has_custom, lists};
-use fontaine_guardian::{EnvironmentConfig, List, Profile, RuleConfig};
-use fontaine_tools::display::escape_controls;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::composition_offer::{self, Candidate, Offer, Posture};
+use fontaine_sdk::core::config::{Config, Slot};
+use fontaine_sdk::core::containment;
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::model_roles::{CRITIQUE_ROLE, ModelChain, SETUP_ROLE, fall_through_notice};
+use fontaine_sdk::core::models::{self, GuardianModel, ResolveParams, Switcher};
+use fontaine_sdk::core::project_env::discover::{self, SystemGh};
+use fontaine_sdk::core::project_env::sample;
+use fontaine_sdk::core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep};
+use fontaine_sdk::core::workspace::{self, RootSource};
+use fontaine_sdk::core::{audit, ledger, trust};
+use fontaine_sdk::guardian::critique::{self, CritiqueError};
+use fontaine_sdk::guardian::rules::{DEFAULTS_MARKER, has_custom, lists};
+use fontaine_sdk::guardian::{EnvironmentConfig, List, Profile, RuleConfig};
+use fontaine_sdk::tools::display::escape_controls;
+use fontaine_sdk::tools::error_chain::chain;
 use rig_core::completion::Usage;
 use serde_json::{Value, json};
 
@@ -55,7 +55,7 @@ fn emit(text: &str) -> ExitCode {
 }
 
 /// The profile a session started with the same flags would run.
-fn profile(cli: &Cli, config: &Config) -> (Profile, Vec<fontaine_core::notice::Notice>) {
+fn profile(cli: &Cli, config: &Config) -> (Profile, Vec<fontaine_sdk::core::notice::Notice>) {
     let resolved = containment::resolve(
         config.guardian.profile,
         cli.in_container,
@@ -316,7 +316,7 @@ async fn critique_on_chain(
                     handle.catalog_billed(),
                 ))
             },
-            |e: &CritiqueError| fontaine_core::turn::error_falls_through(e),
+            |e: &CritiqueError| fontaine_sdk::core::turn::error_falls_through(e),
             |_, e| CritiqueError::Model(Box::new(e)),
         )
         .await;
@@ -529,7 +529,7 @@ async fn composition_step(
     if !confirm("Write it?") {
         return declined(candidates);
     }
-    let file = dirs.config.join(fontaine_core::config::USER_FILE);
+    let file = dirs.config.join(fontaine_sdk::core::config::USER_FILE);
     match composition_offer::write(&file, config, &offer) {
         Ok(()) => {
             let mut lines = vec![format!(
@@ -736,7 +736,7 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_guardian::rules::DEFAULT_HARD_DENY;
+    use fontaine_sdk::guardian::rules::DEFAULT_HARD_DENY;
 
     fn config_with(f: impl FnOnce(&mut Config)) -> Config {
         let dir = tempfile::tempdir().unwrap();
@@ -747,19 +747,20 @@ mod tests {
         );
         std::fs::create_dir_all(&launch).unwrap();
         let env = |_: &str| None;
-        let mut config = fontaine_core::config::load(&fontaine_core::config::LoadParams {
-            launch_dir: &launch,
-            config_dir: &config_dir,
-            data_dir: &data,
-            settings_file: None,
-            cli_rules: fontaine_core::config::CliRules {
-                allow: &[],
-                deny: &[],
-                afk_temperature_ceiling: None,
-            },
-            env: &env,
-        })
-        .unwrap();
+        let mut config =
+            fontaine_sdk::core::config::load(&fontaine_sdk::core::config::LoadParams {
+                launch_dir: &launch,
+                config_dir: &config_dir,
+                data_dir: &data,
+                settings_file: None,
+                cli_rules: fontaine_sdk::core::config::CliRules {
+                    allow: &[],
+                    deny: &[],
+                    afk_temperature_ceiling: None,
+                },
+                env: &env,
+            })
+            .unwrap();
         f(&mut config);
         config
     }

@@ -33,7 +33,7 @@ fn chip_label(attachment: &crate::input::PendingAttachment) -> String {
     format!(
         "[{kind} {} · {}]",
         attachment.label,
-        fontaine_tools::notebook::human_size(attachment.size)
+        fontaine_sdk::tools::notebook::human_size(attachment.size)
     )
 }
 
@@ -853,7 +853,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
 mod tests {
     use super::*;
     use crate::linear::flatten_all;
-    use fontaine_core::config::PermissionMode;
+    use fontaine_sdk::core::config::PermissionMode;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::app::Input;
@@ -946,7 +946,10 @@ mod tests {
     #[test]
     fn a_long_completion_list_is_windowed_to_eight_rows_around_the_selection() {
         use std::sync::Arc;
-        let mut app = App::new(fontaine_core::config::PermissionMode::Manual, "m".into());
+        let mut app = App::new(
+            fontaine_sdk::core::config::PermissionMode::Manual,
+            "m".into(),
+        );
         app.primary_root = std::path::PathBuf::from("/w");
         let files: Vec<String> = (0..20).map(|i| format!("/w/file{i:02}.rs")).collect();
         app.set_files(Arc::new(files));
@@ -979,7 +982,7 @@ mod tests {
             agent_type: if id.is_some() { "worker" } else { "" }.into(),
             model: String::new(),
             effort: None,
-            status: id.map(|_| fontaine_agents::runner::ChildStatus::Running),
+            status: id.map(|_| fontaine_sdk::agents::runner::ChildStatus::Running),
             elapsed: std::time::Duration::from_secs(5),
             spend: "12 tok".into(),
             unpriced: false,
@@ -1053,16 +1056,16 @@ mod tests {
         assert!(rows[spinner + 1].starts_with('┌'), "{rows:?}");
         let (reply, _answer) = tokio::sync::oneshot::channel();
         app.approval = Some(crate::approval::Approval::new(
-            fontaine_core::permissions::ApprovalRequest {
+            fontaine_sdk::core::permissions::ApprovalRequest {
                 tool: "shell".into(),
                 agent: "main".into(),
                 agent_name: String::new(),
                 tool_use_id: None,
                 args: serde_json::json!({}),
                 summary: "ls".into(),
-                tier: fontaine_core::tier::Tier::AllowRule,
+                tier: fontaine_sdk::core::tier::Tier::AllowRule,
                 reason: "r".into(),
-                offers: fontaine_core::permissions::Offers::default(),
+                offers: fontaine_sdk::core::permissions::Offers::default(),
                 proposed_rule: None,
                 preview: None,
             },
@@ -1086,9 +1089,9 @@ mod tests {
             app.running = true;
             app.todos.set_items(
                 (0..8)
-                    .map(|n| fontaine_tools::todo::TodoItem {
+                    .map(|n| fontaine_sdk::tools::todo::TodoItem {
                         content: format!("task {n}"),
-                        status: fontaine_tools::todo::TodoStatus::Pending,
+                        status: fontaine_sdk::tools::todo::TodoStatus::Pending,
                     })
                     .collect(),
             );
@@ -1112,9 +1115,9 @@ mod tests {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.todos.set_items(
             (0..8)
-                .map(|n| fontaine_tools::todo::TodoItem {
+                .map(|n| fontaine_sdk::tools::todo::TodoItem {
                     content: format!("task {n}"),
-                    status: fontaine_tools::todo::TodoStatus::Pending,
+                    status: fontaine_sdk::tools::todo::TodoStatus::Pending,
                 })
                 .collect(),
         );
@@ -1248,7 +1251,7 @@ mod tests {
 
     #[test]
     fn the_live_area_draws_links_when_enabled_and_plain_text_otherwise() {
-        use fontaine_core::turn::SessionEvent;
+        use fontaine_sdk::core::turn::SessionEvent;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let drawn = |enabled: bool| {

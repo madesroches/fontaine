@@ -1,8 +1,8 @@
 use std::ops::ControlFlow;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::extensions::Scope;
-use fontaine_core::skill_trust::{self, TrustState};
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::extensions::Scope;
+use fontaine_sdk::core::skill_trust::{self, TrustState};
 
 use crate::skill_trust_prompt::{self, SkillTrustFooter};
 use crate::{Action, Ui};
@@ -67,7 +67,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                         }
                         Err(e) => self.app.transcript.error(format!(
                             "could not record the trust: {}",
-                            fontaine_tools::error_chain::chain(&e)
+                            fontaine_sdk::tools::error_chain::chain(&e)
                         )),
                     }
                     return ControlFlow::Continue(());

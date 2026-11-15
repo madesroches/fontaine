@@ -3,7 +3,7 @@
 //! is redacted first and truncated second, so a cut can never leave a recognisable prefix of a
 //! secret.
 
-use fontaine_core::config::Telemetry;
+use fontaine_sdk::core::config::Telemetry;
 use rig_core::redact;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

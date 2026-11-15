@@ -1,9 +1,9 @@
 //! The `/model` and `/guardian-model` overlay: models grouped under their account, the
 //! recently used ones first, narrowed by a fuzzy filter typed into it.
 
-use fontaine_core::config::AccountKind;
-use fontaine_core::models::{AccountListing, ModelRef};
-use fontaine_core::providers::RefusedModel;
+use fontaine_sdk::core::config::AccountKind;
+use fontaine_sdk::core::models::{AccountListing, ModelRef};
+use fontaine_sdk::core::providers::RefusedModel;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;

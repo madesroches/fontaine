@@ -4,15 +4,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fontaine_core::audit::AuditLog;
-use fontaine_core::config::{PermissionMode, Slot};
-use fontaine_core::gate::{AutoContext, SessionState, StateParams, no_guardian};
-use fontaine_core::ledger::{Ledger, Record};
-use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
-use fontaine_core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
-use fontaine_guardian::{EnvironmentConfig, Guardian, RuleConfig};
-use fontaine_tools::gate::{CallView, ROOT_AGENT, ToolGate};
-use fontaine_tools::risk::{RiskClass, registered_risk};
+use fontaine_sdk::core::audit::AuditLog;
+use fontaine_sdk::core::config::{PermissionMode, Slot};
+use fontaine_sdk::core::gate::{AutoContext, SessionState, StateParams, no_guardian};
+use fontaine_sdk::core::ledger::{Ledger, Record};
+use fontaine_sdk::core::permission_rules::{RuleSource, SourcedRule, parse_rule};
+use fontaine_sdk::core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
+use fontaine_sdk::guardian::{EnvironmentConfig, Guardian, RuleConfig};
+use fontaine_sdk::tools::gate::{CallView, ROOT_AGENT, ToolGate};
+use fontaine_sdk::tools::risk::{RiskClass, registered_risk};
 
 use crate::case::{Case, MaterializeError, materialize};
 
@@ -126,19 +126,19 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     }
     let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
     let approver = Arc::new(DenyAll);
-    let agents = Arc::new(fontaine_agents::tree::AgentTree::new(
-        fontaine_agents::tree::Limits::default(),
+    let agents = Arc::new(fontaine_sdk::agents::tree::AgentTree::new(
+        fontaine_sdk::agents::tree::Limits::default(),
         1,
     ));
     agents.set_root_tools(|| {
-        fontaine_tools::descriptor::names()
+        fontaine_sdk::tools::descriptor::names()
             .map(String::from)
             .collect()
     });
     let state = Arc::new(SessionState::new(StateParams {
         session_id,
         mode: case.mode.unwrap_or(PermissionMode::Manual),
-        scope: Arc::new(fontaine_tools::scope::Scope::new(cwd, [])),
+        scope: Arc::new(fontaine_sdk::tools::scope::Scope::new(cwd, [])),
         deny: sourced(&permissions.deny)?,
         ask: sourced(&permissions.ask)?,
         allow: sourced(&permissions.allow)?,
@@ -152,18 +152,18 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         guardian: guardian.unwrap_or_else(no_guardian),
         auto: auto_context(case),
         agents,
-        agent_types: Arc::new(fontaine_tools::live::Live::new(
-            fontaine_agents::registry::AgentTypes::builtin(),
+        agent_types: Arc::new(fontaine_sdk::tools::live::Live::new(
+            fontaine_sdk::agents::registry::AgentTypes::builtin(),
         )),
         reveal_mcp_names: false,
-        auto_edits: fontaine_core::gate::AutoEdits::default(),
+        auto_edits: fontaine_sdk::core::gate::AutoEdits::default(),
         effort: None,
-        retry: fontaine_core::retry::RetryPolicy::default(),
+        retry: fontaine_sdk::core::retry::RetryPolicy::default(),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver,
-        human: fontaine_core::permissions::HumanChannel::Present,
+        human: fontaine_sdk::core::permissions::HumanChannel::Present,
         hooks: Vec::new(),
         denied_hooks: Vec::new(),
         plugin_hooks: Default::default(),

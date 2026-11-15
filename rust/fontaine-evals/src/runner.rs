@@ -3,8 +3,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fontaine_core::config::PermissionMode;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::tools::error_chain::chain;
 use serde::{Deserialize, Serialize};
 
 use crate::case::{Case, Category, FixtureVerdict, Kind, Profile, load_dataset};
@@ -16,11 +16,11 @@ use crate::screen::{self, Screen, ScreenScore};
 use crate::screen_report::{self, RefCase, ScreenAnalysis};
 use crate::{EXIT_FAIL, EXIT_USAGE};
 use crate::{baseline, cache_bench};
-use fontaine_core::providers::ServedModel;
+use fontaine_sdk::core::providers::ServedModel;
 
 /// Where the inclusion-bar writer puts qualifying entries when `--models-file` is not given,
 /// relative to the invocation directory `rust/`.
-pub const DEFAULT_MODELS_FILE: &str = "fontaine-guardian/data/guardian_models.toml";
+pub const DEFAULT_MODELS_FILE: &str = "fontaine-sdk/data/guardian_models.toml";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProfileArg {
@@ -399,9 +399,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
     // A live guardian eval on the Claude CLI adapter starts this executable as its inert tool
     // inventory; the mode is hidden and takes no part in the command line.
     if let Some(manifest) =
-        fontaine_core::providers::claude_subscription::inventory::from_args(args.clone())
+        fontaine_sdk::core::providers::claude_subscription::inventory::from_args(args.clone())
     {
-        return match fontaine_core::providers::claude_subscription::inventory::serve(&manifest) {
+        return match fontaine_sdk::core::providers::claude_subscription::inventory::serve(&manifest)
+        {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("fontaine-evals: the tool inventory failed: {}", chain(&e));
@@ -498,10 +499,10 @@ fn run_cache_bench(
 }
 
 /// The mode a `--verdict-transport` forces; `auto` and no flag leave it to the model.
-fn forced_mode(transport: Option<TransportArg>) -> Option<fontaine_guardian::OutputMode> {
+fn forced_mode(transport: Option<TransportArg>) -> Option<fontaine_sdk::guardian::OutputMode> {
     match transport {
-        Some(TransportArg::Tool) => Some(fontaine_guardian::OutputMode::Tool),
-        Some(TransportArg::Schema) => Some(fontaine_guardian::OutputMode::Schema),
+        Some(TransportArg::Tool) => Some(fontaine_sdk::guardian::OutputMode::Tool),
+        Some(TransportArg::Schema) => Some(fontaine_sdk::guardian::OutputMode::Schema),
         Some(TransportArg::Auto) | None => None,
     }
 }
@@ -619,7 +620,7 @@ fn run_score(args: &RunArgs) -> u8 {
             .and_then(|(_, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
     };
     let steering_veto_set = args.steering_veto.or_else(|| param_number("steering_veto"));
-    let steering_veto = steering_veto_set.unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
+    let steering_veto = steering_veto_set.unwrap_or(fontaine_sdk::guardian::DEFAULT_STEERING_VETO);
     let reported_stop = stop_threshold.or_else(|| param_number("stop_threshold"));
     let reported_allow = args
         .allow_threshold
@@ -706,8 +707,8 @@ fn run_score(args: &RunArgs) -> u8 {
     let mut screen_framing = screen::Framing::default();
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
         let guardian_profile = match profile {
-            Profile::Full => fontaine_guardian::Profile::Full,
-            Profile::Minimal => fontaine_guardian::Profile::Minimal,
+            Profile::Full => fontaine_sdk::guardian::Profile::Full,
+            Profile::Minimal => fontaine_sdk::guardian::Profile::Minimal,
         };
         // Connecting may run the Claude CLI's checks, which await; `run_score` is synchronous.
         let rt = match runtime() {
@@ -725,7 +726,7 @@ fn run_score(args: &RunArgs) -> u8 {
         };
         let hosted = cascade_script.is_none()
             && cascade_screen.and_then(|screen| connected.screen_backend(screen))
-                == Some(fontaine_guardian::BackendKind::SystemOne);
+                == Some(fontaine_sdk::guardian::BackendKind::SystemOne);
         if cascade_screen.is_some() && cascade_script.is_none() && !hosted && !thresholds_given {
             return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
         }
@@ -739,7 +740,7 @@ fn run_score(args: &RunArgs) -> u8 {
             let allowing = !composition_params
                 .iter()
                 .any(|(k, v)| k == "allow" && v.as_bool() == Some(false));
-            let fitted = fontaine_guardian::composition::has_default_thresholds(
+            let fitted = fontaine_sdk::guardian::composition::has_default_thresholds(
                 cascade_screen.unwrap_or_default(),
             );
             let stop_given = stop_threshold.is_some()
@@ -759,7 +760,7 @@ fn run_score(args: &RunArgs) -> u8 {
             c.allow_threshold = allowing
                 .then(|| {
                     c.allow_threshold.or_else(|| {
-                        fitted.then_some(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
+                        fitted.then_some(fontaine_sdk::guardian::composition::JEV_ALLOW_THRESHOLD)
                     })
                 })
                 .flatten();

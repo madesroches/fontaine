@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fontaine_core::owner_only;
+use fontaine_sdk::core::owner_only;
 use serde_json::{Value, json};
 
 pub const HISTORY_CAP: usize = 5_000;
@@ -182,7 +182,7 @@ fn unusable(path: &Path, error: &io::Error) -> String {
     format!(
         "prompt history in {} cannot be used ({}); it is kept for this session only",
         path.display(),
-        fontaine_tools::error_chain::chain(error)
+        fontaine_sdk::tools::error_chain::chain(error)
     )
 }
 

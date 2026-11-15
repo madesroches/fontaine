@@ -322,7 +322,7 @@ fn keep_previous(target: &Path, prior: &Prior<'_>) {
     })
     .to_string();
     // A `.prev` without its record could not be rolled back to, so it is not kept.
-    if fontaine_core::owner_only::write_atomic(&record, text.as_bytes()).is_err() {
+    if fontaine_sdk::core::owner_only::write_atomic(&record, text.as_bytes()).is_err() {
         let _ = std::fs::remove_file(&prev);
     }
 }

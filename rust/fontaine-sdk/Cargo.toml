@@ -1,0 +1,76 @@
+[package]
+name = "fontaine-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# PromptGuard 2 inference for the tool-result scanner; off by default to keep the build light.
+pg2 = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+
+[dependencies]
+async-lsp.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+brush-parser.workspace = true
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+chrono.workspace = true
+crossterm.workspace = true
+dirs.workspace = true
+futures.workspace = true
+gix.workspace = true
+globset.workspace = true
+htmd.workspace = true
+http.workspace = true
+ignore.workspace = true
+lsp-types.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rig-agent.workspace = true
+rig-core.workspace = true
+rig-memory.workspace = true
+rig-reqwest.workspace = true
+rig-rmcp.workspace = true
+rig-tools.workspace = true
+rmcp.workspace = true
+rune.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokenizers = { workspace = true, optional = true }
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+webpki-root-certs.workspace = true
+yaml-rust2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+fontaine-testkit.workspace = true
+insta.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tempfile.workspace = true
+tokio-rustls.workspace = true
+tracing-subscriber.workspace = true
+wiremock.workspace = true
+rig-agent = { workspace = true, features = ["test-utils"] }
+rig-core = { workspace = true, features = ["test-utils"] }
+rmcp = { workspace = true, features = ["server", "transport-io", "elicitation"] }
+tokio = { workspace = true, features = ["test-util"] }

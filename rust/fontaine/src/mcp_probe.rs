@@ -2,12 +2,12 @@
 //! doctor` and `fontaine mcp`. A server a session would hold back for the user's say-so is
 //! reported, never started.
 
-use fontaine_core::agent::{mcp_plan, probe_server, server_spec};
-use fontaine_core::config::Config;
-use fontaine_core::dirs::Dirs;
-use fontaine_core::doctor_report::{self as report, McpGate, McpState};
-use fontaine_core::plugins::{self, PluginContributions};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::agent::{mcp_plan, probe_server, server_spec};
+use fontaine_sdk::core::config::Config;
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::doctor_report::{self as report, McpGate, McpState};
+use fontaine_sdk::core::plugins::{self, PluginContributions};
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::{Host, shared_env};
 
@@ -56,7 +56,7 @@ pub(crate) async fn probe_servers(
 ) -> Vec<ProbedServer> {
     let plan = mcp_plan(config, &config.workspace, &dirs.data, trusted, true);
     let env = shared_env(host);
-    let scrubbed = fontaine_core::tools::scrubbed_env(config, (host.env_names)());
+    let scrubbed = fontaine_sdk::core::tools::scrubbed_env(config, (host.env_names)());
     let probes = config
         .mcp_servers
         .keys()
@@ -92,7 +92,7 @@ async fn probe(
     config: &Config,
     dirs: &Dirs,
     name: &str,
-    env: &fontaine_core::agent::EnvLookup,
+    env: &fontaine_sdk::core::agent::EnvLookup,
     scrubbed: &[std::ffi::OsString],
 ) -> McpState {
     let spec = match server_spec(config, name, &config.workspace, &dirs.data, env, scrubbed) {

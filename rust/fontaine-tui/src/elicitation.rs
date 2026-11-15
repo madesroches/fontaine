@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use fontaine_tools::mcp::{Choice, ElicitForm, ElicitReply, Field, FieldKind};
+use fontaine_sdk::tools::mcp::{Choice, ElicitForm, ElicitReply, Field, FieldKind};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -487,7 +487,7 @@ fn control_line(field: &Field, entry: &Entry, focused: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use fontaine_tools::mcp::elicitation::ElicitationSchema;
+    use fontaine_sdk::tools::mcp::elicitation::ElicitationSchema;
 
     use super::*;
 
@@ -542,7 +542,7 @@ mod tests {
     }
 
     fn theme() -> Theme {
-        Theme::preset(fontaine_core::config::ThemeName::default())
+        Theme::preset(fontaine_sdk::core::config::ThemeName::default())
     }
 
     #[test]
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn a_single_select_is_picked_with_space_and_required_until_then() {
-        use fontaine_tools::mcp::elicitation::ElicitationSchema as Schema;
+        use fontaine_sdk::tools::mcp::elicitation::ElicitationSchema as Schema;
         let schema: Schema = serde_json::from_value(serde_json::json!({
             "type": "object",
             "properties": {"pick": {

@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use fontaine_core::config::{self, Config, Slot};
-use fontaine_core::dirs::Dirs;
-use fontaine_core::doctor_report::{McpGate, McpState};
-use fontaine_core::mcp_auth::{FileCredentialStore, FileStateStore};
-use fontaine_core::mcp_config::{self, Scope};
-use fontaine_core::mcp_json;
-use fontaine_core::plugins::PluginContributions;
-use fontaine_core::trust;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::config::{self, Config, Slot};
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::doctor_report::{McpGate, McpState};
+use fontaine_sdk::core::mcp_auth::{FileCredentialStore, FileStateStore};
+use fontaine_sdk::core::mcp_config::{self, Scope};
+use fontaine_sdk::core::mcp_json;
+use fontaine_sdk::core::plugins::PluginContributions;
+use fontaine_sdk::core::trust;
+use fontaine_sdk::tools::error_chain::chain;
 use rmcp::transport::auth::{AuthorizationManager, AuthorizationRequest, OAuthState};
 
 use crate::cli::{
@@ -503,8 +503,8 @@ async fn login(
     }
     // Resolved as at connect time (the `headers_helper` refusal and `${VAR}` expansion): the
     // stored token is bound to this URL, and a later connect refuses any other.
-    let scrubbed = fontaine_core::tools::scrubbed_env(&config, (host.env_names)());
-    let server = fontaine_core::agent::resolved_server(
+    let scrubbed = fontaine_sdk::core::tools::scrubbed_env(&config, (host.env_names)());
+    let server = fontaine_sdk::core::agent::resolved_server(
         &config,
         name,
         &config.workspace,
@@ -521,7 +521,7 @@ async fn login(
     let network = config
         .loaded_network(None)
         .map_err(|e| Failure::usage(chain(&e)))?;
-    let oauth = fontaine_tools::mcp::auth::build_oauth_client(&network, &url)
+    let oauth = fontaine_sdk::tools::mcp::auth::build_oauth_client(&network, &url)
         .map_err(|e| Failure::failed(chain(&e)))?;
     let mut manager =
         AuthorizationManager::new_with_oauth_http_client(url.as_str(), Arc::new(oauth))
@@ -657,7 +657,7 @@ async fn serve_callback_connection(
 }
 
 fn logout(dirs: &Dirs, args: &crate::cli::McpLogoutArgs) -> Result<(), Failure> {
-    match fontaine_core::credentials::mcp_remove(&dirs.data, &args.name) {
+    match fontaine_sdk::core::credentials::mcp_remove(&dirs.data, &args.name) {
         Ok(true) => {
             println!("Deleted the stored credentials of `{}`.", args.name);
             Ok(())

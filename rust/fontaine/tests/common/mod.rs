@@ -728,7 +728,7 @@ impl Sandbox {
         #[cfg(windows)]
         let name = format!(
             "fontaine-{}",
-            fontaine_core::owner_only::current_user_sid().unwrap()
+            fontaine_sdk::core::owner_only::current_user_sid().unwrap()
         );
         #[cfg(not(windows))]
         let name = "fontaine".to_string();

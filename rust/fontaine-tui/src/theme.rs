@@ -1,7 +1,7 @@
 //! The colours the interface draws with, by meaning. Call sites add their own `BOLD`/`DIM`;
 //! selection is `REVERSED` and not a token.
 
-use fontaine_core::config::ThemeName;
+use fontaine_sdk::core::config::ThemeName;
 use ratatui::style::Color;
 
 /// The marks that start a notice, with an ASCII set for terminals and fonts without `⚠`.

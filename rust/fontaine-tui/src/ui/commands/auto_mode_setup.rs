@@ -2,15 +2,15 @@ use std::ops::ControlFlow;
 
 use crate::setup_prompt::{self, CompositionPrompt};
 use crate::{Action, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::now_rfc3339;
-use fontaine_core::composition_offer::{self, Candidate, Offer};
-use fontaine_core::model_roles::{SETUP_ROLE, fall_through_notice};
-use fontaine_core::project_env::discover::{self, SystemGh};
-use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
-use fontaine_core::trust;
-use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::audit::now_rfc3339;
+use fontaine_sdk::core::composition_offer::{self, Candidate, Offer};
+use fontaine_sdk::core::model_roles::{SETUP_ROLE, fall_through_notice};
+use fontaine_sdk::core::project_env::discover::{self, SystemGh};
+use fontaine_sdk::core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
+use fontaine_sdk::core::trust;
+use fontaine_sdk::tools::error_chain::chain;
+use fontaine_sdk::tools::gate::ROOT_AGENT;
 use tokio::task::JoinHandle;
 
 /// How a background step ended.
@@ -64,7 +64,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("guardian composition: skipped (a composition is already configured)");
             return ControlFlow::Continue(());
         }
-        if runtime.guardian_profile() == fontaine_guardian::Profile::Minimal {
+        if runtime.guardian_profile() == fontaine_sdk::guardian::Profile::Minimal {
             self.app
                 .transcript
                 .notice("guardian composition: skipped (the minimal profile)");

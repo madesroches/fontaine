@@ -12,7 +12,7 @@ use ratatui::text::Line;
 use crate::confirm_prompt::{ANSWER_GRACE, Block, ConfirmPrompt};
 use crate::input::wrap;
 use crate::theme::Theme;
-use fontaine_core::composition_offer::{Candidate, Offer, Posture};
+use fontaine_sdk::core::composition_offer::{Candidate, Offer, Posture};
 
 /// Rows of proposals the overlay shows; the transcript above it holds the whole review.
 pub(crate) const BODY_ROWS: usize = 14;
@@ -173,7 +173,7 @@ mod tests {
     fn candidate(account: &str) -> Candidate {
         Candidate::Ollama {
             account: account.to_string(),
-            benchmark: &fontaine_core::composition_offer::BENCHMARKS[0],
+            benchmark: &fontaine_sdk::core::composition_offer::BENCHMARKS[0],
         }
     }
 

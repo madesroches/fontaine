@@ -3,7 +3,7 @@
 
 use std::time::SystemTime;
 
-use fontaine_core::session::SessionInfo;
+use fontaine_sdk::core::session::SessionInfo;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;

@@ -152,7 +152,7 @@ impl Row {
     fn windows_clipboard() -> Self {
         Self {
             program: "powershell.exe",
-            args: fontaine_tools::powershell::launch_args(WINDOWS_CLIPBOARD_SCRIPT),
+            args: fontaine_sdk::tools::powershell::launch_args(WINDOWS_CLIPBOARD_SCRIPT),
             output: Output::Base64,
         }
     }

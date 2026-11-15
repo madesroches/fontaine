@@ -2,8 +2,8 @@
 //! so the dialog shows what the file declares now, or what changed since they last trusted it.
 
 use crate::confirm_prompt::{Block, ConfirmPrompt};
-use fontaine_core::extensions::{Scope, Skill};
-use fontaine_core::skill_trust::{self, TrustRecord};
+use fontaine_sdk::core::extensions::{Scope, Skill};
+use fontaine_sdk::core::skill_trust::{self, TrustRecord};
 
 /// When the trust the dialog records takes effect, which depends on who asks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -122,7 +122,7 @@ fn section(out: &mut Vec<String>, heading: &str, lines: Vec<String>, empty: &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::permission_rules::parse_rule;
+    use fontaine_sdk::core::permission_rules::parse_rule;
 
     fn skill(tools: &[&str], body: &str) -> Skill {
         Skill {

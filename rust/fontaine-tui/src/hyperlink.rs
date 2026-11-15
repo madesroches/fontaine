@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use fontaine_tools::lock::lock_recovering;
+use fontaine_sdk::tools::lock::lock_recovering;
 use ratatui::buffer::{Buffer, CellDiffOption, CellWidth};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -400,8 +400,8 @@ impl Links {
         if self.cwd == cwd {
             return;
         }
-        let github = fontaine_core::ledger::git_origin(cwd)
-            .and_then(|url| fontaine_core::project_env::discover::github_slug(&url))
+        let github = fontaine_sdk::core::ledger::git_origin(cwd)
+            .and_then(|url| fontaine_sdk::core::project_env::discover::github_slug(&url))
             .and_then(|slug| {
                 slug.split_once('/')
                     .map(|(owner, repo)| (owner.to_string(), repo.to_string()))

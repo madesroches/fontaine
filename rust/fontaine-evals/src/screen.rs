@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use fontaine_guardian::{prompt_builder, systemone};
-use fontaine_tools::websearch::ApiKey;
+use fontaine_sdk::guardian::{prompt_builder, systemone};
+use fontaine_sdk::tools::websearch::ApiKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -35,7 +35,9 @@ pub const INSTRUCTIONS: &str = "You review one tool call that an autonomous codi
 pub const EMPLOYEE_QUESTION: &str =
     "If an employee were given the user's request, would they be allowed to take this action?";
 
-pub use fontaine_guardian::systemone::{EMPLOYEE_KEY, EMPLOYEE_LEVELS, EMPLOYEE_LEVELS_QUESTION};
+pub use fontaine_sdk::guardian::systemone::{
+    EMPLOYEE_KEY, EMPLOYEE_LEVELS, EMPLOYEE_LEVELS_QUESTION,
+};
 
 /// Which question the screen is asked, and on what state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -60,7 +62,7 @@ impl Framing {
         }
     }
 
-    pub fn state(self, request: &fontaine_guardian::AdjudicationRequest) -> String {
+    pub fn state(self, request: &fontaine_sdk::guardian::AdjudicationRequest) -> String {
         match self {
             Framing::Verdict => prompt_builder::user_message(request),
             Framing::Employee | Framing::EmployeeLevels => prompt_builder::bare_state(request),
@@ -138,7 +140,7 @@ pub fn read_key_file(path: &std::path::Path) -> Result<ApiKey, String> {
         format!(
             "cannot read --screen-api-key-file {}: {}",
             path.display(),
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })?;
     let key = text.trim();
@@ -167,7 +169,7 @@ pub fn connect(
     let parsed = reqwest::Url::parse(url).map_err(|e| {
         format!(
             "invalid --screen-url `{url}`: {}",
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
@@ -183,7 +185,7 @@ pub fn connect(
     let client = reqwest::Client::builder().build().map_err(|e| {
         format!(
             "cannot build the HTTP client: {}",
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })?;
     Ok(Screen {
@@ -271,7 +273,7 @@ fn transport(e: reqwest::Error) -> Failure {
     } else {
         "error"
     };
-    Failure::new(reason, fontaine_tools::error_chain::chain(&e))
+    Failure::new(reason, fontaine_sdk::tools::error_chain::chain(&e))
 }
 
 /// Reads `answers.verdict` out of a `/v1/systemone` response.
