@@ -6,7 +6,7 @@ use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::Path;
 
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::goal::{Applied, Judgment, Step};
+use fontaine_core::goal::{Applied, Due, Judgment, Step};
 use fontaine_core::ledger::{GoalEvent, MessageOrigin};
 use fontaine_core::turn::TurnOutcome;
 
@@ -37,7 +37,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.quitting() {
             return Some(Break(()));
         }
-        let pending = runtime.next_goal_step()?;
+        let pending = match runtime.next_goal_step(true)? {
+            Due::Evaluate(pending) => pending,
+            Due::CheckIn(check) => {
+                self.app
+                    .transcript
+                    .notice("goal: checking on background work".to_string());
+                let prompt = runtime.checkin_prompt(&check);
+                return Some(self.goal_turn(runtime, launch_dir, prompt).await);
+            }
+            Due::IdleExhausted => return None,
+            Due::Paused(reason) => {
+                self.app.transcript.notice(reason.notice());
+                return Some(Continue(()));
+            }
+        };
         self.app.set_running(true);
         let mut evaluation = Box::pin(runtime.evaluate_goal(&pending));
         let result = self
@@ -86,7 +100,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
         }
         match step.flatten() {
-            Some(next) => Some(self.goal_turn(runtime, launch_dir, next).await),
+            Some(next) => {
+                let prompt = runtime.goal_prompt(&next).await;
+                Some(self.goal_turn(runtime, launch_dir, prompt).await)
+            }
             None => Some(Continue(())),
         }
     }

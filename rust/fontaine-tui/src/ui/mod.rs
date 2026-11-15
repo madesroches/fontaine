@@ -837,7 +837,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.draw(runtime);
             let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
             let statusline_tick = self.statusline_tick(runtime);
-            let tick = soonest_tick(&self.app, &[tick, list_tick, statusline_tick]);
+            let checkin_tick = if held {
+                None
+            } else {
+                runtime.goal_checkin_wait(true)
+            };
+            let tick = soonest_tick(&self.app, &[tick, list_tick, statusline_tick, checkin_tick]);
             if self.finish_statusline() {
                 // A run finished between wakeups: redraw now rather than parking with an
                 // undrawn line.

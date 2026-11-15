@@ -446,6 +446,24 @@ impl Job {
         self.started.elapsed()
     }
 
+    fn info(&self) -> JobInfo {
+        JobInfo {
+            id: self.id.clone(),
+            command: self.command.clone(),
+            monitor: self.monitor.is_some(),
+            description: self.monitor.as_ref().map(|m| m.description.clone()),
+            age: self.age(),
+            running: self.running(),
+            state: match (&self.ended, self.mode) {
+                (Some(info), _) => info.describe(),
+                (None, Mode::Foreground | Mode::Abandoned) => {
+                    "running in the foreground".to_owned()
+                }
+                (None, Mode::Background) => "running".to_owned(),
+            },
+        }
+    }
+
     fn tail(&self) -> String {
         let from = self.buffer.lines.len().saturating_sub(TAIL_LINES);
         let (mut text, dropped) = fit_lines(
@@ -714,6 +732,8 @@ pub struct JobInfo {
     pub id: String,
     pub command: String,
     pub monitor: bool,
+    /// A monitor's own description of what it watches.
+    pub description: Option<String>,
     pub age: Duration,
     pub running: bool,
     /// `running`, `running in the foreground`, or how it ended.
@@ -969,20 +989,17 @@ impl Jobs {
         lock(&self.shared.inner, "job registry")
             .jobs
             .iter()
-            .map(|job| JobInfo {
-                id: job.id.clone(),
-                command: job.command.clone(),
-                monitor: job.monitor.is_some(),
-                age: job.age(),
-                running: job.running(),
-                state: match (&job.ended, job.mode) {
-                    (Some(info), _) => info.describe(),
-                    (None, Mode::Foreground | Mode::Abandoned) => {
-                        "running in the foreground".to_owned()
-                    }
-                    (None, Mode::Background) => "running".to_owned(),
-                },
-            })
+            .map(Job::info)
+            .collect()
+    }
+
+    /// The jobs that keep a goal waiting: background shells and monitors still running.
+    pub fn running_background(&self) -> Vec<JobInfo> {
+        lock(&self.shared.inner, "job registry")
+            .jobs
+            .iter()
+            .filter(|job| job.counts())
+            .map(Job::info)
             .collect()
     }
 

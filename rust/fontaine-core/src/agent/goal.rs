@@ -8,15 +8,16 @@ use rig_core::DynModel;
 use rig_core::operation::Completion;
 use rig_memory::load_async;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::AgentRuntime;
 use super::models::announce_fall_through;
 use crate::config::PermissionMode;
 use crate::gate::SessionState;
 use crate::goal::{
-    Applied, Cleared, Continue, Evaluation, GoalCaps, GoalError, GoalEvaluator, PauseReason,
-    Pending, REASON_CHARS, Step, cut, goal_prompt_text, last_user_text, transcript_of,
-    visible_transcript_of,
+    Applied, CheckIn, Cleared, Continue, Due, Evaluation, GoalCaps, GoalError, GoalEvaluator,
+    PauseReason, Pending, REASON_CHARS, Step, checkin_prompt_text, cut, goal_prompt_text,
+    last_user_text, transcript_of, visible_transcript_of,
 };
 use crate::ledger::{GoalEvent, Record};
 use crate::model_roles::{COMPACTION_ROLE, ModelChain};
@@ -27,6 +28,9 @@ use crate::side_question::{Answer, SideQuestion, SideQuestionError, clean_sugges
 use crate::turn::TurnOutcome;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::user_hooks::CompactGate;
+
+/// How much of a job's command or description a line of background work keeps.
+const WORK_LINE_CHARS: usize = 200;
 
 /// Unused suggestions in a row after which none is asked for until one is accepted or enough
 /// human turns have passed.
@@ -438,7 +442,7 @@ impl AgentRuntime {
             fontaine_agents::spawn::remind_main(self.state.agents());
         }
         let goal = self.session.goal();
-        let paused = goal.after_turn(end);
+        let paused = goal.after_turn(end, !self.background_work().is_empty(), Instant::now());
         if paused.is_some() {
             self.state.append(Record::Goal {
                 event: GoalEvent::Paused,
@@ -474,10 +478,70 @@ impl AgentRuntime {
             .user_prompt(self.tree_spend(), self.paused_total());
     }
 
-    /// The evaluation due now, if any; none while a subagent still runs.
-    pub fn next_goal_step(&self) -> Option<Pending> {
-        let running = self.state.agents().any_running();
-        self.session.goal().next_step(running)
+    /// What keeps a goal from being evaluated: one line per running subagent, background shell
+    /// and monitor.
+    pub fn background_work(&self) -> Vec<String> {
+        let agents = self
+            .state
+            .agents()
+            .running_ids()
+            .into_iter()
+            .map(|id| format!("agent {id}"));
+        let jobs = self.setup.jobs.running_background().into_iter().map(|job| {
+            let line = match &job.description {
+                Some(description) if job.monitor => format!("monitor {}: {description}", job.id),
+                _ => format!("shell {}: {}", job.id, job.command),
+            };
+            cut(&line, WORK_LINE_CHARS)
+        });
+        agents.chain(jobs).collect()
+    }
+
+    /// What the goal needs now, if anything. `idle` says the surface is not busy with the user.
+    /// A check-in that would pass the turn or cost cap pauses the goal, which is recorded here.
+    pub fn next_goal_step(&self, idle: bool) -> Option<Due> {
+        self.next_goal_step_at(idle, Instant::now())
+    }
+
+    /// [`next_goal_step`](Self::next_goal_step) at a given time.
+    pub fn next_goal_step_at(&self, idle: bool, now: Instant) -> Option<Due> {
+        let due = self.session.goal().take_step(
+            &self.background_work(),
+            now,
+            idle,
+            &GoalCaps::from(&self.config.goal),
+            self.tree_spend(),
+            self.models.main.priced(),
+        );
+        if let Some(Due::Paused(reason)) = &due {
+            self.state.append(Record::Goal {
+                event: GoalEvent::Paused,
+                evaluations: self.session.goal().evaluations(),
+                reason: Some(reason.to_string()),
+            });
+        }
+        due
+    }
+
+    /// The time until the next check-in falls due; see `SessionGoal::checkin_wait`.
+    pub fn goal_checkin_wait(&self, respect_idle_cap: bool) -> Option<Duration> {
+        let running = !self.background_work().is_empty();
+        self.session.goal().checkin_wait(
+            running,
+            Instant::now(),
+            respect_idle_cap,
+            &GoalCaps::from(&self.config.goal),
+        )
+    }
+
+    /// An answered turn is waiting for background work to end before it is evaluated.
+    pub fn goal_deferred(&self) -> bool {
+        self.session.goal().deferred()
+    }
+
+    /// The prompt of a check-in turn.
+    pub fn checkin_prompt(&self, check: &CheckIn) -> String {
+        checkin_prompt_text(check)
     }
 
     /// Asks the evaluator and applies its answer; `None` when the goal was cleared meanwhile.
@@ -497,10 +561,16 @@ impl AgentRuntime {
                 Step::Continue(_) => None,
             };
             if let Some(event) = event {
+                // The evaluator's own finding is the pause's reason; the other pauses are the
+                // goal's caps, which the verdict records already explain.
+                let reason = match &applied.step {
+                    Step::Pause(reason @ PauseReason::WaitingOnUser(_)) => Some(reason.to_string()),
+                    _ => None,
+                };
                 self.state.append(Record::Goal {
                     event,
                     evaluations: applied.evaluations,
-                    reason: None,
+                    reason,
                 });
             }
         }

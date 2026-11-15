@@ -207,6 +207,27 @@ async fn running_in_the_background_returns_at_once() {
 }
 
 #[tokio::test]
+async fn running_background_holds_monitors_and_promoted_jobs_but_not_foreground_ones() {
+    let (jobs, _) = jobs();
+    let foreground = start(&jobs, "sleep 30", false);
+    assert!(jobs.running_background().is_empty());
+    let watch = monitor(&jobs, "sleep 30", None);
+    let promoted = start(&jobs, "sleep 30", false);
+    let ran = jobs
+        .foreground(&promoted, Duration::from_millis(100), None, true)
+        .await;
+    assert!(ran.end.is_none());
+    let background = jobs.running_background();
+    let ids: Vec<&str> = background.iter().map(|job| job.id.as_str()).collect();
+    assert_eq!(ids, [watch.as_str(), promoted.as_str()]);
+    assert!(!ids.contains(&foreground.as_str()));
+    assert_eq!(background[0].description.as_deref(), Some("watching"));
+    assert_eq!(background[1].description, None);
+    jobs.terminate_all().await;
+    assert!(jobs.running_background().is_empty());
+}
+
+#[tokio::test]
 async fn a_ninth_background_job_is_refused_and_a_promotion_past_the_cap_stops_the_command() {
     let (jobs, _) = jobs();
     for _ in 0..MAX_RUNNING {

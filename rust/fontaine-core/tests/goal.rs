@@ -4,16 +4,16 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::World;
 use common::runtime::build_with_scanner;
 use fontaine_agents::budget::Spend;
 use fontaine_core::config::{AccountKind, PermissionMode::Manual};
 use fontaine_core::goal::{
-    Applied, Evaluation, GoalArg, GoalCaps, GoalError, GoalEvaluator, GoalVerdict, Judgment,
-    PauseReason, SessionGoal, Step, last_user_text, parse_goal_arg, render_transcript,
-    visible_transcript_of,
+    Applied, CheckIn, Due, Evaluation, GoalArg, GoalCaps, GoalError, GoalEvaluator, GoalVerdict,
+    IDLE_CHECKINS, Judgment, NO_PROGRESS_LIMIT, PauseReason, Pending, SessionGoal, Step,
+    checkin_prompt_text, last_user_text, parse_goal_arg, render_transcript, visible_transcript_of,
 };
 use fontaine_core::ledger::{GoalEvent, Ledger, Record};
 use fontaine_core::models::{GuardianModel, ModelHandle, ModelRef};
@@ -39,6 +39,7 @@ const CAPS: GoalCaps = GoalCaps {
     max_cost_usd: None,
     max_tokens: None,
     max_duration: None,
+    checkin: None,
 };
 
 struct Fixture {
@@ -66,10 +67,18 @@ impl Fixture {
         self.call(ROOT_AGENT);
     }
 
+    fn root_tool(&self, tool: &str) {
+        self.call_tool(tool, ROOT_AGENT);
+    }
+
     fn call(&self, agent: &str) {
+        self.call_tool("shell", agent);
+    }
+
+    fn call_tool(&self, tool: &str, agent: &str) {
         self.ledger
             .append(Record::Action {
-                tool: "shell".into(),
+                tool: tool.into(),
                 agent: agent.into(),
                 paths: Vec::new(),
                 created: Vec::new(),
@@ -82,6 +91,40 @@ impl Fixture {
     }
 }
 
+/// The state machine as a surface without background work drives it.
+trait Plain {
+    fn turn_ended(&self, end: Option<&TurnOutcome>) -> Option<PauseReason>;
+    fn step(&self, agents_running: bool) -> Option<Pending>;
+}
+
+impl Plain for SessionGoal {
+    fn turn_ended(&self, end: Option<&TurnOutcome>) -> Option<PauseReason> {
+        self.after_turn(end, false, Instant::now())
+    }
+
+    fn step(&self, agents_running: bool) -> Option<Pending> {
+        let work: Vec<String> = agents_running
+            .then(|| "agent a1".to_string())
+            .into_iter()
+            .collect();
+        match self.take_step(&work, Instant::now(), true, &CAPS, Spend::default(), true) {
+            Some(Due::Evaluate(pending)) => Some(pending),
+            Some(other) => panic!("no check-in is due without a schedule: {other:?}"),
+            None => None,
+        }
+    }
+}
+
+fn evaluation_due(runtime: &fontaine_core::agent::AgentRuntime) -> Option<Pending> {
+    match runtime.next_goal_step(true) {
+        Some(Due::Evaluate(pending)) => Some(pending),
+        other => {
+            assert!(other.is_none(), "{other:?}");
+            None
+        }
+    }
+}
+
 fn answer() -> TurnOutcome {
     TurnOutcome::Answer("done".into())
 }
@@ -90,6 +133,7 @@ fn verdict(judgment: Judgment, reason: &str) -> Evaluation {
     Evaluation::Verdict(GoalVerdict {
         verdict: judgment,
         reason: reason.into(),
+        waiting_on_user: false,
     })
 }
 
@@ -106,8 +150,8 @@ fn not_met(goal: &SessionGoal, caps: &GoalCaps, spend: Spend, priced: bool) -> A
 
 /// Ends a turn that answered, then takes a not-met verdict for it.
 fn turn_then_not_met(goal: &SessionGoal, caps: &GoalCaps) -> Applied {
-    goal.after_turn(Some(&answer()));
-    assert!(goal.next_step(false).is_some());
+    goal.turn_ended(Some(&answer()));
+    assert!(goal.step(false).is_some());
     not_met(goal, caps, Spend::default(), true)
 }
 
@@ -211,13 +255,13 @@ fn each_way_a_turn_can_end_decides_whether_the_goal_is_evaluated() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
-    assert!(goal.next_step(false).is_none(), "nothing to evaluate yet");
+    assert!(goal.step(false).is_none(), "nothing to evaluate yet");
 
-    assert_eq!(goal.after_turn(Some(&answer())), None);
-    assert_eq!(goal.next_step(false).unwrap().condition, "done");
+    assert_eq!(goal.turn_ended(Some(&answer())), None);
+    assert_eq!(goal.step(false).unwrap().condition, "done");
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
-    assert!(goal.next_step(false).is_none());
+    assert!(goal.step(false).is_none());
 
     let cases = [
         (None, PauseReason::Interrupted),
@@ -236,8 +280,8 @@ fn each_way_a_turn_can_end_decides_whether_the_goal_is_evaluated() {
     ];
     for (end, expected) in cases {
         goal.user_prompt(Spend::default(), Duration::ZERO);
-        assert_eq!(goal.after_turn(end.as_ref()), Some(expected.clone()));
-        assert!(goal.next_step(false).is_none(), "{expected:?} pauses");
+        assert_eq!(goal.turn_ended(end.as_ref()), Some(expected.clone()));
+        assert!(goal.step(false).is_none(), "{expected:?} pauses");
         let paused = goal.status(Spend::default()).active.unwrap().paused;
         assert_eq!(paused, Some(expected));
     }
@@ -248,10 +292,10 @@ fn a_pause_holds_until_the_user_speaks_and_a_later_turn_does_not_change_it() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
-    goal.after_turn(None);
+    goal.turn_ended(None);
     // A scheduled or notification turn that answers meanwhile does not wake a paused goal.
-    assert_eq!(goal.after_turn(Some(&answer())), None);
-    assert!(goal.next_step(false).is_none());
+    assert_eq!(goal.turn_ended(Some(&answer())), None);
+    assert!(goal.step(false).is_none());
     goal.user_prompt(Spend::default(), Duration::ZERO);
     assert!(
         goal.status(Spend::default())
@@ -260,8 +304,8 @@ fn a_pause_holds_until_the_user_speaks_and_a_later_turn_does_not_change_it() {
             .paused
             .is_none()
     );
-    goal.after_turn(Some(&answer()));
-    assert!(goal.next_step(false).is_some());
+    goal.turn_ended(Some(&answer()));
+    assert!(goal.step(false).is_some());
 }
 
 #[test]
@@ -269,9 +313,9 @@ fn evaluation_waits_while_an_agent_runs() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
-    goal.after_turn(Some(&answer()));
-    assert!(goal.next_step(true).is_none());
-    assert!(goal.next_step(false).is_some());
+    goal.turn_ended(Some(&answer()));
+    assert!(goal.step(true).is_none());
+    assert!(goal.step(false).is_some());
 }
 
 #[test]
@@ -281,7 +325,7 @@ fn a_met_verdict_ends_the_goal_and_is_remembered_until_the_next() {
     goal.set("done", spend(100, Some(1.0)), Duration::ZERO)
         .unwrap();
     assert!(f.file().is_file());
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::Met, "the file exists"),
@@ -321,7 +365,7 @@ fn an_impossible_verdict_ends_the_goal_without_an_achievement() {
     let goal = f.goal();
     goal.set("square the circle", Spend::default(), Duration::ZERO)
         .unwrap();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::Impossible, "it cannot be done"),
@@ -355,10 +399,7 @@ fn not_met_continues_with_the_reason_and_the_condition() {
         ("more to do", "done")
     );
     assert!(goal.is_active());
-    assert!(
-        goal.next_step(false).is_none(),
-        "the verdict consumed the turn"
-    );
+    assert!(goal.step(false).is_none(), "the verdict consumed the turn");
     let status = goal.status(Spend::default()).active.unwrap();
     assert_eq!(status.last_reason.as_deref(), Some("more to do"));
     assert_eq!(status.evaluations, 1);
@@ -369,7 +410,7 @@ fn a_verdict_for_a_goal_that_was_cleared_meanwhile_is_dropped() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     goal.clear();
     assert!(
         goal.apply(
@@ -401,7 +442,7 @@ fn the_turn_cap_pauses_the_goal_and_a_user_prompt_starts_a_fresh_stretch() {
     let applied = turn_then_not_met(&goal, &caps);
     assert_eq!(applied.step, Step::Pause(PauseReason::TurnCap(3)));
     assert!(goal.is_active(), "the goal stays set");
-    assert!(goal.next_step(false).is_none());
+    assert!(goal.step(false).is_none());
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
     f.root_call();
@@ -424,25 +465,583 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     goal.user_prompt(spend(0, Some(10.0)), Duration::ZERO);
 
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let under = not_met(&goal, &caps, spend(0, Some(10.9)), true);
     assert!(matches!(under.step, Step::Continue(_)), "{under:?}");
 
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let over = not_met(&goal, &caps, spend(0, Some(11.2)), true);
     assert_eq!(over.step, Step::Pause(PauseReason::CostCap(1.0)));
 
     goal.user_prompt(spend(0, Some(11.2)), Duration::ZERO);
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let unpriced = not_met(&goal, &caps, spend(0, Some(99.0)), false);
     assert!(matches!(unpriced.step, Step::Continue(_)), "{unpriced:?}");
 
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let no_price = not_met(&goal, &caps, spend(5_000_000, None), true);
     assert!(matches!(no_price.step, Step::Continue(_)), "{no_price:?}");
+}
+
+fn minutes(n: u64) -> Duration {
+    Duration::from_secs(n * 60)
+}
+
+fn checkin_caps(first_minutes: u64) -> GoalCaps {
+    GoalCaps {
+        checkin: (first_minutes > 0).then(|| minutes(first_minutes)),
+        ..CAPS
+    }
+}
+
+fn work() -> Vec<String> {
+    vec!["monitor job-1: watching the deploy".to_string()]
+}
+
+fn check_in(due: Option<Due>) -> CheckIn {
+    match due {
+        Some(Due::CheckIn(check)) => check,
+        other => panic!("a check-in was due: {other:?}"),
+    }
+}
+
+/// An answered turn with work still running, so the goal starts waiting at `at`.
+fn answered_with_work(goal: &SessionGoal, at: Instant) {
+    assert_eq!(goal.after_turn(Some(&answer()), true, at), None);
+}
+
+fn waiting(reason: &str) -> Evaluation {
+    Evaluation::Verdict(GoalVerdict {
+        verdict: Judgment::NotMet,
+        reason: reason.into(),
+        waiting_on_user: true,
+    })
+}
+
+#[test]
+fn work_running_defers_a_pending_evaluation_until_it_is_gone() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    answered_with_work(&goal, t0);
+    let caps = checkin_caps(30);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+    assert!(goal.deferred());
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(10),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(11), true, &caps, Spend::default(), true),
+        Some(Due::Evaluate(Pending {
+            condition: "done".into()
+        }))
+    );
+    assert!(!goal.deferred());
+}
+
+#[test]
+fn check_ins_fall_due_at_30_minutes_then_60_then_every_120() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    answered_with_work(&goal, t0);
+    let caps = checkin_caps(30);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+
+    let mut last = t0;
+    for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
+        let due = last + minutes(gap);
+        assert_eq!(
+            goal.take_step(
+                &work(),
+                due - Duration::from_secs(1),
+                true,
+                &caps,
+                Spend::default(),
+                true
+            ),
+            None,
+            "not before {gap} minutes"
+        );
+        let check = check_in(goal.take_step(&work(), due, true, &caps, Spend::default(), true));
+        assert_eq!(check.work, work());
+        assert_eq!(check.condition, "done");
+        assert_eq!(check.last_idle, nth == IDLE_CHECKINS, "check-in {nth}");
+        last = due;
+    }
+    // The idle check-ins are used up: the next one that falls due is refused, at the same
+    // 120-minute spacing.
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            last + minutes(119),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            last + minutes(120),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        Some(Due::IdleExhausted)
+    );
+    // Not idle: nothing is delivered and nothing is used up.
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            last + minutes(121),
+            false,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+}
+
+#[test]
+fn without_a_check_in_interval_none_ever_falls_due() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    answered_with_work(&goal, t0);
+    let caps = checkin_caps(0);
+    for hours in [1, 24, 1000] {
+        assert_eq!(
+            goal.take_step(
+                &work(),
+                t0 + minutes(hours * 60),
+                true,
+                &caps,
+                Spend::default(),
+                true
+            ),
+            None
+        );
+    }
+    assert_eq!(goal.checkin_wait(true, t0, true, &caps), None);
+    assert!(goal.deferred(), "the evaluation stays deferred");
+}
+
+#[test]
+fn a_check_in_after_the_turn_ends_is_a_turn_end_one_and_later_ones_are_idle() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    answered_with_work(&goal, t0);
+    let caps = checkin_caps(30);
+
+    // The first look after the answered turn finds a check-in due: it is the turn's own, takes
+    // the pending evaluation with it and does not use up an idle one.
+    let check = check_in(goal.take_step(
+        &work(),
+        t0 + minutes(30),
+        false,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    assert!(!check.last_idle);
+    assert!(!goal.deferred());
+
+    // Its work is gone without a report and nothing is pending: an idle surface looks again.
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(31), false, &caps, Spend::default(), true),
+        None
+    );
+    assert!(
+        goal.take_step(&[], t0 + minutes(32), true, &caps, Spend::default(), true)
+            .is_some()
+    );
+    assert_eq!(
+        goal.take_step(&[], t0 + minutes(33), true, &caps, Spend::default(), true),
+        None
+    );
+}
+
+#[test]
+fn a_check_in_turns_own_answer_does_not_make_every_later_check_in_a_turn_end_one() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    answered_with_work(&goal, t0);
+    let caps = checkin_caps(30);
+    // Looked at once, as an idle surface does after every turn.
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+
+    let mut at = t0;
+    for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
+        at += minutes(gap);
+        let check = check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
+        assert_eq!(check.last_idle, nth == 3);
+        // The check-in turn answers with the work still running.
+        answered_with_work(&goal, at);
+        assert!(goal.deferred());
+        assert_eq!(
+            goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+            None
+        );
+    }
+    at += minutes(120);
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+        Some(Due::IdleExhausted)
+    );
+
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    assert!(!goal.deferred());
+    answered_with_work(&goal, at);
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+        None
+    );
+    let check = check_in(goal.take_step(
+        &work(),
+        at + minutes(30),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    assert!(!check.last_idle, "the idle count started over");
+}
+
+#[test]
+fn a_surface_that_waits_without_looking_first_still_gets_idle_check_ins() {
+    // Headless blocks on the work right after a turn, before any take_step.
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let caps = checkin_caps(30);
+    let mut at = Instant::now();
+    answered_with_work(&goal, at);
+    for (gap, nth) in [(30, 1), (60, 2), (120, 3)] {
+        assert!(goal.checkin_wait(true, at, false, &caps).is_some());
+        at += minutes(gap);
+        let check = check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
+        assert_eq!(check.last_idle, nth == 3, "check-in {nth}");
+        answered_with_work(&goal, at);
+    }
+    assert!(goal.checkin_wait(true, at, false, &caps).is_some());
+    at += minutes(120);
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, Spend::default(), true),
+        Some(Due::IdleExhausted)
+    );
+}
+
+#[test]
+fn a_due_check_in_over_the_cost_cap_pauses_and_is_inactive_without_a_price() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", spend(0, Some(10.0)), Duration::ZERO)
+        .unwrap();
+    let t0 = Instant::now();
+    let caps = GoalCaps {
+        max_cost_usd: Some(1.0),
+        ..checkin_caps(30)
+    };
+    answered_with_work(&goal, t0);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, spend(0, Some(10.0)), true),
+        None
+    );
+    let at = t0 + minutes(30);
+    check_in(goal.take_step(&work(), at, true, &caps, spend(0, Some(10.9)), true));
+    let at = at + minutes(60);
+    check_in(goal.take_step(&work(), at, true, &caps, spend(0, Some(11.2)), false));
+    let at = at + minutes(120);
+    assert_eq!(
+        goal.take_step(&work(), at, true, &caps, spend(0, Some(11.2)), true),
+        Some(Due::Paused(PauseReason::CostCap(1.0)))
+    );
+}
+
+#[test]
+fn a_due_check_in_at_the_turn_cap_pauses_and_below_it_counts_as_a_turn() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    let caps = GoalCaps {
+        max_turns: 2,
+        ..checkin_caps(30)
+    };
+    answered_with_work(&goal, t0);
+    assert_eq!(
+        goal.take_step(&work(), t0, true, &caps, Spend::default(), true),
+        None
+    );
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(30),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(90),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(210),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        Some(Due::Paused(PauseReason::TurnCap(2)))
+    );
+    let status = goal.status(Spend::default()).active.unwrap();
+    assert_eq!(status.paused, Some(PauseReason::TurnCap(2)));
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(400),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+
+    // A user prompt starts a fresh stretch with its own turns.
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    answered_with_work(&goal, t0 + minutes(500));
+    assert_eq!(
+        goal.take_step(
+            &work(),
+            t0 + minutes(500),
+            true,
+            &caps,
+            Spend::default(),
+            true
+        ),
+        None
+    );
+    check_in(goal.take_step(
+        &work(),
+        t0 + minutes(530),
+        true,
+        &caps,
+        Spend::default(),
+        true,
+    ));
+}
+
+#[test]
+fn the_check_in_wait_counts_down_and_is_none_when_off_or_used_up() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    let t0 = Instant::now();
+    let caps = checkin_caps(30);
+    assert_eq!(
+        goal.checkin_wait(true, t0, true, &caps),
+        None,
+        "no wait yet"
+    );
+    answered_with_work(&goal, t0);
+    assert_eq!(goal.checkin_wait(true, t0, true, &caps), Some(minutes(30)));
+    assert_eq!(
+        goal.checkin_wait(true, t0 + minutes(10), true, &caps),
+        Some(minutes(20))
+    );
+    assert_eq!(
+        goal.checkin_wait(true, t0 + minutes(45), true, &caps),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(goal.checkin_wait(false, t0, true, &caps), None, "no work");
+    assert_eq!(
+        goal.checkin_wait(true, t0, true, &checkin_caps(0)),
+        None,
+        "check-ins are off"
+    );
+
+    let mut at = t0;
+    for gap in [30, 60, 120] {
+        at += minutes(gap);
+        check_in(goal.take_step(&work(), at, true, &caps, Spend::default(), true));
+    }
+    assert_eq!(goal.checkin_wait(true, at, true, &caps), None, "cap used");
+    assert_eq!(
+        goal.checkin_wait(true, at, false, &caps),
+        Some(minutes(120)),
+        "headless asks without the cap"
+    );
+}
+
+#[test]
+fn reads_polls_and_monitor_starts_are_not_progress_but_other_calls_are() {
+    for idle_tool in ["job_output", "read", "monitor"] {
+        let f = Fixture::new();
+        let goal = f.goal();
+        goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+        for i in 0..NO_PROGRESS_LIMIT - 1 {
+            f.root_tool(idle_tool);
+            let applied = turn_then_not_met(&goal, &CAPS);
+            assert!(matches!(applied.step, Step::Continue(_)), "{idle_tool} {i}");
+        }
+        f.root_tool(idle_tool);
+        assert_eq!(
+            turn_then_not_met(&goal, &CAPS).step,
+            Step::Pause(PauseReason::NoProgress(NO_PROGRESS_LIMIT)),
+            "{idle_tool}"
+        );
+    }
+    for acting_tool in ["shell", "edit", "some_mcp_tool"] {
+        let f = Fixture::new();
+        let goal = f.goal();
+        goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+        for _ in 0..NO_PROGRESS_LIMIT - 1 {
+            f.root_tool("job_output");
+            turn_then_not_met(&goal, &CAPS);
+        }
+        f.root_tool(acting_tool);
+        assert!(
+            matches!(turn_then_not_met(&goal, &CAPS).step, Step::Continue(_)),
+            "{acting_tool} resets the count"
+        );
+    }
+}
+
+#[test]
+fn not_met_waiting_on_the_user_pauses_without_a_turn_and_the_flag_is_ignored_otherwise() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    f.root_call();
+    goal.turn_ended(Some(&answer()));
+    assert!(goal.step(false).is_some());
+    let applied = goal
+        .apply(
+            waiting("the force push was denied"),
+            Spend::default(),
+            Duration::ZERO,
+            &CAPS,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        applied.step,
+        Step::Pause(PauseReason::WaitingOnUser(
+            "the force push was denied".into()
+        ))
+    );
+    assert_eq!(applied.judgment, Some(Judgment::NotMet));
+    assert_eq!(applied.evaluations, 1);
+    let status = goal.status(Spend::default()).active.unwrap();
+    assert_eq!(
+        status.last_reason.as_deref(),
+        Some("the force push was denied")
+    );
+    assert_eq!(
+        status.paused.unwrap().notice(),
+        "Goal paused: it is waiting for you (the force push was denied). Send a message to continue."
+    );
+    assert!(goal.step(false).is_none());
+
+    // It took no turn from the stretch: after a prompt the cap has all its turns.
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    let caps = GoalCaps {
+        max_turns: 1,
+        ..CAPS
+    };
+    f.root_call();
+    assert!(matches!(
+        turn_then_not_met(&goal, &caps).step,
+        Step::Continue(_)
+    ));
+
+    let met = Evaluation::Verdict(GoalVerdict {
+        verdict: Judgment::Met,
+        reason: "done".into(),
+        waiting_on_user: true,
+    });
+    goal.turn_ended(Some(&answer()));
+    let applied = goal
+        .apply(met, Spend::default(), Duration::ZERO, &CAPS, true)
+        .unwrap();
+    assert!(matches!(applied.step, Step::Done { .. }), "{applied:?}");
+}
+
+#[test]
+fn a_long_waiting_reason_is_cut_in_the_pause_notice() {
+    let notice = PauseReason::WaitingOnUser("x".repeat(500)).notice();
+    assert!(notice.len() < 300, "{}", notice.len());
+    assert!(
+        notice.starts_with("Goal paused: it is waiting for you ("),
+        "{notice}"
+    );
+}
+
+#[test]
+fn the_check_in_note_lists_the_work_and_says_when_idle_check_ins_stop() {
+    let check = CheckIn {
+        condition: "the deploy is green".into(),
+        work: vec!["agent a1".into(), "monitor job-1: watching".into()],
+        last_idle: false,
+    };
+    let note = checkin_prompt_text(&check);
+    assert!(
+        note.starts_with("[Harness note, not the user's words:"),
+        "{note}"
+    );
+    assert!(
+        note.contains("\n- agent a1\n- monitor job-1: watching\n"),
+        "{note}"
+    );
+    assert!(note.ends_with("Goal: the deploy is green"), "{note}");
+    assert!(!note.contains("paused until"), "{note}");
+    let last = checkin_prompt_text(&CheckIn {
+        last_idle: true,
+        ..check
+    });
+    assert!(
+        last.contains("Idle check-ins are paused until the user sends a message."),
+        "{last}"
+    );
 }
 
 #[test]
@@ -456,20 +1055,20 @@ fn the_token_cap_fires_for_an_unpriced_model_and_resets_with_a_user_prompt() {
     goal.set("done", spend(500, None), Duration::ZERO).unwrap();
 
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let at = not_met(&goal, &caps, spend(1_500, None), false);
     assert!(matches!(at.step, Step::Continue(_)), "{at:?}");
 
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let over = not_met(&goal, &caps, spend(1_501, None), false);
     assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
     assert!(goal.is_active(), "the goal stays set");
-    assert!(goal.next_step(false).is_none());
+    assert!(goal.step(false).is_none());
 
     goal.user_prompt(spend(1_501, None), Duration::ZERO);
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let fresh = not_met(&goal, &caps, spend(2_000, None), false);
     assert!(matches!(fresh.step, Step::Continue(_)), "{fresh:?}");
 }
@@ -496,7 +1095,7 @@ fn the_token_cap_is_measured_on_the_stretchs_input_and_output_tokens_unpriced() 
         ..Spend::default()
     };
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let over = not_met(&goal, &caps, now, false);
     assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
 }
@@ -542,7 +1141,7 @@ fn usage_pause_time_inside_the_stretch_does_not_count_toward_the_duration_cap() 
         .unwrap();
     std::thread::sleep(Duration::from_millis(150));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::NotMet, "more to do"),
@@ -570,7 +1169,7 @@ fn usage_pause_time_from_before_the_stretch_counts_for_nothing_toward_the_durati
         .unwrap();
     std::thread::sleep(Duration::from_millis(150));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::NotMet, "more to do"),
@@ -595,16 +1194,17 @@ fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
         max_cost_usd: Some(1.0),
         max_tokens: Some(10),
         max_duration: Some(Duration::from_millis(1)),
+        ..CAPS
     };
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let first = not_met(&goal, &CAPS, spend(1_000, Some(5.0)), true);
     assert!(matches!(first.step, Step::Continue(_)), "{first:?}");
 
     std::thread::sleep(Duration::from_millis(5));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let turns = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
     assert_eq!(turns.step, Step::Pause(PauseReason::TurnCap(1)));
 
@@ -616,21 +1216,21 @@ fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     std::thread::sleep(Duration::from_millis(5));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let cost = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
     assert_eq!(cost.step, Step::Pause(PauseReason::CostCap(1.0)));
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
     std::thread::sleep(Duration::from_millis(5));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let tokens = not_met(&goal, &caps, spend(1_000, None), true);
     assert_eq!(tokens.step, Step::Pause(PauseReason::TokenCap(10)));
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
     std::thread::sleep(Duration::from_millis(5));
     f.root_call();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let duration = not_met(&goal, &caps, Spend::default(), true);
     assert_eq!(
         duration.step,
@@ -685,16 +1285,16 @@ fn a_tool_call_in_an_earlier_turn_of_the_stretch_still_counts_as_progress() {
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     for _ in 0..7 {
-        goal.after_turn(Some(&answer()));
-        assert!(goal.next_step(false).is_some());
+        goal.turn_ended(Some(&answer()));
+        assert!(goal.step(false).is_some());
         not_met(&goal, &CAPS, Spend::default(), true);
     }
     for _ in 0..3 {
         f.root_call();
-        goal.after_turn(Some(&answer()));
+        goal.turn_ended(Some(&answer()));
         // A news turn with no call of its own runs before the evaluation.
-        goal.after_turn(Some(&answer()));
-        assert!(goal.next_step(false).is_some());
+        goal.turn_ended(Some(&answer()));
+        assert!(goal.step(false).is_some());
         assert!(matches!(
             not_met(&goal, &CAPS, Spend::default(), true).step,
             Step::Continue(_)
@@ -726,7 +1326,7 @@ fn an_evaluator_that_gave_no_verdict_pauses_the_goal() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default(), Duration::ZERO).unwrap();
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     let applied = goal
         .apply(
             Evaluation::Failed("no answer within 60 seconds".into()),
@@ -742,7 +1342,7 @@ fn an_evaluator_that_gave_no_verdict_pauses_the_goal() {
         applied.step,
         Step::Pause(PauseReason::EvaluatorFailed(_))
     ));
-    assert!(goal.next_step(false).is_none());
+    assert!(goal.step(false).is_none());
     assert!(goal.is_active());
 }
 
@@ -762,7 +1362,7 @@ fn the_goal_file_is_owner_only_json_that_a_reopened_session_restores_with_fresh_
         let mode = std::fs::metadata(f.file()).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{mode:o}");
     }
-    goal.after_turn(Some(&answer()));
+    goal.turn_ended(Some(&answer()));
     goal.apply(
         verdict(Judgment::NotMet, "still red"),
         Spend::default(),
@@ -770,7 +1370,7 @@ fn the_goal_file_is_owner_only_json_that_a_reopened_session_restores_with_fresh_
         &CAPS,
         true,
     );
-    goal.after_turn(None);
+    goal.turn_ended(None);
 
     let reopened = SessionGoal::load(f.dir.path(), f.ledger.clone());
     let status = reopened.status(Spend::default()).active.unwrap();
@@ -1018,7 +1618,8 @@ async fn the_evaluator_reads_met_not_met_and_impossible() {
             judged.evaluation,
             Evaluation::Verdict(GoalVerdict {
                 verdict: judgment,
-                reason: "because".into()
+                reason: "because".into(),
+                waiting_on_user: false,
             }),
             "{word}"
         );
@@ -1206,7 +1807,7 @@ async fn a_goal_turn_is_a_harness_note_and_adds_no_user_message() {
     });
     runtime.set_goal("the file exists").unwrap();
     runtime.goal_turn_ended(Some(&answer()));
-    let pending = runtime.next_goal_step().unwrap();
+    let pending = evaluation_due(&runtime).unwrap();
     let applied = runtime.evaluate_goal(&pending).await.unwrap();
     let Step::Continue(next) = applied.step else {
         panic!("not met continues: {applied:?}");
@@ -1300,7 +1901,7 @@ async fn an_evaluation_is_debited_to_the_root_and_tallied_for_the_session() {
     runtime.set_goal("the file exists").unwrap();
     let before = runtime.tree_spend();
     runtime.goal_turn_ended(Some(&answer()));
-    let pending = runtime.next_goal_step().unwrap();
+    let pending = evaluation_due(&runtime).unwrap();
     let applied = runtime.evaluate_goal(&pending).await.unwrap();
     assert_eq!(evaluator.request_count(), 1);
     assert!(matches!(
@@ -1353,13 +1954,13 @@ async fn an_unavailable_evaluator_model_pauses_the_goal_and_is_recorded() {
     );
     runtime.set_goal("done").unwrap();
     runtime.goal_turn_ended(Some(&answer()));
-    let pending = runtime.next_goal_step().unwrap();
+    let pending = evaluation_due(&runtime).unwrap();
     let applied = runtime.evaluate_goal(&pending).await.unwrap();
     assert!(matches!(
         applied.step,
         Step::Pause(PauseReason::EvaluatorFailed(_))
     ));
-    assert!(runtime.next_goal_step().is_none());
+    assert!(evaluation_due(&runtime).is_none());
     assert_eq!(
         goal_records(&runtime),
         [(GoalEvent::Set, 0), (GoalEvent::Paused, 0)]
@@ -1510,10 +2111,10 @@ async fn an_afk_pause_stops_the_next_step_and_is_recorded_with_its_reason() {
     let (runtime, _) = runtime_with_evaluator(&world, Vec::new(), ScannerStart::default());
     runtime.set_goal("done").unwrap();
     runtime.goal_turn_ended(Some(&answer()));
-    assert!(runtime.next_goal_step().is_some());
+    assert!(evaluation_due(&runtime).is_some());
 
     assert!(runtime.pause_goal(PauseReason::Blocked("breaker tripped".into())));
-    assert!(runtime.next_goal_step().is_none());
+    assert!(evaluation_due(&runtime).is_none());
     let records = runtime.session.ledger.read().unwrap();
     let reason = records.iter().rev().find_map(|e| match &e.record {
         Record::Goal {
@@ -1557,7 +2158,7 @@ async fn an_afk_pause_stops_the_next_step_and_is_recorded_with_its_reason() {
         .unwrap()
         .paused;
     assert_eq!(paused, Some(PauseReason::AfkStopped));
-    assert!(runtime.next_goal_step().is_none());
+    assert!(evaluation_due(&runtime).is_none());
     runtime.state.afk_review();
     runtime.goal_user_prompt();
     assert!(
@@ -1577,4 +2178,178 @@ async fn pausing_with_no_goal_does_nothing() {
     let world = World::new();
     let (runtime, _) = runtime_with_evaluator(&world, Vec::new(), ScannerStart::default());
     assert!(!runtime.pause_goal(PauseReason::AfkStopped));
+}
+
+fn submit_waiting(reason: &str) -> MockTurn {
+    MockTurn::tool_call(
+        "s1",
+        "submit",
+        json!({"verdict": "not_met", "reason": reason, "waiting_on_user": true}),
+    )
+}
+
+#[tokio::test]
+async fn the_waiting_on_user_flag_is_optional_in_the_evaluators_answer() {
+    let (_, evaluator) = evaluator_on(vec![
+        submit("not_met", "more to do"),
+        submit_waiting("needs approval"),
+    ]);
+    let plain = evaluator.evaluate("done", "[User]\nhi").await;
+    assert_eq!(
+        plain.evaluation,
+        Evaluation::Verdict(GoalVerdict {
+            verdict: Judgment::NotMet,
+            reason: "more to do".into(),
+            waiting_on_user: false,
+        })
+    );
+    let flagged = evaluator.evaluate("done", "[User]\nhi").await;
+    assert_eq!(
+        flagged.evaluation,
+        Evaluation::Verdict(GoalVerdict {
+            verdict: Judgment::NotMet,
+            reason: "needs approval".into(),
+            waiting_on_user: true,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_goal_waiting_on_the_user_pauses_and_records_why() {
+    let world = World::new();
+    let (runtime, _) = runtime_with_evaluator(
+        &world,
+        vec![submit_waiting("the force push was denied")],
+        ScannerStart::default(),
+    );
+    runtime.set_goal("the branch is pushed").unwrap();
+    runtime.goal_turn_ended(Some(&answer()));
+    let pending = evaluation_due(&runtime).unwrap();
+    let applied = runtime.evaluate_goal(&pending).await.unwrap();
+    assert_eq!(
+        applied.step,
+        Step::Pause(PauseReason::WaitingOnUser(
+            "the force push was denied".into()
+        ))
+    );
+    assert!(evaluation_due(&runtime).is_none());
+    assert_eq!(
+        goal_records(&runtime),
+        [(GoalEvent::Set, 0), (GoalEvent::Paused, 1)]
+    );
+    assert_eq!(
+        goal_pause_reasons(&runtime),
+        [Some(
+            "it is waiting for you (the force push was denied)".to_string()
+        )]
+    );
+}
+
+fn goal_pause_reasons(runtime: &fontaine_core::agent::AgentRuntime) -> Vec<Option<String>> {
+    runtime
+        .session
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry.record {
+            Record::Goal {
+                event: GoalEvent::Paused,
+                reason,
+                ..
+            } => Some(reason),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A monitor on a process that outlives the test body, the way a watch outlives a turn.
+#[cfg(unix)]
+fn start_monitor(runtime: &fontaine_core::agent::AgentRuntime) -> String {
+    let process = rig_tools::process::Launcher::default()
+        .spawn(
+            "sh",
+            ["-c", "sleep 30"],
+            rig_tools::process::Spawn::default(),
+        )
+        .expect("sh starts");
+    runtime
+        .jobs()
+        .start(
+            fontaine_tools::jobs::Start {
+                command: "sleep 30".to_owned(),
+                background: true,
+                monitor: Some(fontaine_tools::jobs::MonitorSpec {
+                    description: "watching the deploy".to_owned(),
+                    timeout: None,
+                }),
+            },
+            process,
+        )
+        .expect("the monitor starts")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_running_monitor_defers_the_evaluation_and_is_named_in_the_check_in() {
+    let world = World::new();
+    let (runtime, _) = runtime_with_evaluator(&world, Vec::new(), ScannerStart::default());
+    runtime.set_goal("the deploy is green").unwrap();
+    let id = start_monitor(&runtime);
+
+    runtime.goal_turn_ended(Some(&answer()));
+    assert!(runtime.goal_deferred());
+    assert!(runtime.next_goal_step(true).is_none(), "the monitor defers");
+    assert_eq!(
+        runtime.background_work(),
+        [format!("monitor {id}: watching the deploy")]
+    );
+
+    let later = Instant::now() + minutes(31);
+    let Some(Due::CheckIn(check)) = runtime.next_goal_step_at(true, later) else {
+        panic!("a check-in was due after 31 minutes");
+    };
+    let prompt = runtime.checkin_prompt(&check);
+    assert!(
+        prompt.contains(&format!("- monitor {id}: watching the deploy")),
+        "{prompt}"
+    );
+    assert!(prompt.ends_with("Goal: the deploy is green"), "{prompt}");
+
+    runtime.jobs().terminate_all().await;
+    assert!(runtime.background_work().is_empty());
+    assert!(
+        matches!(runtime.next_goal_step(true), Some(Due::Evaluate(_))),
+        "with the monitor gone the deferred evaluation is due"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_check_in_at_the_turn_cap_pauses_the_goal_and_is_recorded_with_its_reason() {
+    let world = World::new();
+    world.user_file("[goal]\nmax_turns = 1\n");
+    let (runtime, _) = runtime_with_evaluator(
+        &world,
+        vec![submit("not_met", "still running")],
+        ScannerStart::default(),
+    );
+    runtime.set_goal("the deploy is green").unwrap();
+    runtime.goal_turn_ended(Some(&answer()));
+    let pending = evaluation_due(&runtime).unwrap();
+    let applied = runtime.evaluate_goal(&pending).await.unwrap();
+    assert!(matches!(applied.step, Step::Continue(_)), "{applied:?}");
+
+    start_monitor(&runtime);
+    runtime.goal_turn_ended(Some(&answer()));
+    let later = Instant::now() + minutes(31);
+    assert_eq!(
+        runtime.next_goal_step_at(true, later),
+        Some(Due::Paused(PauseReason::TurnCap(1)))
+    );
+    assert_eq!(
+        goal_pause_reasons(&runtime),
+        [Some("1 goal turn ran without it being met".to_string())]
+    );
+    runtime.jobs().terminate_all().await;
 }

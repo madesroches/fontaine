@@ -2047,10 +2047,12 @@ fn the_goal_limits_default_and_only_the_user_scopes_set_them() {
     let w = World::new();
     let goal = w.load().unwrap().goal;
     assert_eq!((goal.max_turns, goal.max_cost_usd), (50, None));
+    assert_eq!(goal.checkin_minutes, 30);
 
-    w.user_file("[goal]\nmax_turns = 10\nmax_cost_usd = 2.5\n");
+    w.user_file("[goal]\nmax_turns = 10\nmax_cost_usd = 2.5\ncheckin_minutes = 5\n");
     let goal = w.load().unwrap().goal;
     assert_eq!((goal.max_turns, goal.max_cost_usd), (10, Some(2.5)));
+    assert_eq!(goal.checkin_minutes, 5);
     let cli = w.cli_file("[goal]\nmax_turns = 3\n");
     let goal = w.load_with_settings(&cli).unwrap().goal;
     assert_eq!((goal.max_turns, goal.max_cost_usd), (3, Some(2.5)));
@@ -2061,6 +2063,8 @@ fn the_goal_limits_default_and_only_the_user_scopes_set_them() {
         "[goal]\nmax_cost_usd = 5.0\n",
         "[goal]\nmax_tokens = 1\n",
         "[goal]\nmax_duration_secs = 2592000\n",
+        "[goal]\ncheckin_minutes = 0\n",
+        "[goal]\ncheckin_minutes = 1440\n",
     ] {
         user_ok(text);
     }
@@ -2094,6 +2098,7 @@ fn a_repository_cannot_lengthen_an_unattended_goal_run() {
             "[goal]\nmax_cost_usd = 1000.0\n",
             "[goal]\nmax_tokens = 1000000000\n",
             "[goal]\nmax_duration_secs = 86400\n",
+            "[goal]\ncheckin_minutes = 1440\n",
         ] {
             let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
             assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
@@ -2118,6 +2123,7 @@ fn the_goal_limits_are_validated() {
             "[goal]\nmax_duration_secs = 2592001\n",
             "goal.max_duration_secs",
         ),
+        ("[goal]\ncheckin_minutes = 1441\n", "goal.checkin_minutes"),
     ] {
         let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
         assert!(err.to_string().contains(key), "{text}: {err}");

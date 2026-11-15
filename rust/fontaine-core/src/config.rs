@@ -1238,6 +1238,7 @@ pub struct GoalSection {
     pub max_cost_usd: Option<f64>,
     pub max_tokens: Option<u64>,
     pub max_duration_secs: Option<u64>,
+    pub checkin_minutes: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -2155,6 +2156,14 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 &format!("must be between 1 and {MAX_GOAL_DURATION_SECS}"),
             );
         }
+        if let Some(v) = g.checkin_minutes
+            && v > MAX_GOAL_CHECKIN_MINUTES
+        {
+            return bad(
+                "goal.checkin_minutes",
+                &format!("must be between 0 and {MAX_GOAL_CHECKIN_MINUTES}"),
+            );
+        }
     }
     if let Some(r) = &s.retry {
         if let Some(v) = r.max_retries
@@ -2755,6 +2764,8 @@ pub const DEFAULT_GOAL_MAX_TURNS: u32 = 50;
 const MAX_GOAL_TURNS: u32 = 1000;
 /// 30 days; a bound that catches a typo, not a limit anyone needs.
 const MAX_GOAL_DURATION_SECS: u64 = 30 * 86_400;
+const DEFAULT_GOAL_CHECKIN_MINUTES: u32 = 30;
+const MAX_GOAL_CHECKIN_MINUTES: u32 = 1440;
 const MAX_RETRY_COUNT: u32 = 10;
 /// A full day; keeps `Instant + Duration` far from overflow.
 const MAX_SHELL_TIMEOUT_SECS: u64 = 86_400;
@@ -2824,6 +2835,9 @@ pub struct Goal {
     pub max_tokens: Option<u64>,
     /// Wall-clock seconds of one unattended stretch; unset is no bound.
     pub max_duration_secs: Option<u64>,
+    /// Minutes background work keeps the goal waiting before the model is asked to check on it;
+    /// 0 turns the check-ins off, and the work still defers evaluation.
+    pub checkin_minutes: u32,
 }
 
 /// The merged `[retry]` section: how a failed model call is tried again.
@@ -3140,6 +3154,7 @@ impl Config {
                 max_cost_usd: None,
                 max_tokens: None,
                 max_duration_secs: None,
+                checkin_minutes: DEFAULT_GOAL_CHECKIN_MINUTES,
             },
             retry: Retry::default(),
             afk: Afk {
@@ -3436,6 +3451,9 @@ impl Config {
             }
             if let Some(v) = g.max_duration_secs {
                 self.goal.max_duration_secs = Some(v);
+            }
+            if let Some(v) = g.checkin_minutes {
+                self.goal.checkin_minutes = v;
             }
         }
         if let Some(r) = &s.retry {

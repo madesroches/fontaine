@@ -10,7 +10,6 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
 use fontaine_core::config::HookEvent;
 use fontaine_core::gate::AgentViewEvent;
-use fontaine_core::goal::Continue;
 use fontaine_core::ledger::{MessageOrigin, Record, RemoteSender};
 use fontaine_core::model_roles::Tried;
 use fontaine_core::quota::UsageRole;
@@ -490,18 +489,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.harness_turn_tail(runtime, launch_dir, end).await
     }
 
-    /// A turn on a goal the evaluator found not met yet. A harness note, never the user
-    /// speaking; what the human queued meanwhile is handled as after a scheduled turn.
+    /// A turn on a goal the evaluator found not met yet, or a check-in on background work.
+    /// `prompt` is a harness note, never the user speaking;
+    /// what the human queued meanwhile is handled as after a scheduled turn.
     pub(crate) async fn goal_turn(
         &mut self,
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
-        next: Continue,
+        prompt: String,
     ) -> std::ops::ControlFlow<()> {
         if self.quitting() {
             return std::ops::ControlFlow::Break(());
         }
-        let prompt = runtime.goal_prompt(&next).await;
         let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
             None => {

@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 use fontaine_agents::budget::{Budget, Spend};
 use fontaine_guardian::EXTRACTOR_RETRIES;
 use fontaine_guardian::prompt_builder::neutralize;
+use fontaine_tools::descriptor;
 use fontaine_tools::display::compact_count;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::{lock, lock_recovering};
+use fontaine_tools::risk::RiskClass;
 use rig_agent::agent::{AgentHook, HookContext, OutcomeAction, OutcomeEvent};
 use rig_agent::completion::StructuredOutputError;
 use rig_agent::extractor::ExtractorBuilder;
@@ -41,8 +43,15 @@ pub const GOAL_FILE: &str = "goal.json";
 /// Claude Code's limit on a condition.
 pub const MAX_CONDITION_CHARS: usize = 4_000;
 
-/// Consecutive *not met* verdicts after turns that made no tool call before the goal pauses.
+/// Consecutive *not met* verdicts after turns that made no progress (no call other than a read
+/// or a monitor start) before the goal pauses.
 pub const NO_PROGRESS_LIMIT: u32 = 8;
+
+/// Check-ins between two user prompts that arrive while the session sits idle.
+pub const IDLE_CHECKINS: u32 = 3;
+
+/// The longest a check-in interval grows, as a multiple of the first.
+const CHECKIN_BACKOFF_CAP: u32 = 4;
 
 const TARGET: &str = "fontaine::telemetry";
 const EVALUATOR_PROMPT: &str = include_str!("../prompts/goal_evaluator.md");
@@ -62,6 +71,9 @@ pub struct GoalCaps {
     pub max_cost_usd: Option<f64>,
     pub max_tokens: Option<u64>,
     pub max_duration: Option<Duration>,
+    /// How long background work keeps the goal waiting before the first check-in; `None` is no
+    /// check-ins.
+    pub checkin: Option<Duration>,
 }
 
 impl From<&config::Goal> for GoalCaps {
@@ -71,6 +83,8 @@ impl From<&config::Goal> for GoalCaps {
             max_cost_usd: goal.max_cost_usd,
             max_tokens: goal.max_tokens,
             max_duration: goal.max_duration_secs.map(Duration::from_secs),
+            checkin: (goal.checkin_minutes > 0)
+                .then(|| Duration::from_secs(u64::from(goal.checkin_minutes) * 60)),
         }
     }
 }
@@ -140,7 +154,15 @@ pub enum PauseReason {
     Blocked(String),
     /// AFK mode: the temperature ceiling stopped the session.
     AfkStopped,
+    /// The evaluator found the next step needs the user.
+    WaitingOnUser(String),
+    /// Background work still runs and nobody is there to check on it: a headless run's check-ins
+    /// are used up, or it does not wait for jobs.
+    BackgroundWait,
 }
+
+/// How much of the evaluator's reason a pause notice shows.
+const WAITING_REASON_CHARS: usize = 200;
 
 impl fmt::Display for PauseReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -160,7 +182,7 @@ impl fmt::Display for PauseReason {
             PauseReason::NoProgress(n) => {
                 write!(
                     f,
-                    "{n} turns in a row made no tool call and it is still not met"
+                    "{n} turns in a row made no call other than reads and monitor starts and it is still not met"
                 )
             }
             PauseReason::TurnFailed(why) => write!(f, "the last turn did not finish ({why})"),
@@ -171,6 +193,16 @@ impl fmt::Display for PauseReason {
             PauseReason::Blocked(why) => f.write_str(why),
             PauseReason::AfkStopped => {
                 f.write_str("the AFK temperature ceiling stopped the session")
+            }
+            PauseReason::WaitingOnUser(reason) => {
+                write!(
+                    f,
+                    "it is waiting for you ({})",
+                    cut(reason, WAITING_REASON_CHARS)
+                )
+            }
+            PauseReason::BackgroundWait => {
+                f.write_str("background work is still running and the run cannot wait on it")
             }
         }
     }
@@ -263,6 +295,19 @@ struct ActiveGoal {
     /// A turn ended with an answer and has not been evaluated yet.
     pending: bool,
     paused: Option<PauseReason>,
+    /// Background work is keeping the goal from being evaluated.
+    wait: Option<Wait>,
+    /// A turn answered and nothing has looked at the goal since, so a check-in due now is the
+    /// turn's own rather than an idle one.
+    turn_end: bool,
+}
+
+/// How long background work has kept the goal waiting.
+#[derive(Clone, Copy, Debug)]
+struct Wait {
+    /// When the deferral started, then when the last check-in was delivered.
+    since: Instant,
+    checkins: u32,
 }
 
 /// What one unattended stretch has used; the user sending a prompt starts a new one.
@@ -271,6 +316,8 @@ struct Stretch {
     /// Goal turns started.
     turns: u32,
     idle_verdicts: u32,
+    /// Check-ins delivered while the session sat idle.
+    idle_checkins: u32,
     spend_base: Spend,
     started: Instant,
     /// The session's total usage-pause time when the stretch began; waits for a usage window
@@ -346,6 +393,27 @@ pub struct Pending {
     pub condition: String,
 }
 
+/// A check-in on background work, instead of an evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckIn {
+    pub condition: String,
+    /// One line per running subagent, shell and monitor.
+    pub work: Vec<String>,
+    /// The last check-in the session delivers while idle until the user sends a prompt.
+    pub last_idle: bool,
+}
+
+/// What a goal needs next.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Due {
+    Evaluate(Pending),
+    CheckIn(CheckIn),
+    /// A check-in is due while idle, but the idle ones are used up.
+    IdleExhausted,
+    /// A due check-in falls at the turn cap or past the cost cap: the goal is now paused.
+    Paused(PauseReason),
+}
+
 /// What a goal turn is told: the evaluator's reason and the condition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Continue {
@@ -385,6 +453,10 @@ pub struct GoalVerdict {
     pub verdict: Judgment,
     /// What remains, in at most a few sentences.
     pub reason: String,
+    /// true only with not_met, when the next step needs the user: an approval, a decision, an
+    /// answer, or a permission the session was denied.
+    #[serde(default)]
+    pub waiting_on_user: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -473,12 +545,20 @@ impl SessionGoal {
         lock_recovering(&self.warning).take()
     }
 
-    fn root_actions(&self) -> usize {
+    /// Root-agent actions that advance a goal. A read, a `job_output` poll and a monitor start do
+    /// not: a model blocked on the user can do all three forever. A tool without a built-in
+    /// descriptor, such as an MCP tool, counts.
+    fn progress_actions(&self) -> usize {
         self.ledger
             .view()
             .actions
             .iter()
             .filter(|action| action.agent == ROOT_AGENT)
+            .filter(|action| {
+                action.tool != "monitor"
+                    && !descriptor::find(&action.tool)
+                        .is_some_and(|d| d.risk == RiskClass::ReadOnly)
+            })
             .count()
     }
 
@@ -489,17 +569,20 @@ impl SessionGoal {
             evaluations: 0,
             last_reason: None,
             spend_base: base,
-            calls_seen: self.root_actions(),
+            calls_seen: self.progress_actions(),
             made_call: false,
             stretch: Stretch {
                 turns: 0,
                 idle_verdicts: 0,
+                idle_checkins: 0,
                 spend_base: base,
                 started: Instant::now(),
                 paused_base: paused_now,
             },
             pending: false,
             paused: None,
+            wait: None,
+            turn_end: false,
         }
     }
 
@@ -569,9 +652,16 @@ impl SessionGoal {
         lock(&self.state, "goal").active.is_some()
     }
 
-    /// A turn ended: `None` is an interrupted one. Returns the pause this caused, if any.
-    pub fn after_turn(&self, end: Option<&TurnOutcome>) -> Option<PauseReason> {
-        let calls = self.root_actions();
+    /// A turn ended: `None` is an interrupted one. `work_running` says background work is still
+    /// going, which starts the goal's wait now: a surface may block on that work before it
+    /// ever looks at the goal. Returns the pause this caused, if any.
+    pub fn after_turn(
+        &self,
+        end: Option<&TurnOutcome>,
+        work_running: bool,
+        now: Instant,
+    ) -> Option<PauseReason> {
+        let calls = self.progress_actions();
         let mut state = lock(&self.state, "goal");
         let goal = state.active.as_mut()?;
         goal.made_call |= calls > goal.calls_seen;
@@ -582,6 +672,13 @@ impl SessionGoal {
         let reason = match end {
             Some(TurnOutcome::Answer(_)) => {
                 goal.pending = true;
+                goal.turn_end = true;
+                if work_running && goal.wait.is_none() {
+                    goal.wait = Some(Wait {
+                        since: now,
+                        checkins: 0,
+                    });
+                }
                 return None;
             }
             None => PauseReason::Interrupted,
@@ -628,9 +725,12 @@ impl SessionGoal {
             goal.paused = None;
             goal.pending = false;
             goal.made_call = false;
+            goal.wait = None;
+            goal.turn_end = false;
             goal.stretch = Stretch {
                 turns: 0,
                 idle_verdicts: 0,
+                idle_checkins: 0,
                 spend_base: spend_now,
                 started: Instant::now(),
                 paused_base: paused_now,
@@ -638,14 +738,115 @@ impl SessionGoal {
         }
     }
 
-    /// The evaluation due now, if one is. Nothing while a subagent still runs: the
-    /// turn that delivers its news is evaluated instead.
-    pub fn next_step(&self, agents_running: bool) -> Option<Pending> {
-        let state = lock(&self.state, "goal");
-        let goal = state.active.as_ref()?;
-        (goal.pending && goal.paused.is_none() && !agents_running).then(|| Pending {
+    /// What the goal needs now, if anything. `work` lists what still runs: while it does, an
+    /// answered turn is not evaluated, and a check-in falls due on a growing schedule instead.
+    /// `idle` says nobody is typing, so a check-in may start a turn of its own.
+    pub fn take_step(
+        &self,
+        work: &[String],
+        now: Instant,
+        idle: bool,
+        caps: &GoalCaps,
+        spend_now: Spend,
+        priced: bool,
+    ) -> Option<Due> {
+        let mut state = lock(&self.state, "goal");
+        let goal = state.active.as_mut()?;
+        let turn_end = std::mem::take(&mut goal.turn_end);
+        if goal.paused.is_some() {
+            return None;
+        }
+        if work.is_empty() {
+            // A wait with nothing pending is a check-in whose turn never ran; the work it
+            // waited on is gone, so the goal is looked at again.
+            if !(goal.pending || goal.wait.is_some() && idle) {
+                return None;
+            }
+            goal.wait = None;
+            return Some(Due::Evaluate(Pending {
+                condition: goal.condition.clone(),
+            }));
+        }
+        if goal.pending && goal.wait.is_none() {
+            goal.wait = Some(Wait {
+                since: now,
+                checkins: 0,
+            });
+        }
+        let wait = goal.wait.as_mut()?;
+        let first = caps.checkin?;
+        if now.saturating_duration_since(wait.since) < checkin_interval(first, wait.checkins) {
+            return None;
+        }
+        if !turn_end {
+            if !idle {
+                return None;
+            }
+            if goal.stretch.idle_checkins >= IDLE_CHECKINS {
+                return Some(Due::IdleExhausted);
+            }
+        }
+        let cap_reason = if goal.stretch.turns >= caps.max_turns {
+            Some(PauseReason::TurnCap(caps.max_turns))
+        } else {
+            over_cost(&goal.stretch, &spend_now, caps, priced)
+        };
+        if let Some(reason) = cap_reason {
+            goal.pending = false;
+            goal.paused = Some(reason.clone());
+            return Some(Due::Paused(reason));
+        }
+        goal.stretch.turns += 1;
+        wait.checkins += 1;
+        wait.since = now;
+        let mut last_idle = false;
+        if turn_end {
+            goal.pending = false;
+        } else {
+            goal.stretch.idle_checkins += 1;
+            last_idle = goal.stretch.idle_checkins >= IDLE_CHECKINS;
+        }
+        Some(Due::CheckIn(CheckIn {
             condition: goal.condition.clone(),
-        })
+            work: work.to_vec(),
+            last_idle,
+        }))
+    }
+
+    /// How long until the next check-in falls due, zero when it is. `None` without a wait, with
+    /// check-ins off, and, with `respect_idle_cap`, once the idle check-ins are used up. A
+    /// surface calls it as it is about to wait, which also ends the turn's own claim on a
+    /// check-in: one that falls due after the wait is an idle one.
+    pub fn checkin_wait(
+        &self,
+        work_running: bool,
+        now: Instant,
+        respect_idle_cap: bool,
+        caps: &GoalCaps,
+    ) -> Option<Duration> {
+        let mut state = lock(&self.state, "goal");
+        let goal = state.active.as_mut()?;
+        if goal.paused.is_some() {
+            return None;
+        }
+        goal.turn_end = false;
+        if !work_running {
+            return None;
+        }
+        let wait = goal.wait.as_ref()?;
+        let first = caps.checkin?;
+        if respect_idle_cap && goal.stretch.idle_checkins >= IDLE_CHECKINS {
+            return None;
+        }
+        Some((wait.since + checkin_interval(first, wait.checkins)).saturating_duration_since(now))
+    }
+
+    /// An answered turn is waiting for background work to end before it is evaluated.
+    pub fn deferred(&self) -> bool {
+        lock(&self.state, "goal")
+            .active
+            .as_ref()
+            .is_some_and(|goal| goal.paused.is_none() && goal.pending && goal.wait.is_some())
     }
 
     /// Takes an evaluation's result. `None` when the goal was cleared meanwhile.
@@ -677,7 +878,7 @@ impl SessionGoal {
         goal.last_reason = Some(verdict.reason.clone());
         let evaluations = goal.evaluations;
         let step = match verdict.verdict {
-            Judgment::NotMet => not_met(goal, &verdict.reason, spend_now, paused_now, caps, priced),
+            Judgment::NotMet => not_met(goal, &verdict, spend_now, paused_now, caps, priced),
             ended => {
                 let summary = Summary {
                     condition: goal.condition.clone(),
@@ -709,9 +910,31 @@ impl SessionGoal {
     }
 }
 
+/// The wait before a check-in: the first interval, doubled after each check-in up to 4x.
+fn checkin_interval(first: Duration, checkins: u32) -> Duration {
+    first * (1u32 << checkins.min(CHECKIN_BACKOFF_CAP.ilog2()))
+}
+
+/// The cost cap, once the stretch's spend has passed it; inactive without a price.
+fn over_cost(
+    stretch: &Stretch,
+    spend_now: &Spend,
+    caps: &GoalCaps,
+    priced: bool,
+) -> Option<PauseReason> {
+    let cap = caps.max_cost_usd.filter(|_| priced)?;
+    let spent = spend_since(spend_now, &stretch.spend_base);
+    Budget {
+        tokens: None,
+        cost_usd: Some(cap),
+    }
+    .exhausted(&spent, false)
+    .map(|_| PauseReason::CostCap(cap))
+}
+
 fn not_met(
     goal: &mut ActiveGoal,
-    reason: &str,
+    verdict: &GoalVerdict,
     spend_now: Spend,
     paused_now: Duration,
     caps: &GoalCaps,
@@ -724,16 +947,12 @@ fn not_met(
         stretch.idle_verdicts + 1
     };
     goal.made_call = false;
+    if verdict.waiting_on_user {
+        let pause = PauseReason::WaitingOnUser(verdict.reason.clone());
+        goal.paused = Some(pause.clone());
+        return Step::Pause(pause);
+    }
     let spent = spend_since(&spend_now, &stretch.spend_base);
-    let over_cost = priced
-        && caps.max_cost_usd.is_some_and(|cap| {
-            Budget {
-                tokens: None,
-                cost_usd: Some(cap),
-            }
-            .exhausted(&spent, false)
-            .is_some()
-        });
     let over_tokens = caps.max_tokens.is_some_and(|cap| {
         Budget {
             tokens: Some(cap),
@@ -751,10 +970,8 @@ fn not_met(
         Some(PauseReason::NoProgress(NO_PROGRESS_LIMIT))
     } else if stretch.turns >= caps.max_turns {
         Some(PauseReason::TurnCap(caps.max_turns))
-    } else if over_cost {
-        Some(PauseReason::CostCap(
-            caps.max_cost_usd.expect("over_cost needs a cap"),
-        ))
+    } else if let Some(cost) = over_cost(stretch, &spend_now, caps, priced) {
+        Some(cost)
     } else if over_tokens {
         Some(PauseReason::TokenCap(
             caps.max_tokens.expect("over_tokens needs a cap"),
@@ -772,7 +989,7 @@ fn not_met(
     }
     stretch.turns += 1;
     Step::Continue(Continue {
-        reason: reason.to_string(),
+        reason: verdict.reason.clone(),
         condition: goal.condition.clone(),
     })
 }
@@ -1100,6 +1317,25 @@ where
 pub fn goal_prompt_text(reason: &str, condition: &str) -> String {
     format!(
         "[Harness note, not the user's words: a goal you were given is not met yet. An evaluator checked the conversation and said: {reason}. Keep working toward the goal. This is not a new request from the user and does not widen what the user asked for.]\n\nGoal: {condition}"
+    )
+}
+
+/// The harness note of a check-in turn. The list is the model's own commands and agent ids, not
+/// tool output.
+pub fn checkin_prompt_text(check: &CheckIn) -> String {
+    let work: String = check
+        .work
+        .iter()
+        .map(|line| format!("\n- {line}"))
+        .collect();
+    let paused = if check.last_idle {
+        " Idle check-ins are paused until the user sends a message."
+    } else {
+        ""
+    };
+    format!(
+        "[Harness note, not the user's words: a goal is active and background work is still running:{work}\nRead its output; if it is progressing, end your turn and keep waiting; fix or stop anything that is stuck.{paused}]\n\nGoal: {}",
+        check.condition
     )
 }
 

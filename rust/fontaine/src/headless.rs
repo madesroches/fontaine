@@ -15,7 +15,7 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Converted, Decision, DecisionRecord};
 use fontaine_core::config::{OnUsageLimit, PermissionMode};
 use fontaine_core::gate::UsageWait;
-use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
+use fontaine_core::goal::{Due, GoalArg, PauseReason, Step, first_turn_prompt};
 use fontaine_core::ledger::{MessageOrigin, Record};
 use fontaine_core::model_roles::Tried;
 use fontaine_core::providers::ExternalLogin;
@@ -1093,12 +1093,15 @@ enum News {
 }
 
 /// Waits until a subagent has news for the main conversation, the budget is spent, or
-/// no subagent is left running.
+/// no subagent is left running. Under a goal (`goal`) it also waits on background jobs, when
+/// check-ins are on to end the wait, and returns when a check-in falls due.
 async fn wait_for_news(
     runtime: &AgentRuntime,
     over_cap: &dyn Fn() -> bool,
     host_waiting: &dyn Fn() -> bool,
+    goal: bool,
 ) -> News {
+    let waits_on_jobs = goal && runtime.config.goal.checkin_minutes > 0;
     let tree = runtime.state.agents().clone();
     let mut stops = runtime.state.afk_stop_signal();
     loop {
@@ -1121,7 +1124,11 @@ async fn wait_for_news(
         if let Some(prompt) = runtime.notification_prompt().await {
             return News::Prompt(prompt);
         }
-        if !tree.any_running() {
+        if goal && runtime.goal_checkin_wait(false) == Some(std::time::Duration::ZERO) {
+            return News::Done;
+        }
+        let jobs_running = waits_on_jobs && !runtime.jobs().running_background().is_empty();
+        if !tree.any_running() && !jobs_running {
             // A report is queued before its child is marked finished, so nothing is missed
             // between the check above and this one.
             return match runtime.notification_prompt().await {
@@ -1132,10 +1139,15 @@ async fn wait_for_news(
         if over_cap() {
             return News::OverBudget;
         }
+        let poll = std::time::Duration::from_millis(100);
+        let nap = match goal.then(|| runtime.goal_checkin_wait(false)).flatten() {
+            Some(until) => until.min(poll),
+            None => poll,
+        };
         tokio::select! {
             _ = &mut changed => {}
             Ok(()) = stops.changed() => return News::Stopped,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            _ = tokio::time::sleep(nap) => {}
         }
     }
 }
@@ -1305,12 +1317,20 @@ async fn continue_on_stop(
 /// Subagents still running when the answer comes are waited for: their reports
 /// reach the main conversation as notifications, each a turn of its own, until none is running.
 /// A run stopped by a limit kills them and drops their reports.
-async fn settle(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, mut outcome: Outcome) -> Outcome {
+async fn settle(
+    runtime: &mut AgentRuntime,
+    ctx: &mut Ctx<'_>,
+    mut outcome: Outcome,
+    goal: bool,
+) -> Outcome {
     while outcome.subtype == Subtype::Success {
         let options = ctx.options;
-        match wait_for_news(runtime, &|| over_cap(runtime, options), &|| {
-            (ctx.pending)() || ctx.cancel.is_set()
-        })
+        match wait_for_news(
+            runtime,
+            &|| over_cap(runtime, options),
+            &|| (ctx.pending)() || ctx.cancel.is_set(),
+            goal,
+        )
         .await
         {
             News::Prompt(prompt) => {
@@ -1464,15 +1484,36 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
     };
     runtime.goal_user_prompt();
     let outcome = guarded_turn(runtime, ctx, prompt).await;
-    let mut outcome = settle(runtime, ctx, outcome).await;
+    let mut outcome = settle(runtime, ctx, outcome, involved).await;
     let mut ended = None;
     while involved && outcome.subtype == Subtype::Success {
         // Blocked or stopped: no goal turn starts. The goal is paused with the reason below.
         if runtime.unattended_blocked().is_some() {
             break;
         }
-        let Some(pending) = runtime.next_goal_step() else {
+        let Some(due) = runtime.next_goal_step(true) else {
+            // Evaluation is still deferred behind work this run does not wait for.
+            // The wait also ends when the host has a message queued or interrupted; that is not
+            // a reason to pause.
+            if runtime.goal_deferred() && !(ctx.pending)() && !ctx.cancel.is_set() {
+                runtime.pause_goal(PauseReason::BackgroundWait);
+            }
             break;
+        };
+        let pending = match due {
+            Due::Evaluate(pending) => pending,
+            Due::CheckIn(check) => {
+                let prompt = runtime.checkin_prompt(&check);
+                let turn = guarded_turn(runtime, ctx, prompt).await;
+                outcome = settle(runtime, ctx, merge(outcome, turn), involved).await;
+                continue;
+            }
+            // Nobody is there to send the next prompt, so the wait ends here.
+            Due::IdleExhausted => {
+                runtime.pause_goal(PauseReason::BackgroundWait);
+                break;
+            }
+            Due::Paused(_) => break,
         };
         if let Some(stop) = stop_before_call(runtime, options, None).await {
             runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
@@ -1492,7 +1533,7 @@ async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: Str
             Step::Continue(next) => {
                 let prompt = runtime.goal_prompt(&next).await;
                 let turn = guarded_turn(runtime, ctx, prompt).await;
-                outcome = settle(runtime, ctx, merge(outcome, turn)).await;
+                outcome = settle(runtime, ctx, merge(outcome, turn), involved).await;
             }
             Step::Done { event, summary } => {
                 ended = Some(goal::Ended {

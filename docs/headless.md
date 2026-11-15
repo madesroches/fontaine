@@ -112,9 +112,18 @@ slash command headless understands, and only as a message that starts with `/goa
 space or the end of the text. The first turn works on the condition; after each turn the evaluator
 (the guardian's model) judges it, and *not met* runs another turn, until the condition is *met* or
 *impossible*, or the goal pauses on `[goal] max_turns`, `[goal] max_cost_usd`, `[goal] max_tokens`,
-`[goal] max_duration_secs`, `--max-turns`, `--max-budget-usd`, the no-progress cap, a failed turn
-or an evaluator that gave no verdict. The spend of the evaluator counts toward `--max-budget-usd`
-and `total_cost_usd`.
+`[goal] max_duration_secs`, `--max-turns`, `--max-budget-usd`, the no-progress cap, an evaluator that finds the goal is waiting for you (the
+pause reads `it is waiting for you (<reason>)`), a failed turn or an evaluator that gave no
+verdict. The spend of the evaluator counts toward `--max-budget-usd` and `total_cost_usd`.
+
+While a goal runs, the run waits for [background jobs](tools.md#background-jobs) as well as
+subagents, and the goal is evaluated once they have ended. After
+[`[goal] checkin_minutes`](configuration.md#goal) of waiting (30 by default) it starts a check-in
+turn that asks the model to look at the work, and later ones follow after 1 hour and then every 2
+hours. Nobody is there to send the next prompt, so after the third check-in the goal pauses when
+another falls due (`background work is still running and the run cannot wait on it`) and the run
+exits 1. With `checkin_minutes = 0` the run does not wait for jobs: a goal still waiting on them
+pauses the same way, at once.
 
 `-p "/goal"` prints the goal's status and `-p "/goal clear"` removes it; neither calls a model, and
 the `result` has `num_turns` 0. A goal restored by `--continue` or `--resume` is evaluated after the
@@ -162,7 +171,8 @@ none is running; then the `result` is emitted. `--max-turns` and `--max-budget-u
 turns and the subagents' spend, and a run stopped by either kills the running subagents and drops
 their reports.
 
-[Background jobs](tools.md#background-jobs) are not waited for. A notice from a job that ended
+[Background jobs](tools.md#background-jobs) are not waited for, except while a [goal](#goals) is
+active. A notice from a job that ended
 before the answer is delivered like a subagent's report, in a further turn; a job still running
 when the run ends is terminated, so a headless run leaves no process behind. Jobs persist across the
 messages of one stream-json run and end with it.
