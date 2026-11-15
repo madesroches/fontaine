@@ -155,7 +155,7 @@ From `rust/`:
   `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` / `cargo deny check` /
   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --sequences ../evals/sequences/afk.jsonl`
   and the same with `--profile minimal` (without `--sequences`) — the core CI steps; the two
-  `fixture` evals, the "Release signing" step and the pg2 clippy/rustdoc run on Linux only (the pg2 tests run nightly in `pg2.yml`, not per PR) (macOS and Windows run `cargo check --features fontaine/pg2`), everything else on all
+  `fixture` evals, the "Release signing" step and the pg2 clippy/rustdoc run on Linux only (macOS and Windows run `cargo check --features fontaine/pg2`; the pg2 tests run nightly in `pg2.yml`, not per PR), everything else on all
   three OSes. Later phases add steps (`--guardian none` eval run); `dist plan` runs once per PR in
   `release.yml`'s `plan` job. The master plan's workspace layout lists the full `ci.yml` step set.
 - `.github/scripts/docs-site.sh <dir>` (from the repo root) — builds the docs site and checks its links (Linux; needs
