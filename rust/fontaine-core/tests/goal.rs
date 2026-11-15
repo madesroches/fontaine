@@ -767,7 +767,8 @@ fn a_surface_that_waits_without_looking_first_still_gets_idle_check_ins() {
 fn a_due_check_in_over_the_cost_cap_pauses_and_is_inactive_without_a_price() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", spend(0, Some(10.0)), Duration::ZERO).unwrap();
+    goal.set("done", spend(0, Some(10.0)), Duration::ZERO)
+        .unwrap();
     let t0 = Instant::now();
     let caps = GoalCaps {
         max_cost_usd: Some(1.0),
