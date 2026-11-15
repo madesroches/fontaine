@@ -48,17 +48,20 @@ or reads on docs.rs. Many crates on crates.io make the docs hard to follow, so t
   trees are `#[doc(hidden)]`-free so links in the facade's docs resolve.
 - The merge is mechanical: `git mv` the trees, `fontaine_core::` -> `fontaine_sdk::core::` (and
   likewise) across the roughly 340 files that import them, and the four `Cargo.toml` dependency
-  lists fold into one. It also rewrites `crate::` paths inside the moved trees and cross-tree
-  `fontaine_tools::`/`fontaine_agents::` paths inside core to `crate::tools::`/`crate::agents::`;
-  moves `fontaine-core/prompts/` next to the new source (`include_str!` in `prompt.rs`, `goal.rs`)
-  and `fontaine-guardian/{prompts,data}/` next to the guardian module (`include_str!` in
-  `critique`, `env_scan`, `evasion`, `profile`, `scanner`, `models`); fixes the `../../../research/`
+  lists fold into one. It also rewrites every `fontaine_{core,tools,agents,guardian}::` path inside the four moved trees
+  (core uses `fontaine_guardian::`; agents uses `fontaine_tools::` in registry/spawn/tasks/tree) to
+  `crate::{core,tools,agents,guardian}::`;
+  moves `fontaine-core/prompts/` to `fontaine-sdk/prompts/core/` (`include_str!("../../../prompts/core/...")` in
+  `core/prompt.rs`, `core/goal.rs`), `fontaine-guardian/prompts/` to `fontaine-sdk/prompts/guardian/` and
+  `fontaine-guardian/data/` to `fontaine-sdk/data/` (`include_str!("../../../prompts/guardian/...")` and
+  `"../../../data/guardian_models.toml"` in `guardian/{critique,env_scan,evasion,profile,scanner,models}.rs`); fixes the `../../../research/`
   include in core's `usage_limit.rs` for the extra directory level; renames and re-accepts the 7
   insta snapshots in `fontaine-guardian/src/snapshots` (`fontaine_guardian__prompt_builder__tests__...`);
   renames the colliding integration tests (`choke_point.rs`, `lsp.rs`, `network.rs`, `scanner.rs`,
   and the `common/` dirs, e.g. `core_common/`, `tools_common/`); repoints the `fontaine-guardian/`
-  paths hard-coded in `DEFAULT_MODELS_FILE` (`fontaine-evals/src/runner.rs`), `evals/README.md`,
-  `docs/evals.md` and `docs/guardian.md`;
+  paths hard-coded in `DEFAULT_MODELS_FILE` (`fontaine-evals/src/runner.rs`, now
+  `fontaine-sdk/data/guardian_models.toml`), `evals/README.md`, `docs/evals.md` and `docs/guardian.md`
+  (the prompt and data files at their new `fontaine-sdk/{prompts/guardian,data}/` paths);
   fixes the `example_bin("fontaine-core"|"fontaine-tools", ...)` call sites and the `#[path]`
   includes of the other crates' tests and examples; and re-points the `pg2` feature from
   `fontaine/Cargo.toml` and `fontaine-evals/Cargo.toml`; it also rewrites crate names in code and doc comments (`tools/gate.rs:2`, `todo.rs:55`, `skill.rs:15`, `agents/runner.rs:2`, the `cargo test -p fontaine-guardian --features pg2` line in `scanner/pg2.rs`) and renames the `#[cfg(feature = "composition")]` sites (guardian `lib.rs`, `tests/composition.rs`) to `guardian-composition`. It lands as its own commit, ahead of any
@@ -85,6 +88,7 @@ impl SessionBuilder {
     pub fn allowed_tools(self, rules: Vec<String>) -> Self;  // CLI-scope allow rules, below the floor
     pub fn disallowed_tools(self, rules: Vec<String>) -> Self;
     pub fn builtin_tools(self, names: Vec<String>) -> Self;  // maps to AgentSetup::root_tools; must also name every host tool to keep
+    pub fn include_partial_messages(self, on: bool) -> Self;  // default false; maps to Options.include_partial_messages, which gates `assistant_delta`
     pub fn add_dir(self, dir: PathBuf) -> Self;
     pub fn resume(self, id: SessionRef) -> Self;    // Continue | Id(String), plus .fork()
     pub fn approver(self, a: Arc<dyn Approver>) -> Self;     // sets HumanChannel::Delegate
@@ -96,7 +100,7 @@ impl SessionBuilder {
 pub struct Session { /* owns the run_session task (which owns AgentRuntime) + Scratch guard */ }
 impl Session {
     pub fn id(&self) -> &str;
-    pub fn send(&mut self, prompt: impl Into<String>) -> Turn<'_>;   // a Stream of Event
+    pub fn send(&mut self, prompt: impl Into<String>) -> Turn<'_>;   // Turn: Stream<Item = Result<Event, EmbedError>>
     pub fn interrupt_handle(&self) -> InterruptHandle;
     pub async fn close(self) -> Result<(), EmbedError>;               // SessionEnd hooks, scratch cleanup; Err if the task ended non-zero
 }
@@ -135,7 +139,7 @@ Decisions that shape this surface:
   (same as MCP tools). The pipeline branches on tool name (the protected-path floor for
   `edit`/`write`/`notebook_edit`, `descriptor::find` for path-free, `afk_report.rs`,
   `spawn_changes_state`), so `build()` rejects with `EmbedError::Config` a host tool whose name
-  matches a descriptor row, a built-in name or the `mcp__` prefix, or duplicates another host tool, or any name outside `[A-Za-z0-9_-]`. The registry change is
+  matches a descriptor row or the `mcp__` prefix, or duplicates another host tool, or any name outside `[A-Za-z0-9_-]`. The registry change is
   additive: a `host_tools: Vec<Arc<dyn HostTool>>` field on `AgentSetup`, kept in the retained
   setup so plugin reloads rebuild it, and subject to `root_tools`/toolset cutting like built-ins, so
   a subagent never has a host tool its parent lacks.
@@ -146,8 +150,7 @@ Decisions that shape this surface:
   `scheduling = false`, `confirm_project_servers = false`, and `project_executables` follows
   `[headless] require_trust` and the trust store. `PermissionMode::Afk` maps as the CLI's
   `session_mode` does: `Auto` plus `setup.afk = true`.
-- **Stability.** `AgentSetup` stays unstable and un-promised; only the root facade is the semver
-  surface. It starts at `0.x`, `publish = false` like the workspace (`publish.workspace`), and the
+- **Stability.** The SDK starts at `0.x`, `publish = false` like the workspace (`publish.workspace`), and the
   facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
@@ -172,7 +175,7 @@ interrupt.
 `Options` moves with the loop, holding SDK-owned, clap-free input/output format enums that the CLI
 maps from its `InputFormat`/`OutputFormat`. The `pub(crate)` items `claude_compat` imports
 (`EventSink`, `ResultInfo` with its private `goal`/`afk` fields, `Outcome` with its `pub(crate)` fields, `Subtype`,
-`session_cost`, `main_usage`, `Cancel`, `PauseObserver`, `InputSource`, `Options`, `run_session`) become
+`Usage` with its `pub(crate)` fields (`claude_compat` reads `info.usage.main`), `session_cost`, `main_usage`, `Cancel`, `PauseObserver`, `InputSource`, `Options`, `run_session`) become
 public in the SDK tree; the `#[cfg(test)] pub(crate)` `interrupted_for_tests` helper is replaced by a public constructor. Every `eprintln!` in the moved loop (announce, `run_session` and the rest)
 goes through the approver's `warn`/`notice` or an `EventSink` hook that `HeadlessV1Sink` writes to
 stderr, so CLI output is unchanged.
@@ -194,8 +197,8 @@ uses to set the approver, `human_channel`, `callback_hooks`, `host_mcp` and `roo
 
 `run_session` is a pull loop holding `&mut AgentRuntime` for the whole session, so the spawned task
 owns the runtime and returns it with the exit code when it finishes; `close()` takes both from the
-join handle before `fire_session_end`. A task that ends with a non-zero code surfaces as an error
-item on the active `Turn` stream and as `Err` from `close()`. The loop records the
+join handle before `fire_session_end`. A task that ends with a non-zero code surfaces as an
+`Err(EmbedError::Runtime)` item on the active `Turn` stream and as `Err` from `close()`. The loop records the
 session start, announces and calls `sink.session_start` once, and a failed turn ends the run unless
 `InputSource::long_lived()`. So `Session` runs `run_session` on a task fed by a channel-backed
 `InputSource` with `long_lived() = true` (like `claude_compat`'s `SdkInput`), and events flow
@@ -234,9 +237,10 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
    `guard_callback` (new `ToolSource` parameter, new `ToolSource::Host`) at `RiskClass::Arbitrary`;
    validate names in `build()`; update the `guard_callback` callers (`tools/src/mcp/register.rs`,
-   `tools/tests/guarded.rs`, at their post-merge paths under `fontaine-sdk`); update the `AgentSetup` literal sites (`fontaine/src/lib.rs`,
+   `tools/tests/guarded.rs`, at their post-merge paths under `fontaine-sdk`); update the `AgentSetup` literal sites (the SDK `assemble` module,
    `fontaine-sdk/tests/core_common/runtime.rs`, `fontaine-tui/src/ui/tests.rs`,
-   `fontaine-tui/tests/common/mod.rs`, ...); extend the choke-point test to cover host tools.
+   `fontaine-tui/tests/common/mod.rs`, ...), and the `RegistryParams` literal sites the new field breaks
+   (`fontaine-sdk/tests/core_choke_point.rs`, the `params` helper, and `fontaine-sdk/tests/core_extensions.rs:437`); extend the choke-point test to cover host tools.
 6. Write `SessionBuilder`, `Session`, `Turn`, `InterruptHandle` over the step 4 `assemble` functions (`SessionBuilder::build` calls them) and the
    run loop moved in step 3, not over `drive`: `Session` runs `run_session` on a task with a
    channel-backed, `long_lived()` `InputSource`; events reach each `Turn` through an `EventSink`;
@@ -290,14 +294,14 @@ Unit tests for builder validation (including `max_turns`, `max_budget_usd`, `jso
 Integration tests with `rig_core::test_utils` deterministic models, no live APIs:
 - wiring: builder plus approver gives `HumanChannel::Delegate`, and a prompt reaches the approver
   (`fontaine-sdk/tests/permissions_delegate.rs` covers the delegate semantics);
-- `build()` rejects a host tool named like a descriptor row, a built-in or `mcp__*`, duplicating
+- `build()` rejects a host tool named like a descriptor row or `mcp__*`, duplicating
   another host tool, or outside `[A-Za-z0-9_-]`, with `EmbedError::Config` (unit test);
 - `hook()` lands in `AgentSetup::callback_hooks` (unit test; the tighten-only, allow-ignored semantics are covered by `fontaine-sdk/tests/permissions_delegate.rs`);
 - a host tool call is guardian-judged in `auto` and prompts in `manual`;
 - a recorded `fontaine -p` run and an
   embedded run of the same scripted model produce the same event sequence, including with
   `max_turns`, `max_budget_usd` and `json_schema` set; the `fontaine -p` side is a subprocess, so
-  both sides use the same wiremock `Endpoint` script (`rust/fontaine/tests/common/mod.rs`);
+  both sides use the same wiremock `Endpoint` script (`rust/fontaine/tests/common/mod.rs`) and set the same `include_partial_messages` flag;
 - interrupt ends a turn with the same `result` as Claude SDK mode's (`interrupted_outcome`, router; the CLI cannot interrupt), and a turn after an interrupted turn
   runs normally.
 The existing headless, resume, SDK-compat and cassette suites are the regression net for the
