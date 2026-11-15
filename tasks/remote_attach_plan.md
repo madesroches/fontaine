@@ -39,16 +39,23 @@ attach.
 ### 1. Protocol (`fontaine-remote`, still core-free)
 
 - New ALPN `fontaine/attach/1`; the `fontaine/send/1` ALPN, `Request/Response` one-shot types
-  and `client::send` are removed (see Decisions). Framing (`read_frame`/`write_frame`, `MAX_FRAME`,
-  timeouts) is reused.
+  and `client::send` are removed (see Decisions). Framing (`read_frame`/`write_frame`) is reused
+  with attach-specific limits: on the attach stream `FRAME_TIMEOUT` (10 s) covers only the body
+  read once a 4-byte prefix has arrived, never the wait for the prefix. Both sides send `Ping`
+  every 15 s; a side that has received nothing for 45 s closes the connection as lost. The attach
+  ALPN has its own frame caps: 4 MiB host → client, 64 KiB client → host. A `Snapshot` larger
+  than the host → client cap is sent as consecutive `Snapshot{seq, part, of, state}` chunks each
+  within the cap, applied by the client only when all parts have arrived; an `Event` over the cap
+  has its oversized text fields truncated (marked) by the `RemoteEvent` mirror.
 - One bidirectional stream per device connection, carrying a sequence of length-prefixed JSON
-  messages. First client message is `Hello { v, auth }` with `auth = Pair { secret } |
+  messages. First client message is `Hello { v, label, auth }` with `auth = Pair { secret } |
   Resume { last_seq: Option<u64> }`. Authentication of a device is the iroh connection's
   authenticated remote NodeId, never a field the client writes.
-- Client → host: `Prompt{text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, reply}`,
+- Client → host: `Prompt{message_id, text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, reply}`,
   `Interrupt`, `Slash{line}`, `Ping`. Host → client: `Snapshot{seq, state}`, `Event{seq, event}`,
-  `ApprovalRequest{id, …}`, `Question{id, …}`, `Notice{severity, text}`, `Paired`,
-  `Rejected{reason}`, `Bye`.
+  `ApprovalRequest{id, …}`, `Question{id, …}`, `Notice{severity, text}`, `Resolved{id}`,
+  `Accepted{message_id}`, `PromptRejected{message_id, reason}`, `Paired`, `Rejected{reason}`,
+  `Bye`.
 - `Reason` gains `NotPaired`, `PairingDeclined`, `PairingTimeout`, `Revoked`, `Superseded` to
   the existing ticket reasons. Version mismatch is `UnsupportedVersion`.
 - Event payloads (`RemoteEvent`) are a serde mirror of what the host UI loop already feeds its
@@ -65,6 +72,12 @@ attach.
   Unix, user-only ACL on Windows), created at the first `--remote`/`/remote`. It replaces the
   per-enable key so a paired device can find the host again by NodeId (see rediscovery).
 - Client key: a persistent device key in the data dir (`attach_device.key`), same protection.
+- `fontaine-remote` does no file I/O for the host key, the device key or `paired_devices.json`:
+  it takes key bytes and the device list through an injected store trait. The TUI/bin side reads
+  and writes them with `fontaine_core::owner_only::{write_atomic,create_new}`.
+- One session is the remote host at a time, enforced by a `fontaine_core::file_lock` lock on the
+  host key file held while remote is enabled. A second session's `--remote` / `/remote on`
+  refuses with a message naming the holder.
 - Pairing: `/remote` / `--remote` mints a ticket (existing `Ticket` + `RemoteInbox` secret
   rules: one-time, TTL default 10 min, max 24 h, per-node lockout, constant-time compare,
   check order secret → expiry → reuse). The ticket is shown once under the #627 secrecy rules
@@ -76,11 +89,14 @@ attach.
   disconnect is `PairingDeclined`/`PairingTimeout`, and the secret is consumed on first valid
   use either way.
 - `paired_devices.json` (user-scope data dir, atomic write, serde-versioned): `[{ node, label,
-  paired_at, last_seen }]`. Loaded by a `PairedDevices` store in `fontaine-remote` (file
-  path injected). Project scope can never write or read it.
+  paired_at, last_seen }]`. `fontaine-remote` holds the `PairedDevices` data type and the store
+  trait; the file is read and written host-side. Every update runs under `file_lock`, and the
+  host re-reads the file on each `Resume`. Project scope can never write or read it.
 - Revoke: `/remote devices` lists, `/remote revoke <node-prefix|label>` removes the entry and
   closes that device's live connection (`Revoked`); `fontaine remote devices|revoke` does the
-  same offline against the file. A revoked NodeId needs a new pairing.
+  same offline against the file; the running host re-checks the file on every client
+  message and every keepalive and closes a now-revoked live connection (`Revoked`). A revoked
+  NodeId needs a new pairing.
 - Reconnect of a paired NodeId needs no ticket: `Hello{Resume}` is accepted when
   `remote_id` is in `paired_devices.json`. An unpaired NodeId without a valid `Pair` secret
   gets `NotPaired` and counts toward the per-node lockout.
@@ -98,24 +114,28 @@ attach.
     entries (`Prompt`, `Slash`) and a new `Input::RemoteControl` wake-up for `Interrupt`.
     Remote entries keep the #627 rules (own submission, never in the draft or history, ledger
     `remote: { node, message_id }`).
-- `RemoteApprover`: same shape as `ChannelApprover`; `approve`, `ask_user`, `elicit*` forward
-  the request to every attached device **and** to the local UI. The first answer wins (local or
-  any device); the others get a `Resolved{id}` event that closes their dialog. The answering
-  device's NodeId goes in the ledger and audit record (`remote` field, audit `explanation`).
-  With no local UI and no device attached, or when the last attached device disconnects while
-  an approval is open and no local dialog can answer, the answer is Deny. A disconnect never
-  silently approves, never leaves a call hanging.
-- Dialog answers from a device are typed (`ApprovalAnswer`, `QuestionReply`) and applied to the
-  open request by `id`, replacing #627's exact-label text mapping for attached devices.
-  `Prompt` lines that happen to read `y` stay ordinary messages.
-- Slash commands from a device run under the `main_only` rules and a device allow-list: the
-  same set a local user can run, **except** `/guardian-disable`, `/guardian-enable`, `/remote*`
-  (minting or pairing), `/config`, and any command that opens a host-only picker. A refused
-  command returns a `Notice`, writes an audit record and never reaches the dispatcher.
+- Approvals, questions and elicitations keep going through `ChannelApprover` and the UI loop;
+  devices see dialogs only through `RemoteEvent`. Typed device answers (`ApprovalAnswer`,
+  `QuestionReply`) are a loop input applied to the open `App` dialog by `id` (as
+  `take_remote_answer`/`answer_remote_dialog` do today), replacing #627's exact-label text
+  mapping. The first answer wins (local or any device) because the loop sends the oneshot once;
+  the other devices get a `Resolved{id}` event that closes their dialog. This meets the issue's
+  "same shape as `ChannelApprover`". The answering device's NodeId goes in the ledger and audit
+  record (`remote` field, audit `explanation`). A device disconnect closes only that device's
+  dialog; the local approval stays pending (if the host UI is quit, the session ends and the
+  call is denied as today). A dropped connection never approves. `Prompt` lines that happen to
+  read `y` stay ordinary messages.
+- Slash commands from a device run under the `main_only` rules and a device allow-list.
+  Refused (with or without argument), by `Command` variant: `GuardianDisable` (including its
+  confirmation dialog), `GuardianEnable`, `/remote` (the replacement for `RemoteInbox`, all
+  subcommands), `Config`, `Clear`, `Resume`, `Branch`, `Rewind`, `Model`, `GuardianModel`,
+  `Login`, `Exit`, `AddDir`, `Bug`, `Plugin`, `ReloadPlugins`, `Skills` (trust form), `Memory`,
+  `Copy`, `Vim`, `Keybindings`, and any other command that opens a picker or needs the local
+  terminal (editor, clipboard). Allowed: everything else a main-conversation local user can
+  run mid-session. A device sends only `Prompt` or `Slash`; a `Prompt` beginning with `!` or `/`
+  is plain text for the model, never a shell line or a command. A refused command returns a
+  `Notice`, writes an audit record and never reaches the dispatcher.
 - Interrupt from a device behaves as Esc locally.
-- `/guardian-disable` is never available from a remote device (both the slash path and any
-  confirmation dialog). This supersedes the #627 Decision that allowed it from a remote
-  terminal; AGENTS.md, SECURITY.md, the master plan Decisions and the docs are amended.
 
 ### 4. Client: `fontaine attach <ticket>`
 
@@ -132,15 +152,15 @@ attach.
   `Resume{last_seq}`; the host replays from the ring or sends a `Snapshot`. Exit with Ctrl+D
   or `/detach`; the host session continues.
 - Non-interactive mode folds in `fontaine send`: `fontaine attach <ticket|host> --message
-  <text|->` attaches, sends one `Prompt`, waits for the host's `Event` acknowledging it was
-  queued, prints `accepted <message_id>` and exits with the existing exit-code table (2 ticket/
+  <text|->` attaches, sends one `Prompt`, waits for the host's `Accepted{message_id}` (or `PromptRejected`), prints `accepted <message_id>` and exits with the existing exit-code table (2 ticket/
   pairing/auth, 3 full/too large, 4 connection, 5 protocol). `fontaine send` is removed.
 
 ### 5. Rediscovery
 
 The host publishes its address via iroh address lookup under the persistent key only when
 `[remote] relay = "default"`; the client dials the stored NodeId with lookup enabled, falling
-back to the stored last-known addresses. `relay = "disabled"` stays direct-only and publishes
+back to the stored last-known addresses. A self-hosted address lookup service is out of scope:
+direct-only users reattach via stored addresses. `relay = "disabled"` stays direct-only and publishes
 nothing (documented: rediscovery then works only on a reachable address). Tickets still carry
 addresses for the first pairing so no lookup is needed to pair.
 
@@ -158,7 +178,7 @@ addresses for the first pairing so no lookup is needed to pair.
 
 Floor, guardian and workspace scope run host-side on every device-induced call; no regex on
 arguments; no new tool (choke-point test unchanged); a device never confirms its own pairing;
-`/guardian-disable` is unreachable from a device; a lost connection is Deny; project scope can
+`/guardian-disable` is unreachable from a device; a lost connection never approves; project scope can
 only tighten and cannot touch `[remote]` or `paired_devices.json`.
 
 ## Implementation Steps
@@ -167,15 +187,17 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    `Prompt`/`Input` it consumes; define `RemoteEvent` and prove a client `App` built purely from
    events renders an identical transcript to the host in a `TestBackend` test. If events cannot
    cover a surface, record it as a limitation in docs and drop it from the snapshot.
-2. `fontaine-remote`: new `protocol` messages and ALPN; `paired` store (`PairedDevices`);
-   persistent key helpers; `server` rewritten around per-device sessions with a `HostSession`
+2. `fontaine-remote`: new `protocol` messages and ALPN; `paired` data type (`PairedDevices`);
+   store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; remove one-shot `send`.
 3. `fontaine-core`: audit/ledger helpers for the answering device (`remote` on approval
    outcome records if absent); no schema break (serde-defaulted optional fields).
-4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, `RemoteApprover`
-   (first answer wins, disconnect = Deny), pairing confirmation dialog (local only), device
+4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, typed device
+   answers as a loop input (first answer wins), the key/paired-file store implementation over
+   `fontaine_core::owner_only` and `file_lock`, pairing confirmation dialog (local only), device
    slash allow-list, `/remote` command family replacing `/remote-inbox`, status indicator
-   with device count, `RemoteClientUi` for the client.
+   with device count, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
+   `ticket_prompt.rs` for attach.
 5. `fontaine`: `--remote` flag, `attach` and `remote devices|revoke` subcommands, remove
    `send_cmd.rs`, wire client key/hosts files.
 6. Docs, changelog, AGENTS.md / SECURITY.md / master plan edits, `cargo deny`, Windows
@@ -184,9 +206,12 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
 ## Files to Modify
 
 - `rust/fontaine-remote/src/{lib,protocol,ticket,inbox,server,client}.rs`, new
-  `src/{paired,keys,session}.rs`, `rust/fontaine-remote/tests/*`
+  `src/{paired,session}.rs`, `rust/fontaine-remote/tests/*`
 - `rust/fontaine-tui/src/{lib,app,commands,shutdown,statusbar,view}.rs`,
-  `rust/fontaine-tui/src/ui/{mod,turn,commands/*}.rs`, new `src/remote/{event,surface,approver,client_ui}.rs`
+  `rust/fontaine-tui/src/ui/{mod,turn,commands/*}.rs`, new `src/remote/{event,surface,client_ui}.rs`,
+  `rust/fontaine-tui/tests/remote.rs` (rewrite for attach: it drives #627 via
+  `fontaine_remote::send` and pins the exact-label dialog answer and remote guardian-disable
+  behaviour, both removed), `rust/fontaine-tui/src/ticket_prompt.rs` (mentions `fontaine send`)
 - `rust/fontaine-core/src/{audit,gate,ledger}.rs` (answering-device identity)
 - `rust/fontaine/src/{cli,lib,main}.rs`, new `attach_cmd.rs`, delete `send_cmd.rs`
 - `rust/Cargo.toml`, crate manifests, `rust/deny.toml` if licenses change
@@ -201,8 +226,6 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   `App` changes, mitigated by the step-1 equivalence test.
 - **Persistent host key vs. per-enable key**: rediscovery by NodeId requires a stable identity;
   the cost is a long-lived key file, mitigated by the pairing list being the real authorization.
-- **Fold `send` into `attach --message` vs. keep both**: one protocol and one trust model
-  instead of two; scripted use now needs a one-time pairing.
 - **Typed dialog answers vs. text mapping**: removes the exact-label heuristic for devices.
 
 ## Decisions
@@ -211,10 +234,12 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   aliases; `attach --message` is the one-shot path. Reason: the issue says attach supersedes it,
   and a second trust model (unpaired bearer ticket = user) contradicts device pairing.
 - AFK: `/guardian-disable` and `/guardian-enable` are refused from any device, reversing the
-  #627 allowance; the master plan Decision, AGENTS.md and SECURITY.md wording are updated.
+  #627 allowance; the master plan Decision, AGENTS.md, SECURITY.md and the docs wording are
+  updated.
 - AFK: a pairing confirmation is local-terminal only and not remote-answerable; a secret is
   consumed on first valid use even if the host declines.
-- AFK: with no local UI able to answer and no device attached, an open approval is Deny.
+- AFK: a device disconnect closes only that device's dialog; the local approval stays pending,
+  and quitting the host UI ends the session and denies the call as today.
 - AFK: the event ring defaults to 4096 events; a gap beyond it sends a full snapshot.
 - AFK: `paired_devices.json` and the host key are user-scope data-dir files; project scope
   cannot read, write or influence them.
@@ -232,24 +257,25 @@ Unit (no network): pairing store round trip and atomic write; unpaired NodeId ge
 and counts toward lockout; replayed pairing secret is `Reused`; secret consumed on decline;
 revoke closes the live connection; device slash allow-list refuses `/guardian-disable`,
 `/guardian-enable`, `/remote*` and never reaches dispatch; first-answer-wins with local and
-device answers; mid-approval disconnect is Deny and a second device can still answer;
-last-device disconnect with no local UI is Deny; the answering NodeId is in ledger and audit;
+device answers; a device disconnect mid-approval closes only its dialog, leaves the local approval pending
+and never approves, and a second device can still answer; the answering NodeId is in ledger and audit;
 event ring resume from sequence and snapshot fallback; `RemoteEvent` serde round trip;
 host/client `TestBackend` transcript equivalence; ticket never in ledger/audit/history/export.
 
 Integration (`fontaine-remote/tests`, in-process iroh endpoints, relay disabled and the local
 test relay): pair → confirm → attach → reattach by NodeId with no ticket; declined pairing;
-reconnect with `Resume`; superseded connection; `attach --message` exit codes. A real network
+reconnect with `Resume`; superseded connection; a revoked NodeId's `Resume` gets `NotPaired` and its live connection
+gets `Revoked`. Unit (`attach_cmd.rs`): every `Reason` (incl. `NotPaired`, `PairingDeclined`,
+`PairingTimeout`, `Revoked`, `Superseded`) maps to its `attach --message` exit code. A real network
 catches NAT/relay behaviour and address-lookup rediscovery a loopback test cannot; manual.
 
 ## Manual Verification
 
 1. Two machines: `fontaine --remote`, `fontaine attach <ticket>`, confirm on the host, drive a
    prompt and an approval from the client. Why manual: real network paths and a real terminal.
-2. Kill the client's network mid-approval; the host call is denied. Reattach; transcript resumes.
-3. `/remote revoke`, then attach again; expect `Revoked`/`NotPaired`.
+2. Kill the client's network mid-approval; the host's local dialog stays pending and the call
+   is not approved. Reattach; transcript resumes.
 
 ## Open Questions
 
-- Does address lookup (rediscovery) need a self-hosted service for users who disable the n0
-  relays? Out of scope here; direct-only users reattach via stored addresses.
+None.
