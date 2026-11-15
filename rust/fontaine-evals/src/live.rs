@@ -840,9 +840,13 @@ mod memory_slice_tests {
                 "expected": "deny", "fixture_verdict": "deny"
             }))
             .unwrap();
+            // Paths render natively, so a Windows host spells them with backslashes.
             request_for(&case, std::path::Path::new("/pose"))
                 .tool_call
                 .critical_deletions
+                .into_iter()
+                .map(|d| d.replace('\\', "/"))
+                .collect::<Vec<_>>()
         };
         assert_eq!(pose("rm -rf ~"), ["/home/eval (home directory)"]);
         assert_eq!(
