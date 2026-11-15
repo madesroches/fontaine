@@ -103,12 +103,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             None => "effort is unset for this session: the model's own default applies".to_string(),
         });
         let caching = runtime.models.main.prompt_caching;
-        if previous == level || !caching {
+        // The cache keys on what is sent: a level the model refuses sends nothing.
+        let changed = effort_changes_request(&runtime.models.main, previous, level);
+        if !changed || !caching {
             return;
         }
         match runtime.conversation_len().await {
             Ok(len) => {
-                if let Some(warning) = effort_cache_warning(previous, level, caching, len > 0) {
+                if let Some(warning) = effort_cache_warning(changed, caching, len > 0) {
                     self.app.transcript.notice(warning);
                 }
             }
@@ -436,14 +438,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 }
 
-/// The notice for a changed effort on a session whose prompt cache holds the conversation.
-fn effort_cache_warning(
+/// Whether moving from `previous` to `new` changes what the model is sent: a level it refuses
+/// sends nothing, the same as unset.
+fn effort_changes_request(
+    model: &fontaine_core::models::ModelHandle,
     previous: Option<Effort>,
     new: Option<Effort>,
-    caching: bool,
-    has_history: bool,
-) -> Option<&'static str> {
-    (previous != new && caching && has_history).then_some(
+) -> bool {
+    model.generation_options(previous).0 != model.generation_options(new).0
+}
+
+/// The notice for a changed effort on a session whose prompt cache holds the conversation.
+fn effort_cache_warning(changed: bool, caching: bool, has_history: bool) -> Option<&'static str> {
+    (changed && caching && has_history).then_some(
         "the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache",
     )
 }
@@ -465,15 +472,38 @@ mod tests {
 
     #[test]
     fn the_cache_warning_needs_a_change_caching_and_history() {
-        let high = Some(Effort::High);
-        let low = Some(Effort::Low);
-        assert!(effort_cache_warning(low, high, true, true).is_some());
-        assert!(effort_cache_warning(None, high, true, true).is_some());
-        assert!(effort_cache_warning(high, None, true, true).is_some());
-        assert!(effort_cache_warning(high, high, true, true).is_none());
-        assert!(effort_cache_warning(None, None, true, true).is_none());
-        assert!(effort_cache_warning(low, high, false, true).is_none());
-        assert!(effort_cache_warning(low, high, true, false).is_none());
+        assert!(effort_cache_warning(true, true, true).is_some());
+        assert!(effort_cache_warning(false, true, true).is_none());
+        assert!(effort_cache_warning(true, false, true).is_none());
+        assert!(effort_cache_warning(true, true, false).is_none());
+    }
+
+    #[test]
+    fn refused_levels_send_the_same_nothing() {
+        use fontaine_core::config::AccountKind;
+        use fontaine_core::models::{ModelHandle, ModelRef};
+        use rig_core::catalog::Catalog;
+        use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
+
+        let mock = MockCompletionModel::from_stream_turns(Vec::<Vec<MockStreamEvent>>::new())
+            .priced_as(
+                (*Catalog::builtin()
+                    .resolve("openai/gpt-4o-mini")
+                    .unwrap()
+                    .spec)
+                    .clone(),
+            );
+        let model = ModelHandle::new(
+            ModelRef::parse("test/mock").unwrap(),
+            AccountKind::named("openai-compatible"),
+            mock.into(),
+        );
+        let (low, high) = (Some(Effort::Low), Some(Effort::High));
+        // This model takes no level but off: low and high are both refused.
+        assert!(!effort_changes_request(&model, low, high));
+        assert!(!effort_changes_request(&model, None, high));
+        assert!(!effort_changes_request(&model, high, None));
+        assert!(effort_changes_request(&model, None, Some(Effort::Off)));
     }
 
     #[test]
