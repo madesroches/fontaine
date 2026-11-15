@@ -117,9 +117,11 @@ Decisions that shape this surface:
   `serde_json::to_string(&event)`. `Event` serializes untagged (or by hand-written `Serialize`),
   each struct declaring its payload fields first and `type`, `schema_version`, `session_id` last,
   matching `event()` in `headless.rs` (serde_json `preserve_order`); a `#[serde(tag = "type")]`
-  enum would write the tag first and fail the byte-equality check. The schema version stays `1`; embedders see `SCHEMA_VERSION` re-exported. The existing
+  enum would write the tag first and fail the key-order unit test. The schema version stays `1`; embedders see `SCHEMA_VERSION` re-exported. The existing
   `headless_contract` tests (which validate every line against `headless-v1.schema.json`) and a
-  byte-equality check on a recorded stream pin the key order.
+  unit test that builds each of the 12 `Event` variants from fixed values and asserts
+  `serde_json::to_string` equals a literal string captured from today's builder output (before step 2
+  deletes the `json!` builders) pin the key order.
 - **Approvals.** `build()` with an approver sets `HumanChannel::Delegate`; without one it sets
   `Absent` backed by `DenyAll`, as the CLI does (every would-prompt is a denial). `Present` is not exposed: it means "a person at a
   terminal". The approver is reached only where the TUI would ask a person, after the floor, hooks,
@@ -139,7 +141,7 @@ Decisions that shape this surface:
   (same as MCP tools). The pipeline branches on tool name (the protected-path floor for
   `edit`/`write`/`notebook_edit`, `descriptor::find` for path-free, `afk_report.rs`,
   `spawn_changes_state`), so `build()` rejects with `EmbedError::Config` a host tool whose name
-  matches a descriptor row or the `mcp__` prefix, or duplicates another host tool, or any name outside `[A-Za-z0-9_-]`. The registry change is
+  matches a descriptor row or the `mcp__` prefix, or duplicates another host tool, or any name outside `[A-Za-z0-9_-]`, empty, or longer than 64 characters. The registry change is
   additive: a `host_tools: Vec<Arc<dyn HostTool>>` field on `AgentSetup`, kept in the retained
   setup so plugin reloads rebuild it, and subject to `root_tools`/toolset cutting like built-ins, so
   a subagent never has a host tool its parent lacks.
@@ -154,8 +156,10 @@ Decisions that shape this surface:
   facade is `#[non_exhaustive]` on enums.
 - **Errors.** `EmbedError` is a typed enum only where an embedder dispatches (`Config`, `Session`,
   `Credentials`, `Model`, `Runtime`); each carries its source (see AGENTS.md error handling). The SDK
-  writes to stderr only through the `Approver::warn`/`notice` defaults (the `DenyAll` used without an approver), which an embedder replaces by supplying an approver;
-  the PromptGuard download message in `scanner_stage` goes through `notice` when embedded.
+  writes no stderr lines in an embedded session: the run loop's lines reach the approver's `warn`
+  through the embedded channel sink, and the PromptGuard download message in `scanner_stage`
+  through the `StartParams` notice callback the embedded session sets; without an approver the
+  `DenyAll` defaults apply, which an embedder replaces by supplying one.
 - **Builder validation.** `build()` applies the CLI's checks as `EmbedError::Config`: `max_turns > 0`,
   `max_budget_usd` finite and non-negative, `json_schema` a JSON object convertible to a `Schema`.
 
@@ -176,9 +180,10 @@ interrupt.
 maps from its `InputFormat`/`OutputFormat`. The `pub(crate)` items `claude_compat` imports
 (`EventSink`, `ResultInfo` with its private `goal`/`afk` fields, `Outcome` with its `pub(crate)` fields, `Subtype`,
 `Usage` with its `pub(crate)` fields (`claude_compat` reads `info.usage.main`), `session_cost`, `main_usage`, `Cancel`, `PauseObserver`, `InputSource`, `Options`, `run_session`) become
-public in the SDK tree; the `#[cfg(test)] pub(crate)` `interrupted_for_tests` helper is replaced by a public constructor. Every `eprintln!` in the moved loop (announce, `run_session` and the rest)
-goes through the approver's `warn`/`notice` or an `EventSink` hook that `HeadlessV1Sink` writes to
-stderr, so CLI output is unchanged.
+public in the SDK tree; the `#[cfg(test)] pub(crate)` `interrupted_for_tests` helper is replaced by a public constructor. Every `eprintln!` in the moved loop (the `announce()` scanner/facts/guardian-unavailable lines and
+the AFK `set_mode` error line) goes through a new `EventSink` method for these lines.
+`HeadlessV1Sink` and the Claude SDK mode sink write them to stderr exactly as today, so CLI and SDK
+mode output is unchanged; the embedded channel sink forwards them to the approver's `warn`.
 
 The startup steps of `start_headless`/`run_headless` that `prepare_session` does not cover move
 too, and `SessionBuilder::build` runs them: `runtime.connect_mcp(&[])` after `AgentRuntime::new`
@@ -218,11 +223,13 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    unchanged.
 2. Define typed `Event` structs for the 12 output kinds (all but `user_input`) in `fontaine-sdk::events` and move their
    builders (`init_event`, `result_event`, `usage_event`, the goal and AFK helpers, `Outcome`/`Usage`)
-   out of `fontaine/src/headless.rs`; rewire `HeadlessV1Sink`. Add the byte-equality check on a recorded stream.
+   out of `fontaine/src/headless.rs`; rewire `HeadlessV1Sink`. First capture today's builder output for each of the 12 kinds as literal
+   strings, then add the unit test that serializes each `Event` variant built from fixed values and
+   asserts equality with them.
 3. Move the headless run loop (`run_session`, `run_one`, `run_attempt`, settle, cancel, `EventSink`,
    `InputSource`, and `Options` with SDK-owned format enums) from `fontaine/src/headless.rs` into
-   the SDK; make the items `claude_compat` imports public (the full list is in Assembly extraction); route every `eprintln!` through the
-   approver's `warn`/`notice` or an `EventSink` hook. Tighten
+   the SDK; make the items `claude_compat` imports public (the full list is in Assembly extraction); route every `eprintln!` through a new `EventSink`
+   method (stderr in `HeadlessV1Sink` and the SDK-mode sink). Tighten
    `Ctx.pending` and the two `wait_for_news` parameters from `&dyn Fn() -> bool` to
    `&(dyn Fn() -> bool + Sync)` so the `run_session` future is `Send` and the task `Session`
    spawns compiles. The CLI calls it. No behavior change in CLI output.
@@ -232,7 +239,9 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
    `max_budget_usd` refusal from `start_headless`/`run_headless`) from `fontaine/src/lib.rs` into
    `fontaine-sdk::assemble`, whose functions return the `AgentRuntime` and `guardian_login` and keep a
    pre-build `AgentSetup` tweak hook; the CLI, `claude_compat` and the TUI path call them; the
-   staged-plugin swap stays in the CLI. No behavior change.
+   staged-plugin swap stays in the CLI. `scanner_stage::StartParams` gains an optional notice callback for
+   the PromptGuard download line (`scanner_stage.rs:261`, a direct `eprintln!` today): embedded sessions
+   set it to the approver's `warn`, the CLI leaves it unset so its stderr line stays. No behavior change.
 5. Add `HostTool` and `AgentSetup::host_tools`; keep it in the retained setup and pass it through
    `RegistryParams` in `agent/build.rs` so plugin reloads keep it; wrap every host tool with
    `guard_callback` (new `ToolSource` parameter, new `ToolSource::Host`) at `RiskClass::Arbitrary`;
@@ -274,7 +283,7 @@ drops the input, awaits the task, then fires `SessionEnd` hooks (`fire_session_e
 - 2026-11-14: (user call) The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become its modules in this same change. Deviates from the guardian crate's lift-out rule: a lift-out consumer now depends on the SDK with default features off, and the guardian module imports no other SDK module.
 - 2026-11-14: Publication is out of scope; the publish set would be `fontaine-sdk` alone.
 - 2026-11-14: Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
-- 2026-11-14: `AgentSetup` is not exposed directly to embedders: only the root facade is semver-stable.
+- 2026-11-14: `AgentSetup` stays reachable through the `pub` `core` tree but is not part of the semver-stable root facade.
 - 2026-11-14: Provider warnings go through the process-global `providers::warn::set_sink` (latest session wins), so with several embedded sessions they reach the most recently built session's approver.
 - 2026-11-14: The SDK crate is named `fontaine-sdk`: Rust crate names are hyphenated, and the issue frames it as SDK parity. The bare name `fontaine` stays the binary's package, so no release plumbing is renamed.
 
@@ -295,11 +304,12 @@ Integration tests with `rig_core::test_utils` deterministic models, no live APIs
 - wiring: builder plus approver gives `HumanChannel::Delegate`, and a prompt reaches the approver
   (`fontaine-sdk/tests/permissions_delegate.rs` covers the delegate semantics);
 - `build()` rejects a host tool named like a descriptor row or `mcp__*`, duplicating
-  another host tool, or outside `[A-Za-z0-9_-]`, with `EmbedError::Config` (unit test);
+  another host tool, outside `[A-Za-z0-9_-]`, empty, or longer than 64 characters, with `EmbedError::Config` (unit test);
 - `hook()` lands in `AgentSetup::callback_hooks` (unit test; the tighten-only, allow-ignored semantics are covered by `fontaine-sdk/tests/permissions_delegate.rs`);
 - a host tool call is guardian-judged in `auto` and prompts in `manual`;
 - a recorded `fontaine -p` run and an
-  embedded run of the same scripted model produce the same event sequence, including with
+  embedded run of the same scripted model produce the same event sequence (normalizing
+  `session_id`, `duration_ms` and the scratch entry of `workspace_roots`), including with
   `max_turns`, `max_budget_usd` and `json_schema` set; the `fontaine -p` side is a subprocess, so
   both sides use the same wiremock `Endpoint` script (`rust/fontaine/tests/common/mod.rs`) and set the same `include_partial_messages` flag;
 - interrupt ends a turn with the same `result` as Claude SDK mode's (`interrupted_outcome`, router; the CLI cannot interrupt), and a turn after an interrupted turn
