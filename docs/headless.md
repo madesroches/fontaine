@@ -111,9 +111,10 @@ not exist. See [Scheduled prompts](tui.md#scheduled-prompts) for the terminal UI
 slash command headless understands, and only as a message that starts with `/goal` followed by a
 space or the end of the text. The first turn works on the condition; after each turn the evaluator
 (the guardian's model) judges it, and *not met* runs another turn, until the condition is *met* or
-*impossible*, or the goal pauses on `[goal] max_turns`, `[goal] max_cost_usd`, `--max-turns`,
-`--max-budget-usd`, the no-progress cap, a failed turn or an evaluator that gave no verdict. The
-spend of the evaluator counts toward `--max-budget-usd` and `total_cost_usd`.
+*impossible*, or the goal pauses on `[goal] max_turns`, `[goal] max_cost_usd`, `[goal] max_tokens`,
+`[goal] max_duration_secs`, `--max-turns`, `--max-budget-usd`, the no-progress cap, a failed turn
+or an evaluator that gave no verdict. The spend of the evaluator counts toward `--max-budget-usd`
+and `total_cost_usd`.
 
 `-p "/goal"` prints the goal's status and `-p "/goal clear"` removes it; neither calls a model, and
 the `result` has `num_turns` 0. A goal restored by `--continue` or `--resume` is evaluated after the

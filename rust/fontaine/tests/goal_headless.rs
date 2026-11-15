@@ -236,6 +236,35 @@ async fn the_turn_cap_pauses_the_goal_and_exits_1() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_token_cap_pauses_the_goal_and_exits_1() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::text("pass"),
+            judged("not_met", "still not there"),
+            Turn::text("pass"),
+            judged("not_met", "still not there"),
+        ],
+    )
+    .await;
+    let s = Sandbox::new();
+    with_goal_config(&s, &endpoint.url(), "max_tokens = 1000");
+    let out = headless(&s, &stream("/goal be done")).await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    assert_all_valid(&out);
+    let result = result_of(&out);
+    assert_eq!(result["subtype"], "success");
+    assert_eq!(result["goal"]["status"], "paused");
+    assert!(
+        result["goal"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("the goal's tokens passed 1.0k"),
+        "{result}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_evaluator_that_gives_no_verdict_pauses_the_goal() {
     let endpoint = Endpoint::start(
         Wire::Chat,

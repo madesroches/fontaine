@@ -1236,6 +1236,8 @@ pub struct MemorySection {
 pub struct GoalSection {
     pub max_turns: Option<u32>,
     pub max_cost_usd: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub max_duration_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -2142,6 +2144,17 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         {
             return bad("goal.max_cost_usd", "must be a finite number, zero or more");
         }
+        if g.max_tokens == Some(0) {
+            return bad("goal.max_tokens", "must be at least 1");
+        }
+        if let Some(v) = g.max_duration_secs
+            && !(1..=MAX_GOAL_DURATION_SECS).contains(&v)
+        {
+            return bad(
+                "goal.max_duration_secs",
+                &format!("must be between 1 and {MAX_GOAL_DURATION_SECS}"),
+            );
+        }
     }
     if let Some(r) = &s.retry {
         if let Some(v) = r.max_retries
@@ -2740,6 +2753,8 @@ pub struct Context {
 
 pub const DEFAULT_GOAL_MAX_TURNS: u32 = 50;
 const MAX_GOAL_TURNS: u32 = 1000;
+/// 30 days; a bound that catches a typo, not a limit anyone needs.
+const MAX_GOAL_DURATION_SECS: u64 = 30 * 86_400;
 const MAX_RETRY_COUNT: u32 = 10;
 /// A full day; keeps `Instant + Duration` far from overflow.
 const MAX_SHELL_TIMEOUT_SECS: u64 = 86_400;
@@ -2805,6 +2820,10 @@ pub struct Goal {
     pub max_turns: u32,
     /// Spend of one unattended stretch; unset is no cost bound.
     pub max_cost_usd: Option<f64>,
+    /// Tokens of one unattended stretch, priced or not; unset is no bound.
+    pub max_tokens: Option<u64>,
+    /// Wall-clock seconds of one unattended stretch; unset is no bound.
+    pub max_duration_secs: Option<u64>,
 }
 
 /// The merged `[retry]` section: how a failed model call is tried again.
@@ -3119,6 +3138,8 @@ impl Config {
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
+                max_tokens: None,
+                max_duration_secs: None,
             },
             retry: Retry::default(),
             afk: Afk {
@@ -3409,6 +3430,12 @@ impl Config {
             }
             if let Some(v) = g.max_cost_usd {
                 self.goal.max_cost_usd = Some(v);
+            }
+            if let Some(v) = g.max_tokens {
+                self.goal.max_tokens = Some(v);
+            }
+            if let Some(v) = g.max_duration_secs {
+                self.goal.max_duration_secs = Some(v);
             }
         }
         if let Some(r) = &s.retry {

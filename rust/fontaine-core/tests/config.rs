@@ -2059,9 +2059,31 @@ fn the_goal_limits_default_and_only_the_user_scopes_set_them() {
         "[goal]\nmax_turns = 1000\n",
         "[goal]\nmax_cost_usd = 0\n",
         "[goal]\nmax_cost_usd = 5.0\n",
+        "[goal]\nmax_tokens = 1\n",
+        "[goal]\nmax_duration_secs = 2592000\n",
     ] {
         user_ok(text);
     }
+}
+
+#[test]
+fn the_goal_token_and_duration_caps_default_unset_and_merge() {
+    let w = World::new();
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_tokens, goal.max_duration_secs), (None, None));
+
+    w.user_file("[goal]\nmax_tokens = 500000\nmax_duration_secs = 7200\n");
+    let goal = w.load().unwrap().goal;
+    assert_eq!(
+        (goal.max_tokens, goal.max_duration_secs),
+        (Some(500_000), Some(7_200))
+    );
+    let cli = w.cli_file("[goal]\nmax_turns = 3\n");
+    let goal = w.load_with_settings(&cli).unwrap().goal;
+    assert_eq!(
+        (goal.max_tokens, goal.max_duration_secs),
+        (Some(500_000), Some(7_200))
+    );
 }
 
 #[test]
@@ -2070,6 +2092,8 @@ fn a_repository_cannot_lengthen_an_unattended_goal_run() {
         for text in [
             "[goal]\nmax_turns = 1000\n",
             "[goal]\nmax_cost_usd = 1000.0\n",
+            "[goal]\nmax_tokens = 1000000000\n",
+            "[goal]\nmax_duration_secs = 86400\n",
         ] {
             let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
             assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
@@ -2088,9 +2112,26 @@ fn the_goal_limits_are_validated() {
         ("[goal]\nmax_cost_usd = -1.0\n", "goal.max_cost_usd"),
         ("[goal]\nmax_cost_usd = nan\n", "goal.max_cost_usd"),
         ("[goal]\nmax_cost_usd = inf\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_tokens = 0\n", "goal.max_tokens"),
+        ("[goal]\nmax_duration_secs = 0\n", "goal.max_duration_secs"),
+        (
+            "[goal]\nmax_duration_secs = 2592001\n",
+            "goal.max_duration_secs",
+        ),
     ] {
         let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
         assert!(err.to_string().contains(key), "{text}: {err}");
+    }
+    for text in [
+        "[goal]\nmax_tokens = -1\n",
+        "[goal]\nmax_tokens = 1.5\n",
+        "[goal]\nmax_duration_secs = -5\n",
+        "[goal]\nmax_duration_secs = \"1h\"\n",
+    ] {
+        assert!(
+            parse_settings(text, Path::new("u.toml"), Column::User).is_err(),
+            "{text}"
+        );
     }
     assert!(
         parse_settings(

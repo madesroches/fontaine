@@ -37,6 +37,8 @@ use serde_json::json;
 const CAPS: GoalCaps = GoalCaps {
     max_turns: 50,
     max_cost_usd: None,
+    max_tokens: None,
+    max_duration: None,
 };
 
 struct Fixture {
@@ -92,8 +94,14 @@ fn verdict(judgment: Judgment, reason: &str) -> Evaluation {
 }
 
 fn not_met(goal: &SessionGoal, caps: &GoalCaps, spend: Spend, priced: bool) -> Applied {
-    goal.apply(verdict(Judgment::NotMet, "more to do"), spend, caps, priced)
-        .expect("a goal is active")
+    goal.apply(
+        verdict(Judgment::NotMet, "more to do"),
+        spend,
+        Duration::ZERO,
+        caps,
+        priced,
+    )
+    .expect("a goal is active")
 }
 
 /// Ends a turn that answered, then takes a not-met verdict for it.
@@ -140,8 +148,10 @@ fn a_condition_is_set_replaced_and_cleared() {
     let f = Fixture::new();
     let goal = f.goal();
     assert!(!goal.is_active());
-    goal.set("tests pass", Spend::default()).unwrap();
-    goal.set("  docs build  ", Spend::default()).unwrap();
+    goal.set("tests pass", Spend::default(), Duration::ZERO)
+        .unwrap();
+    goal.set("  docs build  ", Spend::default(), Duration::ZERO)
+        .unwrap();
     let status = goal.status(Spend::default());
     assert_eq!(status.active.unwrap().condition, "docs build");
     let cleared = goal.clear().unwrap();
@@ -155,14 +165,15 @@ fn an_empty_or_over_long_condition_is_refused() {
     let f = Fixture::new();
     let goal = f.goal();
     assert!(matches!(
-        goal.set("   ", Spend::default()),
+        goal.set("   ", Spend::default(), Duration::ZERO),
         Err(GoalError::Empty)
     ));
     assert!(matches!(
-        goal.set(&"x".repeat(4_001), Spend::default()),
+        goal.set(&"x".repeat(4_001), Spend::default(), Duration::ZERO),
         Err(GoalError::TooLong { chars: 4_001 })
     ));
-    goal.set(&"x".repeat(4_000), Spend::default()).unwrap();
+    goal.set(&"x".repeat(4_000), Spend::default(), Duration::ZERO)
+        .unwrap();
     assert!(goal.is_active());
 }
 
@@ -170,7 +181,9 @@ fn an_empty_or_over_long_condition_is_refused() {
 fn a_failed_save_is_a_persist_error_with_its_cause_and_sets_nothing() {
     let f = Fixture::new();
     let goal = SessionGoal::new(&f.dir.path().join("missing"), f.ledger.clone());
-    let error = goal.set("tests pass", Spend::default()).unwrap_err();
+    let error = goal
+        .set("tests pass", Spend::default(), Duration::ZERO)
+        .unwrap_err();
     assert!(matches!(error, GoalError::Persist { .. }));
     assert!(std::error::Error::source(&error).is_some());
     assert!(!goal.is_active());
@@ -197,13 +210,13 @@ fn the_argument_is_status_clear_or_a_condition() {
 fn each_way_a_turn_can_end_decides_whether_the_goal_is_evaluated() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     assert!(goal.next_step(false).is_none(), "nothing to evaluate yet");
 
     assert_eq!(goal.after_turn(Some(&answer())), None);
     assert_eq!(goal.next_step(false).unwrap().condition, "done");
 
-    goal.user_prompt(Spend::default());
+    goal.user_prompt(Spend::default(), Duration::ZERO);
     assert!(goal.next_step(false).is_none());
 
     let cases = [
@@ -222,7 +235,7 @@ fn each_way_a_turn_can_end_decides_whether_the_goal_is_evaluated() {
         ),
     ];
     for (end, expected) in cases {
-        goal.user_prompt(Spend::default());
+        goal.user_prompt(Spend::default(), Duration::ZERO);
         assert_eq!(goal.after_turn(end.as_ref()), Some(expected.clone()));
         assert!(goal.next_step(false).is_none(), "{expected:?} pauses");
         let paused = goal.status(Spend::default()).active.unwrap().paused;
@@ -234,12 +247,12 @@ fn each_way_a_turn_can_end_decides_whether_the_goal_is_evaluated() {
 fn a_pause_holds_until_the_user_speaks_and_a_later_turn_does_not_change_it() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     goal.after_turn(None);
     // A scheduled or notification turn that answers meanwhile does not wake a paused goal.
     assert_eq!(goal.after_turn(Some(&answer())), None);
     assert!(goal.next_step(false).is_none());
-    goal.user_prompt(Spend::default());
+    goal.user_prompt(Spend::default(), Duration::ZERO);
     assert!(
         goal.status(Spend::default())
             .active
@@ -255,7 +268,7 @@ fn a_pause_holds_until_the_user_speaks_and_a_later_turn_does_not_change_it() {
 fn evaluation_waits_while_an_agent_runs() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     goal.after_turn(Some(&answer()));
     assert!(goal.next_step(true).is_none());
     assert!(goal.next_step(false).is_some());
@@ -265,13 +278,15 @@ fn evaluation_waits_while_an_agent_runs() {
 fn a_met_verdict_ends_the_goal_and_is_remembered_until_the_next() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", spend(100, Some(1.0))).unwrap();
+    goal.set("done", spend(100, Some(1.0)), Duration::ZERO)
+        .unwrap();
     assert!(f.file().is_file());
     goal.after_turn(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::Met, "the file exists"),
             spend(1_100, Some(1.5)),
+            Duration::ZERO,
             &CAPS,
             true,
         )
@@ -304,12 +319,14 @@ fn a_met_verdict_ends_the_goal_and_is_remembered_until_the_next() {
 fn an_impossible_verdict_ends_the_goal_without_an_achievement() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("square the circle", Spend::default()).unwrap();
+    goal.set("square the circle", Spend::default(), Duration::ZERO)
+        .unwrap();
     goal.after_turn(Some(&answer()));
     let applied = goal
         .apply(
             verdict(Judgment::Impossible, "it cannot be done"),
             Spend::default(),
+            Duration::ZERO,
             &CAPS,
             true,
         )
@@ -326,7 +343,7 @@ fn an_impossible_verdict_ends_the_goal_without_an_achievement() {
 fn not_met_continues_with_the_reason_and_the_condition() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     f.root_call();
     let applied = turn_then_not_met(&goal, &CAPS);
     assert_eq!(applied.judgment, Some(Judgment::NotMet));
@@ -351,12 +368,18 @@ fn not_met_continues_with_the_reason_and_the_condition() {
 fn a_verdict_for_a_goal_that_was_cleared_meanwhile_is_dropped() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     goal.after_turn(Some(&answer()));
     goal.clear();
     assert!(
-        goal.apply(verdict(Judgment::Met, "x"), Spend::default(), &CAPS, true)
-            .is_none()
+        goal.apply(
+            verdict(Judgment::Met, "x"),
+            Spend::default(),
+            Duration::ZERO,
+            &CAPS,
+            true
+        )
+        .is_none()
     );
 }
 
@@ -366,9 +389,9 @@ fn the_turn_cap_pauses_the_goal_and_a_user_prompt_starts_a_fresh_stretch() {
     let goal = f.goal();
     let caps = GoalCaps {
         max_turns: 3,
-        max_cost_usd: None,
+        ..CAPS
     };
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     for _ in 0..3 {
         f.root_call();
         let applied = turn_then_not_met(&goal, &caps);
@@ -380,7 +403,7 @@ fn the_turn_cap_pauses_the_goal_and_a_user_prompt_starts_a_fresh_stretch() {
     assert!(goal.is_active(), "the goal stays set");
     assert!(goal.next_step(false).is_none());
 
-    goal.user_prompt(Spend::default());
+    goal.user_prompt(Spend::default(), Duration::ZERO);
     f.root_call();
     assert!(matches!(
         turn_then_not_met(&goal, &caps).step,
@@ -393,11 +416,12 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     let f = Fixture::new();
     let goal = f.goal();
     let caps = GoalCaps {
-        max_turns: 50,
         max_cost_usd: Some(1.0),
+        ..CAPS
     };
-    goal.set("done", spend(0, Some(10.0))).unwrap();
-    goal.user_prompt(spend(0, Some(10.0)));
+    goal.set("done", spend(0, Some(10.0)), Duration::ZERO)
+        .unwrap();
+    goal.user_prompt(spend(0, Some(10.0)), Duration::ZERO);
 
     f.root_call();
     goal.after_turn(Some(&answer()));
@@ -409,7 +433,7 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     let over = not_met(&goal, &caps, spend(0, Some(11.2)), true);
     assert_eq!(over.step, Step::Pause(PauseReason::CostCap(1.0)));
 
-    goal.user_prompt(spend(0, Some(11.2)));
+    goal.user_prompt(spend(0, Some(11.2)), Duration::ZERO);
     f.root_call();
     goal.after_turn(Some(&answer()));
     let unpriced = not_met(&goal, &caps, spend(0, Some(99.0)), false);
@@ -422,10 +446,219 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
 }
 
 #[test]
+fn the_token_cap_fires_for_an_unpriced_model_and_resets_with_a_user_prompt() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_tokens: Some(1_000),
+        ..CAPS
+    };
+    goal.set("done", spend(500, None), Duration::ZERO).unwrap();
+
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let at = not_met(&goal, &caps, spend(1_500, None), false);
+    assert!(matches!(at.step, Step::Continue(_)), "{at:?}");
+
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let over = not_met(&goal, &caps, spend(1_501, None), false);
+    assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
+    assert!(goal.is_active(), "the goal stays set");
+    assert!(goal.next_step(false).is_none());
+
+    goal.user_prompt(spend(1_501, None), Duration::ZERO);
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let fresh = not_met(&goal, &caps, spend(2_000, None), false);
+    assert!(matches!(fresh.step, Step::Continue(_)), "{fresh:?}");
+}
+
+#[test]
+fn the_token_cap_is_measured_on_the_stretchs_input_and_output_tokens_unpriced() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_tokens: Some(1_000),
+        ..CAPS
+    };
+    let base = Spend {
+        input_tokens: 100,
+        output_tokens: 50,
+        unpriced_tokens: 20,
+        ..Spend::default()
+    };
+    goal.set("done", base, Duration::ZERO).unwrap();
+    let now = Spend {
+        input_tokens: 800,
+        output_tokens: 400,
+        unpriced_tokens: 220,
+        ..Spend::default()
+    };
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let over = not_met(&goal, &caps, now, false);
+    assert_eq!(over.step, Step::Pause(PauseReason::TokenCap(1_000)));
+}
+
+#[test]
+fn the_duration_cap_fires_only_once_the_stretch_is_older_than_it_and_resets() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_duration: Some(Duration::from_millis(300)),
+        ..CAPS
+    };
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+
+    f.root_call();
+    let under = turn_then_not_met(&goal, &caps);
+    assert!(matches!(under.step, Step::Continue(_)), "{under:?}");
+
+    std::thread::sleep(Duration::from_millis(400));
+    f.root_call();
+    let over = turn_then_not_met(&goal, &caps);
+    assert_eq!(
+        over.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(300)))
+    );
+    assert!(goal.is_active(), "the goal stays set");
+
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    f.root_call();
+    let fresh = turn_then_not_met(&goal, &caps);
+    assert!(matches!(fresh.step, Step::Continue(_)), "{fresh:?}");
+}
+
+#[test]
+fn usage_pause_time_inside_the_stretch_does_not_count_toward_the_duration_cap() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_duration: Some(Duration::from_millis(100)),
+        ..CAPS
+    };
+    goal.set("done", Spend::default(), Duration::from_secs(5))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let applied = goal
+        .apply(
+            verdict(Judgment::NotMet, "more to do"),
+            Spend::default(),
+            Duration::from_secs(15),
+            &caps,
+            true,
+        )
+        .unwrap();
+    assert!(
+        matches!(applied.step, Step::Continue(_)),
+        "the 10s wait is not the goal's time: {applied:?}"
+    );
+}
+
+#[test]
+fn usage_pause_time_from_before_the_stretch_counts_for_nothing_toward_the_duration_cap() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_duration: Some(Duration::from_millis(100)),
+        ..CAPS
+    };
+    goal.set("done", Spend::default(), Duration::from_secs(5))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let applied = goal
+        .apply(
+            verdict(Judgment::NotMet, "more to do"),
+            Spend::default(),
+            Duration::from_secs(5),
+            &caps,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        applied.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(100)))
+    );
+}
+
+#[test]
+fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_turns: 1,
+        max_cost_usd: Some(1.0),
+        max_tokens: Some(10),
+        max_duration: Some(Duration::from_millis(1)),
+    };
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let first = not_met(&goal, &CAPS, spend(1_000, Some(5.0)), true);
+    assert!(matches!(first.step, Step::Continue(_)), "{first:?}");
+
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let turns = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
+    assert_eq!(turns.step, Step::Pause(PauseReason::TurnCap(1)));
+
+    let goal = f.goal();
+    let caps = GoalCaps {
+        max_cost_usd: Some(1.0),
+        ..caps
+    };
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let cost = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
+    assert_eq!(cost.step, Step::Pause(PauseReason::CostCap(1.0)));
+
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let tokens = not_met(&goal, &caps, spend(1_000, None), true);
+    assert_eq!(tokens.step, Step::Pause(PauseReason::TokenCap(10)));
+
+    goal.user_prompt(Spend::default(), Duration::ZERO);
+    std::thread::sleep(Duration::from_millis(5));
+    f.root_call();
+    goal.after_turn(Some(&answer()));
+    let duration = not_met(&goal, &caps, Spend::default(), true);
+    assert_eq!(
+        duration.step,
+        Step::Pause(PauseReason::DurationCap(Duration::from_millis(1)))
+    );
+}
+
+#[test]
+fn the_new_pause_reasons_read_as_sentences() {
+    assert_eq!(
+        PauseReason::TokenCap(500_000).to_string(),
+        "the goal's tokens passed 500.0k"
+    );
+    assert_eq!(
+        PauseReason::DurationCap(Duration::from_secs(7_200)).to_string(),
+        "the stretch ran longer than 2h 00m"
+    );
+    assert_eq!(
+        PauseReason::DurationCap(Duration::from_secs(90)).to_string(),
+        "the stretch ran longer than 1m 30s"
+    );
+}
+
+#[test]
 fn eight_idle_verdicts_in_a_row_pause_and_a_tool_call_resets_the_count() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     for i in 0..7 {
         let applied = turn_then_not_met(&goal, &CAPS);
         assert!(matches!(applied.step, Step::Continue(_)), "verdict {i}");
@@ -450,7 +683,7 @@ fn eight_idle_verdicts_in_a_row_pause_and_a_tool_call_resets_the_count() {
 fn a_tool_call_in_an_earlier_turn_of_the_stretch_still_counts_as_progress() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     for _ in 0..7 {
         goal.after_turn(Some(&answer()));
         assert!(goal.next_step(false).is_some());
@@ -473,7 +706,7 @@ fn a_tool_call_in_an_earlier_turn_of_the_stretch_still_counts_as_progress() {
 fn only_the_root_agents_calls_count_as_progress() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     for _ in 0..7 {
         f.call("subagent-1");
         assert!(matches!(
@@ -492,12 +725,13 @@ fn only_the_root_agents_calls_count_as_progress() {
 fn an_evaluator_that_gave_no_verdict_pauses_the_goal() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     goal.after_turn(Some(&answer()));
     let applied = goal
         .apply(
             Evaluation::Failed("no answer within 60 seconds".into()),
             Spend::default(),
+            Duration::ZERO,
             &CAPS,
             true,
         )
@@ -516,7 +750,8 @@ fn an_evaluator_that_gave_no_verdict_pauses_the_goal() {
 fn the_goal_file_is_owner_only_json_that_a_reopened_session_restores_with_fresh_counters() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("the build is green", Spend::default()).unwrap();
+    goal.set("the build is green", Spend::default(), Duration::ZERO)
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(f.file()).unwrap(),
         r#"{"condition":"the build is green"}"#
@@ -531,6 +766,7 @@ fn the_goal_file_is_owner_only_json_that_a_reopened_session_restores_with_fresh_
     goal.apply(
         verdict(Judgment::NotMet, "still red"),
         Spend::default(),
+        Duration::ZERO,
         &CAPS,
         true,
     );
@@ -549,7 +785,7 @@ fn the_goal_file_is_owner_only_json_that_a_reopened_session_restores_with_fresh_
 fn clearing_removes_the_file() {
     let f = Fixture::new();
     let goal = f.goal();
-    goal.set("done", Spend::default()).unwrap();
+    goal.set("done", Spend::default(), Duration::ZERO).unwrap();
     goal.clear();
     assert!(!f.file().exists());
     assert!(
@@ -586,7 +822,7 @@ fn a_goal_is_carried_by_a_forked_session_and_not_by_a_fresh_one() {
     let session = Session::create(&w.data, source).unwrap();
     session
         .goal()
-        .set("the docs build", Spend::default())
+        .set("the docs build", Spend::default(), Duration::ZERO)
         .unwrap();
     drop(session);
     let forked = Session::fork(&w.data, source, "00000000-0000-4000-8000-0000000000a2").unwrap();

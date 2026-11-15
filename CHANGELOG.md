@@ -17,6 +17,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Goal token and wall-clock budgets (#444): `[goal] max_tokens` and `[goal] max_duration_secs`
+  (user scope, unset by default) pause an unattended goal stretch when its tokens, priced or not, or
+  its elapsed time pass the cap, checked at the evaluation boundary like `max_turns`. A stretch can
+  overrun the duration by one turn plus one evaluation.
 - Anthropic context editing (#629): an `anthropic` account can set `[accounts.<name>.context_editing]`
   (user scope, off by default) to have the server clear old tool results before the model reads the
   conversation, with `trigger_tokens`, `keep`, `clear_at_least_tokens` and `exclude_tools`. The main
