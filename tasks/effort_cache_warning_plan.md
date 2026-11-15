@@ -24,13 +24,13 @@ caches prompts and the conversation already has content, and `docs/tui.md` will 
 Chosen option: mention the cost in `/effort` output (the issue's first option).
 
 - Expose whether the main model's requests carry cache markers: add a `pub prompt_caching: bool` field like `quota`
-  (default `false` in `ModelHandle::new`, so tests set it directly), set in `resolve_main_model` (`fontaine-core/src/models.rs`, where
+  (default `false` in `ModelHandle::new`), set in `resolve_main_model` (`fontaine-core/src/models.rs`, where
   `main_account` is in hand) as `kind.provider().accepts_prompt_caching() && PromptCaching::of(account).enabled`.
-  `switch_main_model` must go through that path so a `/model` switch refreshes it.
+  Both switch paths reach `resolve_main_model` through `Switcher::main`, so a `/model` switch refreshes it with no further change.
 - History check: reuse the existing `AgentRuntime::conversation_len()` (async, `Result<usize, SessionError>`);
   history means `> 0`. No new accessor, no token estimate.
 - `effort()` becomes `async` and the `Command::Effort` arm in `ui/mod.rs` awaits it. A failed
-  `conversation_len()` skips the cache notice and is reported through the existing warning path.
+  `conversation_len()` skips the cache notice and is reported with `self.app.transcript.warning(chain(&e), None)`.
 - In `effort()`, after setting a level that differs from the previous one, if
   `runtime.models.main.prompt_caching && history`, append a second notice:
   `the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache`. Emit nothing when the level is
@@ -40,14 +40,15 @@ Chosen option: mention the cost in `/effort` output (the issue's first option).
 
 ## Implementation Steps
 
-1. `fontaine-core/src/models.rs`: add `prompt_caching` to `ModelHandle`, set it in `resolve_main_model`; confirm `switch_main_model` uses it.
+1. `fontaine-core/src/models.rs`: add `prompt_caching` to `ModelHandle`, set it in `resolve_main_model`.
 2. `fontaine-tui/src/ui/commands/model.rs` and `ui/mod.rs`: add `effort_cache_warning`, make `effort()` async and call it.
 3. Docs and changelog.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/models.rs`
-- `rust/fontaine-tui/src/ui/commands/model.rs`, `rust/fontaine-tui/src/ui/mod.rs`
+- `rust/fontaine-tui/src/ui/commands/model.rs` (with an inline `#[cfg(test)]` module for the `effort_cache_warning` unit tests), `rust/fontaine-tui/src/ui/mod.rs`
+- `rust/fontaine-tui/tests/common/mod.rs`, `rust/fontaine-tui/tests/tui.rs`
 - `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -67,7 +68,7 @@ mid-session change can invalidate the prompt cache on accounts that cache, and t
 - Unit tests for `effort_cache_warning`: warns only when level changed, caching on, history present;
   silent for each other combination.
 - A TUI test in `fontaine-tui/tests/tui.rs` style: `/effort high` on a session with a prior turn on a
-  caching account (the test sets `handle.prompt_caching = true` on the World's main handle) shows the warning; on an empty session or non-caching account does not.
+  caching account (`World` gains a `with_prompt_caching()` builder whose flag `setup()` applies to the main handle) shows the warning; on an empty session or non-caching account does not.
 
 ## Decisions
 
