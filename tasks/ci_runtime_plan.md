@@ -41,7 +41,9 @@ OS's PR check completes within 20 min of wall-clock latency.
    `cargo test --features fontaine/pg2` (no `cargo clean` needed: the fresh runner has no
    default-feature build to displace). Release builds already enable `pg2` (`dist` config), so a
    release still compiles it; the release gate for pg2 tests is a manual check that the latest
-   nightly is green, documented in CONTRIBUTING and not enforced in `release.yml`.
+   nightly is green, documented as a readiness step in CONTRIBUTING `## Releasing` and not
+   enforced in `release.yml`. The job sets `timeout-minutes` (e.g. 60) as its hang guard, since it
+   runs `cargo test`, not nextest, and `defaults.run.working-directory: rust`.
 2. **Keep the cheap pg2 checks on PRs** (`Clippy (pg2)`, `Rustdoc (pg2)`, and `Check (pg2)` on
    macOS/Windows) so the feature keeps compiling. Remove the "Before Test (pg2)" comment.
 3. **Nextest hang guard**: add `rust/.config/nextest.toml` with `slow-timeout = { period = "60s",
@@ -50,9 +52,12 @@ OS's PR check completes within 20 min of wall-clock latency.
    kills a legitimate test.
 4. **Dependency cache is an experiment, off by default.** PR #180 found cold runs faster than
    `rust-cache` on every OS, so none is added unconditionally. On the PR, measure each OS with and
-   without `Swatinem/rust-cache@v2` (workspace `rust`, `save-if` on `main` only); keep it only on an
-   OS where it wins by a clear margin, otherwise leave it off. Any kept cache must be sized against
-   the 10 GB per-repo cap (three OSes plus `sdk-compat` share it).
+   without `Swatinem/rust-cache@v2` (workspace `rust`). During the experiment use `save-if: true`
+   (a PR run with `save-if` main-only never saves, so the with-cache leg would always be a cold
+   miss) and measure two runs per OS: the first seeds the cache, the second restores it. Keep it
+   only on an OS where the restore run wins by a clear margin, otherwise leave it off; for any
+   cache that is kept, set `save-if` to main-only. Any kept cache must be sized against the 10 GB
+   per-repo cap (three OSes plus `sdk-compat` share it).
 5. **Fit the 20 min budget**: first root-cause, then choose levers. Take a per-step breakdown of a
    current Windows run (`gh run view <id> --json jobs`) to find what grew from 17m22 after #180 to
    ~43 min, and do the same for macOS and Linux. Removing the pg2 test step only helps Linux, so it
@@ -60,7 +65,9 @@ OS's PR check completes within 20 min of wall-clock latency.
    (no split of `deny`, rustdoc, signing or evals into new jobs), which keeps cross-OS coverage and
    the required-check set unchanged. If an OS is still over 20 min, apply only levers the
    measurement points at, each recorded in Decisions; dropping any cross-OS step also needs a
-   Decisions line narrowing the 2026-10-21 "every CI step runs on all three OSes" line.
+   Decisions line narrowing the 2026-10-21 "every CI step runs on all three OSes" line. If any OS
+   is still over 20 min after pg2 removal and the measured levers, the PR description reports the
+   miss and the remaining cause rather than shipping silently.
 
 ## Implementation Steps
 
@@ -70,7 +77,7 @@ OS's PR check completes within 20 min of wall-clock latency.
 2. In `ci.yml`: delete the `Test (pg2)` step and the "Before Test (pg2)" comment.
 3. Add `rust/.config/nextest.toml` with the slow-timeout.
 4. Push the branch; take the per-step breakdown (Design 5), run the with/without cache experiment
-   (Design 4), apply only measured levers, compare job durations to the 20 min target and the
+   (Design 4: `save-if: true`, seed run then restore run), apply only measured levers, compare job durations to the 20 min target and the
    issue baseline, and record the numbers in the PR description.
 5. Update docs and the master plan (below).
 
@@ -79,7 +86,8 @@ OS's PR check completes within 20 min of wall-clock latency.
 - `.github/workflows/ci.yml`
 - `.github/workflows/pg2.yml` (new)
 - `rust/.config/nextest.toml` (new)
-- `CONTRIBUTING.md` (CI paragraph, lines ~28–34; the pg2 sentence at ~30–32)
+- `CONTRIBUTING.md` (CI paragraph, lines ~28–34; the pg2 sentence at ~30–32; the release gate as a
+  readiness step in `## Releasing`)
 - `AGENTS.md` (the "pg2 clippy/test/rustdoc run on Linux only" sentence in Essential Commands)
 - `tasks/fontaine_harness_plan.md` (workspace layout CI paragraph at line 206; Decisions lines at 449
   (2026-10-25) and 450 (2026-11-04); line 41 and line 260 ("CI pg2 steps") checked for wording)
@@ -91,12 +99,6 @@ OS's PR check completes within 20 min of wall-clock latency.
 - **Drop pg2 tests from PRs vs. a separate cache for pg2**: a separate cache still costs a candle
   build on every cache miss and doubles cache storage; the scanner is opt-in and unused by the
   maintainer, so nightly coverage is enough (the issue's decision).
-- **Nightly workflow vs. a job in `ci.yml` gated on `main`**: a separate workflow cannot fail `CI`
-  and therefore cannot block the dev channel.
-- **Splitting `deny`/rustdoc/signing/evals into parallel jobs** is declined: it would change the
-  required-check set and lose cross-OS coverage, and #180 declined splitting too.
-- **Cache**: unconditional rust-cache is declined on #180's evidence; it is kept only where measured
-  to win.
 
 ## Decisions
 
@@ -108,10 +110,11 @@ OS's PR check completes within 20 min of wall-clock latency.
 
 ## Documentation
 
-- `CONTRIBUTING.md`: CI now runs pg2 tests nightly (and on dispatch), not per PR; document the
-  manual release check of the latest nightly.
+- `CONTRIBUTING.md`: CI now runs pg2 tests nightly (and on dispatch), not per PR; add the manual
+  release check of the latest nightly to the numbered readiness steps in `## Releasing`.
 - `AGENTS.md`: update the pg2 sentence in Essential Commands.
-- Master plan: update the `ci.yml` description (line 206) and add a Build and release Decisions line
+- Master plan: update the `ci.yml` description (line 206; the edit also corrects the sentence "PR
+  runs restore but do not save the cache" to match the outcome) and add a Build and release Decisions line
   that narrows the 2026-10-25 (line 449) and 2026-11-04 (line 450) lines (pg2 tests off PRs; no
   `cargo clean` any more). `tasks/design/platforms.md` line 8 gets the same wording fix.
 - `CHANGELOG.md`: add a CI entry.
@@ -127,8 +130,9 @@ pg2 workflow is exercised by `workflow_dispatch` after merge.
 
 1. After merge, trigger `gh workflow run pg2.yml` and confirm it completes green: the schedule and
    dispatch triggers only exist on the default branch, so this cannot run on the PR.
-2. If a cache was kept on any OS, confirm it is saved by the first `main` push and restored by the
-   next PR run (cache step log shows a hit).
+2. If a cache was kept on any OS (with `save-if` main-only), confirm the first `main` push saves it
+   and the next run restores it (cache step log shows a hit). The experiment's hit was already
+   observed on the PR's second run.
 
 ## Open Questions
 
