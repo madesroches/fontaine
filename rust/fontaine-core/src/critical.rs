@@ -50,8 +50,12 @@ pub fn critical_deletions(tool: &str, args: &Value, env: &CriticalEnv<'_>) -> Ve
 fn critical_shell(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Vec<String> {
     let analysis = analyze(command);
     let mut found = Vec::new();
+    // `cd sub && rm -rf ..` runs from a directory the walk does not track, so once the command
+    // changes directory only absolute and home-relative operands are read.
+    let mut moved = false;
     for simple in &analysis.commands {
         let Some(at) = deleter_position(&simple.words) else {
+            moved |= changes_directory(&simple.words);
             continue;
         };
         let mut options_ended = false;
@@ -65,6 +69,7 @@ fn critical_shell(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Vec<Stri
                 continue;
             }
             let target = match text {
+                Some(text) if moved && !is_absolute_operand(text) => None,
                 Some(text) => Some(text.to_string()),
                 None => home_target(operand, analysis.assignments, env),
             };
@@ -76,6 +81,17 @@ fn critical_shell(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Vec<Stri
         }
     }
     found
+}
+
+fn changes_directory(words: &[ShellWord]) -> bool {
+    words
+        .first()
+        .and_then(|word| word.literal.as_deref())
+        .is_some_and(|name| matches!(&*program_name(name), "cd" | "pushd" | "popd"))
+}
+
+fn is_absolute_operand(text: &str) -> bool {
+    Path::new(text).is_absolute() || text.starts_with(['/', '\\'])
 }
 
 /// Argv wrappers that run the command after their own options and arguments: the options that
@@ -126,6 +142,10 @@ fn deleter_position(words: &[ShellWord]) -> Option<usize> {
             if text == "--" {
                 at += 1;
                 break;
+            }
+            // `command -v rm /usr` only prints.
+            if name == "command" && text.starts_with('-') && text[1..].contains(['v', 'V']) {
+                return None;
             }
             if text.starts_with('-') && text.len() > 1 {
                 at += if value_options.contains(&text) { 2 } else { 1 };
@@ -299,6 +319,14 @@ mod tests {
             assert_eq!(deletions(cmd, None, &env), [expected], "{cmd}");
         }
         assert_eq!(
+            deletions("cd sub && rm -rf /", None, &env),
+            ["/ (file system root)"]
+        );
+        assert_eq!(
+            deletions("command rm -rf /", None, &env),
+            ["/ (file system root)"]
+        );
+        assert_eq!(
             deletions("rm -rf /home", None, &env),
             ["/home (top-level directory)"]
         );
@@ -354,6 +382,12 @@ mod tests {
             "grep -rw rm /etc",
             "echo rm /",
             "which rm /usr",
+            "command -v rm /usr",
+            "command -V rm /usr",
+            "export HOME=/tmp/x; rm -rf ~",
+            "export HOME=$(mktemp -d); rm -rf \"$HOME\"",
+            "cd sub && rm -rf ..",
+            "pushd sub; rm -rf ..",
             "git rm -r --cached .",
             "rm x",
             "rm -rf build",

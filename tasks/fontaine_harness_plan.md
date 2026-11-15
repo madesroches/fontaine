@@ -1017,6 +1017,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - AFK: 2026-11-15: (#654) shell `~`, `~/<literal>` and `$HOME`/`${HOME}` deletion targets resolve against `CriticalEnv.home` through a new `ShellWord.home_relative` field (`$HOME` only when the command has no assignment), because otherwise `rm -rf ~`, the most likely critical deletion, carries no `critical_deletions` fact once the floor's unreadable-command branch is gone.
 - AFK: 2026-11-15: (#654) `destructive.rs` keeps its own value-taking option list for grep/egrep/fgrep/rg instead of reusing the preclassifier's private, fast-path-only Spec tables, which miss `-e`, `-m`, `-g`, `--type` and others and would read `grep -m 5 pat f` as pattern `5`.
 - 2026-11-15: (#654) `Tier::CriticalPath` is retired (20 tiers): old ledgers and audit logs read it back as `protected_path`, and the headless v1 schema drops the `critical_path` enum value without a version bump, as for `plan_block`.
+- 2026-11-15 (user): (#654) The session scratch directory itself is not a `critical_deletions` target, though it is a workspace root, because it is private to the session and removed at exit; its parents stay critical.
 
 ### Project
 

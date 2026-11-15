@@ -361,9 +361,10 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
 - **`Remove-Item` targets reach the guardian.** A `powershell` call whose deleter (`Remove-Item`,
   `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`) names a drive root, a top-level directory, your home
   directory, a workspace root or a parent of one by a literal path carries it to the guardian as
-  `critical_deletions`, as for `shell`. The scan is a token reader, not a PowerShell parser: a
-  variable, a subexpression, a wildcard, a pipeline, a nested interpreter or a computed command
-  name adds nothing, and the guardian reads the command itself. Targets on other providers
+  `critical_deletions`, as for `shell`. The scan is a token reader, not a PowerShell parser: the home forms
+  (`~`, `$HOME`, `$env:USERPROFILE`, `%USERPROFILE%`) are resolved, but any other variable, a
+  subexpression, a wildcard, targets piped in, a relative target after a `Set-Location` or `cd`, a
+  nested interpreter or a computed command name adds nothing, and the guardian reads the command itself. Targets on other providers
   (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.
 - **Trusted skills.** A plugin skill you [trusted](extensions.md#trusted-skills) lends its specific
   `allowed-tools` as allows for the turn, after the floor, deny and ask rules and hooks. Its

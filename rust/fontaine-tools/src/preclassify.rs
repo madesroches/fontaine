@@ -337,8 +337,18 @@ impl Walk<'_> {
             // `export A=b` carries its assignment as a word; a prefix assignment is not a word
             // of the command, but its value can still hold a substitution.
             CommandPrefixOrSuffixItem::AssignmentWord(_, word) => {
-                // A suffix `a=b` is an argument; `export A=b` is rejected by its program name.
-                self.out.assignments |= words.is_none();
+                // A suffix `a=b` is an argument, except to a declaration builtin, which assigns.
+                self.out.assignments |= match words {
+                    None => true,
+                    Some(words) => words.first().is_some_and(|name| {
+                        name.literal.as_deref().is_some_and(|name| {
+                            matches!(
+                                name,
+                                "export" | "declare" | "typeset" | "local" | "readonly"
+                            )
+                        })
+                    }),
+                };
                 let classified = self.word(word);
                 if let Some(words) = words {
                     words.push(classified);
@@ -1393,6 +1403,15 @@ mod tests {
             "A=b; ls",
             "ls; A=b mv x y",
             "echo $(A=b ls)",
+        ] {
+            assert!(analyze(text).assignments, "{text}");
+        }
+        for text in [
+            "export HOME=/tmp/x",
+            "declare -x HOME=/tmp/x",
+            "typeset HOME=/tmp/x",
+            "local HOME=/tmp/x",
+            "readonly HOME=/tmp/x",
         ] {
             assert!(analyze(text).assignments, "{text}");
         }

@@ -17,6 +17,18 @@ const PATTERN_PARAMS: [&str; 3] = ["include", "exclude", "filter"];
 /// Parameters that take no value.
 const SWITCHES: [&str; 4] = ["recurse", "force", "whatif", "confirm"];
 
+/// Commands and aliases that change the working directory.
+const DIRECTORY_CHANGERS: [&str; 8] = [
+    "set-location",
+    "sl",
+    "cd",
+    "chdir",
+    "push-location",
+    "pushd",
+    "pop-location",
+    "popd",
+];
+
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
     /// `plain_head` is the byte length of `text` before its first quote, so `-Path:'x'` can be
@@ -35,14 +47,22 @@ enum Token {
 pub fn critical_powershell(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Vec<String> {
     let tokens = tokenize(command);
     let mut found = Vec::new();
+    // A directory change earlier in the command leaves relative operands without a known base.
+    let mut moved = false;
     for (at, token) in tokens.iter().enumerate() {
         let Token::Word { text, .. } = token else {
             continue;
         };
         // A deleter's name anywhere else is an argument (`echo rm C:\`).
         let at_command = at == 0 || matches!(tokens[at - 1], Token::Sep(c) if c != ',');
-        if at_command && DELETERS.contains(&command_name(text).as_str()) {
-            collect_operands(&tokens[at + 1..], base, env, &mut found);
+        if !at_command {
+            continue;
+        }
+        let name = command_name(text);
+        if DELETERS.contains(&name.as_str()) {
+            collect_operands(&tokens[at + 1..], base, moved, env, &mut found);
+        } else if DIRECTORY_CHANGERS.contains(&name.as_str()) {
+            moved = true;
         }
     }
     found
@@ -62,7 +82,13 @@ fn is_non_literal(text: &str) -> bool {
     text.contains(['$', '(', ')', '@', '{', '}', '%'])
 }
 
-fn collect_operands(rest: &[Token], base: &Path, env: &CriticalEnv<'_>, found: &mut Vec<String>) {
+fn collect_operands(
+    rest: &[Token],
+    base: &Path,
+    moved: bool,
+    env: &CriticalEnv<'_>,
+    found: &mut Vec<String>,
+) {
     let mut at = 0;
     while at < rest.len() {
         let (text, quoted, plain_head) = match &rest[at] {
@@ -84,7 +110,7 @@ fn collect_operands(rest: &[Token], base: &Path, env: &CriticalEnv<'_>, found: &
             && text.starts_with('-')
             && text[1..].starts_with(|c: char| c.is_ascii_alphabetic());
         if !is_option {
-            judge(text, base, env, found);
+            judge(text, base, moved, env, found);
             continue;
         }
         let (name, inline) = match text[1..].split_once(':') {
@@ -116,7 +142,7 @@ fn collect_operands(rest: &[Token], base: &Path, env: &CriticalEnv<'_>, found: &
         }
         if TARGET_PARAMS.contains(&known) {
             for value in values {
-                judge(value, base, env, found);
+                judge(value, base, moved, env, found);
             }
         }
     }
@@ -139,7 +165,7 @@ fn known_parameter(name: &str) -> Option<&'static str> {
 
 /// Adds `operand` to `found` when it is a literal path that names a critical place. A wildcard,
 /// an expansion and a home-relative path with no known home add nothing.
-fn judge(operand: &str, base: &Path, env: &CriticalEnv<'_>, found: &mut Vec<String>) {
+fn judge(operand: &str, base: &Path, moved: bool, env: &CriticalEnv<'_>, found: &mut Vec<String>) {
     let home = env.home.map(Path::to_string_lossy);
     let Expanded::Text(expanded) = expand_home(operand, home.as_deref()) else {
         return;
@@ -155,6 +181,9 @@ fn judge(operand: &str, base: &Path, env: &CriticalEnv<'_>, found: &mut Vec<Stri
         return;
     }
     if text.contains(['*', '?', '[']) {
+        return;
+    }
+    if moved && !(Path::new(text).is_absolute() || text.starts_with(['/', '\\'])) {
         return;
     }
     if let Some(place) = critical_place(text, base, env)
@@ -451,10 +480,21 @@ mod tests {
             "powershell -Command \"rm -r C:\\\"",
             "[IO.Directory]::Delete('x')",
             "Get-Help rm",
+            "cd sub; Remove-Item ..",
+            "Set-Location sub; Remove-Item ..",
+            "Push-Location sub; rm -r .",
             "Get-ChildItem | rm -Recurse",
         ] {
             assert_eq!(found(command), Vec::<String>::new(), "{command}");
         }
+    }
+
+    #[test]
+    fn a_directory_change_keeps_only_absolute_and_home_operands() {
+        let (root_dir, _) = top();
+        assert!(critical(&format!("cd sub; Remove-Item {root_dir}")));
+        assert!(critical(&format!("Set-Location sub; rm {root_dir}")));
+        assert!(critical("cd sub; Remove-Item ~"));
     }
 
     #[test]
