@@ -90,7 +90,11 @@ Keep the target recognition and drop the "cannot be shown not to" branches:
   the kind, e.g. `/home/me (home directory)`. Non-literal command names and targets, launchers,
   operand-free `rm`, unreadable commands and chains add nothing: they go to the guardian
   unannotated, and the full prompt's existing "a recursive delete whose target the call does not
-  make clear" clause covers them. The existing `rm -rf {/,x}` brace case: brush yields a
+  make clear" clause covers them. In `critical/powershell.rs`, the `Expanded::NoHome` branch
+  (`floor/powershell.rs:491`) and `wildcard_critical` (:559-596, `Remove-Item *`, `..\pro*`) are
+  "cannot be shown not to" outcomes: both are deleted under the literal-target rule, and their tests
+  (`a_missing_home_makes_home_targets_critical`, :993-1000, and the wildcard ones) are rewritten to
+  assert an empty result. The existing `rm -rf {/,x}` brace case: brush yields a
   non-literal word, so it adds nothing, and the guardian sees the raw command.
 - `ToolCallSummary` (`fontaine-guardian/src/request.rs`) gains
   `pub critical_deletions: Vec<String>`. Its doc comment says the harness computes it from the call
@@ -105,9 +109,10 @@ Keep the target recognition and drop the "cannot be shown not to" branches:
   `critical_deletions` entry is a harness-resolved deletion of the file system root, a top-level
   directory, the home directory or a workspace root or its parent, and it is this rule whatever the
   user's messages say.
-- Minimal profile: `guardian_minimal.md` gains a containment bullet under
-  `class=bind-mount-symlink`: a `critical_deletions` entry deletes a workspace root or the host
-  data mounted around it, so the call is `Container Escape`. This is the only destruction the
+- Minimal profile: `guardian_minimal.md` gains a sibling item after `class=bind-mount-symlink` in its "Containment integrity" list
+  (rule `Container Escape`), `class=host-data-delete`: a `critical_deletions` entry deletes a
+  workspace root or the host data mounted around it, and the Deny explanation ends with
+  `class=host-data-delete`. This is the only destruction the
   container profile judges, because it reaches past the container.
 
 ### 3. The composed guardian never score-allows a critical deletion
@@ -119,9 +124,7 @@ through to its `llm(call)` stage. This sits inside the script, before any verdic
 covers both the sequential and the concurrent `first_decisive` path. A script that does not call
 `llm` (a user composition) ends with an abstain, which is a fail-closed guardian Deny
 (`fail_closed = unparseable`, `composition/mod.rs:631-636`). The check lives in the engine, not in
-the preset scripts, so no user-scope script can opt out. `Call` gains a `critical_deletion()`
-accessor (bool) next to `destructive()` so scripts can route on it, and docs/guardian.md's
-host-function table lists it.
+the preset scripts, so no user-scope script can opt out.
 
 ### 4. `Tier::CriticalPath` retires
 
@@ -157,7 +160,8 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
    returned target, and the old "cannot be resolved" cases assert an empty result.
 2. **Pipeline.** Delete the critical-path block in `permissions.rs`. Fill
    `ToolCallSummary.critical_deletions` in `adjudication.rs` from `critical::critical_deletions`
-   with the call's scope and home.
+   with `CriticalEnv { scope: &state.scope(), home: state.home.as_deref() }`, the home the floor uses
+   today (`gate.rs:424`, `permissions.rs:1109`).
 3. **Guardian request and prompts.** Add the field to `request.rs`, render it in
    `prompt_builder.rs`, extend `rules.rs:42` and `guardian_minimal.md`, and update the snapshots
    that gain the fact (only new snapshot cases should differ). Reword the `prompt_builder.rs:411-416`
@@ -165,7 +169,7 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
    pre-digested" comment), e.g. "only the `critical_deletions` targets were resolved; read the rest
    of the command".
 4. **Composition guard.** Implement the `allow_below` → abstain rule (§3: `Score` carrying the
-   `Arc<EvalCtx>`) and the `Call::critical_deletion()` accessor in `composition/host.rs`/`mod.rs`.
+   `Arc<EvalCtx>`) in `composition/host.rs`.
 5. **Tier retirement.** Apply §4 across `tier.rs`, `permissions.rs`, `afk_report.rs`, the TUI
    fixtures (`notify.rs:161`, `screen.rs:694`, `linear.rs:626` → another floor tier such as
    `AskRule`), remove `critical_path` from `docs/schemas/headless-v1.schema.json` (pinned by
@@ -175,8 +179,8 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 7. **Tests.** Rewrite the critical-path integration tests to the new expectations (see Testing
    Strategy). `fontaine-evals/src/live.rs:364` `request_for` builds the `AdjudicationRequest` and
    a `ToolCallSummary` (:442) itself, with `Scope::new(root, [])` and no home: it fills
-   `critical_deletions` through `pub mod critical` in fontaine-core's `lib.rs`, with a home source
-   so the `rm -rf ~` case resolves. Update the evals: `evals/dataset/floor.jsonl` cases 7-9 and the
+   `critical_deletions` through `pub mod critical` in fontaine-core's `lib.rs`, with a fixed eval home such
+   as `/home/eval`, beside the existing `MEMORY_DIR`, so the `rm -rf ~` case resolves. Update the evals: `evals/dataset/floor.jsonl` cases 7-9 and the
    `tier05.jsonl` cases with `expected_tier: critical_path` (lines 2, 5, 10, 19), and the
    `evals/sequences/afk.jsonl` `afk-temp-critical-path-retries` case. Add golden guardian cases for
    critical deletions in both profiles.
@@ -211,13 +215,12 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 - **Keep recognized critical removals in the floor, drop only the "cannot be shown not to"
   outcomes** (Claude Code parity, no deviation). This fixes #654 with less change. It was not
   chosen because the maintainer's direction on the issue is that the floor should not decide on a
-  parse, and that some judgment is almost always required. The cost of the chosen route, an allow
-  rule or the screen able to clear `rm -rf ~`, is bounded by §2's hard-deny fact and §3's engine
-  guard. This plan does not bound the allow-rule part (see Decisions).
+  parse, and that some judgment is almost always required. The screen's ability to clear such a call is bounded by §2's
+  fact and §3's guard; the allow-rule part is the accepted risk in Decisions.
 - **Narrow fix: keep the deny, correct the reason text and the `paths` noise** (the issue's
   alternative). Rejected: the guardian still never sees a harmless `$BIN` test run.
 - **Pass no new fact, rely on raw args and `home_directory`**: simpler, but a hosted screen or a
-  small model reading `rm -rf "$(pwd)/.."` gains from the harness's own resolution, and the minimal
+  small model reading `rm -rf ..` from a workspace root, or a symlink to home, gains from the harness's own resolution, and the minimal
   profile has no rule to hang the decision on without a fact.
 - **Block the screen allow for every `destructive` call** instead of only critical deletions:
   broader than the issue and changes the screen's measured skip rate. Not taken.
@@ -243,7 +246,8 @@ non-literal (`preclassify.rs:382-388`) and `touched_paths` skips non-literal wor
 `AGENTS.md`'s floor invariant becomes "The deterministic floor (`deny → ask → protected-path`)
 gates EVERY mode". The `/guardian-disable` exception text is unchanged. The guardian fail-closed,
 no-zero-guardian and project-scope-only-tightens invariants are untouched: the change removes a
-deterministic stop, it does not add a loosening key.
+deterministic stop, it does not add a loosening key. `AGENTS.md:58-61` (the composed guardian's
+`allow_below` exception) gains "never for a call with a non-empty `critical_deletions`".
 
 ## Documentation
 
@@ -252,8 +256,7 @@ deterministic stop, it does not add a loosening key.
   (l.363-384) and the stale reference at l.203. Describe the `critical_deletions` fact where the
   guardian is mentioned.
 - `docs/guardian.md`: the floor summary (l.10, 264, 359), the new fact and both prompts' rule, the
-  `allow_below` exception where it is described (l.654: a critical deletion abstains) and the
-  `critical_deletion()` host function.
+  `allow_below` exception where it is described (l.654: a critical deletion abstains).
 - `docs/afk.md` (l.79, 163), `docs/headless.md` (l.232, 290), `docs/hooks.md` (l.210),
   `docs/tui.md` (l.587, 718), `docs/architecture.md` (l.156), `docs/agent-sdk.md` (l.140),
   `README.md` (l.11), `evals/README.md` (l.62, 111).
@@ -268,8 +271,8 @@ deterministic stop, it does not add a loosening key.
 ## Testing Strategy
 
 Unit tests (`critical.rs`, `critical/powershell.rs`):
-- Recognized targets return their resolved path and kind: `rm -rf /`, `rm -rf ~/`-free literal home
-  path, a workspace root, a parent of it, a symlink to home, `Remove-Item C:\`, a cwd-relative `..`.
+- Recognized targets return their resolved path and kind: `rm -rf /`, a literal home
+  path (`rm -rf /home/me`), a workspace root, a parent of it, a symlink to home, `Remove-Item C:\`, a cwd-relative `..`.
 - The #654 commands return nothing:
   `bin=$(ls -t target/debug/deps/agents-* | grep -v '\.d$' | head -1); ($bin t)`,
   `while pgrep -x rustc >/dev/null; do sleep 3; done`, `BIN=$(ls -t x); ($BIN t --exact)`; so do
@@ -279,10 +282,7 @@ Pipeline integration tests (`fontaine-core/tests`, scripted guardian):
 - **Regression for #654**: in AFK `auto` with a fixture guardian that allows, each of the three
   issue commands is allowed at `tier = guardian` and reaches the guardian once, with no
   `converted: floor` denial.
-- `rm -rf ~`/`rm -rf /` in `auto`: the guardian request carries `critical_deletions`. A fixture
-  screen composition whose score is below `allow_threshold` does **not** allow it: the LLM stage is
-  consulted, and with no LLM stage the call fails closed. This is a permissions property, so it is
-  automated, not manual.
+- `rm -rf ~`/`rm -rf /` in `auto`: the guardian request carries `critical_deletions`.
 - manual: `rm -rf /` prompts at `tier = mode`. dontAsk/headless: denied at `dont_ask`.
   `pipeline_headless.rs` expects the headless denial at `tier = mode`, `converted = mode`.
 - Existing tests asserting `Tier::CriticalPath` in `permissions*.rs`, `afk.rs`, `hook_slot.rs`,
@@ -293,6 +293,10 @@ Pipeline integration tests (`fontaine-core/tests`, scripted guardian):
 - `touched_paths` for the issue's first command is empty (no `\.d$` path, no glob-prefix path).
 
 Guardian:
+- `fontaine-guardian/tests/composition.rs`, beside `allow_below_under_the_threshold_allows` (:661),
+  with a request built via `tests/common/mod.rs` that has non-empty `critical_deletions`: a score
+  below `allow_threshold` does **not** allow, the call falls through to the LLM stage, and with no
+  LLM stage it fails closed.
 - Prompt-builder snapshot with a non-empty `critical_deletions`. Existing snapshots unchanged.
 - New golden cases in `evals/dataset` for `rm -rf ~` and `rm -rf <workspace root>` in the full and
   minimal profiles, expected `deny`, run with the fixture guardian in CI and with the live Haiku
