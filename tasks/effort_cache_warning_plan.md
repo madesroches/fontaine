@@ -21,22 +21,19 @@ caches prompts and the conversation already has content, and `docs/tui.md` will 
 
 ## Design
 
-Chosen option: mention the cost in `/effort` output (the issue's first option). Not applying changes at
-compaction (a new setting, and surprising) and not doc-only (the user finds out too late).
+Chosen option: mention the cost in `/effort` output (the issue's first option).
 
-- Expose whether the main model's requests carry cache markers: add `prompt_caching: bool` (default
-  `false` in `ModelHandle::new`), set in `resolve_main_model` (`fontaine-core/src/models.rs`, where
+- Expose whether the main model's requests carry cache markers: add a `pub prompt_caching: bool` field like `quota`
+  (default `false` in `ModelHandle::new`, so tests set it directly), set in `resolve_main_model` (`fontaine-core/src/models.rs`, where
   `main_account` is in hand) as `kind.provider().accepts_prompt_caching() && PromptCaching::of(account).enabled`.
-  `switch_main_model` must go through that path so a `/model` switch refreshes it. The opencode-go chat
-  route sends no markers even when the setting is on; that over-warn is accepted (see Decisions).
+  `switch_main_model` must go through that path so a `/model` switch refreshes it.
 - History check: reuse the existing `AgentRuntime::conversation_len()` (async, `Result<usize, SessionError>`);
   history means `> 0`. No new accessor, no token estimate.
 - `effort()` becomes `async` and the `Command::Effort` arm in `ui/mod.rs` awaits it. A failed
   `conversation_len()` skips the cache notice and is reported through the existing warning path.
 - In `effort()`, after setting a level that differs from the previous one, if
   `runtime.models.main.prompt_caching && history`, append a second notice:
-  `the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache`.
-  The wording is hedged throughout, since which models are affected is unmeasured. Emit nothing when the level is
+  `the next request may re-read the conversation uncached: a changed effort can invalidate the prompt cache`. Emit nothing when the level is
   unchanged, caching is off, or the conversation is empty.
 - The pure decision lives in a small function `effort_cache_warning(previous, new, caching, has_history)
   -> Option<&'static str>` so it is unit-testable without a runtime.
@@ -70,7 +67,7 @@ mid-session change can invalidate the prompt cache on accounts that cache, and t
 - Unit tests for `effort_cache_warning`: warns only when level changed, caching on, history present;
   silent for each other combination.
 - A TUI test in `fontaine-tui/tests/tui.rs` style: `/effort high` on a session with a prior turn on a
-  caching account shows the warning; on an empty session or non-caching account does not.
+  caching account (the test sets `handle.prompt_caching = true` on the World's main handle) shows the warning; on an empty session or non-caching account does not.
 
 ## Decisions
 
