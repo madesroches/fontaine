@@ -584,6 +584,6 @@ fn a_grep_pattern_file_stays_a_path() {
 
 #[test]
 fn rg_modes_without_a_pattern_keep_every_operand_a_path() {
-    assert_eq!(paths_of("rg --files ./src"), ["/w/src"]);
-    assert_eq!(paths_of("rg --type-list ./src"), ["/w/src"]);
+    assert_eq!(paths_of("rg --files sub/src"), ["/w/sub/src"]);
+    assert_eq!(paths_of("rg --type-list sub/src"), ["/w/sub/src"]);
 }
