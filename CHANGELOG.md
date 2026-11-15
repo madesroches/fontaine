@@ -349,6 +349,8 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Update the pinned Rust toolchain and workspace `rust-version` to 1.100.0 (#668); the testkit's
+  test-executable layout detection accepts Cargo 1.100's `build/<pkg>/<hash>/out/` location.
 - Tests that spawn helper binaries built as Cargo examples (`hook_marker`,
   `repo_mcp_server`, …) now locate them through a shared `fontaine-testkit::example_bin`
   helper that builds the example on first use per test process, so a per-package run such as

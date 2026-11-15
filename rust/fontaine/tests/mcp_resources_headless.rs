@@ -4,19 +4,11 @@
 mod common;
 
 use common::{Endpoint, Sandbox, Turn, Wire};
+use fontaine_testkit::example_bin;
 use serde_json::json;
 
 fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
+    example_bin("fontaine", name).to_string_lossy().into_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -210,9 +210,9 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 ```
 fontaine/
 ├── rust/
-│   ├── rust-toolchain.toml     # channel = "1.99.1" (rig 0.45.0 needs ≥ 1.97.1)
+│   ├── rust-toolchain.toml     # channel = "1.100.0" (rig 0.45.0 needs ≥ 1.97.1)
 │   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".cargo", ".fontaine", ".config", ".claude"]`, resolver = "2",
-│   │                           #   workspace.package: edition 2024, rust-version 1.99.1); rig crates pinned to exact versions
+│   │                           #   workspace.package: edition 2024, rust-version 1.100.0); rig crates pinned to exact versions
 │   ├── deny.toml               # cargo-deny config (advisories, licenses, bans, sources)
 │   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
@@ -481,6 +481,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#509, AFK): Update failures exit with distinct codes `EXIT_UPDATE_NOT_SELF_UPDATABLE` = 3, `EXIT_UPDATE_NETWORK` = 4, `EXIT_UPDATE_VERIFY` = 5 (config errors keep `EXIT_CONFIG` = 2); each is a kind scripts dispatch on.
 - 2026-11-08 (#527): The installers use `install-path = "~/.fontaine/bin"`, not Claude Code's `~/.local/bin` or cargo-dist's `$CARGO_HOME/bin`; reason: the directory is Fontaine's alone, shared with no other tool, and trivial to remove. No automatic migration of older `$CARGO_HOME/bin` installs.
 - 2026-11-14: (#627) iroh 1.4.1 is pinned exactly (`default-features = false, features = ["tls-ring"]`, plus `test-utils` only as a `fontaine-remote` dev-dependency for the in-process relay), in its own `fontaine-remote` crate so its dependency tree stays off `fontaine-guardian` and `fontaine-core`; licenses and advisories are covered by the existing `cargo deny check`.
+- 2026-11-15 (#668): Toolchain and workspace `rust-version` raised from 1.99.1 to 1.100.0; exact-version pin kept for reproducible CI.
 
 ### Config
 

@@ -75,7 +75,7 @@ fn build_and_copy(package: &str, name: &str) -> PathBuf {
     let cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
     let layout = Layout::from_exe(&exe, cargo_target_dir.as_deref()).unwrap_or_else(|| {
         panic!(
-            "{} is not under a target/<profile>/deps directory",
+            "{} is not under a target/<profile>/deps or target/<profile>/build/<package>/<hash>/out directory",
             exe.display()
         )
     });
@@ -292,7 +292,8 @@ fn resolve_nested_target(
     Some(found.canonicalize().unwrap_or(found))
 }
 
-/// The layout of a test binary's path: `target[<triple>]/<profile>/deps/<test>`.
+/// The layout of a test binary's path: `target[/<triple>]/<profile>/deps/<test>`, or, with
+/// Cargo's newer build-dir layout, `target[/<triple>]/<profile>/build/<package>/<hash>/out/<test>`.
 struct Layout {
     target_dir: PathBuf,
     triple: Option<String>,
@@ -313,11 +314,19 @@ impl Layout {
         cargo_target_dir: Option<&Path>,
         build_target: Option<&str>,
     ) -> Option<Layout> {
-        let deps = exe.parent()?;
-        if deps.file_name()? != "deps" {
+        let dir = exe.parent()?;
+        // Newer cargo puts test executables in `<profile>/build/<package>/<hash>/out`.
+        let profile_dir = if dir.file_name()? == "deps" {
+            dir.parent()?
+        } else if dir.file_name()? == "out" {
+            let build = dir.parent()?.parent()?.parent()?;
+            if build.file_name()? != "build" {
+                return None;
+            }
+            build.parent()?
+        } else {
             return None;
-        }
-        let profile_dir = deps.parent()?;
+        };
         let above = profile_dir.parent()?;
         // Cargo's configured target dir is authoritative when the exe descends from it:
         // anything between it and the profile dir is a triple, and the configured dir's
@@ -503,6 +512,53 @@ mod tests {
         assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
         assert_eq!(l.triple, None);
         assert_eq!(l.profile_dir, Path::new("/ws/rust/target/debug"));
+    }
+
+    #[test]
+    fn build_out_exe_gives_target_dir_and_no_triple() {
+        let l = layout("/ws/rust/target/debug/build/pkg/abc123/out/my_test").unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/ws/rust/target/debug"));
+    }
+
+    #[test]
+    fn build_out_exe_with_triple_sets_triple_and_strips_it_from_target_dir() {
+        let l = layout_with_target(
+            "/ws/rust/target/x86_64-pc-windows-gnu/debug/build/pkg/abc123/out/my_test.exe",
+            None,
+            Some("x86_64-pc-windows-gnu"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
+        assert_eq!(l.triple.as_deref(), Some("x86_64-pc-windows-gnu"));
+        assert_eq!(
+            l.profile_dir,
+            Path::new("/ws/rust/target/x86_64-pc-windows-gnu/debug")
+        );
+    }
+
+    #[test]
+    fn build_out_exe_under_configured_target_dir_uses_it() {
+        let l = layout_with_env(
+            "/cfg/tdir/debug/build/pkg/abc123/out/my_test",
+            Some("/cfg/tdir"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/cfg/tdir"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/cfg/tdir/debug"));
+    }
+
+    #[test]
+    fn out_dir_not_under_a_build_dir_is_rejected() {
+        assert!(layout("/ws/rust/target/debug/other/pkg/abc123/out/my_test").is_none());
+    }
+
+    #[test]
+    fn too_shallow_out_path_is_rejected() {
+        assert!(layout("/out/my_test").is_none());
+        assert!(layout("/a/out/my_test").is_none());
     }
 
     #[test]
