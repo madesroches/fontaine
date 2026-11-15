@@ -66,6 +66,9 @@ describe what the current build does; each page covers one topic.
   permission rules, and the differences from Claude Code.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
+- [Embedding in a Rust program](embedding.md): the `fontaine-sdk` crate: a session builder, host
+  tools and hooks, an approval callback and a typed event stream that is `headless-v1`, and how the
+  Rust, stdio and Claude Agent SDK routes relate.
 - [Claude subscription](claude-subscription.md): the account kind that runs your
   installed Claude Code CLI as the model transport on a Max or Ultra plan, its checks, limits and
   billing caveats.

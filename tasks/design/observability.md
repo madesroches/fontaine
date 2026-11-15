@@ -6,7 +6,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 
 **Facade: `tracing` everywhere.** Every crate instruments with `tracing` spans/events only — no
 crate but the `fontaine` bin depends on a subscriber or exporter (rig already emits GenAI-semconv
-`tracing` spans, so this is the one facade that sees them). for telemetry, `fontaine-guardian` uses only
+`tracing` spans, so this is the one facade that sees them). for telemetry, the SDK's `guardian` module uses only
 `tracing` (no subscriber or exporter) and stays embeddable: with no subscriber installed its spans are no-ops. The bin
 owns the global subscriber (`rust/fontaine/src/telemetry/`): a `tracing_subscriber::registry()`
 with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env filter; owner-only; Claude
@@ -66,7 +66,7 @@ them via `record_content_telemetry`.
   visible here; emitted from the turn loop, where the typed error is, not from the completion span, which
   closes the same way on error and on a cancelled call),
   `user_prompt` (length only), `tool_result` (tool_name, risk_class, success, duration, sizes,
-  tool_source builtin/mcp), `tool_decision` (CC attributes + `tier` = the `permissions.md` §Core data flow tier enum, `permission_mode`, `headless`, `guardian.{model,profile,verdict,
+  tool_source builtin/mcp/host), `tool_decision` (CC attributes + `tier` = the `permissions.md` §Core data flow tier enum, `permission_mode`, `headless`, `guardian.{model,profile,verdict,
   confidence,cache_hit,latency_ms}`, `fail_closed_reason` = error | timeout | unparseable |
   low_confidence | unavailable, with the audit label: provider error, stream drop or connection reset → `error` / `GuardianUnavailable`; missing credential or unavailable pinned guardian → `unavailable` / `GuardianUnavailable`; timeout → `timeout` / `Timeout`; unparseable → `unparseable` / `Unparseable`; low confidence → `low_confidence` / `LowConfidence`), `permission_mode_changed`, `mcp_server_connection`, `subagent`
   (spawn | complete | killed | budget_exhausted), `internal_error` (`class` = `audit_write` | `ledger_write`, on every failed write; never the io error).

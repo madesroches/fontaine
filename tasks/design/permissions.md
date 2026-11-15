@@ -5,13 +5,13 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 ## Core data flow
 
 ```
- user ──▶ TUI ──▶ rig-agent runtime, orchestrated by fontaine-core
+ user ──▶ TUI ──▶ rig-agent runtime, orchestrated by fontaine-sdk's `core` module
                       │  (AgentBuilder + AgentRun state machine; rig streams model events)
                       ▼
                ToolCall { name, args }
                       │
                       ▼  (every registered tool is a GuardedTool wrapper)
-         PermissionPipeline (fontaine-core; GuardedTool::call reaches it through the `ToolGate` trait)
+         PermissionPipeline (`fontaine-sdk::core`; GuardedTool::call reaches it through the `ToolGate` trait)
            1. registry.lookup(name) → RiskClass
            1a. User PreToolUse hooks (§User hooks): may return deny / ask / allow and an
               `updated_input` that replaces the call — every later step, the audit record and the
@@ -86,7 +86,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               fallback for the write tools). An external path never becomes a root: no write
               reach of its own, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
-           7. mode == auto → the composed guardian (`fontaine_guardian::composition::adjudicate`):
+           7. mode == auto → the composed guardian (`fontaine_sdk::guardian::composition::adjudicate`):
               the Rune script of `[guardian.composition]` (the `screen` preset by default) over
               the host leaves, the LLM guardian and the logprob reads ──▶ Verdict, inside a
               fail-closed root (instruction budget, time bound, no verdict = Deny). A script
@@ -157,7 +157,7 @@ floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (step 7) |
 `screen` (step 7: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `human`. A prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 
-**Critical deletions.** `critical::critical_deletions(tool, args, env)` (`fontaine-core`) returns, for `shell`, `monitor` and `powershell`, each `rm`/`rmdir`/`Remove-Item` operand whose literal target (resolved against the call's `cwd`, lexically and through `canonicalize`; `~`, `~/<literal>`, `$HOME` and `${HOME}` against the session home, `$HOME` only when the command assigns nothing) is the filesystem root, a top-level dir, home, a workspace root or a parent of one, as `<resolved path> (<kind>)`. Whatever it cannot resolve (an expanded command name or target, a launcher, a wildcard, a chain, an unreadable command) adds nothing and reaches the guardian unannotated. `adjudication::build` copies the result into `ToolCallSummary.critical_deletions`; the prompt builder renders it as a harness fact; the full profile's hard deny (`Destroy Pre-existing Files`) and the minimal profile's `class=host-data-delete` deny it; and the composition's `allow_below` abstains for a call that has one, so a score never allows it.
+**Critical deletions.** `critical::critical_deletions(tool, args, env)` (`fontaine-sdk::core`) returns, for `shell`, `monitor` and `powershell`, each `rm`/`rmdir`/`Remove-Item` operand whose literal target (resolved against the call's `cwd`, lexically and through `canonicalize`; `~`, `~/<literal>`, `$HOME` and `${HOME}` against the session home, `$HOME` only when the command assigns nothing) is the filesystem root, a top-level dir, home, a workspace root or a parent of one, as `<resolved path> (<kind>)`. Whatever it cannot resolve (an expanded command name or target, a launcher, a wildcard, a chain, an unreadable command) adds nothing and reaches the guardian unannotated. `adjudication::build` copies the result into `ToolCallSummary.critical_deletions`; the prompt builder renders it as a harness fact; the full profile's hard deny (`Destroy Pre-existing Files`) and the minimal profile's `class=host-data-delete` deny it; and the composition's `allow_below` abstains for a call that has one, so a score never allows it.
 
 **Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
 grants, the user-hook runner, the session ledger (source of task intent, recent user messages,

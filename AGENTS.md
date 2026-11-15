@@ -82,15 +82,17 @@ all tests pass:
   root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
   `SECURITY.md`, `.gitignore`, `.ignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
-  sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
-  `fontaine-guardian`, `fontaine-agents`, `fontaine-tui`, `fontaine-remote` (iroh transport for
-  `fontaine send` and `/remote-inbox`; core-free), `fontaine-evals`, `fontaine-testkit`
+  sits directly under `rust/`**: `fontaine` (bin), `fontaine-sdk` (the embeddable agent; its
+  `core`, `tools`, `agents` and `guardian` modules hold what were four crates, and its crate root
+  is the one documented, semver-stable surface), `fontaine-tui`, `fontaine-remote` (iroh transport
+  for `fontaine send` and `/remote-inbox`; core-free), `fontaine-evals`, `fontaine-testkit`
   (dev-only test helpers).
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.
   No custom provider layer; no custom agent loop or history management. Do not adopt rig's
   Bevy-based `rig-harness` / `rig-tui`.
-- Keep `fontaine-guardian` dependency-light and lift-out-able (embeddable by other harnesses).
+- Keep the SDK's `guardian` module dependency-light and free of `core`/`tools`/`agents` imports
+  (test-enforced); `tools` and `agents` likewise never import `core`.
 - `docs/` is the standalone, website-ready home for all product documentation (one topic per
   page; `README.md` stays a thin front door; links leaving `docs/` are absolute GitHub URLs and
   every page is listed in both `docs/SUMMARY.md` and `docs/index.md`). Documentation is a
@@ -115,7 +117,7 @@ all tests pass:
   `String`.
 - Keep the cause as `source()`; never `format!("{e}")` an error into another error's message.
   Render the full chain once, where the error reaches a human, with
-  `fontaine_tools::error_chain::chain`. The exception is wrapping a third-party error whose own
+  `fontaine_sdk::tools::error_chain::chain`. The exception is wrapping a third-party error whose own
   type drops `source()` (rig's `ProviderError::Http`): its chain may go into Display, as
   `CausedClient` does.
 - `expect("why this cannot fail")` instead of `unwrap()` outside tests. An invariant panics
@@ -125,7 +127,7 @@ all tests pass:
   `Approver` (whose default implementation writes to stderr) rather than writing to stderr directly.
   `let _ =` is only for best-effort cleanup and sends to closed channels.
 - Lock poisoning: a lock whose contents feed a permission or guardian decision, a spend tally, the
-  model in use or a durable record panics on poison (`fontaine_tools::lock::{lock, read, write}`);
+  model in use or a durable record panics on poison (`fontaine_sdk::tools::lock::{lock, read, write}`);
   only display or advisory state recovers (`lock_recovering` and kin), with a one-line reason at
   the call site. Don't write `unwrap_or_else(|e| e.into_inner())` anywhere else.
 - Error text may explain a Deny, never change it.

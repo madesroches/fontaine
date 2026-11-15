@@ -216,21 +216,17 @@ fontaine/
 │   ├── deny.toml               # cargo-deny config (advisories, licenses, bans, sources)
 │   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
-│   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, rig bookkeeping hooks),
-│   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
-│   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md,
-│   │                           #   registry assembly (full choke-point test: `fontaine-core/tests/choke_point.rs`);
-│   │                           #   `prompts/system_prompt.md`
-│   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
-│   │                           #   rig-core Tool (calls the `ToolGate` trait it defines); rig-tools built-ins re-exposed with risk
-│   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config;
-│   │                           #   MCP servers (`mcp`): rig-rmcp wiring, tools registered as `RiskClass::Arbitrary`
-│   ├── fontaine-guardian/      # the guardian agent: verdict protocol (rig extractor),
-│   │                           #   prompt builder, rules config, caching, fail-closed logic, result scanner;
-│   │                           #   `prompts/` (guardian, minimal, scanner) + `data/guardian_models.toml`
-│   ├── fontaine-agents/        # parallel subagent orchestration on rig-agent: spawn/list/
-│   │                           #   interrupt, per-type tool registries, budgets (v1); defines the
-│   │                           #   `ChildRunner` trait (implemented by core)
+│   ├── fontaine-sdk/           # the embeddable agent, the one crate an embedder names; modules:
+│   │                           #   `core` (session orchestration on rig-agent, permission pipeline + rule grammar,
+│   │                           #   settings scope stack, workspace trust, user hooks, session ledger, extension loading,
+│   │                           #   registry assembly; `prompts/core/`), `tools` (risk metadata registry + GuardedTool around
+│   │                           #   rig-core Tool, calls the `ToolGate` trait it defines; workspace-scope validation; MCP servers
+│   │                           #   as `RiskClass::Arbitrary`; `HostTool`), `agents` (parallel subagent orchestration, defines the
+│   │                           #   `ChildRunner` trait implemented by core), `guardian` (verdict protocol, prompt builder, rules,
+│   │                           #   caching, fail-closed logic, result scanner; `prompts/guardian/` + `data/guardian_models.toml`;
+│   │                           #   imports nothing from the other three, test-enforced), plus `events` (typed `headless-v1`),
+│   │                           #   `run` (the headless run loop), `assemble` (session assembly), `session` (`SessionBuilder`,
+│   │                           #   `Session`), `error`; full choke-point tests: `fontaine-sdk/tests/{core,tools}_choke_point.rs`
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
 │   ├── fontaine-remote/        # one-shot remote messages over iroh (`fontaine send`, `/remote-inbox`): protocol, ticket, inbox, server, client; core-free, meets the TUI only through the `Delivery` trait
 │   ├── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
@@ -247,18 +243,15 @@ fontaine/
 Crate dependency graph (arrows point at dependencies; no cycles):
 
 ```
-fontaine (bin+lib)       ─▶ fontaine-core, fontaine-tui, fontaine-remote
-fontaine-evals (bin+lib) ─▶ fontaine-core, fontaine-guardian, fontaine-tools
-fontaine-tui          ─▶ fontaine-core, fontaine-remote
+fontaine (bin+lib)       ─▶ fontaine-sdk, fontaine-tui, fontaine-remote
+fontaine-evals (bin+lib) ─▶ fontaine-sdk
+fontaine-tui          ─▶ fontaine-sdk, fontaine-remote
 fontaine-remote       ─▶ (no Fontaine crates; pulls iroh)
-fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-agents
-fontaine-agents       ─▶ fontaine-tools
-fontaine-guardian     ─▶ (no Fontaine crates)
-fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
-fontaine-testkit      ─▶ (no Fontaine crates; dev-dependency of fontaine, fontaine-core, fontaine-tools, fontaine-tui)
+fontaine-sdk          ─▶ (no Fontaine crates; inside it `core` uses `tools`, `guardian` and `agents`, `agents` uses `tools`, and `tools` and `guardian` never use `core`)
+fontaine-testkit      ─▶ (no Fontaine crates; dev-dependency of fontaine, fontaine-sdk, fontaine-tui)
 ```
 
-Cargo features: `fontaine/pg2 = ["fontaine-core/pg2"]` and `fontaine-core/pg2 = ["fontaine-guardian/pg2"]` forward the optional PromptGuard 2 scanner (Phase 6); CI pg2 steps and the nightly `pg2.yml` use `--features fontaine/pg2`.
+Cargo features: `fontaine/pg2 = ["fontaine-sdk/pg2"]` (and the same in `fontaine-evals`) forward the optional PromptGuard 2 scanner (Phase 6); CI pg2 steps and the nightly `pg2.yml` use `--features fontaine/pg2`.
 
 Phase-owned design sections live in the phase plans: model layer + headless I/O contract (Phase 1),
 tools/risk registry/GuardedTool + multi-root workspace + session ledger (Phase 2), permission modes
@@ -544,6 +537,19 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-26: User-tier rules carry `Origin::User`, not `Origin::Rule`, so the guardian's ordering places them with the user tier (#7).
 - 2026-10-27: `--cd <DIR>` (short `-C`) is a Fontaine addition with no Claude Code equivalent; it changes the process working directory as well as `Host.cwd`, because relative `--settings`/`--add-dir`/`--debug-file` values and spawned children must agree with the project directory (#145).
 - 2026-10-27: Auto memory (`[memory] auto`, user-scope only, on by default for testing at the user's request; the default should return to off until the memory-poisoning scorecard is run) stores notes under `<data dir>/memory/<project key>/`, outside the repository, and the agent writes them with the ordinary `write`/`edit` tools, which the protected-path floor and, in `auto`, the guardian gate; there is no memory fast path. The loaded index is framed as unverified notes and kept out of the guardian's `project_instructions`; the guardian sees the directory as a core-set session fact. Claude Code keeps its memory in `~/.claude/projects/` and writes it without a per-write check (#8)
+
+### Embedding
+
+- 2026-11-14 (#15): Rust embedding is a typed, in-process facade whose event stream serializes to `headless-v1` unchanged; foreign languages use the existing stdio surfaces, with no third protocol.
+- 2026-11-14 (#15, user): The Rust SDK is a single crate, `fontaine-sdk`; `fontaine-core`, `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` become its modules in this same change. Deviates from the guardian crate's lift-out rule: the guardian is no longer separately liftable (a guardian-only consumer pins an older `fontaine-guardian` release or vendors the module); its independence is kept by a test that forbids `crate::{core,tools,agents}` paths in the guardian module. Rune is a non-optional SDK dependency because core uses `guardian::composition` unconditionally.
+- 2026-11-14 (#15): Publication is out of scope; the publish set would be `fontaine-sdk` alone.
+- 2026-11-14 (#15): Embedded approvals use `HumanChannel::Delegate`, not a new channel: the delegate semantics (asked only after the floor, hooks, rules and guardian; no "always allow") are exactly what an embedder needs.
+- 2026-11-14 (#15): `AgentSetup` stays reachable through the `pub` `core` tree but is not part of the semver-stable root facade.
+- 2026-11-14 (#15): Provider warnings go through the process-global `providers::warn::set_sink` (latest session wins), so with several embedded sessions they reach the most recently built session's approver.
+- 2026-11-14 (#15): The SDK crate is named `fontaine-sdk`: Rust crate names are hyphenated, and the issue frames it as SDK parity. The bare name `fontaine` stays the binary's package, so no release plumbing is renamed.
+- 2026-11-14 (#15): AFK: Host tools keep bare names and are not addressable by permission rules, `allowed_tools`/`disallowed_tools`, agent-type `tools` lists or hook matchers; `build()` rejects host-tool names in `allowed_tools`/`disallowed_tools`, and `hook()` and the approver tighten them. Deviates from Claude Code, where custom tools are MCP tools and rule-addressable: extending rule parsing to host tools is left for later.
+- 2026-11-14 (#15): AFK: One persistent event channel feeds Turns in order: `init` is the first item of the first Turn, each Turn ends after its `result`, between-turn events go to the next Turn, a dropped Turn drains to its `result`, `send` after the task exited yields `Err(EmbedError::Runtime)`, and `close()` returns the trailing `afk_report` as `Result<Option<AfkReport>, EmbedError>`.
+- 2026-11-14 (#15): AFK: Dropping a `Session` without `close()` triggers the shared `Cancel`, closes the input and moves the `Scratch` guard into the task; `SessionEnd` hooks fire only through `close()`.
 
 ### Evals
 

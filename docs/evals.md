@@ -313,7 +313,7 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:work/c
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:work/claude-haiku-5-5 --profile minimal --out ../evals/scorecards/claude-haiku-5-5-minimal.json
 ```
 
-The full-profile run updates `rust/fontaine-guardian/data/guardian_models.toml`; the minimal run
+The full-profile run updates `rust/fontaine-sdk/data/guardian_models.toml`; the minimal run
 reports the `minimal` column and never touches it. See [the runner](https://github.com/madesroches/fontaine/blob/main/evals/README.md#live-mode)
 for the flags.
 

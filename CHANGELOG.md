@@ -41,6 +41,15 @@ All notable changes are recorded here. The format follows
   frames the call as a permission-system verification step. `evals/baselines/pipeline.jsonl` now holds
   66 records recorded with `claude` 2.1.325 and every divergence is fixed or recorded in the plan's
   Decisions; `floor-protected-path-edit` gains the `.fontaine/settings.toml` workspace file it needs.
+- Embeddable Rust API (#15): the new `fontaine-sdk` crate runs the guarded agent in process. A
+  `SessionBuilder` takes the project directory, mode, model, limits, an approver (answered through
+  `HumanChannel::Delegate`), callback hooks and host tools, and a `Session` yields each prompt's
+  `Turn` as a stream of typed `Event`s that serialize to the same `headless-v1` JSON as `fontaine -p`.
+  Host tools are gated as arbitrary-risk tools and report `tool_source` `host`. `fontaine-core`,
+  `fontaine-tools`, `fontaine-agents` and `fontaine-guardian` are now modules of `fontaine-sdk`
+  (`core`, `tools`, `agents`, `guardian`), the headless run loop and session assembly moved into it,
+  and the guardian module is kept free of imports from the others by a test. The Rune dependency is
+  no longer optional. See [Embedding in a Rust program](docs/embedding.md).
 - Goal token and wall-clock budgets (#444): `[goal] max_tokens` and `[goal] max_duration_secs`
   (user scope, unset by default) pause an unattended goal stretch when its tokens, priced or not, or
   its elapsed time pass the cap, checked at the evaluation boundary like `max_turns`. A stretch can

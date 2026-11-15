@@ -5,7 +5,8 @@ application can use `fontaine` as its Claude Code executable. Fontaine serves th
 Claude Code's stream-json protocol: Claude-shaped `system`, `assistant`, `user`, `stream_event` and
 `result` messages, and `control_request` / `control_response` traffic in both directions. It keeps
 its own agent loop, models, tools, sessions, guardian and permission pipeline. The surface is
-separate from [`headless-v1`](headless.md), which does not change.
+separate from [`headless-v1`](headless.md), which does not change. A Rust program can skip the
+process boundary altogether; see [Embedding in a Rust program](embedding.md).
 
 Tested against TypeScript SDK `0.3.325`, Python SDK `0.2.182` and the Claude Code `2.1.325`
 protocol.

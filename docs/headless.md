@@ -3,7 +3,8 @@
 `fontaine -p "task"` runs one task without a terminal and exits. It is the surface the CI
 integration tests, the eval runner and any external consumer drive, so its output is a versioned
 contract: [a checked-in JSON Schema](schemas/headless-v1.schema.json) describes every object it
-prints.
+prints. A Rust program can run the same agent in process and read these objects as typed
+events; see [Embedding in a Rust program](embedding.md).
 
 ```
 fontaine -p "explain what main.rs does"
