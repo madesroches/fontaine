@@ -371,6 +371,12 @@ All notable changes are recorded here. The format follows
   `pg2.yml` workflow (also runnable with `workflow_dispatch`), which cuts about 15-21 minutes from
   the Linux job; pg2 clippy, rustdoc and check stay on PRs. `cargo nextest run` now kills a test
   that runs 10 minutes, naming it, through `rust/.config/nextest.toml` (#652).
+- Test processes no longer rebuild the dependency tree on every run: the nested example build in
+  `fontaine-testkit` now drops the variables cargo sets for the test process, so a full
+  `cargo nextest run` takes 2 minutes locally instead of 13 and no test is flagged slow (#652).
+- CI restores a `rust-cache` dependency cache on Linux and macOS (saved from `main` runs only) and
+  removes the Linux disk cleanup's serial wait; Linux and macOS PR checks now finish in about
+  17 minutes. Windows still runs cold, about 25 minutes (#652).
 
 ### Added
 

@@ -75,15 +75,13 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: rustup toolchain install
 
-      # Experiment (#652): measure a seed run and a restore run per OS against the no-cache
-      # baseline; keep it only where the restore run is at least 3 min faster, with `save-if`
-      # on main only.
+      # Off on Windows: the restore run was no faster there (25m31s vs 25m00s without it).
       - name: Cache dependencies
         if: needs.changes.outputs.code == 'true' && runner.os != 'Windows'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-          save-if: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny and cargo-nextest
         if: needs.changes.outputs.code == 'true'
@@ -105,15 +103,7 @@ jobs:
 
       - name: Build tests
         if: needs.changes.outputs.code == 'true'
-        run: cargo test --no-run --timings
-
-      # Temporary (#652): where the build time goes, per OS.
-      - name: Upload build timings
-        if: needs.changes.outputs.code == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: timings-${{ runner.os }}
-          path: rust/target/cargo-timings/cargo-timing.html
+        run: cargo test --no-run
 
       - name: Test
         if: needs.changes.outputs.code == 'true'
