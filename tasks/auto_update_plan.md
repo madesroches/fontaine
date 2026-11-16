@@ -51,18 +51,20 @@ TUI start (not -p, not send, receipt install, [updates] auto_update)
        stage: download archive+sig → verify_file + check_binding   (reuses update())
        Unix:    replace_binary (atomic persist under the receipt lock), write receipt, write marker
        Windows: leave staged dir, start the helper (below)
-next launch: marker present and running version == marker.to → one Notice::info, delete marker
+next launch: marker present and receipt version (receipt::locate) == marker.to → one Notice::info, delete marker
 ```
 
 ### Code shape (DRY)
 
 Split `update::update()` into stages that both callers use, in `update/mod.rs`:
 
-- `prepare(client, params) -> Result<Prepared, UpdateError>`: locate, lock, compare, download,
+- `prepare(client, params) -> Result<Prepare, UpdateError>`, where `Prepare` is `UpToDate` or
+  `Ready(Prepared)`: locate, lock, compare, download,
   verify, bind. `Prepared` holds `InstallInfo`, the verified archive path (in a work dir created
   beside the binary), `Verified` and the receipt lock guard.
 - `install(prepared) -> Outcome`: `install::replace_binary` and the receipt rewrite.
-- `update()` = `prepare` + `install` (behavior unchanged; its tests keep passing).
+- `update()` = `prepare` + `install` (behavior unchanged, still returns `Outcome::UpToDate` for
+  `Prepare::UpToDate`; its tests keep passing).
 
 New `update/auto.rs` owns only the background policy: the cadence, the lock, the marker, the log,
 the notices, the Windows hand-off. Move `stamp_due`/`write_stamp` out of `plugin_auto_update.rs`
@@ -74,8 +76,6 @@ into a shared `stamp.rs` that takes the file name, and have both passes call it.
 a catalog row, the `config.rs` section and overlay, rows in the `docs/configuration.md` matrix and a
 `[updates]` section, a paragraph in `docs/installing.md`. Project scope and `--settings` are rejected
 like `plugins.auto_update`. Off disables the check and the install; `fontaine update` still works.
-There is no channel key: the channel is the receipt's, changed only by reinstalling with the other
-channel's installer, so an update can never be a channel switch.
 
 ### Gating
 
@@ -108,8 +108,10 @@ binary is kept as `<exe>.prev` (hard link taken before the rename) for rollback.
 
 The running executable is locked, so the session never replaces itself. After verification the pass
 keeps the verified archive, its `.minisig` and a manifest (`channel`, `version`, `sha256`) in
-`<data>/update-staged/<version>/` (written to a temp name and renamed), then starts a detached
-helper and returns.
+`<data>/update-staged/<version>/` (copied from the work dir, not renamed: it may be on another
+filesystem; the manifest is written to a temp name and renamed), then starts a detached
+helper and returns. The pass drops the receipt lock (the `Prepared` guard) when it hands off to
+the helper.
 
 - **Helper** = a per-spawn copy of the currently running, already trusted `fontaine.exe`
   (`<data>/update-helper/fontaine-helper-<pid>.exe`) started with a hidden internal subcommand. The
@@ -119,9 +121,10 @@ helper and returns.
 - **Wait:** the helper polls (every 2 s) whether the target can be opened for exclusive write, i.e.
   no Fontaine process runs from it. It gives up after 24 h and leaves the stage for the next
   launch's pass to retry. It never relaunches Fontaine and shows no console window.
-- **Swap:** when free, under the receipt lock it re-verifies the staged archive with
+- **Swap:** when free, under the receipt lock it extracts the staged archive into a fresh
+  `.fontaine-update-*` work dir beside the binary, re-verifies the staged archive with
   `verify_file` + `check_binding` against the embedded key (the stage persisted across launches),
-  re-compares versions (a newer build installed meanwhile wins), runs `replace_binary`, rewrites the
+  re-compares versions (a newer build installed meanwhile wins), calls `replace_binary`, rewrites the
   receipt, writes the marker, removes the stage. Per-user install dir, so no UAC.
 - **Interruption:** the stage stays until applied; a killed helper is replaced by the next launch's
   pass (stamp permitting, plus a check at every launch for an existing stage with no live helper,
@@ -137,14 +140,6 @@ lock, rewrites the receipt version, and records the rolled-back build in `<data>
 auto-update does not reinstall that same build; a still newer build clears the skip. `fontaine
 update` (manual) ignores the skip.
 
-### Dev channel versioning
-
-Dev builds are ordered by the build number `n` in `<version>-dev.<n>+<commit>`
-(`release_index::dev_build_number`, `compare`); only a strictly greater `n` installs, so a re-run
-or an older feed is never a downgrade. Release builds compare by semver. A build of the other
-channel is never offered because the index is queried for the receipt's channel and the signed
-binding must name that channel.
-
 ### Failure reporting
 
 Outcomes go to `<data>/updates.jsonl`, one line per check or update (`timestamp`, `channel`,
@@ -158,9 +153,11 @@ and receipt are untouched on every failure.
 ### Notice
 
 The marker `<data>/update-applied.json` (`from`, `to`, `channel`) is written after a successful
-swap. An interactive start whose running version equals `to` shows one
+swap. An interactive start whose receipt version equals `to` shows one
 `Fontaine updated to vX.Y.Z` (`dev.N (…)` text reuses `Outcome::report` formatting for dev) and
-deletes the marker; a marker whose `to` does not match the running version is deleted silently.
+deletes the marker. The comparison uses the version in the receipt for the running executable
+(`receipt::locate`), not `VERSION` (on dev `<pkg>-dev+<sha12>`, never equal to the signed
+`<base>-dev.<N>+<sha7>`); a marker whose `to` does not match is deleted silently.
 
 ## Implementation Steps
 
@@ -185,14 +182,11 @@ deletes the marker; a marker whose `to` does not match the running version is de
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs`, new `update_auto.rs`; core `tests/config.rs`
-- `docs/installing.md`, `docs/configuration.md`, `docs/tui.md`
+- `docs/installing.md`, `docs/configuration.md`, `docs/tui.md`, `docs/headless.md`
 - `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
-- **Wrap axoupdater vs keep the minimal updater:** the tree already has its own updater with the
-  signature binding, receipt rules and tests; axoupdater verifies nothing beyond TLS and would
-  still need the wrapper. Keeping the minimal one avoids a dependency and a second code path.
 - **Unix: swap in the background vs stage then swap at next launch:** the in-process swap at next
   launch would run the old binary for that launch; an atomic rename in the background already
   satisfies "no interruption" and "next launch uses the new version", with one verification.
@@ -205,13 +199,17 @@ deletes the marker; a marker whose `to` does not match the running version is de
 
 - 2026-11-15 (#175): Background auto-update reuses the minimal updater (no axoupdater); channel stays receipt-derived with no config key, so an update is never a channel switch. Reason: one verification path and the 2026-11-08 decision.
 - 2026-11-15 (#175): No automatic rollback; one `<exe>.prev` generation plus `fontaine update --rollback` and a skip record. Reason: a binary that cannot start cannot report failure, and a boot-health protocol is out of scope for the first release.
-- 2026-11-15 (#175): Deviation from Claude Code, which applies updates by its own policy: Fontaine's update is on by default and silent apart from one post-update notice; `[updates] auto_update` (user scope only) opts out. Reason: the maintainer's scope decision of 2026-11-15.
+- 2026-11-15 (#175): Deviation from Claude Code, which applies updates by its own policy: Fontaine's update is on by default and silent apart from one post-update notice and a once-shown warning on a failed update; `[updates] auto_update` (user scope only) opts out. Reason: the maintainer's scope decision of 2026-11-15.
 - 2026-11-15 (#175): Supersedes the Windows rename-aside note of 2026-11-08 for the background path only; the helper swaps when no process runs the target.
+- 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable; `fontaine update --rollback` ships in the first release.
 
 ## Documentation
 
 - `docs/installing.md`: automatic updates, the opt-out, silent cases, rollback, Windows behavior,
-  log and marker files.
+  log and marker files; the uninstall sections name the new files (`.prev`, `update-staged`,
+  `update-helper`, `update.lock`, `updates.jsonl`, `update-applied.json`, `update-state.json`,
+  `update-skip`).
+- `docs/headless.md`: `fontaine update`, including `--rollback`.
 - `docs/configuration.md`: `[updates]` section and the user-only matrix row (validated by
   `cargo test -p fontaine-core --test docs`).
 - `docs/tui.md`: the post-update notice.
@@ -233,8 +231,9 @@ Unit and integration tests with wiremock and the existing release-index and sign
   `update()` installs once.
 - Config: `updates.auto_update` rejected from project scope and `--settings` (`config_scope` tests),
   accepted in user scope; docs test.
-- Notice: marker matching the running version shows once and is deleted; mismatched marker is
-  deleted silently.
+- Notice: marker matching the receipt version shows once and is deleted; mismatched marker is
+  deleted silently; a dev-shaped `VERSION` (`<pkg>-dev+<sha12>`) with a receipt at
+  `<base>-dev.<N>+<sha7>` still shows the notice.
 - Rollback: `--rollback` restores `.prev`, rewrites the receipt, and the skip file stops reinstall of
   that build.
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
@@ -251,8 +250,3 @@ Unit and integration tests with wiremock and the existing release-index and sign
    `update-staged\` exists, exit Fontaine, and within ~5 s `fontaine --version` shows the new build
    with no UAC prompt and no window. Not automated because it needs an interactive session holding
    the lock; CI covers the non-interactive variant.
-
-## Open Questions
-
-- Should the Windows helper's 24 h give-up be configurable? Proposed: no.
-- Should `fontaine update --rollback` be in the first release or follow it? Proposed: ship it.
