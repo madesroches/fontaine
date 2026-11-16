@@ -255,6 +255,7 @@ pub async fn assess_evasion(
         retries: RETRIES,
         max_tokens: MAX_TOKENS,
         additional_params: guardian.additional_params.as_ref(),
+        params_refused: Some(&guardian.params_refused),
         rejection: None,
     };
     let reported =

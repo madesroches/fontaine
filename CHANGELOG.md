@@ -20,10 +20,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
-- `thinking_off` account key, `databricks` only: `true` adds the Chat wire's thinking-off parameter
-  to the guardian's and the scanner's forced-call requests, so a model that thinks by default can
-  give a verdict. Opt-in because the gateway's acceptance of the parameter is unverified; a refusal
-  still fails closed.
+- `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
+  forced-call requests to a Chat-wire model carry the thinking-off parameter, so a model that
+  thinks by default can give a verdict. A workspace that refuses the parameter costs the first
+  attempt: the guardian and the scanner retry without it and do not send it again for the session.
+  `thinking_off = false` opts out of that first attempt.
 - Automatic background updates (#175): at interactive start, at most once a day, an install made by
   a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
   minisign signature against the key compiled into the running binary and makes it the next

@@ -1,6 +1,7 @@
 //! One stateless, tool-less model conversation per adjudication. Every outcome that is not a
 //! verdict the model returned is a denial decided here, by code.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -103,6 +104,9 @@ pub struct Guardian {
     /// Extra request parameters, e.g. the one that turns thinking off for a model that refuses a
     /// forced tool call while thinking.
     pub(crate) additional_params: Option<serde_json::Value>,
+    /// Raised by the first refusal of `additional_params`; every later request leaves them out.
+    /// The evasion review shares it, because it asks the same model.
+    pub(crate) params_refused: AtomicBool,
     pub(crate) mode: ModeResolver,
 }
 
@@ -114,6 +118,7 @@ impl Guardian {
             settings,
             cache: Mutex::default(),
             additional_params: None,
+            params_refused: AtomicBool::new(false),
             mode: ModeResolver::default(),
         }
     }
@@ -153,6 +158,7 @@ impl Guardian {
             settings,
             cache: Mutex::default(),
             additional_params: None,
+            params_refused: AtomicBool::new(false),
             mode: ModeResolver::default(),
         }
     }
@@ -321,6 +327,7 @@ impl Guardian {
             retries: EXTRACTOR_RETRIES,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
+            params_refused: Some(&self.params_refused),
             rejection: Some(crate::guardian::verdict::rejection_note),
         };
         let extraction = structured::run::<Verdict>(

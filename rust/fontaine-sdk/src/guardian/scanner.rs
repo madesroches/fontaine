@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -108,6 +109,8 @@ pub struct LlmScanner {
     priced: bool,
     /// Extra request parameters; see `Guardian::with_additional_params`.
     additional_params: Option<serde_json::Value>,
+    /// Raised by the first refusal of `additional_params`; every later request leaves them out.
+    params_refused: AtomicBool,
     mode: ModeResolver,
 }
 
@@ -125,6 +128,7 @@ impl LlmScanner {
             timeout,
             priced,
             additional_params: None,
+            params_refused: AtomicBool::new(false),
             mode: ModeResolver::default(),
         }
     }
@@ -164,6 +168,7 @@ impl LlmScanner {
             retries: 1,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
+            params_refused: Some(&self.params_refused),
             rejection: None,
         };
         let spent = Tally::default();

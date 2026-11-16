@@ -200,7 +200,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `cache_ttl` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `context_editing` | `anthropic` only: a table that turns on Anthropic's server-side clearing of old tool results, so a long session stops resending them on every request. The stored conversation is untouched; only what the model reads is trimmed. Keys: `enabled` (default `false`); `trigger_tokens` (the input size that starts a clearing, default `100000`); `keep` (the newest tool uses that stay, at least 1, default `3`); `clear_at_least_tokens` (a clearing that would free fewer input tokens is skipped, below `trigger_tokens`, default `20000`); `exclude_tools` (tools whose results are never cleared; unset keeps `board_show`, `board_update`, `memory` and `todo_write`, `[]` keeps none, an MCP tool is named by its cleaned name, `mcp__<server>__<tool>`, where characters outside `[A-Za-z0-9_-]` become `_`). Each clearing invalidates the cached prefix from the cleared point on, so a clearing costs one cache rewrite. The session's own compaction still estimates the full stored history, so it may fire earlier than `trigger_tokens` alone suggests. Only the main agent and its subagents send the `context_management` field, but the beta header goes on every request from the account, guardian and side calls included; a host that rejects the beta makes the guardian fail closed, so do not enable this on an account used only for the guardian. User scope only. | off |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
-| `thinking_off` | `databricks` only: `true` adds the Chat wire's thinking-off parameter (`{"thinking": {"type": "disabled"}}`) to the [guardian's](guardian.md#choosing-the-guardian-model) and the scanner's forced-call requests, so a model that thinks by default can give a verdict. Only models served on the Chat wire get it. Whether the gateway accepts the parameter is unverified, and a refusal leaves the guardian failing closed. | unset |
+| `thinking_off` | `databricks` only: whether the [guardian's](guardian.md#choosing-the-guardian-model) and the scanner's forced-call requests carry the Chat wire's thinking-off parameter (`{"thinking": {"type": "disabled"}}`), so a model that thinks by default can give a verdict. Unset sends it; `false` leaves it out, for a workspace that refuses it. Only models served on the Chat wire get it. A workspace that refuses it anyway costs the first attempt: Fontaine retries without the parameter and does not send it again for the rest of the session. | sent |
 | `quota` | `openai-compatible` only (a `kimi` account shows its subscription quota with no `quota` key, like `claude-subscription`): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
 | `auth` | `anthropic` only: how the key is sent. `"bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`, which OpenRouter's Anthropic endpoint, LiteLLM and similar gateways require (a Databricks workspace has its own `databricks` kind); it applies to requests and to model discovery alike. User scope only. | `"x-api-key"` |
 | `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
@@ -374,14 +374,13 @@ one token (`base_url` is the workspace origin, with no path):
 kind = "databricks"
 base_url = "https://example.cloud.databricks.com"
 api_key_env = "DATABRICKS_TOKEN"
-thinking_off = true
 
 [model]
 model = "dbx/system.ai.claude-sonnet-5-5"
 ```
 
-`thinking_off = true` sends `{"thinking": {"type": "disabled"}}` on the guardian's and the
-scanner's calls to models on the Chat wire; whether the gateway accepts it is unverified.
+The guardian's and the scanner's calls to models on the Chat wire carry
+`{"thinking": {"type": "disabled"}}` unless the account sets `thinking_off = false`.
 
 Each request goes to the route its model is served on, chosen by model id: `claude-` models use
 the Anthropic Messages route (`/ai-gateway/anthropic`, with prompt caching), `gpt-` models the
