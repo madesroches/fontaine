@@ -440,6 +440,8 @@ pub struct App {
     slash_selected: (usize, String, usize),
     /// The input text the human closed the `/` menu on, which keeps it closed until it changes.
     slash_dismissed: Option<String>,
+    /// The exact input whose `!` shell ghost Esc dismissed; it stays hidden until the text changes.
+    ghost_dismissed: Option<String>,
     /// The workspace files `@` completes, as paths under the roots.
     files: Arc<Vec<String>>,
     /// The MCP resources `@` completes, copied from the runtime each draw.
@@ -610,6 +612,7 @@ impl App {
             dismissed: None,
             slash_selected: (0, String::new(), 0),
             slash_dismissed: None,
+            ghost_dismissed: None,
             files: Arc::default(),
             mcp_mentions: Arc::default(),
             primary_root: PathBuf::new(),
@@ -756,6 +759,9 @@ impl App {
         }
         let text = self.input.text();
         if self.input.cursor() != text.chars().count() {
+            return None;
+        }
+        if self.ghost_dismissed.as_deref() == Some(&text) {
             return None;
         }
         self.history.completion(&text)
@@ -1863,6 +1869,14 @@ impl App {
         }
         if key.code == KeyCode::Esc
             && !self.running
+            && self.shell_mode()
+            && self.ghost_text().is_some()
+        {
+            self.ghost_dismissed = Some(self.input.text());
+            return Action::None;
+        }
+        if key.code == KeyCode::Esc
+            && !self.running
             && !self.shell_running
             && self.viewing.is_none()
             && self.input.is_empty()
@@ -1928,6 +1942,9 @@ impl App {
         let text = self.input.text();
         if self.slash_dismissed.as_deref() != Some(&text) {
             self.slash_dismissed = None;
+        }
+        if self.ghost_dismissed.as_deref() != Some(&text) {
+            self.ghost_dismissed = None;
         }
         let token = complete::token_at(&text, '/', self.input.cursor());
         let current = token.as_ref().map(|t| (t.start, t.query.as_str()));
@@ -5390,9 +5407,74 @@ mod tests {
             let mut app = with_history(&["/model x", "!ls -la"]);
             type_text(&mut app, "/mo");
             assert_eq!(app.ghost_text(), None);
-            let mut app = with_history(&["!ls -la"]);
-            type_text(&mut app, "!l");
+        }
+
+        #[test]
+        fn shell_history_completion_follows_typing_and_deleting() {
+            let mut app = with_history(&["!git status", "!ls -la"]);
+            type_text(&mut app, "!");
+            assert_eq!(app.ghost_text(), None, "a bare ! pre-fills nothing");
+            type_text(&mut app, "gi");
+            assert_eq!(app.ghost_text(), Some("t status"));
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.ghost_text(), Some("it status"));
+            type_text(&mut app, "i");
+            assert_eq!(app.ghost_text(), Some("t status"));
+            type_text(&mut app, "x");
             assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn shell_ghost_is_accepted_by_tab_or_right_and_submits_as_typed() {
+            for code in [KeyCode::Tab, KeyCode::Right] {
+                let mut app = with_history(&["!git status"]);
+                type_text(&mut app, "!gi");
+                assert_eq!(press(&mut app, code), Action::None);
+                assert_eq!(app.input.text(), "!git status");
+                assert_eq!(
+                    press(&mut app, KeyCode::Enter),
+                    Action::Shell("git status".into())
+                );
+            }
+        }
+
+        #[test]
+        fn escape_dismisses_the_shell_ghost_until_the_text_changes() {
+            let mut app = with_history(&["!git status"]);
+            type_text(&mut app, "!gi");
+            assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+            assert_eq!(app.ghost_text(), None);
+            assert_eq!(app.input.text(), "!gi");
+            assert!(app.last_esc.is_none());
+            type_text(&mut app, "t");
+            assert_eq!(app.ghost_text(), Some(" status"));
+
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.ghost_text(), Some("t status"));
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.ghost_text(), None);
+            type_text(&mut app, "x");
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.ghost_text(), Some("t status"), "typing away revives it");
+        }
+
+        #[test]
+        fn escape_still_interrupts_a_running_turn_with_a_shell_ghost() {
+            let mut app = with_history(&["!git status"]);
+            type_text(&mut app, "!gi");
+            app.running = true;
+            assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+        }
+
+        #[test]
+        fn the_shell_ghost_is_off_with_the_switch_and_never_crosses_modes() {
+            let mut app = with_history(&["!git status", "git push"]);
+            app.history_completion = false;
+            type_text(&mut app, "!gi");
+            assert_eq!(app.ghost_text(), None);
+            let mut app = with_history(&["!git status", "git push"]);
+            type_text(&mut app, "gi");
+            assert_eq!(app.ghost_text(), Some("t push"));
         }
 
         #[test]
