@@ -166,6 +166,26 @@ fn device_label(args: &AttachArgs, host: &Host) -> String {
         .unwrap_or_else(|| "device".to_string())
 }
 
+/// Why an attach cannot start on this terminal setup, if it cannot. An interactive attach reads its
+/// keys from stdin, which `--ticket-stdin` has already consumed.
+fn terminal_refusal(
+    one_shot: bool,
+    ticket_stdin: bool,
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> Option<&'static str> {
+    if one_shot {
+        return None;
+    }
+    if ticket_stdin {
+        return Some(
+            "--ticket-stdin reads stdin, which an interactive attach needs for keys; use it with `--message`, or pass the ticket in FONTAINE_TICKET",
+        );
+    }
+    (!(stdin_tty && stdout_tty))
+        .then_some("attaching needs a terminal; use `--message` for a one-shot send")
+}
+
 pub fn run(args: &AttachArgs, host: &Host) -> ExitCode {
     let message = match message_text(args) {
         Ok(message) => message,
@@ -178,11 +198,13 @@ pub fn run(args: &AttachArgs, host: &Host) -> ExitCode {
             return ExitCode::from(crate::EXIT_CONFIG);
         }
     };
-    if message.is_none()
-        && !(std::io::IsTerminal::is_terminal(&std::io::stdin())
-            && std::io::IsTerminal::is_terminal(&std::io::stdout()))
-    {
-        return usage("attaching needs a terminal; use `--message` for a one-shot send");
+    if let Some(why) = terminal_refusal(
+        message.is_some(),
+        args.ticket_stdin,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    ) {
+        return usage(why);
     }
     let store = Arc::new(FileStore::new(&dirs.data));
     let target = match target_of(args, host, store.as_ref()) {
@@ -375,6 +397,22 @@ mod tests {
     fn a_ticket_on_stdin_with_a_message_of_dash_is_a_usage_error() {
         let error = message_text(&args(None, true, Some("-"))).unwrap_err();
         assert!(error.contains("both read stdin"), "{error}");
+    }
+
+    #[test]
+    fn an_interactive_attach_needs_a_terminal_and_stdin_for_keys() {
+        assert_eq!(terminal_refusal(true, true, false, false), None);
+        assert_eq!(terminal_refusal(false, false, true, true), None);
+        assert!(
+            terminal_refusal(false, false, false, true)
+                .unwrap()
+                .contains("needs a terminal")
+        );
+        assert!(
+            terminal_refusal(false, true, true, true)
+                .unwrap()
+                .contains("FONTAINE_TICKET")
+        );
     }
 
     #[test]

@@ -55,11 +55,13 @@ The device keeps its own key (`attach_device.key`) and the hosts it paired with
 `paired_devices.json`, are owner-only; project scope can never read or write them.
 
 The ticket on the command line stays in your shell history and is visible in the process list. To
-keep it out of both, pass it on stdin or in the environment:
+keep it out of both, pass it in the environment for an interactive attach, or on stdin for a
+one-shot `--message` (an interactive attach needs stdin for keys, so `--ticket-stdin` without
+`--message` is refused):
 
 ```sh
-printf '%s' "$TICKET" | fontaine attach --ticket-stdin
 FONTAINE_TICKET="$TICKET" fontaine attach
+printf '%s' "$TICKET" | fontaine attach --ticket-stdin --message "hello"
 ```
 
 ## Revoking a device

@@ -592,6 +592,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             };
             cli = Cli {
                 resume: Some(target.source),
+                remote: false,
                 continue_session: false,
                 fork_session: false,
                 session_id: None,
