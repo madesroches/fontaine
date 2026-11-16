@@ -4,7 +4,7 @@
 
 ## Overview
 
-Score `dbx/system.ai.deepseek-v4-1-flash` — the Databricks deployment of the model already measured
+Score `dbx/system.ai.deepseek-v4-1-flash-1017` — the Databricks deployment of the model already measured
 through `opencode-go` — on the live guardian harness, full profile, and record it: the scorecard
 under `evals/scorecards/`, a row in `docs/evals.md`, the numbers on the issue, and, only if it clears
 the inclusion bar, the `kind = "databricks"` entry the run itself writes into
@@ -102,6 +102,12 @@ on this gateway, which is why it is accepted and inert for DeepSeek. The fix is 
 Design 7 already owns: the databricks `thinking_off` hook sends `{"reasoning_effort": "none"}`.
 Whether the verdict then fits the 1024-token budget is what the re-run measures.
 
+**The smoke run after the change (2026-11-16).** With the fragment carrying `reasoning_effort:
+"none"`, the filtered `attack:iam-grant` run scores all ten cases — every one `deny`, 1.1 s to
+4.3 s, p50 1.7 s, p95 4.3 s, nothing fail-closed, exit 0, `scored=10/454`. The deployment is
+measurable, so Design 2's full run is what remains. Ten cases say little about a profile, but
+their p95 is already over the 3 s bar and the `opencode-go` precedent missed exactly there.
+
 ## Design
 
 ### 1. Preflight — feasibility, no repository writes
@@ -130,15 +136,15 @@ Whether the verdict then fits the 1024-token budget is what the re-run measures.
 cd rust
 ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-evals -- \
   --dataset ../evals/dataset \
-  --guardian live:dbx/system.ai.deepseek-v4-1-flash \
+  --guardian live:dbx/system.ai.deepseek-v4-1-flash-1017 \
   --out ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json
 ```
 
 - Run it as a background job and read the progress lines (`[n/total] <id> <verdict> <latency>ms` on
-  stderr): a full-profile run is 430 cases: 331 guardian, 92 pipeline (some reach the guardian), 7 scanner
-  skipped, at tens of minutes to an hour at this model's latencies. The account must set
-  `thinking_off = true` (Design 7) first, and the previous sidecar must be deleted: a run refuses to
-  start with one in its way.
+  stderr): a full-profile run is 454 cases by the runner's `dataset_cases` count — seven of them the
+  scanner cases listed as skipped — at tens of minutes to an hour at this model's latencies. The
+  account needs no `thinking_off` key: Design 8 sends the fragment by default. The previous sidecar
+  must be deleted first: a run refuses to start with one in its way.
 - An interrupted run leaves `<out>.partial.jsonl`; continue it with the same command plus
   `--resume ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl`. `--resume`
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.
@@ -151,7 +157,7 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
 
 Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
 
-- The run writes the entry (`kind = "databricks"`, `model = "system.ai.deepseek-v4-1-flash"`, its
+- The run writes the entry (`kind = "databricks"`, `model = "system.ai.deepseek-v4-1-flash-1017"`, its
   rates, `scored_on`, `dataset_version`, with `transport` omitted for `tool`) and prints
   `<account>/<model>: clears the inclusion bar (N models in <path>)`.
 - `docs/evals.md` gains a row in "Other small and hosted guardian models" (catch, false deny, p50,
@@ -176,8 +182,8 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   the run fails every case closed and Design 5's all-refused branch applies instead.
 - `docs/guardian.md:783-786`: the exception for "the validated list's own `opencode-go` entry
   (`claude-haiku-5-5`)" is rewritten to the databricks entry — `available_validated` matches on
-  `kind`, so any `databricks` account that serves `system.ai.deepseek-v4-1-flash` picks it up as
-  its default guardian.
+  `kind` and on the model id, so an account that serves `system.ai.deepseek-v4-1-flash-1017` picks
+  it up as its default guardian.
 - `CHANGELOG.md`: under `### Added`, one line naming the model, the deployment, the numbers, and that
   the ranked list is what `auto` picks its guardian from; under `### Removed`, one line saying
   `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account, and
@@ -345,10 +351,15 @@ the retry budget already allows for.
   acted on. Its `thinking` field is accepted and ignored on the Chat and the Messages wire alike,
   the Responses route does not serve the deployment, and the default effort is `max`, which is why
   the first two runs overran the guardian's budget. The account key and its default are unchanged.
+- 2026-11-16 The measurement runs on `system.ai.deepseek-v4-1-flash-1017`, the id this workspace's
+  account is configured with and the one the smoke run scored. The workspace also serves the
+  unsuffixed `system.ai.deepseek-v4-1-flash`, and `available_validated` matches a model id exactly
+  (`lists`), so the entry the run writes names only the suffixed one: an account configured with
+  the other alias does not pick it up as a default guardian.
 - 2026-11-15 The first full-profile run (Current State) is neither published nor resumed: it was
   stopped at 318 of 430 cases with 102 fail-closed, and its cases were scored without a
-  reasoning-off parameter. The measurement re-runs over the whole dataset with the account's
-  `thinking_off = true` (Design 7).
+  reasoning-off parameter. The measurement re-runs over the whole dataset with the fragment Design 8
+  sends by default.
 - 2026-11-15 The account's credential reaches the run from the local token file
   `~/.claude_databricks_token`, exported as `ANTHROPIC_AUTH_TOKEN` for the command only (user),
   because Fontaine withholds every account's `api_key_env` variable from the processes it starts;
