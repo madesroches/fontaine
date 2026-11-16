@@ -38,7 +38,10 @@ API — never the workspace's DBU bill, which Fontaine cannot read per call.
   on its own.
 - Displays print dollars with no qualifier: `agents_panel.rs:133` `spend_text`, `reports.rs:783`
   `cost_cell`, `statusline.rs:123` `CostInfo`, and `events.rs:252` `total_cost_usd`.
-- `tests/databricks.rs:144` asserts `!handle.priced()` and `!handle.catalog_billed()`.
+- `tests/databricks.rs:144` asserts `!handle.priced()` and `!handle.catalog_billed()`, and `:249` —
+  in `facts_are_bound_under_the_served_id_on_the_responses_and_messages_wires` — asserts
+  `spec.pricing == None` on a Messages-bound `system.ai.claude-haiku-5-5`, which `Price::Keep`
+  flips to `Some`.
 
 ## Design
 
@@ -149,13 +152,18 @@ Two carriers, mirroring the existing `unpriced_tokens` convention:
   holding both is marked.
 - `agents/budget.rs` `Spend` gains the same field, combined by `Spend::add` (`:20`) with `||` too,
   so a sum holding one estimate is marked; `core/goal.rs:271` `spend_since` takes `estimated` from
-  `now`. `core/gate.rs` `spend_of(usage, basis)` takes the basis; `record_usage_answered` and its
-  four callers (`gate.rs:1324`, `:1385`, `:1405`, `:1425`) carry it through.
+  `now`. `core/gate.rs` `spend_of(usage, basis)` takes the basis — and so does
+  `core/child_runner.rs` `spend` (`:1434`), the public wrapper over it; `record_usage_answered` and
+  its four callers (`gate.rs:1324`, `:1385`, `:1405`, `:1425`) carry it through.
 
 An estimate is rendered, never inferred: `spend_text` (`agents_panel.rs`) and `cost_cell`
 (`reports.rs`) append ` est.` to the dollar figure when the bucket or spend is estimated, so
 `$0.0066 est.` / `$0.0021 est. / $2.00`, next to `· 128k unpriced tok` where that still applies.
 `TOOL` and truncation rules for these rows are unchanged; `est.` rides with the dollar segment.
+A cost cap binds on a list-price estimate: an `--max-budget-usd`, a session cap and a goal's cost
+cap all compare against the estimated figure, and every figure a cap shows carries ` est.`.
+The master plan's `### Providers` decisions keep a cap inactive only for a model with no catalog
+price, and prefer a cap that binds to one silently loosened by a stripped price.
 
 Every other figure a dollar or a cap shows is marked the same way: the `/cost` footer
 `Session cost budget: ${spent:.4} / ${cap:.2}` (`reports.rs:848-849`) through `UsageReport.budget`
@@ -243,7 +251,8 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
    `core/goal.rs` `spend_since`; `core/gate.rs` `spend_of(usage, basis)` and the
    `record_usage_answered`/`add_*_usage` chain, with the integration tests that call them directly
    (`tests/{billing,agent_pipeline,agent_resume,usage_pause_turn}.rs`) or build a `Spend`
-   (`tests/goal.rs`) updated to match.
+   (`tests/goal.rs`) updated to match. `core/child_runner.rs:1434` `spend(usage)`, the public
+   wrapper over `spend_of`, takes the basis too, or goes if it has no callers.
 8. Displays: `agents_panel.rs` `SpendView.estimated` + `spend_text`, `reports.rs` `cost_cell` and
    the `/cost` footer's `budget` flag, `agents/budget.rs` `Exhausted::{Cost,SessionCost}`,
    `core/goal.rs` `PauseReason::CostCap`, `core/project_env.rs` `usage_line`, the `PanelRow`
@@ -259,6 +268,10 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 **Phase 5 — docs and changelog**
 
 10. The documentation edits listed below, and a `CHANGELOG.md` entry.
+11. `tasks/fontaine_harness_plan.md`: scope its `### Providers` line "a mapped model stays unpriced"
+    to `anthropic`, and append this plan's decisions — `Billing::Estimated`, the ` est.` marker, a
+    cap binding on an estimate, and a mapped `databricks` model taking the target's price — as dated
+    lines at the end of that subsection, as `tasks/completed/host_model_facts_plan.md` step 5 did.
 
 ## Files to Modify
 
@@ -283,7 +296,8 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
   `rust/fontaine-sdk/tests/{agent_reply,max_tokens,memory,multimodal,native_search}.rs`,
   `rust/fontaine-sdk/tests/{output_styles,prefix_stability,rewind,teams,tool_search,priced,goal}.rs`,
   `rust/fontaine/tests/embed.rs`
-- `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`
+- `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`,
+  `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -350,11 +364,13 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 - **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5`
   handle is `priced()` and `cost_basis() == Estimated`, and each wire's reply reports a price at the
   existing `completion.call` seam — `usage.cost.is_some()` for Messages, `responses_reply()` and
-  `gemini_reply()`, the Gemini case on `system.ai.gemini-3-5-flash`, an id the file's `MODELS` list,
-  `GEMINI` route constant and the `gemini_reply()` reply mounted there follow; none for
-  `system.ai.glm-5-3` or the derived `system.ai.gemini-3-pro`. `say_hi` returns the response rather
-  than only its text so the assertion can read `usage.cost`; the `estimated` bucket marking stays
-  with the ledger and gate unit tests.
+  `gemini_reply()`. The Gemini case needs a new `system.ai.gemini-3-5-flash` entry in the file's
+  `MODELS` list, a second route constant beside `GEMINI`, and a `gemini_reply()` mounted on it;
+  `GEMINI` stays the `system.ai.gemini-3-pro` route, which `:187-192` and `:341-346` keep calling.
+  No cost for `system.ai.glm-5-3` or the derived `system.ai.gemini-3-pro`, the no-cost case calling
+  `gemini-3-pro` on `GEMINI` itself. `say_hi` returns the response rather than only its text so the
+  assertion can read `usage.cost`; the `estimated` bucket marking stays with the ledger and gate
+  unit tests.
 
 ## Manual Verification
 
@@ -367,10 +383,3 @@ in the user's settings (`kind = "databricks"`, its workspace `base_url`, and
    `DATABRICKS_TOKEN=$(cat ~/.claude_databricks_token) cargo run -p fontaine -- --output-format
    json -p "Reply with exactly: ok"` — expect exit 0 and a `result.total_cost_usd` that is a
    number well above zero, where today it is `null`. Not automated: it is a live, billed call.
-
-## Open Questions
-
-1. **May a cost cap bind on an estimate?** The caps promise a dollar ceiling on real spend, and an
-   estimate is the vendor's list price, not the DBU charge. This plan says yes (direction 1 of the
-   issue, and the figure is marked ` est.` wherever a cap shows it), because the alternative leaves
-   every dbx session uncapped, which is the state the issue reports.
