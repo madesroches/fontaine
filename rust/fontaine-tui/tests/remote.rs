@@ -197,6 +197,38 @@ async fn a_declined_pairing_stores_nothing_and_tells_the_device() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_left_before_the_answer_is_never_recorded_as_confirmed() {
+    let w = World::new(Vec::new()).with_config(DIRECT_ONLY);
+    w.run(|ui| async move {
+        let ticket = enable(&ui).await;
+        let client = Client::start(
+            fontaine_remote::Target::Ticket(Box::new(ticket)),
+            options(),
+            Arc::new(MemoryClientStore::default()),
+        );
+        ui.wait_for_live_prompt("Pair this device?").await;
+        client.stop();
+        // A vanished peer is noticed by the transport's idle timeout, or the 60 s pairing
+        // timeout, whichever comes first; the dialog must then close without a key press.
+        let closed = async {
+            while ui.live().contains("Pair this device?") {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(90), closed)
+            .await
+            .expect("the stale dialog closes by itself");
+        ui.press(KeyCode::Char('y'));
+        ui.idle().await;
+    })
+    .await;
+    let rules = rules(&w);
+    assert!(rules.iter().any(|r| r == "pairing_cancelled"), "{rules:?}");
+    assert!(!rules.iter().any(|r| r == "pairing_confirmed"), "{rules:?}");
+    assert!(!w.data.join("paired_devices.json").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_device_answers_an_approval_and_its_node_reaches_the_ledger_and_audit() {
     let w = World::new(vec![
         tool_turn(

@@ -375,6 +375,16 @@ fn apply(
                 let _ = events.send(ClientEvent::Snapshot { epoch, seq, state });
             }
         }
+        HostMsg::Event { event, .. } if event["kind"] == "oversized" => {
+            // The host's stand-in for an event too large to send. Skipping it would leave the
+            // device out of step, and a resume would replay the same stand-in, so progress is
+            // dropped and the reconnect gets a snapshot.
+            progress.epoch = None;
+            progress.last_seq = None;
+            return Some(Ended::Lost(AttachError::Protocol(
+                "an event was too large to send".to_string(),
+            )));
+        }
         HostMsg::Event { epoch, seq, event } => {
             // An event after a gap would corrupt the mirror; reconnecting resumes from the last
             // one applied.

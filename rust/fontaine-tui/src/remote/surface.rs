@@ -52,6 +52,14 @@ impl Waker for InputWaker {
     }
 }
 
+struct WakeOnDrop(WeakUnboundedSender<Input>);
+
+impl Drop for WakeOnDrop {
+    fn drop(&mut self) {
+        InputWaker(self.0.clone()).wake();
+    }
+}
+
 pub(crate) struct RemoteSurface {
     steering: Steering,
     state: Arc<SessionState>,
@@ -323,9 +331,13 @@ impl HostSession for RemoteSurface {
             reply,
         });
         self.wake();
-        // Dropped by the server on a timeout or a client disconnect; the loop then sees the
-        // sender closed and closes the dialog with no reply.
-        Box::pin(async move { answer.await.unwrap_or(false) })
+        // Dropped by the server on a timeout or a client disconnect; the guard wakes the loop so
+        // it sees the sender closed and closes the dialog with no reply.
+        let _wake = WakeOnDrop(self.wake.clone());
+        Box::pin(async move {
+            let _wake = _wake;
+            answer.await.unwrap_or(false)
+        })
     }
 
     fn paired(&self, node: &Sender, label: &str) {

@@ -30,6 +30,56 @@ fn cap(text: &mut String) {
     }
 }
 
+fn cap_preview(preview: &mut DiffPreview) {
+    cap(&mut preview.path);
+    for line in &mut preview.lines {
+        cap(&mut line.text);
+    }
+}
+
+/// `dialog` with every text field within `FIELD_CAP`.
+fn capped_dialog(mut dialog: Dialog) -> Dialog {
+    match &mut dialog {
+        Dialog::Approval {
+            tool,
+            agent,
+            agent_name,
+            summary,
+            reason,
+            choices,
+            preview,
+            proposed_rule,
+            ..
+        } => {
+            for text in [tool, agent, agent_name, summary, reason] {
+                cap(text);
+            }
+            choices.iter_mut().for_each(cap);
+            if let Some(preview) = preview {
+                cap_preview(preview);
+            }
+            if let Some(rule) = proposed_rule {
+                cap(rule);
+            }
+        }
+        Dialog::Question {
+            agent, questions, ..
+        } => {
+            cap(agent);
+            for question in questions {
+                cap(&mut question.question);
+                cap(&mut question.header);
+                for option in &mut question.options {
+                    cap(&mut option.label);
+                    cap(&mut option.description);
+                }
+            }
+        }
+        Dialog::HostOnly { what } => cap(what),
+    }
+    dialog
+}
+
 /// `entry` with every text field within `FIELD_CAP`.
 pub(crate) fn capped(entry: &Entry) -> Entry {
     let mut entry = entry.clone();
@@ -40,10 +90,14 @@ pub(crate) fn capped(entry: &Entry) -> Entry {
             summary,
             call,
             output,
+            diff,
             ..
         } => {
             cap(summary);
             cap(call);
+            if let Some(diff) = diff {
+                cap_preview(diff);
+            }
             if let Some(ToolOutput { text, .. }) = output {
                 cap(text);
             }
@@ -216,7 +270,7 @@ impl MirrorTracker {
                 status: Box::new(status),
             });
         }
-        let dialog = app.device_dialog();
+        let dialog = app.device_dialog().map(capped_dialog);
         if self.dialog != dialog {
             self.dialog = dialog.clone();
             events.push(RemoteEvent::Dialog { dialog });

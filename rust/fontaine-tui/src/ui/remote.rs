@@ -505,6 +505,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(request) = running.pairing.take() else {
             return;
         };
+        if request.reply.is_closed() {
+            runtime.state.record_remote_event(
+                "pairing_cancelled",
+                &format!(
+                    "device {} left or timed out before the pairing was confirmed",
+                    request.node
+                ),
+                Decision::Deny,
+            );
+            self.app.transcript.notice(format!(
+                "device {} already left or timed out; nothing was paired",
+                short(&request.node)
+            ));
+            return;
+        }
         runtime.state.record_remote_event(
             if answer {
                 "pairing_confirmed"

@@ -69,7 +69,9 @@ impl Reason {
             Reason::Expired => "the ticket has expired",
             Reason::Reused => "the ticket was already used; ask for a new one",
             Reason::Locked => "too many bad attempts; try again in 30 seconds",
-            Reason::TooLarge => "the message is too large",
+            Reason::TooLarge => {
+                "too large: the message, or the session's transcript to attach to, is over the size limit"
+            }
             Reason::InboxFull => "the session's remote queue is full; try again shortly",
             Reason::Closed => "the session turned remote control off",
             Reason::UnsupportedVersion => "the session speaks a different protocol version",

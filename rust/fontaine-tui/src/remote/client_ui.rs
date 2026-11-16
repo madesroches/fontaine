@@ -528,11 +528,6 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
                             Err(e) => break AttachEnd::Failed(AttachError::Protocol(e.to_string())),
                         }
                     }
-                    // The host's stand-in for an event too large to send; it is not a RemoteEvent.
-                    ClientEvent::Event { event, .. } if event["kind"] == "oversized" => {
-                        ui.app.attach_notice =
-                            Some("the host skipped an update that was too large".to_string());
-                    }
                     ClientEvent::Event { event, .. } => {
                         match serde_json::from_value::<RemoteEvent>(event) {
                             Ok(event) => ui.event(event),

@@ -218,5 +218,8 @@ a line and exits 0.
 - Real network behavior (NAT traversal, relay fallback, address-lookup rediscovery) is verified by
   hand on two machines, not in the automated tests, which use loopback and a local relay.
 - Typed answers to a question's "Other" row, attachments and clipboard images are host-side.
+- A session whose transcript is too large to send as one snapshot (over 32 MiB) cannot be attached
+  to: the device is refused with `too_large` (exit code 3). Starting a new session or `/clear`
+  makes it attachable again.
 - The device paints from the host's events, so a surface the host adds without a mirror event does
   not appear on a device until the mirror covers it.
