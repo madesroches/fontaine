@@ -1,5 +1,4 @@
-# End-to-end self-update against the real GitHub feed: install the previous dev build with the real
-# installer, update to the newest one, and check the version changed and the receipt is intact.
+# End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the newest one, and check the version changed and the receipt is intact.
 # Manual and nightly, never a PR gate: it needs two published `dev-<n>` builds and the network.
 # The binary ships no api-base override, so this uses the default feed. Unix legs start the TUI under
 # a pty so the automatic background pass runs; the Windows leg runs `fontaine update` (the helper
@@ -38,24 +37,41 @@ jobs:
           echo "newest=$newest" >> "$GITHUB_OUTPUT"
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
 
-      - name: Install the previous build with the real installer
+      # The installers embed the newest archive's sha256 and receipt version, and `dev-<n>` releases
+      # carry no installer, so the previous build is unpacked by hand and its receipt written to match
+      # what an installer writes. The build's version comes from the signed trusted comment.
+      - name: Install the previous build from its archive
         env:
-          NEWEST: ${{ steps.tags.outputs.newest }}
           PREVIOUS: ${{ steps.tags.outputs.previous }}
           HOME_DIR: ${{ github.workspace }}/e2e/home
         run: |
-          mkdir -p e2e/home e2e/config e2e/data
-          base="https://github.com/madesroches/fontaine/releases/download/dev"
+          mkdir -p e2e/home/.fontaine/bin e2e/config e2e/data e2e/dl e2e/unpacked
+          case "$RUNNER_OS" in
+            Windows) target=x86_64-pc-windows-msvc; ext=zip; bin=fontaine.exe ;;
+            macOS) target=aarch64-apple-darwin; ext=tar.xz; bin=fontaine ;;
+            *) target=x86_64-unknown-linux-gnu; ext=tar.xz; bin=fontaine ;;
+          esac
+          archive="fontaine-$target.$ext"
+          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --dir e2e/dl --pattern "$archive" --pattern "$archive.minisig"
+          version=$(sed -n 's/^trusted comment:.* version=\([^ ]*\).*/\1/p' "e2e/dl/$archive.minisig")
+          case "$version" in *-dev."${PREVIOUS#dev-}"+*) ;; *) echo "signed version '$version' does not match $PREVIOUS"; exit 1 ;; esac
           if [ "$RUNNER_OS" = "Windows" ]; then
-            curl --proto '=https' --tlsv1.2 -LsSf "$base/fontaine-installer.ps1" -o e2e/installer.ps1
-            sed -i "s/$NEWEST/$PREVIOUS/g" e2e/installer.ps1
-            USERPROFILE="$(cygpath -w "$HOME_DIR")" LOCALAPPDATA="$(cygpath -w "$GITHUB_WORKSPACE/e2e/localappdata")" \
-              powershell -ExecutionPolicy Bypass -File "$(cygpath -w e2e/installer.ps1)"
+            powershell -Command "Expand-Archive -Path '$(cygpath -w "e2e/dl/$archive")' -DestinationPath '$(cygpath -w e2e/unpacked)'"
+            prefix="$(cygpath -w "$HOME_DIR/.fontaine")"
+            receipt_dir="$GITHUB_WORKSPACE/e2e/localappdata/fontaine"
           else
-            curl --proto '=https' --tlsv1.2 -LsSf "$base/fontaine-installer.sh" -o e2e/installer.sh
-            sed -i.bak "s/$NEWEST/$PREVIOUS/g" e2e/installer.sh
-            HOME="$HOME_DIR" XDG_CONFIG_HOME="$GITHUB_WORKSPACE/e2e/xdg" sh e2e/installer.sh
+            tar -xJf "e2e/dl/$archive" -C e2e/unpacked
+            prefix="$HOME_DIR/.fontaine"
+            receipt_dir="$GITHUB_WORKSPACE/e2e/xdg/fontaine"
           fi
+          found=$(find e2e/unpacked -name "$bin" -type f | head -n 1)
+          [ -n "$found" ] || { echo "no $bin in $archive"; exit 1; }
+          cp "$found" "e2e/home/.fontaine/bin/$bin"
+          chmod +x "e2e/home/.fontaine/bin/$bin"
+          mkdir -p "$receipt_dir"
+          jq -n --arg bin "$bin" --arg prefix "$prefix" --arg version "$version" \
+            '{binaries: [$bin], install_prefix: $prefix, provider: {source: "cargo-dist", version: "0.32.0"}, version: $version}' \
+            > "$receipt_dir/fontaine-receipt.json"
 
       - name: Update and check
         env:
@@ -77,9 +93,24 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             "$exe" update
           else
-            # The TUI needs a terminal; `script` provides a pty. The pass runs in the background
-            # at start, so give it time to download, verify and swap before quitting.
-            (sleep 90; printf '\003') | script -qec "$exe" /dev/null > /dev/null 2>&1 || true
+            # The TUI needs a terminal, so run it under a pty (portable, unlike util-linux `script`).
+            # The pass runs in the background at start: give it time to download, verify and swap.
+            python3 - "$exe" <<'PY' || true
+          import os, pty, select, signal, sys, time
+          pid, fd = pty.fork()
+          if pid == 0:
+              os.execv(sys.argv[1], [sys.argv[1]])
+          end = time.time() + 90
+          while time.time() < end:
+              if select.select([fd], [], [], 1)[0]:
+                  try:
+                      if not os.read(fd, 65536):
+                          break
+                  except OSError:
+                      break
+          os.kill(pid, signal.SIGTERM)
+          os.waitpid(pid, 0)
+          PY
           fi
           after=$(jq -r .version "$receipt")
           want_after="${NEWEST#dev-}"

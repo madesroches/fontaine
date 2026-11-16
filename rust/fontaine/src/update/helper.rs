@@ -171,13 +171,19 @@ pub fn run(args: &HelperArgs, env: &Env<'_>) -> Done {
         return Done::NothingToDo;
     };
     let mut stages = stage_dirs(&args.data);
-    stages.sort();
+    sort_oldest_first(&mut stages);
     let mut result = Done::NothingToDo;
     // Newest last; `stage` keeps one, but a crash can leave two.
     while let Some(dir) = stages.pop() {
         let outcome = apply_stage(args, env, &info, &dir);
         match outcome {
+            // A discarded stage says nothing about the older ones, which may still be valid.
             Done::NothingToDo => {}
+            Done::Discarded => {
+                if result == Done::NothingToDo {
+                    result = Done::Discarded;
+                }
+            }
             other => {
                 result = other;
                 for rest in stages.drain(..) {
@@ -187,6 +193,28 @@ pub fn run(args: &HelperArgs, env: &Env<'_>) -> Done {
         }
     }
     result
+}
+
+/// Orders stages by the build their manifest names, not by directory name: `dev.10` sorts before
+/// `dev.9` as text. A stage with an unusable manifest sorts first, so it is tried last.
+fn sort_oldest_first(stages: &mut [PathBuf]) {
+    let build_of = |dir: &Path| {
+        let manifest = read_manifest(dir).ok()?;
+        release_index::installed_build(manifest.channel, &manifest.version)
+    };
+    let mut keyed: Vec<_> = stages
+        .iter()
+        .map(|dir| (build_of(dir), dir.clone()))
+        .collect();
+    keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(a), Some(b)) => release_index::compare(*b, *a).unwrap_or(std::cmp::Ordering::Equal),
+    });
+    for (slot, (_, dir)) in stages.iter_mut().zip(keyed) {
+        *slot = dir;
+    }
 }
 
 fn apply_stage(args: &HelperArgs, env: &Env<'_>, info: &InstallInfo, dir: &Path) -> Done {
@@ -405,4 +433,28 @@ fn spawn_copy(_: &HelperArgs) -> std::io::Result<()> {
         std::io::ErrorKind::Unsupported,
         "the update helper exists only on Windows",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stages_sort_by_build_number_not_by_name() {
+        let data = tempfile::tempdir().unwrap();
+        let mut dirs = Vec::new();
+        for version in ["0.1.0-dev.10+bbbbbbb", "0.1.0-dev.9+aaaaaaa"] {
+            let dir = staged_root(data.path()).join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(MANIFEST_FILE),
+                serde_json::json!({"channel": "dev", "version": version}).to_string(),
+            )
+            .unwrap();
+            dirs.push(dir);
+        }
+        sort_oldest_first(&mut dirs);
+        assert!(dirs[0].ends_with("0.1.0-dev.9+aaaaaaa"));
+        assert!(dirs[1].ends_with("0.1.0-dev.10+bbbbbbb"));
+    }
 }
