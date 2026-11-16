@@ -110,6 +110,9 @@ binary is kept as `<exe>.prev` for rollback: on every swap an existing `.prev` i
 current file at the target path is hard-linked to it before the rename (so it is replaced each time). If the
 filesystem rejects the hard link, `.prev` is skipped. Order inside `replace_binary`: extract and
 set the mode first, then remove the old `.prev`, link, and persist; a link failure is ignored.
+When `.prev` is linked, every swap (manual and background) also writes the sidecar
+`<exe>.prev.json` (pre-swap receipt `version` and `channel`) under the receipt lock, so rollback
+has a signed version string to write back; no link, no sidecar (a stale sidecar is removed).
 
 ### Windows
 
@@ -160,10 +163,10 @@ is free; the helper keeps its own `try_lock` as the authoritative check.
 
 No automatic rollback in this release. The
 one-generation `<exe>.prev` is kept (Linux and macOS only) and `fontaine update --rollback` restores
-it under the receipt lock, rewrites the receipt version, and records the rolled-back build in `<data>/update-skip` so
+it under the receipt lock, rewrites the receipt version and channel from `<exe>.prev.json`, and records the newer build being rolled back from in `<data>/update-skip` so
 auto-update does not reinstall that same build; a still newer build clears the skip. `fontaine
 update` (manual) ignores the skip. On Windows `--rollback` is unsupported: it exits 1 with a
-clear message. Where `.prev` is absent (hard link rejected), it reports there is nothing to restore.
+clear message. Where `.prev` or `<exe>.prev.json` is absent (hard link rejected), it reports there is nothing to restore.
 
 ### Failure reporting
 
@@ -198,21 +201,23 @@ deletes the marker. The comparison uses the version in the receipt for the runni
    helper in `tests/update_cmd.rs` updated to ignore `fontaine.prev`); Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
    skip file (cli.rs, update/mod.rs).
 6. Windows: staged dir, hidden helper subcommand (cli.rs, `update/helper.rs`), lock wait, re-verify
-   and swap.
+   and swap. The `.prev.json` sidecar is written by `replace_binary` (step 5).
 7. Tests (below), docs, CHANGELOG, `## Decisions` lines in the master plan.
 8. CI: a manually triggered / nightly workflow `update-e2e.yml` on ubuntu, macos and windows that
-   installs the previous dev build with the real installer, publishes nothing, points the updater at
-   the current dev feed, launches the TUI under a pty (Unix) or via the hidden pass entry point
-   (Windows), and asserts the version changed and the receipt is intact. Coordinate with #176.
+   installs the previous dev build with the real installer (the `dev-<n>` prerelease), uses the
+   default GitHub feed (no api-base override ships in the binary), updates to the current dev build,
+   and asserts the version changed and the receipt is intact. Unix legs launch the TUI under a pty;
+   the Windows leg runs `fontaine update` (manual path); the helper swap is covered by unit tests
+   and Manual Verification. No Windows hidden pass entry point. Coordinate with #176.
 
 ## Files to Modify
 
-- `rust/fontaine/src/update/mod.rs`, `install.rs`, new `auto.rs`, `helper.rs`
+- `rust/fontaine/src/update/mod.rs`, `install.rs` (incl. the `<exe>.prev.json` sidecar), new `auto.rs`, `helper.rs`
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `rust/fontaine/src/plugin_auto_update/tests.rs` (calls `stamp_due`/`write_stamp`), `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs` (the `leftovers()` helper ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
 - `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`, `docs/verifying-releases.md` (the automatic background update also verifies downloaded archives)
-- `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `.github/workflows/update-e2e.yml` (new; default feed, pty on Unix, `fontaine update` on Windows), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Decisions
 
@@ -222,11 +227,14 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - 2026-11-15 (#175): Supersedes the Windows rename-aside note of 2026-11-08 for the background path only; the helper swaps when no process runs the target.
 - 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
 - 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable.
+- 2026-11-15 (#175): AFK: rollback reads a sidecar `<exe>.prev.json` (pre-swap receipt version and channel), written by every swap that links `.prev` under the receipt lock; a missing sidecar is treated like a missing `.prev`, and `update-skip` records the newer build rolled back from. Reason: `.prev` is a bare hard link and `receipt::write_version` needs the signed version.
+- 2026-11-15 (#175): AFK: no api-base override ships in the production binary; gating is tested as a pure predicate (headless, `[updates] auto_update`, `receipt::locate`) with the pass driven through `Params`, `update-e2e.yml` uses the default GitHub feed (pty on Unix, `fontaine update` on Windows), and the Windows hidden pass entry point is dropped. Reason: an override would move the trust root's feed.
+- 2026-11-15 (#175): AFK: keep the Windows helper (separate process waits, then swaps) instead of the in-process rename-aside. Reason: an in-process swap leaves already-running sessions on a renamed `.old` file and lets the session replace itself, which the issue forbids.
 
 ## Documentation
 
 - `docs/installing.md`: automatic updates, the opt-out, silent cases, rollback (Linux/macOS only), Windows behavior,
-  log and marker files; the uninstall sections name the new files (`.prev`, `update-staged`,
+  log and marker files; the uninstall sections name the new files (`.prev`, `.prev.json`, `update-staged`,
   `update-helper`, `update.lock`, `update.stamp`, `update-helper.lock`, `updates.jsonl`, `update-applied.json`,
   `update-state.json`, `update-skip`).
 - `docs/headless.md`: `fontaine update`, including `--rollback` (Linux/macOS only).
@@ -245,8 +253,10 @@ Unit and integration tests with wiremock and the existing release-index and sign
   wrong-channel and wrong-version archives are rejected with the binary and receipt byte-identical
   and one logged, once-shown warning; transient network failure is logged and quiet; up-to-date and
   older feed do nothing (no downgrade).
-- Gating: no activity under `-p` and `fontaine send` (no request reaches the mock); receipt for
-  another binary, no receipt: silent; `auto_update = false`: no request.
+- Gating: a pure predicate (headless, `[updates] auto_update`, `receipt::locate`) is unit-tested:
+  no start under `-p` and `fontaine send`, receipt for another binary or no receipt: silent,
+  `auto_update = false`: no start. The pass itself is driven through `Params` with an injected
+  api_base (as `tests/update_cmd.rs` does); no api-base override exists in the shipped binary.
 - Cadence: the existing stamp tests in `plugin_auto_update/tests.rs` move to `stamp.rs`.
 - Cleanup: a fresh `.fontaine-update-*` dir of a concurrent update survives the start-of-pass
   cleanup; one older than 24 h is removed.
@@ -257,8 +267,8 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Notice: marker matching the receipt version shows once and is deleted; mismatched marker is
   deleted silently; a dev-shaped `VERSION` (`<pkg>-dev+<sha12>`) with a receipt at
   `<base>-dev.<N>+<sha7>` still shows the notice.
-- Rollback: `--rollback` restores `.prev`, rewrites the receipt, and the skip file stops reinstall of
-  that build; a second update replaces an existing `.prev`; a failed extract keeps the existing `.prev`; on Windows `--rollback` prints the
+- Rollback: `--rollback` restores `.prev`, rewrites the receipt version and channel from `<exe>.prev.json`, and the skip file stops reinstall of
+  that build; a missing sidecar reports nothing to restore; every swap (manual and background) writes the sidecar; a second update replaces an existing `.prev`; a failed extract keeps the existing `.prev`; on Windows `--rollback` prints the
   unsupported message and exits 1; with no `.prev` it reports nothing to restore.
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
   against an injected "is the target locked" function so they run on every OS; the real lock probe
@@ -269,9 +279,9 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
 - Windows helper failure (re-verify, failed swap, 24 h give-up) is recorded in `updates.jsonl` and `update-state.json`; the next interactive launch shows one `Notice::warning`, not repeated on later launches.
 - Receipt write fails after a completed swap: the warning is shown once, no `update-applied.json` marker is written, and no second install is claimed as success.
-- End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
-  catches installer/receipt/updater disagreements and the real Windows file locking that fakes
-  cannot reproduce.
+- End to end N → N+1 runs in `update-e2e.yml` (not a PR gate) against the default GitHub feed: Unix
+  legs in a pty, the Windows leg via `fontaine update`; it catches installer/receipt/updater
+  disagreements. The Windows background pass and real file locking are verified manually.
 
 ## Manual Verification
 
@@ -279,4 +289,4 @@ Unit and integration tests with wiremock and the existing release-index and sign
    background pass (or delete `update.stamp`), confirm `fontaine.exe` is unchanged and
    `update-staged\` exists, exit Fontaine, and within ~5 s `fontaine --version` shows the new build
    with no UAC prompt and no window. Not automated because it needs an interactive session holding
-   the lock; CI covers the non-interactive variant.
+   the lock; CI covers only the manual `fontaine update` path on Windows.
