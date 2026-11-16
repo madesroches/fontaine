@@ -83,8 +83,7 @@ like `plugins.auto_update`. Off disables the check and the install; `fontaine up
 
 The pass starts only when `headless.is_none()` (`-p`, `fontaine send` and the other non-interactive
 surfaces never reach it), `config.updates.auto_update`, and `receipt::locate` succeeds for
-`std::env::current_exe()`. On Windows a launch that finds an existing stage starts the helper right
-after that check, before the stamp and `update.lock`. A `cargo install`, package-manager, container, moved or receipt-less
+`std::env::current_exe()`. A `cargo install`, package-manager, container, moved or receipt-less
 binary stops silently. No guardian shortcut is involved and no permission is loosened: the pass
 runs no tool call and gets no new capability.
 
@@ -141,8 +140,7 @@ is free; the helper keeps its own `try_lock` as the authoritative check.
   a `Release` offline from the manifest's `channel` and `version` (`release_index::tag_build` /
   `dev_build_number`) and the asset name from `archive_name(target)`, so it can call `check_binding`.
 - **Interruption:** the stage stays until applied. A launch with an existing stage that is newer
-  than the receipt version and not marked failed starts a helper (a second helper exits at once via
-  `update-helper.lock`; the helper re-verifies and re-compares under the receipt lock), skips the
+  than the receipt version and not marked failed starts a helper, skips the
   stamp and `update.lock`, and needs no network.
 - **Stage lifecycle:** the helper deletes a stage that is not newer than the receipt version, and a
   stage that fails re-verify or whose manifest channel differs from the receipt's (logged to `updates.jsonl` as a failure), so a bad stage never makes
@@ -172,7 +170,10 @@ reuses `UpdateError`: `Network` is logged and quiet; `Verify` (including a missi
 signature, wrong channel or version), `Install` and a failed swap are logged and shown once as a
 `Notice::warning` through the existing notice feed. "Once" is enforced by remembering the
 `(candidate, reason-kind)` last warned about in `<data>/update-state.json`. The installed binary
-and receipt are untouched on every failure.
+and receipt are untouched on every failure except a failed receipt rewrite after a completed swap
+(`update()` returns `Outcome::Updated { receipt_warning: Some(..) }`): the pass treats a set
+`receipt_warning` as a logged failure in `updates.jsonl`, shows it once through `Notice::warning`
+(same once-rule), and does not write the `update-applied.json` marker.
 
 ### Notice
 
@@ -262,6 +263,7 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Windows stage whose manifest channel differs from the receipt's (e.g. dev installer run while a release stage waits): no swap, stage deleted, failure logged.
 - Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
 - Windows helper failure (re-verify, failed swap, 24 h give-up) is recorded in `updates.jsonl` and `update-state.json`; the next interactive launch shows one `Notice::warning`, not repeated on later launches.
+- Receipt write fails after a completed swap: the warning is shown once, no `update-applied.json` marker is written, and no second install is claimed as success.
 - End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
   catches installer/receipt/updater disagreements and the real Windows file locking that fakes
   cannot reproduce.
