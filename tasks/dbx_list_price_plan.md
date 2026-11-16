@@ -85,10 +85,6 @@ impl ModelHandle {
 }
 ```
 
-`catalog_billed()` keeps its name and signature, so the `priced`/`billed` booleans already threaded
-into turn, side question, goal, subagent, scanner and hook paths keep compiling; each of those call
-sites is where a basis is threaded instead (step 4).
-
 ### 3. Keep the vendor's price in dbx facts
 
 `derived_facts::facts_as(vendor, served, base_id, served_id)` gains one parameter saying what the
@@ -101,9 +97,8 @@ pub enum Price { Keep, Strip }
 ```
 
 Inside, `spec.pricing` is cleared unless `keep == Price::Keep` **and** the facts came from an exact
-catalog entry (`listed`). A shape-derived entry never contributes a price: it is already a guess
-about which model this is, and a guessed price on top of that is not worth having. `details.cost`
-stays cleared either way.
+catalog entry (`listed`). A shape-derived entry never contributes a price. `details.cost` stays
+cleared either way.
 
 `databricks::facts_for` passes `Price::Keep`; `anthropic` passes `Price::Strip` and is unchanged.
 `check_model_facts`, called from `validate`, passes `Strip` (it only asks whether a target
@@ -154,9 +149,18 @@ An estimate is rendered, never inferred: `spend_text` (`agents_panel.rs`) and `c
 `$0.0066 est.` / `$0.0021 est. / $2.00`, next to `· 128k unpriced tok` where that still applies.
 `TOOL` and truncation rules for these rows are unchanged; `est.` rides with the dollar segment.
 
+Every other figure a dollar or a cap shows is marked the same way: the `/cost` footer
+`Session cost budget: ${spent:.4} / ${cap:.2}` (`reports.rs:848-849`) through `UsageReport.budget`
+(`reports.rs:762`), which becomes `Option<(f64, f64, bool)>` and is filled from `session_spend()` in
+`ui/commands/reports.rs:38-47`; `Exhausted::Cost` and `Exhausted::SessionCost`
+(`agents/budget.rs:62,72`), which take `Spend.estimated` so `describe_with` reads
+`its cost budget is spent ($0.0120 est. of $2.00)`; the goal pause reason `PauseReason::CostCap`
+(`core/goal.rs:146,175`), set from the stretch spend in `over_cost` (`:932`) and shown as
+`the goal's spend passed $2.00 est.`; and `core/project_env.rs` `usage_line(usage, billed)`
+(`:639,647`), which takes the basis for the setup run's figure.
+
 `events.rs` `ResultEvent.total_cost_usd` and `statusline.rs` `CostInfo.total_cost_usd` keep their
-JSON shape (the headless `result` object is the Claude-SDK-compatible contract) and are documented
-as a list-price estimate for an estimate-priced run.
+JSON shape and are documented as a list-price estimate for an estimate-priced run.
 
 ### 6. Price the telemetry stream
 
@@ -164,16 +168,18 @@ as a list-price estimate for an estimate-priced run.
 `core/providers/mod.rs`:
 
 ```rust
-/// The catalog price of a model served through the kind `provider`, when the kind's account
-/// bills in its own units and Fontaine prices its tokens at the vendor's list price instead.
+/// The catalog price of a `(provider, model)` span pair: for a gateway-prefixed id, the served
+/// vendor's list price; otherwise the catalog vendor's own entry.
 pub fn listed_price(provider: &str, model: &str) -> Option<Pricing>
 ```
 
-A `system.ai.`-prefixed id is a databricks model whatever provider name reaches the function, so
-`listed_price` — and `cost_usd`, which calls it — asks `databricks::listed_price(model)` for it
-first; otherwise it returns the catalog's own entry for a catalog vendor.
-`databricks::listed_price(model)` is `family`/`base_id`/`catalog_vendor_of` over the exact catalog
-entry, the same resolution `facts_for` uses.
+A pair goes to the kind's own `listed_price` when `provider` is the kind's name (`databricks`) or
+when the id carries either prefix `base_id` strips — `system.ai.`, or the older `databricks-` —
+whatever provider name reaches the function, so `listed_price` — and `cost_usd`, which calls it —
+asks `databricks::listed_price(model)` for such a pair; otherwise it returns the catalog's own
+entry for a catalog vendor. `databricks::listed_price(model)` is
+`family`/`base_id`/`catalog_vendor_of` over the exact catalog entry, the same resolution
+`facts_for` uses.
 
 The prefix rule is what prices a dbx Gemini call: rig's Gemini wire hardcodes the provider name
 `gcp.gemini`, and `databricks.rs:170` builds it with `GeminiConfig::new("")`, so the span arrives
@@ -181,7 +187,6 @@ as `gcp.gemini` / `system.ai.gemini-3-pro` and the provider name alone would tak
 catalog-vendor branch and resolve nothing.
 
 A `model_facts`-mapped endpoint is the exception: `facts_for` prices it from the account's mapping,
-which `span_bridge::cost_usd` cannot read — it sees only the span's `(provider, model)` strings —
 so a mapped endpoint is priced in the ledger and `/cost` and has no OTLP cost metric.
 
 `span_bridge::cost_usd` becomes `listed_price(provider, model)?.cost(usage).map(|c| c.total)`, and
@@ -209,21 +214,29 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 5. Replace the `priced`/`billed` booleans with `CostBasis` at every site listed in Design §4 — the
    turn and per-agent paths, `guardian/guardian.rs` `Settings.priced`, `guardian/scanner.rs`
    `LlmScanner.priced`, the `permissions.rs`/`afk.rs` record calls and `auto_mode_setup.rs` — add
-   the `model.estimated` span field, and pass the basis down the ledger `record` chain.
+   the `model.estimated` span field, and pass the basis down the ledger `record` chain. The
+   integration tests that build those fields or pass that flag move with them:
+   `tests/{agent_pipeline,audit_telemetry,side_question,account_session,afk}.rs`,
+   `tests/{usage_pause_turn,effort,turn_recovery,guardian_scanner}.rs` and
+   `fontaine/tests/embed.rs`.
 
 **Phase 3 — count and label the estimate**
 
 6. `core/usage_ledger.rs`: `Bucket.estimated`, set in `add`, folded in `merge`; unit tests.
 7. `agents/budget.rs` `Spend.estimated`; `core/gate.rs` `spend_of(usage, basis)` and the
-   `record_usage_answered`/`add_*_usage` chain.
-8. Displays: `agents_panel.rs` `SpendView.estimated` + `spend_text`, `reports.rs` `cost_cell`, and
-   the TUI row plumbing that fills them.
+   `record_usage_answered`/`add_*_usage` chain, with the integration tests that call them directly
+   (`tests/{billing,agent_pipeline,agent_resume,usage_pause_turn}.rs`) updated to pass a basis.
+8. Displays: `agents_panel.rs` `SpendView.estimated` + `spend_text`, `reports.rs` `cost_cell` and
+   the `/cost` footer's `budget` flag, `agents/budget.rs` `Exhausted::{Cost,SessionCost}`,
+   `core/goal.rs` `PauseReason::CostCap`, `core/project_env.rs` `usage_line`, the `PanelRow`
+   literals in `fontaine-tui/src/{app,screen}.rs`, and the TUI row plumbing that fills them.
 
 **Phase 4 — telemetry**
 
-9. `fontaine/src/telemetry/span_bridge.rs`: `cost_usd` through `listed_price`, which resolves a
-   `system.ai.`-prefixed model under any provider name, and the `estimated = "true"` attribute on
-   the cost metric when the enclosing span says so.
+9. `fontaine/src/telemetry/span_bridge.rs`: `cost_usd` through `listed_price`, which takes a pair
+   to `databricks::listed_price` when the provider is `databricks` or the id carries either prefix
+   `base_id` strips (`system.ai.`, `databricks-`), and the `estimated = "true"` attribute on the
+   cost metric when the enclosing span says so.
 
 **Phase 5 — docs and changelog**
 
@@ -241,11 +254,15 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 - `rust/fontaine-sdk/src/core/usage_ledger.rs`, `core/gate.rs`, `core/statusline.rs`, `run.rs`
 - `rust/fontaine-sdk/src/guardian/{guardian,scanner}.rs`
 - `rust/fontaine-sdk/src/agents/budget.rs`
-- `rust/fontaine-tui/src/{agents_panel,reports,agent_list}.rs`, `rust/fontaine-tui/src/ui/{turn,mod}.rs`,
-  `rust/fontaine-tui/src/ui/commands/auto_mode_setup.rs`
+- `rust/fontaine-tui/src/{agents_panel,reports,agent_list,app,screen}.rs` (`PanelRow` literals in
+  the last two), `rust/fontaine-tui/src/ui/{turn,mod}.rs`,
+  `rust/fontaine-tui/src/ui/commands/{auto_mode_setup,reports}.rs`
 - `rust/fontaine/src/telemetry/span_bridge.rs`, `rust/fontaine/src/auto_mode.rs`
 - `rust/fontaine-evals/src/live.rs`
-- `rust/fontaine-sdk/tests/databricks.rs`
+- `rust/fontaine-sdk/tests/{databricks,billing,audit_telemetry,agent_pipeline,agent_resume}.rs`,
+  `rust/fontaine-sdk/tests/{side_question,guardian_scanner,turn_recovery,account_session,afk}.rs`,
+  `rust/fontaine-sdk/tests/{usage_pause_turn,effort}.rs`, `rust/fontaine/tests/embed.rs`
+- `rust/fontaine/tests/` — the new `--max-budget-usd` caps test file
 - `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -306,10 +323,13 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 - **Telemetry** (`span_bridge.rs` unit tests): a `databricks` completion under `model.priced` yields
   `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` under a
   `model.estimated` span, a `gcp.gemini` completion for `system.ai.gemini-3-pro` yields the same
-  cost, and a `system.ai.glm-*` model still yields no cost.
+  cost, a `databricks` completion for the older `databricks-claude-haiku-5-5` spelling yields it
+  too, and a `system.ai.glm-*` model still yields no cost.
 - **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5` handle
   is `priced()`, `cost_basis() == Estimated`, and a reply's reported usage accrues a `cost_usd` in
-  a bucket marked `estimated` on the ledger instead of `unpriced_tokens`; `system.ai.glm-5-3` stays
+  a bucket marked `estimated` on the ledger instead of `unpriced_tokens`; a `system.ai.gpt-*` reply
+  (`responses_reply()`) and a `system.ai.gemini-3-pro` reply (`gemini_reply()`) each add a
+  `cost_usd` to such a bucket, since each wire prices on its own path; `system.ai.glm-5-3` stays
   unpriced.
 - **Caps** (`tests/` for `--max-budget-usd`, alongside the existing mock-server
   `error_max_budget_usd` tests at `fontaine/tests/headless_contract.rs:217,260,652`): a wiremock dbx
