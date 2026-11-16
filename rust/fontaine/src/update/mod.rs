@@ -573,6 +573,20 @@ pub fn rollback(
             "the previous-version record names a version of another channel".into(),
         ));
     }
+    // A stale record from the other channel (dev auto-update, then the release installer) must
+    // not switch channels.
+    if record.channel != info.channel {
+        return Ok(Rollback::NothingToRestore(
+            "the previous version belongs to another channel",
+        ));
+    }
+    // A swap whose receipt rewrite failed leaves the receipt and the record both naming the
+    // old build while the binary is the new one.
+    if record.version == info.version {
+        return Ok(Rollback::NothingToRestore(
+            "the receipt already names the previous version; run `fontaine update` to repair it",
+        ));
+    }
     auto::write_skip(data_dir, info.channel, &info.version)
         .map_err(|e| UpdateError::Install(Box::new(e)))?;
     std::fs::rename(&prev, &info.binary_path).map_err(|e| UpdateError::Install(Box::new(e)))?;

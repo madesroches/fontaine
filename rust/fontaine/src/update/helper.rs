@@ -412,7 +412,9 @@ fn spawn_copy(args: &HelperArgs) -> std::io::Result<()> {
     }
     let copy = dir.join(format!("fontaine-helper-{}.exe", std::process::id()));
     std::fs::copy(std::env::current_exe()?, &copy)?;
+    // The helper outlives the session; inheriting its cwd would keep the project dir in use.
     std::process::Command::new(copy)
+        .current_dir(&args.data)
         .arg("update-helper")
         .arg("--target")
         .arg(&args.target)

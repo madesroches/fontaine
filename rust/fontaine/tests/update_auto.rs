@@ -578,6 +578,29 @@ fn rollback_without_a_sidecar_or_previous_binary_has_nothing_to_restore() {
 }
 
 #[cfg(unix)]
+#[test]
+fn rollback_to_the_version_the_receipt_names_or_to_another_channel_restores_nothing() {
+    let install = Install::new(OLD);
+    std::fs::write(install.binary.with_extension("prev"), b"PREV").unwrap();
+    let record = install.binary.with_extension("prev.json");
+    let write = |version: &str, channel: &str| {
+        let text = format!(r#"{{"version":"{version}","channel":"{channel}"}}"#);
+        std::fs::write(&record, text).unwrap();
+    };
+
+    write(OLD, "dev");
+    let same = update::rollback(&install.receipt, &install.binary, &install.data).unwrap();
+    assert!(matches!(same, Rollback::NothingToRestore(_)), "{same:?}");
+    assert!(!install.data.join(auto::SKIP_FILE).exists());
+
+    write("0.2.0", "release");
+    let other = update::rollback(&install.receipt, &install.binary, &install.data).unwrap();
+    assert!(matches!(other, Rollback::NothingToRestore(_)), "{other:?}");
+    assert_eq!(std::fs::read(&install.binary).unwrap(), b"OLD");
+    assert_eq!(install.receipt_version(), OLD);
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn a_failed_receipt_write_is_warned_once_and_leaves_no_marker() {
     use std::os::unix::fs::PermissionsExt;
