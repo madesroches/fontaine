@@ -132,8 +132,7 @@ model reads `unpriced tok` exactly as today.
   `span_bridge::dropped_guardian_spend` priced. The composition-read site `permissions.rs:2249`
   records what the composition's own readers answered, not the guardian model, so it passes
   `CostBasis::Billed` and keeps today's count-as-reported behavior. The span field stays
-  `model.priced` (bool) and gains `model.estimated` (bool) so a telemetry reader can tell the two
-  apart.
+  `model.priced` (bool), and every site that records it also records `model.estimated` (bool).
 - `guardian/guardian.rs`: `Settings.priced` (`:51`) and the cost drop that reads it (`:403`)
   become the basis, and the span field it records (`:236`) splits into `model.priced` /
   `model.estimated`; `guardian/scanner.rs` `LlmScanner.priced` (`:108`) and its span (`:199`)
@@ -152,8 +151,7 @@ Two carriers, mirroring the existing `unpriced_tokens` convention:
   holding both is marked.
 - `agents/budget.rs` `Spend` gains the same field, combined by `Spend::add` (`:20`) with `||` too,
   so a sum holding one estimate is marked; `core/goal.rs:271` `spend_since` takes `estimated` from
-  `now`. `core/gate.rs` `spend_of(usage, basis)` takes the basis — and so does
-  `core/child_runner.rs` `spend` (`:1434`), the public wrapper over it; `record_usage_answered` and
+  `now`. `core/gate.rs` `spend_of(usage, basis)` takes the basis, and `record_usage_answered` and
   its four callers (`gate.rs:1324`, `:1385`, `:1405`, `:1425`) carry it through.
 
 An estimate is rendered, never inferred: `spend_text` (`agents_panel.rs`) and `cost_cell`
@@ -209,9 +207,11 @@ A `model_facts`-mapped endpoint is the exception: `facts_for` prices it from the
 so a mapped endpoint is priced in the ledger and `/cost` and has no OTLP cost metric.
 
 `span_bridge::cost_usd` becomes `listed_price(provider, model)?.cost(usage).map(|c| c.total)`, and
-the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carries
-`estimated = "true"` — the attribute the guardian-drop estimate already uses for the same reason.
-`fontaine.token.usage` is untouched: those tokens were measured.
+the emitted `fontaine.cost.usage` carries `estimated = "true"` — the attribute the guardian-drop
+estimate already uses for the same reason — when the span's nearest ancestor that names
+`model.priced` also names `model.estimated = true`. `model.estimated` is read from that same
+ancestor, never on its own, so a catalog-billed subagent span under a dbx interaction span is not
+labelled an estimate. `fontaine.token.usage` is untouched: those tokens were measured.
 
 ## Implementation Steps
 
@@ -237,8 +237,9 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
    `guardian.settings()` at the guardian-only sites (`permissions.rs:2242/2307/2374`, `afk.rs:70/83`,
    `setup.rs:795`, and `permissions.rs:2408` keeping `Dropped.priced` a bool as
    `basis != CostBasis::Unpriced`) and `CostBasis::Billed` at the composition-read site
-   (`permissions.rs:2249`); add the `model.estimated` span field, and pass the basis down the ledger
-   `record` chain. The integration tests that build those fields or pass that flag move with them:
+   (`permissions.rs:2249`); add `model.estimated` to every span that records `model.priced`, and
+   pass the basis down the ledger `record` chain. The integration tests that build those fields or
+   pass that flag move with them:
    `tests/{agent_pipeline,audit_telemetry,side_question,account_session,afk}.rs`,
    `tests/{usage_pause_turn,effort,turn_recovery,guardian_scanner}.rs`,
    `tests/{agent_reply,max_tokens,memory,multimodal,native_search,output_styles}.rs`,
@@ -251,8 +252,8 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
    `core/goal.rs` `spend_since`; `core/gate.rs` `spend_of(usage, basis)` and the
    `record_usage_answered`/`add_*_usage` chain, with the integration tests that call them directly
    (`tests/{billing,agent_pipeline,agent_resume,usage_pause_turn}.rs`) or build a `Spend`
-   (`tests/goal.rs`) updated to match. `core/child_runner.rs:1434` `spend(usage)`, the public
-   wrapper over `spend_of`, takes the basis too, or goes if it has no callers.
+   (`tests/goal.rs`) updated to match. Delete `core/child_runner.rs:1434` `spend(usage)`, which has
+   no callers.
 8. Displays: `agents_panel.rs` `SpendView.estimated` + `spend_text`, `reports.rs` `cost_cell` and
    the `/cost` footer's `budget` flag, `agents/budget.rs` `Exhausted::{Cost,SessionCost}`,
    `core/goal.rs` `PauseReason::CostCap`, `core/project_env.rs` `usage_line`, the `PanelRow`
@@ -263,7 +264,7 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 9. `fontaine/src/telemetry/span_bridge.rs`: `cost_usd` through `listed_price`, which takes a pair
    to `databricks::listed_price` when the provider is `databricks` or the id carries either prefix
    `base_id` strips (`system.ai.`, `databricks-`), and the `estimated = "true"` attribute on the
-   cost metric when the enclosing span says so.
+   cost metric when the same ancestor that supplies `model.priced` also records `model.estimated`.
 
 **Phase 5 — docs and changelog**
 
@@ -333,7 +334,7 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 - `docs/tui.md:195`, `:866` and `:1355-1366` — the statusline's `cost.total_cost_usd` is a
   list-price estimate for an estimate-priced run, the dollar figure ends in ` est.` when it is an
   estimate, and the agents-panel paragraph gets the same clause.
-- `docs/headless.md:40`, `:62`, `:77`, `:312` — `total_cost_usd` is a list-price estimate for an
+- `docs/headless.md:40`, `:62`, `:312` — `total_cost_usd` is a list-price estimate for an
   estimate-priced run; a priced dbx model makes `--max-budget-usd` and a preference list work.
 - `docs/telemetry.md:130-138` — `fontaine.cost.usage` is present for a dbx model the catalog lists
   and carries `estimated = "true"`.
@@ -352,6 +353,10 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
   false for every `Unpriced` arm.
 - **Ledger and spend** (`usage_ledger.rs`, `gate.rs` unit tests): `estimated` set only by an
   estimate-priced call, carried through `merge` and through `spend_of`.
+- **Estimate through a turn** (`tests/billing.rs`): a case on the existing `root_turn` seam
+  (`:27-74`, extended to take the basis and to return the flags with the reported cost and root
+  spend): with `CostBasis::Estimated` the reported cost is kept and the root `Spend` and the main
+  ledger bucket both have `estimated == true`.
 - **Display** (`agents_panel.rs`, `reports.rs` unit tests): `$0.0066 est.`, the budgeted form, a
   mixed bucket marked, and an unpriced bucket still `n/a` / `· N unpriced tok`. These are the
   strings the docs promise, so they are pinned where they are built.
@@ -359,8 +364,10 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
   `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` under a
   `model.estimated` span, a `gcp.gemini` completion for `system.ai.gemini-3-5-flash` (dotted to the
   listed `gemini-3.5-flash`) yields the same cost, a `databricks` completion for the older
-  `databricks-claude-haiku-5-5` spelling yields it too, and a `system.ai.glm-*` or an unlisted
-  `system.ai.gemini-3-pro` model still yields no cost.
+  `databricks-claude-haiku-5-5` spelling yields it too, a `system.ai.glm-*` or an unlisted
+  `system.ai.gemini-3-pro` model still yields no cost, and — modelled on
+  `the_nearest_span_naming_a_billing_wins` — a catalog-billed subagent span under a dbx
+  interaction span carries no `estimated` attribute.
 - **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5`
   handle is `priced()` and `cost_basis() == Estimated`, and each wire's reply reports a price at the
   existing `completion.call` seam — `usage.cost.is_some()` for Messages, `responses_reply()` and
