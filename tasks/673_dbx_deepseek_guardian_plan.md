@@ -86,8 +86,8 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
 ```
 
 - Run it as a background job and read the progress lines (`[n/total] <id> <verdict> <latency>ms` on
-  stderr): a full-profile run is about 430 cases, plus the pipeline cases that reach the guardian, at
-  tens of minutes to an hour at this model's latencies.
+  stderr): a full-profile run is 430 cases: 331 guardian, 92 pipeline (some reach the guardian), 7 scanner
+  skipped, at tens of minutes to an hour at this model's latencies.
 - An interrupted run leaves `<out>.partial.jsonl`; continue it with the same command plus
   `--resume ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl`. `--resume`
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.
@@ -120,10 +120,12 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   its default guardian.
 - `CHANGELOG.md`: under `### Added`, one line naming the model, the deployment, the numbers, and that
   the ranked list is what `auto` picks its guardian from; under `### Removed`, one line saying
-  `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account until it is
-  re-scored on `5daaae0b478a`.
+  `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account, and
+  `$guardian_default` no longer resolves to it on such an account either, until it is re-scored on
+  `5daaae0b478a`.
 - The numbers go up as a comment on issue #673, whose acceptance asks for them there, together with
-  the transport and the fail-closed counts.
+  the transport, the fail-closed counts and the catch rate on each destructive class
+  (`summary.catch_by_class`, Design 6).
 
 ### 4. Outcome B — a clean run that misses
 
@@ -139,8 +141,11 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   guardian falls back to the main model. `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
   kind has a default guardian from the list.
 - `CHANGELOG.md`: under `### Added`, one line for the measurement and its miss; under `### Removed`,
-  one line saying `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account
-  until it is re-scored on `5daaae0b478a`. The PR body calls the drop out.
+  one line saying `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account,
+  and `$guardian_default` no longer resolves to it on such an account either, until it is re-scored
+  on `5daaae0b478a`. The PR body calls the drop out.
+- The numbers, the transport, the fail-closed counts and the per-class catch rates
+  (`summary.catch_by_class`, Design 6) go up as a comment on issue #673.
 
 ### 5. Outcome C — the run fails closed on infrastructure
 
@@ -152,16 +157,21 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
     names each reason) and say in the docs that it is not a verdict on the model;
   - add one clause to `docs/guardian.md`'s "Choosing the guardian model", where the databricks
     limitation is already stated, pointing at the measurement;
-  - record the numbers on issue #673;
+  - record the numbers and the per-class catch rates (Design 6) on issue #673;
   - no `CHANGELOG.md` line: the models file is untouched, so nothing a user sees changes.
 - When a few cases stay unscored after a resume (`CaseResult::infrastructure_failure()` counts every
-  fail-closed reason but `low_confidence`, parser failures included), the runner leaves the models
-  file untouched in that run. Follow the `benign-34` precedent in `docs/evals.md`: count each
+  fail-closed reason but `low_confidence`, parser failures included), `update_models` returns early
+  and `report::merge` never runs. Follow the `benign-34` precedent in `docs/evals.md`: count each
   unscored case as the wrong verdict (an attack case as a miss, a benign case as a false deny), and
-  add the `kind = "databricks"` entry by hand only if it still clears the bar on those counted
-  rates. The `docs/evals.md` bullet states both the report's raw rates and the entry's counted
-  rates. Every panel case is then scored or counted against the model, so no committed rate is
-  over a subset.
+  edit the models file by hand to what `merge` would have written: drop the
+  `opencode-go/claude-haiku-5-5` entry (scored on `d1740a7c65ae`, not `5daaae0b478a`), and add the
+  `kind = "databricks"` entry only if it still clears the bar on those counted rates. Then apply
+  Outcome A's `docs/evals.md`, `docs/guardian.md` and `CHANGELOG.md` edits when the entry is added,
+  Outcome B's when it is not. The `docs/evals.md` bullet states both the report's raw rates and the
+  entry's counted rates. Every panel case is then scored or counted against the model, so no
+  committed rate is over a subset.
+- In both branches, once the report is committed as final, delete `<out>.partial.jsonl` (the runner
+  keeps it while any case is unscored, and `*.partial.jsonl` is not gitignored).
 
 ### 6. The counts the issue asks for
 
@@ -172,19 +182,23 @@ the resolved transport is:
 jq -r '.summary.infrastructure_failures[]?.reason' \
   evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json | sort | uniq -c
 jq -r '.summary.verdict_transport' evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json
+jq '.summary.catch_by_class' evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json
 ```
 
-Per-case `fail_closed` carries the same reasons for the cases that did score.
+A scored case can only carry `fail_closed = "low_confidence"`; count them with
+`jq '[.cases[] | select(.fail_closed=="low_confidence")] | length'`. `catch_by_class` holds the catch
+rate per attack class, including the destructive ones (`git-destructive`,
+`destroy-pre-existing-files`, …).
 
 ## Files to Modify
 
 | Path | Change |
 |---|---|
-| `evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json` | New report; the dataset version in the name is the value the run computes. |
-| `rust/fontaine-sdk/data/guardian_models.toml` | Written by the run: the databricks entry when it clears the bar, and the stale `opencode-go` entry dropped. |
+| `evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json` | New report; the dataset version in the name is the value the run computes. Its `.partial.jsonl` sidecar is deleted, not committed. |
+| `rust/fontaine-sdk/data/guardian_models.toml` | Written by the run: the databricks entry when it clears the bar, and the stale `opencode-go` entry dropped. In Outcome C's few-unscored branch, edited by hand to the same result. |
 | `docs/evals.md` | The row, the bullet, the section's prose; in outcomes A and B also the haiku bullet (`:657-661`); in outcome A, the `## Results` prose (~537-542). |
-| `CHANGELOG.md` | Outcomes A and B: an `### Added` line, and a `### Removed` line for the haiku default guardian. None in C. |
-| `docs/guardian.md` | Outcomes A and B: the `opencode-go` exception at `:783-786`. Outcome C: the pointer from the databricks limitation. |
+| `CHANGELOG.md` | Outcomes A and B: an `### Added` line, and a `### Removed` line for the haiku default guardian. In C only the few-unscored branch, with A's or B's lines. |
+| `docs/guardian.md` | Outcomes A and B: the `opencode-go` exception at `:783-786`. Outcome C: the pointer from the databricks limitation; the few-unscored branch also takes A's or B's edit. |
 | `tasks/completed/673_dbx_deepseek_guardian_plan.md` | This plan, moved by `pr`. |
 
 ## Trade-offs
@@ -204,7 +218,8 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   because Fontaine withholds every account's `api_key_env` variable from the processes it starts;
   the value never enters the repository, a report or a log.
 - 2026-11-15 The run merges the models file itself through `update_models`; the entry is not
-  hand-applied from a scratch copy.
+  hand-applied from a scratch copy, except in Outcome C's few-unscored branch, where the file is
+  edited by hand to what `report::merge` would write.
 - 2026-11-15 The ten-case smoke test runs before the full run; the full run still follows it.
 
 ## Documentation
@@ -213,10 +228,12 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   `opencode-go` one, with the dataset version, the date, the transport and the fail-closed counts.
 - `docs/evals.md`: in outcomes A and B, the haiku bullet at `:657-661`; in outcome A, the `## Results`
   prose (~537-542).
-- `CHANGELOG.md`: outcomes A and B only — the `### Added` line (the measurement and, in A, the
-  ranked-list entry) and the `### Removed` line for the haiku default guardian; none in C.
+- `CHANGELOG.md`: outcomes A and B only, and Outcome C's few-unscored branch with A's or B's lines —
+  the `### Added` line (the measurement and, in A, the ranked-list entry) and the `### Removed` line
+  for the haiku default guardian; none otherwise in C.
 - `docs/guardian.md`: outcomes A and B, the `opencode-go` exception at `:783-786` (the databricks
-  entry in A, no exception in B); outcome C, one clause at the databricks limitation.
+  entry in A, no exception in B); outcome C, one clause at the databricks limitation, and in the
+  few-unscored branch also A's or B's edit.
 
 ## Testing Strategy
 
