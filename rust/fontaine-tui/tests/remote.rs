@@ -471,3 +471,23 @@ async fn an_unpaired_device_without_a_secret_gets_not_paired() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_confirmed_during_the_auto_mode_setup_scan_is_answered() {
+    let w = World::new(Vec::new()).with_config(DIRECT_ONLY);
+    w.run(|ui| async move {
+        let ticket = enable(&ui).await;
+        ui.send("/auto-mode-setup");
+        let mut client = pair(&ui, ticket, 'y').await;
+        until(&mut client, |e| {
+            matches!(e, ClientEvent::Connected).then_some(())
+        })
+        .await;
+        ui.idle().await;
+        client.stop();
+    })
+    .await;
+    let rules = rules(&w);
+    assert!(rules.iter().any(|r| r == "pairing_confirmed"), "{rules:?}");
+    assert!(!rules.iter().any(|r| r == "pairing_cancelled"), "{rules:?}");
+}

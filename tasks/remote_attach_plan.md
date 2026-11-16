@@ -155,8 +155,8 @@ attach.
 - Slash commands from a device are gated by an explicit exhaustive `Command::device_allowed()`
   match with no wildcard arm, so a new variant fails to compile until classified; they also
   run under the `main_only` rules. Allowed (with or without argument): `Btw`, `Cost`, `Recap`,
-  `Compact`, `Context`, `Loop`, `Goal`, `Init`, `Rename`, `Help`, `Status`, `Other` (skills).
-  Refused: `GuardianDisable` (including its confirmation dialog), `GuardianEnable`, `RemoteInbox`
+  `Compact`, `Context`, `Goal`, `Init`, `Rename`, `Help`, `Status`, `Other` (skills).
+  Refused: `Loop`, `GuardianDisable` (including its confirmation dialog), `GuardianEnable`, `RemoteInbox`
   (replaced by `/remote`, all subcommands), `Afk` (the review form and its confirmation),
   `Theme` (persists config), `Export` (writes a host file at a device-chosen path), `Config`,
   `Clear`, `Resume`, `Branch`, `Rewind`, `Model`, `Effort`, `GuardianModel`, `OutputStyle`,
@@ -281,6 +281,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
 - AFK: `fontaine send`, the `fontaine/send/1` ALPN and `/remote-inbox` are removed, not kept as
   aliases; `attach --message` is the one-shot path. Reason: the issue says attach supersedes it,
   and a second trust model (unpaired bearer ticket = user) contradicts device pairing.
+- 2026-11-16: AFK: /loop is refused from a device (it was accepted and did nothing)
 - AFK: `/guardian-disable` and `/guardian-enable` are refused from any device, reversing the
   #627 allowance; the master plan Decision, AGENTS.md, SECURITY.md and the docs wording are
   updated.

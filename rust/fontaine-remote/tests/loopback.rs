@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fontaine_remote::{
-    AttachError, AttachOptions, BoxFuture, Client, ClientEvent, ClientMsg, ClientStore, Clock,
-    Close, DeviceStore, Handled, HostSession, Hub, HubLimits, MemoryClientStore, MemoryDeviceStore,
+    AttachError, AttachOptions, BoxFuture, Client, ClientEvent, ClientMsg, ClientStore, Close,
+    DeviceStore, Handled, HostSession, Hub, HubLimits, MemoryClientStore, MemoryDeviceStore,
     Reason, RelayMode, RemoteServer, Sender, ServerConfig, SystemClock, Target, Ticket, Waker,
     send_message,
 };
@@ -559,6 +559,3 @@ async fn a_relayed_attach_reaches_the_session_through_a_local_relay() {
     .await;
     host.server.shutdown().await;
 }
-
-#[allow(dead_code)]
-fn clock_is_object_safe(_: &dyn Clock) {}

@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn a_dialog_the_host_still_has_open_can_be_answered_again() {
-        use fontaine_tools::ask_user::{Question, QuestionOption};
+        use fontaine_sdk::tools::ask_user::{Question, QuestionOption};
         let grace = crate::confirm_prompt::ANSWER_GRACE + Duration::from_millis(50);
         let mut ui = RemoteClientUi::new(app());
         ui.install(Some(approval_dialog(4, &["allow once", "deny"])));

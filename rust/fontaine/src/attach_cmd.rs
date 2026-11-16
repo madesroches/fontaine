@@ -127,23 +127,27 @@ fn target_of(
     }
 }
 
-/// The relay mode from the user-scope config only: project scope can never reach this.
-fn user_relay(dirs: &fontaine_sdk::core::dirs::Dirs) -> RelayMode {
+/// The relay mode from the user-scope config only: project scope can never reach this. A missing
+/// file means the default; a file that cannot be read or parsed is an error rather than a silent
+/// default, since the setting may be the one that keeps traffic off the relay.
+fn user_relay(dirs: &fontaine_sdk::core::dirs::Dirs) -> Result<RelayMode, String> {
     let path = dirs.config.join(fontaine_sdk::core::config::USER_FILE);
-    let relay = fontaine_sdk::core::file_lock::read_shared(&path)
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .and_then(|table| {
-            table
-                .get("remote")?
-                .get("relay")?
-                .as_str()
-                .map(str::to_string)
-        });
-    match relay.as_deref() {
+    let text = match fontaine_sdk::core::file_lock::read_shared(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(RelayMode::Default),
+        Err(e) => return Err(format!("cannot read {}: {}", path.display(), chain(&e))),
+    };
+    let table = text
+        .parse::<toml::Table>()
+        .map_err(|e| format!("cannot parse {}: {}", path.display(), chain(&e)))?;
+    let relay = table
+        .get("remote")
+        .and_then(|remote| remote.get("relay"))
+        .and_then(|relay| relay.as_str());
+    Ok(match relay {
         Some("disabled") => RelayMode::Disabled,
         _ => RelayMode::Default,
-    }
+    })
 }
 
 fn device_label(args: &AttachArgs, host: &Host) -> String {
@@ -183,15 +187,18 @@ pub fn run(args: &AttachArgs, host: &Host) -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    // A ticket carries the host's addresses and relay; a stored host follows the user's setting.
-    let relay = match &target {
-        Target::Ticket(_) => None,
-        Target::Host(_) => Some(user_relay(&dirs)),
+    let user_relay = match user_relay(&dirs) {
+        Ok(relay) => relay,
+        Err(why) => {
+            eprintln!("fontaine: {why}");
+            return ExitCode::from(crate::EXIT_CONFIG);
+        }
     };
-    let relay = match (relay, user_relay(&dirs)) {
-        (Some(relay), _) => Some(relay),
-        (None, RelayMode::Disabled) => Some(RelayMode::Disabled),
-        (None, _) => None,
+    // A ticket carries the host's addresses and relay; a stored host follows the user's setting.
+    let relay = match (&target, user_relay) {
+        (Target::Host(_), relay) => Some(relay),
+        (Target::Ticket(_), RelayMode::Disabled) => Some(RelayMode::Disabled),
+        (Target::Ticket(_), _) => None,
     };
     let options = AttachOptions {
         relay,
@@ -422,5 +429,21 @@ mod tests {
         .unwrap();
         assert!(message.contains("removed `fontaine send`"), "{message}");
         assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn an_unreadable_or_malformed_user_config_is_an_error_not_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = fontaine_sdk::core::dirs::Dirs {
+            config: tmp.path().to_path_buf(),
+            data: tmp.path().to_path_buf(),
+        };
+        assert!(matches!(user_relay(&dirs), Ok(RelayMode::Default)));
+        let file = tmp.path().join(fontaine_sdk::core::config::USER_FILE);
+        std::fs::write(&file, "[remote]\nrelay = \"disabled\"\n").unwrap();
+        assert!(matches!(user_relay(&dirs), Ok(RelayMode::Disabled)));
+        std::fs::write(&file, "[remote\nrelay =").unwrap();
+        let why = user_relay(&dirs).unwrap_err();
+        assert!(why.contains("cannot parse"), "{why}");
     }
 }

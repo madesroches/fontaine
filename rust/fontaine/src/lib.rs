@@ -958,7 +958,7 @@ async fn run_interactive(
         feed,
     } = notices;
     if cli.remote && (cli.resume.is_some() || cli.continue_session || cli.fork_session) {
-        ax_warnings.push(fontaine_core::notice::Notice::info(
+        ax_warnings.push(fontaine_sdk::core::notice::Notice::info(
             "--remote is ignored for a resumed session: remote control is off; turn it on with `/remote on`",
         ));
     }
