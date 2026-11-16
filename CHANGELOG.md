@@ -35,7 +35,8 @@ All notable changes are recorded here. The format follows
   do not send it again for the session. `thinking_off = false` opts out of that first attempt.
   `reasoning_effort: "none"` is the value Databricks documents for turning a hybrid reasoning model
   off; its Anthropic-shaped `thinking` field belongs to the Claude models behind the same gateway and
-  is accepted and ignored for the others (#673).
+  is accepted and ignored for the others (#673). Only the guardian-side calls carry it, so the main
+  agent keeps reasoning at its own default.
 - Automatic background updates (#175): at interactive start, at most once a day, an install made by
   a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
   minisign signature against the key compiled into the running binary and makes it the next
