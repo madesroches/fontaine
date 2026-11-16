@@ -355,6 +355,36 @@ async fn a_send_after_the_run_ended_is_a_runtime_error_and_close_reports_the_exi
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_afk_run_that_hit_a_usage_limit_hands_its_report_to_the_close_error() {
+    let window = r#"{"error":{"message":"You've reached your 5-hour usage limit.","type":"exceeded_current_quota_error"}}"#;
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        (0..5)
+            .map(|_| Turn::Reply(429, window.to_string()))
+            .collect(),
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    s.user_config(&format!(
+        "{config}\n[headless]\non_usage_limit = \"exit\"\n"
+    ));
+    let mut session = builder(&s)
+        .mode(PermissionMode::Afk)
+        .build()
+        .await
+        .expect("builds");
+    let first = run_turn(&mut session, "hi").await;
+    assert_eq!(result_of(&first)["subtype"], "error_usage_limit");
+    match session.close().await {
+        Err(e @ EmbedError::Runtime(_)) => {
+            assert!(e.afk_report().is_some(), "the assessed report survives");
+        }
+        other => panic!("expected a runtime error from close, got {other:?}"),
+    }
+}
+
 fn hook_config(s: &Sandbox, ends: &std::path::Path) {
     let config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
     s.user_config(&format!(

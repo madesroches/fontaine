@@ -3,6 +3,8 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::core::afk_report::AfkReport;
+
 type Source = Box<dyn Error + Send + Sync>;
 
 /// What failed, and the cause it wraps. `Display` is the message alone; render the whole chain
@@ -12,6 +14,7 @@ pub struct Detail {
     message: String,
     source: Option<Source>,
     exit_code: u8,
+    afk_report: Option<Box<AfkReport>>,
 }
 
 impl Detail {
@@ -59,6 +62,7 @@ impl EmbedError {
             message: message.into(),
             source: None,
             exit_code: crate::core::config::CONFIG_EXIT_CODE,
+            afk_report: None,
         })
     }
 
@@ -69,6 +73,7 @@ impl EmbedError {
             message: cause.to_string(),
             source: Some(Box::new(cause)),
             exit_code: crate::core::config::CONFIG_EXIT_CODE,
+            afk_report: None,
         })
     }
 
@@ -81,6 +86,7 @@ impl EmbedError {
             message: message.into(),
             source: Some(Box::new(cause)),
             exit_code: crate::core::config::CONFIG_EXIT_CODE,
+            afk_report: None,
         })
     }
 
@@ -92,6 +98,7 @@ impl EmbedError {
             message: cause.to_string(),
             source: Some(Box::new(cause)),
             exit_code,
+            afk_report: None,
         })
     }
 
@@ -100,6 +107,7 @@ impl EmbedError {
             message: message.into(),
             source: None,
             exit_code: 1,
+            afk_report: None,
         })
     }
 
@@ -112,6 +120,7 @@ impl EmbedError {
             message: message.into(),
             source: Some(Box::new(cause)),
             exit_code,
+            afk_report: None,
         })
     }
 
@@ -123,7 +132,24 @@ impl EmbedError {
             message: cause.to_string(),
             source: Some(Box::new(cause)),
             exit_code,
+            afk_report: None,
         })
+    }
+
+    /// The report the run assessed before it ended with a failure, when it was an AFK run. A run
+    /// that stops on a spent usage window still has one, as `fontaine -p` prints it on that exit.
+    pub fn afk_report(&self) -> Option<&AfkReport> {
+        self.detail().afk_report.as_deref()
+    }
+
+    pub(crate) fn with_afk_report(mut self, report: Option<AfkReport>) -> EmbedError {
+        let (EmbedError::Config(d)
+        | EmbedError::Session(d)
+        | EmbedError::Credentials(d)
+        | EmbedError::Model(d)
+        | EmbedError::Runtime(d)) = &mut self;
+        d.afk_report = report.map(Box::new);
+        self
     }
 
     pub(crate) fn runtime(message: impl Into<String>) -> EmbedError {
@@ -131,6 +157,7 @@ impl EmbedError {
             message: message.into(),
             source: None,
             exit_code: 1,
+            afk_report: None,
         })
     }
 
@@ -139,6 +166,7 @@ impl EmbedError {
             message: message.into(),
             source: None,
             exit_code,
+            afk_report: None,
         })
     }
 
@@ -147,6 +175,7 @@ impl EmbedError {
             message: cause.to_string(),
             source: Some(Box::new(cause)),
             exit_code: 1,
+            afk_report: None,
         })
     }
 }

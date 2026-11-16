@@ -550,7 +550,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-14 (#15): AFK: Host tools keep bare names and are not addressable by permission rules, `allowed_tools`/`disallowed_tools`, agent-type `tools` lists or hook matchers; `build()` rejects host-tool names in `allowed_tools`/`disallowed_tools`, and `hook()` and the approver tighten them. Deviates from Claude Code, where custom tools are MCP tools and rule-addressable: extending rule parsing to host tools is left for later.
 - 2026-11-14 (#15): AFK: One persistent event channel feeds Turns in order: `init` is the first item of the first Turn, each Turn ends after its `result`, between-turn events go to the next Turn, a dropped Turn drains to its `result`, `send` after the task exited yields `Err(EmbedError::Runtime)`, and `close()` returns the trailing `afk_report` as `Result<Option<AfkReport>, EmbedError>`.
 - 2026-11-14 (#15): AFK: Dropping a `Session` without `close()` triggers the shared `Cancel`, closes the input and moves the `Scratch` guard into the task; `SessionEnd` hooks fire only through `close()`.
-- 2026-11-15: AFK: Embedded sessions refuse claude-subscription accounts (EmbedError::Config): the provider re-executes the host binary with --internal-claude-inventory, which only fontaine and fontaine-evals handle; an embedder entry point for it is left for later.
+- 2026-11-15: AFK: Embedded sessions refuse any configured claude-subscription account, referenced or not (EmbedError::Config): the provider re-executes the host binary with --internal-claude-inventory, which only fontaine and fontaine-evals handle; an embedder entry point for it is left for later.
 
 ### Evals
 

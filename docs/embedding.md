@@ -27,7 +27,8 @@ promise. The crate is `0.x` and not published; depend on it by path or git.
 
 `claude-subscription` accounts are not supported for embedding: that provider re-executes the host
 binary with `--internal-claude-inventory`, which only `fontaine` handles, so `build()` fails with
-`EmbedError::Config` when a configured role, the guardian model or `model(..)` uses one.
+`EmbedError::Config` when the settings configure any `claude-subscription` account, whether or not
+anything references it (the `agent` tool and agent types can reach any account).
 
 ## A session in a few lines
 
@@ -153,7 +154,8 @@ turn with the same `result` Claude Agent SDK mode gives an interrupted turn
 
 `close()` stops accepting prompts, waits for the run to finish, fires the `session_end` hooks,
 removes the session's scratch directory and returns the AFK report, if any. It returns an `Err` if the
-run ended with a failure. Dropping a `Session` without `close()` cancels the running turn, closes the
+run ended with a failure; when an AFK run ended that way (a spent usage window, say), the report it
+assessed is still available from `EmbedError::afk_report()`. Dropping a `Session` without `close()` cancels the running turn, closes the
 input and lets the task end on its own, and removes the scratch directory once it has; no
 `session_end` hook fires.
 

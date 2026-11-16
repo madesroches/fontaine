@@ -22,8 +22,6 @@ use crate::core::afk_report::AfkReport;
 use crate::core::agent::{AgentRuntime, AgentSetup, EnvLookup};
 use crate::core::config::{Config, MatcherKind, PermissionMode};
 use crate::core::dirs::{self, Dirs};
-use crate::core::model_roles::Roles;
-use crate::core::models::ModelRef;
 use crate::core::notice::Notice;
 use crate::core::permissions::{Approver, DenyAll, HumanChannel};
 use crate::core::providers::claude_subscription::PROVIDER_NAME as CLAUDE_SUBSCRIPTION;
@@ -94,28 +92,14 @@ pub struct SessionBuilder {
     tools: Vec<Arc<dyn HostTool>>,
 }
 
-/// Refuses a session that could use a `claude-subscription` account: that provider re-executes
-/// the host binary with `--internal-claude-inventory`, which only `fontaine` handles.
-fn refuse_claude_subscription(config: &Config, model: Option<&str>) -> Result<(), EmbedError> {
-    let mut refs: Vec<ModelRef> = Vec::new();
-    if let Ok(roles) = Roles::from_config(config) {
-        for name in roles.names() {
-            refs.extend(roles.get(name).unwrap_or_default().iter().cloned());
-        }
-        if let Some(chain) = model.and_then(|text| roles.chain_from_text(text).ok()) {
-            refs.extend(chain.entries.iter().cloned());
-        }
-    }
-    refs.extend(config.guardian.model.as_deref().and_then(ModelRef::parse));
-    for reference in refs {
-        let is_claude = config
-            .accounts
-            .get(&reference.account)
-            .is_some_and(|a| a.kind.as_str() == CLAUDE_SUBSCRIPTION);
-        if is_claude {
+/// Refuses a session whose settings configure a `claude-subscription` account, referenced or not:
+/// the `agent` tool's `model:` argument and agent types can reach any account, and that provider
+/// re-executes the host binary with `--internal-claude-inventory`, which only `fontaine` handles.
+fn refuse_claude_subscription(config: &Config) -> Result<(), EmbedError> {
+    for (name, account) in &config.accounts {
+        if account.kind.as_str() == CLAUDE_SUBSCRIPTION {
             return Err(EmbedError::config(format!(
-                "account `{}` is a claude-subscription account; that provider needs the host binary to implement the internal inventory mode (`--internal-claude-inventory`) and is not supported for embedding",
-                reference.account
+                "account `{name}` is a claude-subscription account; that provider needs the host binary to implement the internal inventory mode (`--internal-claude-inventory`) and is not supported for embedding"
             )));
         }
     }
@@ -395,7 +379,7 @@ impl SessionBuilder {
             },
         )
         .map_err(EmbedError::config_from)?;
-        refuse_claude_subscription(&config, self.model.as_deref())?;
+        refuse_claude_subscription(&config)?;
         let requested = assemble::requested_mode(self.mode, &config, true);
         let wiring = self.wiring(checked.host_tools);
         let approver = wiring.approver.clone();
@@ -789,7 +773,10 @@ impl Session {
         };
         self.scratch.take();
         let report = lock(&self.afk, "the AFK report slot").take();
-        result.map(|()| report)
+        match result {
+            Ok(()) => Ok(report),
+            Err(e) => Err(e.with_afk_report(report)),
+        }
     }
 
     fn ended_error(&mut self) -> EmbedError {
