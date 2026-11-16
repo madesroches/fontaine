@@ -220,10 +220,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    (`tls-ring` suffices); new `protocol` messages and ALPN; `paired` data type (`PairedDevices`);
    store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; keep one-shot `client::send` (and its callers) until step 5 so the workspace builds.
-3. `fontaine-core`: the answer reaching the permission pipeline carries an optional `RemoteSender`
-   (beside the `Answer` on the approver reply); a defaulted `Approver::ask_user_as` returns the `fontaine-tools` `QuestionReply` (unchanged) with `Option<RemoteSender>` (default calls `ask_user`, returns `None`), and `questions.rs` unpacks it to fill `remote` on the dialog `Record::UserMessage`; `permissions.rs` writes it on `Record::Approval`/`Record::Denial`
-   (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit explanation; no schema break (serde-defaulted optional fields);
-   `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
+3. `fontaine-core`: answering-device identity per §3 (`Approver::ask_user_as`, `remote` on the dialog `UserMessage`, `Approval`/`Denial` and the audit explanation); `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
 4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, typed device
    answers as a loop input (first answer wins), the key/paired-file store implementation over
    `fontaine_core::owner_only` and `file_lock`, pairing confirmation dialog (local only), device
@@ -235,7 +232,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    with device count, a unit test that a device answer is refused while the local approval is typing feedback or the question panel is mid-edit, a unit test that a choice not offered by the open approval is refused and leaves the dialog pending, `RemoteClientUi` for the client; rewrite `tests/remote.rs` and
    `ticket_prompt.rs` for attach.
 5. `fontaine`: `--remote` flag, `attach` and `remote devices|revoke` subcommands, remove
-   `client::send`, `send_cmd.rs` and the old `fontaine-tui/tests/remote.rs` scenarios together, wire client key/hosts files.
+   `client::send`, `send_cmd.rs` and the send-based tests in `fontaine-remote/tests/loopback.rs` (they use `send`/`Request`/`Response`; remove or rewrite them) together, wire client key/hosts files.
 6. Docs, changelog, AGENTS.md / SECURITY.md / master plan edits, `cargo deny`, Windows
    `cargo check --target x86_64-pc-windows-gnu`.
 
