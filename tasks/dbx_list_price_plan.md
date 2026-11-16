@@ -207,11 +207,13 @@ A `model_facts`-mapped endpoint is the exception: `facts_for` prices it from the
 so a mapped endpoint is priced in the ledger and `/cost` and has no OTLP cost metric.
 
 `span_bridge::cost_usd` becomes `listed_price(provider, model)?.cost(usage).map(|c| c.total)`, and
-the emitted `fontaine.cost.usage` carries `estimated = "true"` — the attribute the guardian-drop
-estimate already uses for the same reason — when the span's nearest ancestor that names
-`model.priced` also names `model.estimated = true`. `model.estimated` is read from that same
-ancestor, never on its own, so a catalog-billed subagent span under a dbx interaction span is not
-labelled an estimate. `fontaine.token.usage` is untouched: those tokens were measured.
+the emitted `fontaine.cost.usage` carries `cost.basis = "list-price"` when the span's nearest
+ancestor that names `model.priced` also names `model.estimated = true`, on the `api_request` event
+too, whose `cost_usd` field is that same figure. `model.estimated` is read from that same ancestor,
+never on its own, so a catalog-billed subagent span under a dbx interaction span is not labelled a
+list price. `estimated` keeps its single meaning, the uncounted guardian-drop guess, so a query
+that filters on its absence still keeps every measured cost. `fontaine.token.usage` is untouched:
+those tokens were measured.
 
 ## Implementation Steps
 
@@ -272,9 +274,9 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 9. `fontaine/src/telemetry/span_bridge.rs`: `cost_usd` through `listed_price`, which takes a pair
    to `databricks::listed_price` when the provider is `databricks` or the id carries either prefix
    `base_id` strips (`system.ai.`, `databricks-`), and, when the same ancestor that supplies
-   `model.priced` also records `model.estimated`, the `estimated = "true"` attribute on the cost
-   metric and `estimated = true` on the `api_request` event, whose `cost_usd` field is that same
-   figure.
+   `model.priced` also records `model.estimated`, the `cost.basis = "list-price"` attribute on the
+   cost metric and on the `api_request` event, whose `cost_usd` field is that same figure; never
+   `estimated`, which stays the guardian-drop guess.
 
 **Phase 5 — docs and changelog**
 
@@ -342,9 +344,11 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   and the paragraph at `:158` and the `--max-budget-usd` note at `:22` stop calling the models
   unpriced unconditionally.
 - `docs/configuration.md:385-393` — the Databricks section: a listed Claude/GPT/Gemini model is
-  priced at the served model's list price as an estimate; open models, `gpt-oss-*` and custom
-  endpoints stay unpriced and keep `--max-budget-usd` a usage error. `:197` and `:311` split the
-  "the mapped model is unpriced" rule by kind.
+  priced at the served model's list price as an estimate; open models, `gpt-oss-*` and an unmapped
+  custom endpoint stay unpriced and keep `--max-budget-usd` a usage error, and a
+  `model_facts`-mapped endpoint on `databricks` takes its target's list price, where on `anthropic`
+  the mapping stays unpriced. `:197` and `:311` split the "the mapped model is unpriced" rule by
+  kind.
 - `docs/tui.md:195`, `:866` and `:1355-1366` — the statusline's `cost.total_cost_usd` is a
   list-price estimate for an estimate-priced run, the dollar figure ends in ` est.` when it is an
   estimate, and the agents-panel paragraph gets the same clause.
@@ -354,12 +358,13 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 - `docs/agent-sdk.md:219` — the Agent SDK `result.total_cost_usd` and `modelUsage[..].costUSD` are
   list-price estimates for an estimate-priced run.
 - `docs/telemetry.md:130-138` — `fontaine.cost.usage` is present for a dbx model the catalog lists
-  and carries `estimated = "true"`.
+  and carries `cost.basis = "list-price"`.
 - `docs/telemetry.md:156` — the `api_request` row: its `cost_usd` (when priced) is the same
-  list-price estimate, and the event carries `estimated = true` when the figure is one.
-- `docs/telemetry.md:126` and `:146-148` — `estimated` on `fontaine.cost.usage` marks two things: a
-  guessed guardian-drop spend, and a cost priced at a vendor's list price for an account that bills
-  in its own units. The `fontaine.token.usage` row (`:125`) keeps the guardian estimate only.
+  list-price estimate, and the event carries `cost.basis = "list-price"` when the figure is one.
+- `docs/telemetry.md:126` and `:146-148` — the `fontaine.cost.usage` row lists `cost.basis`
+  (`list-price`) for that figure, and `estimated` keeps its one meaning, a guessed guardian-drop
+  spend, so "real usage never carries `estimated`" and the query that filters on its absence both
+  still hold. The `fontaine.token.usage` row (`:125`) keeps the guardian estimate only.
 - `CHANGELOG.md` — one entry.
 
 ## Testing Strategy
@@ -384,13 +389,14 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   ` est.` joins the existing footer test, and `usage_line`'s is a new `project_env.rs` case. These
   are the strings the docs promise, so they are pinned where they are built.
 - **Telemetry** (`span_bridge.rs` unit tests): a `databricks` completion under `model.priced` yields
-  `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` on the metric
-  and `estimated = true` on its `api_request` event under a `model.estimated` span, a `gcp.gemini`
-  completion for `system.ai.gemini-3-5-flash` (dotted to the listed `gemini-3.5-flash`) yields the
-  same cost, a `databricks` completion for the older `databricks-claude-haiku-5-5` spelling yields
-  it too, a `system.ai.glm-*` or an unlisted `system.ai.gemini-3-pro` model still yields no cost,
-  and — modelled on `the_nearest_span_naming_a_billing_wins` — a catalog-billed subagent span under
-  a dbx interaction span carries no `estimated` attribute.
+  `fontaine.cost.usage` from the served vendor's price, carries `cost.basis = "list-price"` on the
+  metric and on its `api_request` event under a `model.estimated` span, a `gcp.gemini` completion
+  for `system.ai.gemini-3-5-flash` (dotted to the listed `gemini-3.5-flash`) yields the same cost, a
+  `databricks` completion for the older `databricks-claude-haiku-5-5` spelling yields it too, a
+  `system.ai.glm-*` or an unlisted `system.ai.gemini-3-pro` model still yields no cost, the
+  guardian-drop metric still carries `estimated` and no `cost.basis`, and — modelled on
+  `the_nearest_span_naming_a_billing_wins` — a catalog-billed subagent span under a dbx interaction
+  span carries no `cost.basis` attribute.
 - **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5`
   handle is `priced()` and `cost_basis() == Estimated`, and each wire's reply reports a price at the
   existing `completion.call` seam — `usage.cost.is_some()` for Messages, `responses_reply()` and
@@ -413,3 +419,8 @@ in the user's settings (`kind = "databricks"`, its workspace `base_url`, and
    `DATABRICKS_TOKEN=$(cat ~/.claude_databricks_token) cargo run -p fontaine -- --output-format
    json -p "Reply with exactly: ok"` — expect exit 0 and a `result.total_cost_usd` that is a
    number well above zero, where today it is `null`. Not automated: it is a live, billed call.
+
+## Decisions
+
+AFK: `fontaine.cost.usage` and the `api_request` event mark a list-price dbx cost with `cost.basis = "list-price"` and leave `estimated` alone, because `docs/telemetry.md` promises real usage never carries `estimated`, so reusing it would hide every dbx cost from a query that filters on its absence.
+AFK: `docs/configuration.md:385-393` also states that a `model_facts`-mapped endpoint on `databricks` takes its target's list price while one on `anthropic` stays unpriced, because a mapped dbx endpoint is priced in the ledger and the old "custom endpoints stay unpriced" sentence would contradict it.
