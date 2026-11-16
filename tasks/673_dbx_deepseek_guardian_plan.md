@@ -121,6 +121,14 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   (haiku "is the only model that clears all three bars, and it is the first entry in
   `guardian_models.toml`") is corrected to say the entry was dropped on the new dataset version and
   the databricks entry is the list's.
+- The row and the bullet carry the route's one difference from the `go/` row: nothing turns this
+  deployment's thinking off. A `databricks` account has no `thinking_off` hook (`DatabricksClient`,
+  `rust/fontaine-sdk/src/core/providers/databricks.rs`, inherits the `None` default), where
+  `opencode_go::thinking_off` sends `{"thinking": {"type": "disabled"}}` for this model on the Chat
+  wire (`rust/fontaine-sdk/src/core/providers/opencode_go.rs`, pinned by
+  `thinking_off_follows_the_wire`). These numbers are therefore the deployment's own default
+  behavior, and the latency is not transport-identical to the `go/` row's — say so where the row
+  compares the two.
 - `docs/guardian.md:783-786`: the exception for "the validated list's own `opencode-go` entry
   (`claude-haiku-5-5`)" is rewritten to the databricks entry — `available_validated` matches on
   `kind`, so any `databricks` account that serves `system.ai.deepseek-v4-1-flash` picks it up as
@@ -131,8 +139,8 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   `$guardian_default` no longer resolves to it on such an account either, until it is re-scored on
   `5daaae0b478a`.
 - The numbers go up as a comment on issue #673, whose acceptance asks for them there, together with
-  the transport, the fail-closed counts and the catch rate on each destructive class
-  (`summary.catch_by_class`, Design 6).
+  the transport, the fail-closed counts, the catch rate on each destructive class
+  (`summary.catch_by_class`, Design 6) and the reasoning-off caveat the row carries.
 
 ### 4. Outcome B — a clean run that misses
 
@@ -140,16 +148,17 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   was p95 by 0.2 s, so a near miss is a "rerun" verdict rather than a settled one — the issue asks
   for that call too.
 - The same `docs/evals.md` row and bullet, written as a miss, next to the `go/` row since it is the
-  same model on another endpoint. The section's intro and the "The reports are …" sentence are
-  amended as in Outcome A. The bullet at `docs/evals.md:657-661` is corrected to
-  say the haiku entry was dropped on the new dataset version and the list is empty.
+  same model on another endpoint, and with the same reasoning-off caveat as in Outcome A. The
+  section's intro and the "The reports are …" sentence are amended as in Outcome A. The bullet at
+  `docs/evals.md:657-661` is corrected to say the haiku entry was dropped on the new dataset version
+  and the list is empty.
 - The models file keeps only what clears the bar, so a miss leaves it with no entries and the
   guardian falls back to the main model. `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
   kind has a default guardian from the list.
 - `CHANGELOG.md`: under `### Added`, one line for the measurement and its miss; under `### Removed`,
   the same line as in Outcome A. The PR body calls the drop out.
-- The numbers, the transport, the fail-closed counts and the per-class catch rates
-  (`summary.catch_by_class`, Design 6) go up as a comment on issue #673.
+- The numbers, the transport, the fail-closed counts, the per-class catch rates
+  (`summary.catch_by_class`, Design 6) and the reasoning-off caveat go up as a comment on issue #673.
 
 ### 5. Outcome C — the run fails closed on infrastructure
 
@@ -215,6 +224,11 @@ rate per attack class, including the destructive ones (`git-destructive`,
 
 ## Decisions
 
+- 2026-11-15 The measurement is reported as the route behaves. Nothing turns this deployment's
+  thinking off: a `databricks` account has no `thinking_off` hook and the Chat route's acceptance of
+  the parameter is unverified, so the row, the CHANGELOG line and the issue comment record that
+  caveat rather than this change adding a hook to force it off. The `go/` row stays the only
+  measurement of this model with thinking disabled.
 - 2026-11-15 The account's credential reaches the run from the local token file
   `~/.claude_databricks_token`, exported as `ANTHROPIC_AUTH_TOKEN` for the command only (user),
   because Fontaine withholds every account's `api_key_env` variable from the processes it starts;
