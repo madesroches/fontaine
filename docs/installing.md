@@ -79,6 +79,9 @@ Keep them if rustup or cargo is installed.
 Remove:
 
 - `~/.fontaine/bin`, which holds the binary and the `env` and `env.fish` scripts;
+- `~/.fontaine/bin/fontaine.prev` and `fontaine.prev.json`, which an update leaves beside the binary;
+- the update files in the data directory: `update.stamp`, `update.lock`, `updates.jsonl`,
+  `update-applied.json`, `update-state.json` and `update-skip`;
 - the receipt, `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`;
 - `~/.config/fish/conf.d/fontaine.env.fish`;
 - the lines in your shell's rc files that source `~/.fontaine/bin/env`.
@@ -156,6 +159,9 @@ Remove:
 
 - `%USERPROFILE%\.fontaine\bin`, which holds `fontaine.exe` and, while a session still runs from the
   old binary after `fontaine update`, `fontaine.exe.old` and any `fontaine.exe.old-*`;
+- the update files in the data directory (`update-staged`, `update-helper`, `update.lock`,
+  `update.stamp`, `update-helper.lock`, `updates.jsonl`, `update-applied.json`, `update-state.json`,
+  `update-skip`);
 - the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
   one).
 
@@ -188,6 +194,8 @@ channel, run the other channel's installer.
   renamed to `fontaine.exe.old` and the new one moved into place; the leftover is deleted by the
   next `fontaine update`.
 - The receipt's `version` is rewritten to the installed build; its other fields are kept.
+- On Linux and macOS the previous binary is kept as `fontaine.prev` (see
+  [Automatic updates](#automatic-updates)); `fontaine update --rollback` restores it.
 - The `[network]` settings (proxy, CA bundle, mutual TLS) apply to the download.
 
 Only an install made by one of the installers above can update itself: the receipt must exist and
@@ -203,6 +211,36 @@ nothing is written.
 | 3 | This install cannot update itself |
 | 4 | The release list or the download could not be fetched (not when it was fetched and held no release); retrying may help |
 | 5 | The download failed verification (missing or bad signature, wrong channel, file or version, or an archive larger than expected) |
+
+### Automatic updates
+
+By default an install made by one of the installers updates itself, with no command and no prompt.
+When the terminal UI starts, a background pass, at most once a day, looks for a newer build on the
+install's channel, downloads it, verifies it exactly as `fontaine update` does and makes it the
+binary the next launch runs. The next start shows one `Fontaine updated to vX.Y.Z` notice. Running
+sessions are not interrupted. Set `[updates] auto_update = false` in the user settings to turn it
+off (see [`[updates]`](configuration.md#updates)); `fontaine update` keeps working.
+
+- It is silent for every install that cannot update itself (a `cargo install` build, a package
+  manager, a container, a moved binary, no receipt), for `fontaine -p` and for `fontaine send`.
+- An offline machine or a failed download is logged and retried the next day. A failed verification
+  or install leaves the binary and receipt as they were, is logged and is shown once as a warning
+  per failed build.
+- Linux and macOS replace the binary atomically and keep the previous one as `fontaine.prev`, with
+  `fontaine.prev.json` recording its version. `fontaine update --rollback` restores it, rewrites
+  the receipt and stops the automatic update from installing the build you left; a newer build
+  clears that. Where the filesystem refuses the hard link nothing is kept and `--rollback` reports
+  there is nothing to restore.
+- Windows cannot replace a running executable, so the pass keeps the verified archive in
+  `update-staged` in the data directory and a hidden, detached helper (a copy of the trusted
+  `fontaine.exe`, with no console window) waits until no Fontaine process runs from the install,
+  verifies the archive again, swaps it in and records the update. The helper gives up after 24
+  hours and the next start tries again. `fontaine update --rollback` is not supported on Windows
+  and exits 1.
+
+Everything it writes is in the data directory (see [Where files live](configuration.md#where-files-live)):
+`update.stamp`, `update.lock`, `updates.jsonl`, `update-applied.json`, `update-state.json`,
+`update-skip`, and on Windows `update-staged`, `update-helper` and `update-helper.lock`.
 
 ## The release archive
 

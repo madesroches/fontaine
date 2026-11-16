@@ -8,7 +8,7 @@
 //! user is told to run `fontaine plugin update`.
 
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fontaine_core::agent::EnvLookup;
 use fontaine_core::dirs::Dirs;
@@ -25,13 +25,11 @@ use crate::plugin::{
     MarketplaceFetch, MarketplaceOutcome, PluginFetch, PluginOutcome, UNATTENDED_GIT, Workdir,
     fetch_marketplace, fetch_plugin, read_catalog, remove_dir,
 };
+use crate::stamp::{stamp_due, write_stamp};
 use fontaine_core::plugin_ops::{EnvRef, Fetch, PluginSource};
 
 pub(crate) const STAMP_FILE: &str = "plugin-update.stamp";
 pub(crate) const LOG_FILE: &str = "plugin-updates.jsonl";
-
-/// An offline machine or a quick restart does not retry on every start.
-const THROTTLE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -145,28 +143,6 @@ pub(crate) fn append_log(
     file.write_all(text.as_bytes())
 }
 
-/// Whether the last pass is old enough for another.
-pub(crate) fn stamp_due(data_dir: &Path, now: SystemTime) -> bool {
-    let modified = std::fs::metadata(data_dir.join(STAMP_FILE)).and_then(|m| m.modified());
-    match modified {
-        // A stamp well in the future (the clock moved back) must not stall updates for good.
-        Ok(at) => match now.duration_since(at) {
-            Ok(age) => age >= THROTTLE,
-            Err(ahead) => ahead.duration() > Duration::from_secs(60),
-        },
-        Err(_) => true,
-    }
-}
-
-pub(crate) fn write_stamp(data_dir: &Path, now: SystemTime) -> std::io::Result<()> {
-    std::fs::create_dir_all(data_dir)?;
-    let seconds = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    fontaine_core::owner_only::write_atomic(
-        &data_dir.join(STAMP_FILE),
-        format!("{seconds}\n").as_bytes(),
-    )
-}
-
 /// Starts the pass on its own thread. A plain `std::thread`, not `spawn_blocking`: a tokio
 /// runtime waits for blocking tasks when it drops, and the process must not wait for a slow
 /// network on exit. Outcomes reach the interface over `notices`.
@@ -188,7 +164,7 @@ pub(crate) fn spawn(dirs: Dirs, env: EnvLookup, notices: UnboundedSender<Notice>
 
 fn run_background(dirs: &Dirs, env: EnvRef<'_>, notices: &UnboundedSender<Notice>) {
     let now = SystemTime::now();
-    if !stamp_due(&dirs.data, now) {
+    if !stamp_due(&dirs.data, STAMP_FILE, now) {
         return;
     }
     let updates = Pass { dirs, env }.run(now);
@@ -205,7 +181,7 @@ fn run_background(dirs: &Dirs, env: EnvRef<'_>, notices: &UnboundedSender<Notice
         let _ = notices.send(update.notice());
     }
     // Written even when every fetch failed, so an offline machine does not retry each start.
-    if let Err(e) = write_stamp(&dirs.data, now) {
+    if let Err(e) = write_stamp(&dirs.data, STAMP_FILE, now) {
         let _ = notices.send(Notice::warning(
             format!(
                 "the plugin update stamp was not written, so the next start checks again: {}",

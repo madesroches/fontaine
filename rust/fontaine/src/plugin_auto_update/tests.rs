@@ -388,19 +388,6 @@ fn stale_leftovers_are_removed_and_young_or_recorded_ones_are_kept() {
 }
 
 #[test]
-fn the_stamp_throttles_the_pass_to_once_a_day() {
-    let dir = tempfile::tempdir().unwrap();
-    let now = SystemTime::now();
-    assert!(stamp_due(dir.path(), now), "no stamp yet");
-    write_stamp(dir.path(), now).unwrap();
-    assert!(!stamp_due(dir.path(), now));
-    assert!(!stamp_due(dir.path(), now + Duration::from_secs(23 * 3600)));
-    assert!(stamp_due(dir.path(), now + Duration::from_secs(25 * 3600)));
-    // A clock that moved back must not stall updates for good.
-    assert!(stamp_due(dir.path(), now - Duration::from_secs(3 * 86_400)));
-}
-
-#[test]
 fn every_outcome_is_logged_as_one_json_line_and_noticed() {
     let dir = tempfile::tempdir().unwrap();
     let updates = vec![

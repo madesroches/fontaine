@@ -3013,3 +3013,25 @@ mod retry {
         assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
     }
 }
+
+#[test]
+fn self_update_defaults_on_and_only_the_user_file_turns_it_off() {
+    let w = World::new();
+    assert!(w.load().unwrap().updates.auto_update);
+
+    w.user_file("[updates]\nauto_update = false\n");
+    assert!(!w.load().unwrap().updates.auto_update);
+
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[updates]\nauto_update = false\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let settings = w.cli_file("[updates]\nauto_update = false\n");
+    let err = w.load_with_settings(&settings).unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+}

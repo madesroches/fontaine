@@ -17,6 +17,17 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Automatic background updates (#175): at interactive start, at most once a day, an install made by
+  a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
+  minisign signature against the key compiled into the running binary and makes it the next
+  launch's binary; the next start shows one `Fontaine updated to vX.Y.Z` notice. A failure is
+  logged to `updates.jsonl` and shown once as a warning. `[updates] auto_update = false` (user scope
+  only) opts out; other installs stay silent. Linux and macOS keep the previous binary as
+  `<exe>.prev`, and `fontaine update --rollback` restores it and stops the background pass from
+  reinstalling that build; Windows stages the verified archive and a detached helper swaps it once
+  nothing runs from the install. A deliberate deviation from Claude Code; `fontaine update` shares
+  the same download, verification and install code and no longer holds the receipt lock while
+  downloading.
 - `/effort` cache-cost warning (#632): changing the level mid-session on an account that caches
   prompts, once the conversation has content, adds a notice that the next request may re-read the
   conversation uncached because a changed effort can invalidate the prompt cache.

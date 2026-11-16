@@ -36,6 +36,14 @@ Files in these directories:
 | `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment) (setup also writes `[guardian.composition]` to the user settings file when you accept its [offer](guardian.md#setting-up-the-composition)). Readable by the current user only; the agent's file tools cannot write it unprompted. |
 | `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<config dir>/skill-trust.lock`, `<config dir>/fontaine-receipt.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock`, `<data dir>/claude-cache-verdicts.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
+| `<data dir>/update.stamp` | When the [automatic self-update](installing.md#automatic-updates) pass last ran, so it runs at most once a day. |
+| `<data dir>/update.lock` | Held by the pass while it checks, so two sessions starting together check once. |
+| `<data dir>/updates.jsonl` | One JSON line for each automatic update check or update (timestamp, channel, installed and candidate version, outcome, reason). Readable by the current user only. |
+| `<data dir>/update-applied.json` | The build a background update installed, so the next start can announce it once; deleted after. |
+| `<data dir>/update-state.json` | Which failed update was already shown, so a warning appears once. |
+| `<data dir>/update-skip` | The build `fontaine update --rollback` rolled back from, which the automatic update does not reinstall. |
+| `<data dir>/update-staged/` | Windows only: a verified archive waiting for the update helper. |
+| `<data dir>/update-helper/`, `<data dir>/update-helper.lock` | Windows only: the helper's copy of the executable and its one-helper lock. |
 | `<data dir>/plugin-update.stamp` | When the [plugin auto-update](plugins.md#auto-update) pass last ran, so it runs at most once a day. |
 | `<data dir>/plugin-updates.jsonl` | One JSON line for each plugin or marketplace update the pass staged, held or failed. Readable by the current user only. |
 | `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
@@ -140,6 +148,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[statusline]` | no | no | no |
 | `[checkpoints]` keys | no | no | no |
 | `[plugins] auto_update` | no | no | no |
+| `[updates] auto_update` | no | no | no |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -1313,6 +1322,20 @@ marketplace auto-update <name> no` or `fontaine plugin auto-update <name> no`.
 
 ```toml
 [plugins]
+auto_update = false
+```
+
+### `[updates]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `auto_update` | Whether an install made by a Fontaine installer replaces itself in the background when the terminal UI starts (see [Automatic updates](installing.md#automatic-updates)). Off disables the check and the install; `fontaine update` still works. Headless runs never auto-update. | `true` |
+
+Replacing the executable is not something a repository may switch, so only the user file can set it;
+a repository and `--settings` cannot.
+
+```toml
+[updates]
 auto_update = false
 ```
 

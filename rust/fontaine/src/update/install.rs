@@ -4,6 +4,8 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::release_signature::Channel;
+
 /// Upper bound on any one decompressed or extracted stream, so a hostile archive that passed
 /// verification (a compromised key) still cannot fill the disk.
 const MAX_UNPACKED: u64 = 1 << 30;
@@ -243,9 +245,98 @@ pub fn remove_stale(target: &Path) -> io::Result<()> {
     first_err.map_or(Ok(()), Err)
 }
 
+/// The receipt state a swap replaces, recorded beside the kept previous binary so a rollback can
+/// write back a version string the receipt accepts.
+pub struct Prior<'a> {
+    pub version: &'a str,
+    pub channel: Channel,
+}
+
+/// What `<exe>.prev.json` holds.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PrevRecord {
+    pub version: String,
+    pub channel: Channel,
+}
+
+fn sibling(target: &Path, suffix: &str) -> PathBuf {
+    let mut name = target.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// The previous binary a swap keeps on Linux and macOS.
+pub fn prev_path(target: &Path) -> PathBuf {
+    sibling(target, ".prev")
+}
+
+pub fn prev_record_path(target: &Path) -> PathBuf {
+    sibling(target, ".prev.json")
+}
+
+/// The sidecar of the kept previous binary; `None` when it does not exist.
+pub fn read_prev_record(target: &Path) -> Result<Option<PrevRecord>, InstallError> {
+    let path = prev_record_path(target);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(InstallError::Io(
+                "the previous-version record is unreadable",
+                e,
+            ));
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| InstallError::Archive("the previous-version record is not valid JSON"))?;
+    let version = value["version"].as_str().ok_or(InstallError::Archive(
+        "the previous-version record has no version",
+    ))?;
+    let channel = match value["channel"].as_str() {
+        Some("release") => Channel::Release,
+        Some("dev") => Channel::Dev,
+        _ => {
+            return Err(InstallError::Archive(
+                "the previous-version record has no channel",
+            ));
+        }
+    };
+    Ok(Some(PrevRecord {
+        version: version.to_string(),
+        channel,
+    }))
+}
+
+/// Hard-links the binary about to be replaced to `<exe>.prev`, replacing any older one. A
+/// filesystem that refuses the link just gets no rollback, and a swap must not fail for it.
+#[cfg(unix)]
+fn keep_previous(target: &Path, prior: &Prior<'_>) {
+    let prev = prev_path(target);
+    let record = prev_record_path(target);
+    let _ = std::fs::remove_file(&prev);
+    let _ = std::fs::remove_file(&record);
+    if std::fs::hard_link(target, &prev).is_err() {
+        return;
+    }
+    let text = serde_json::json!({
+        "version": prior.version,
+        "channel": prior.channel.as_str(),
+    })
+    .to_string();
+    // A `.prev` without its record could not be rolled back to, so it is not kept.
+    if fontaine_core::owner_only::write_atomic(&record, text.as_bytes()).is_err() {
+        let _ = std::fs::remove_file(&prev);
+    }
+}
+
 /// Unpacks `archive` and replaces `target` with the binary in it. `work` is a directory on the
 /// same filesystem as `target`; everything created there is removed on return.
-pub fn replace_binary(archive: &Path, target: &Path, work: &Path) -> Result<(), InstallError> {
+pub fn replace_binary(
+    archive: &Path,
+    target: &Path,
+    work: &Path,
+    prior: &Prior<'_>,
+) -> Result<(), InstallError> {
     let name = binary_name();
     let mut staged = tempfile::Builder::new()
         .prefix(".fontaine-new-")
@@ -262,7 +353,10 @@ pub fn replace_binary(archive: &Path, target: &Path, work: &Path) -> Result<(), 
             .unwrap_or(0o755);
         std::fs::set_permissions(staged.path(), std::fs::Permissions::from_mode(mode))
             .map_err(io_err("the new binary's mode cannot be set"))?;
+        keep_previous(target, prior);
     }
+    #[cfg(not(unix))]
+    let _ = prior;
     if cfg!(windows) {
         // A running exe can be renamed but not overwritten or deleted.
         let mut aside = aside_path(target, None);
@@ -331,6 +425,74 @@ mod tests {
     }
 
     use tar::EntryType::{Regular, Symlink};
+
+    fn prior() -> Prior<'static> {
+        Prior {
+            version: "0.1.0-dev.3+aaaaaaa",
+            channel: Channel::Dev,
+        }
+    }
+
+    #[cfg(unix)]
+    fn archive_of(dir: &Path, body: &[u8]) -> PathBuf {
+        let member = format!("t/{}", binary_name());
+        let archive = dir.join("a.tar.xz");
+        std::fs::write(&archive, tar_xz(&[(member.as_str(), Regular, body, None)])).unwrap();
+        archive
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_swap_keeps_the_previous_binary_and_its_record_and_replaces_them_next_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(binary_name());
+        std::fs::write(&target, b"one").unwrap();
+        let archive = archive_of(dir.path(), b"two");
+        let work = tempfile::tempdir_in(dir.path()).unwrap();
+        replace_binary(&archive, &target, work.path(), &prior()).unwrap();
+        assert_eq!(std::fs::read(prev_path(&target)).unwrap(), b"one");
+        assert_eq!(
+            read_prev_record(&target).unwrap(),
+            Some(PrevRecord {
+                version: "0.1.0-dev.3+aaaaaaa".into(),
+                channel: Channel::Dev
+            })
+        );
+
+        let archive = archive_of(dir.path(), b"three");
+        let newer = Prior {
+            version: "0.2.0",
+            channel: Channel::Release,
+        };
+        replace_binary(&archive, &target, work.path(), &newer).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"three");
+        assert_eq!(std::fs::read(prev_path(&target)).unwrap(), b"two");
+        assert_eq!(read_prev_record(&target).unwrap().unwrap().version, "0.2.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_extract_keeps_the_existing_previous_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(binary_name());
+        std::fs::write(&target, b"current").unwrap();
+        std::fs::write(prev_path(&target), b"kept").unwrap();
+        let archive = dir.path().join("a.tar.xz");
+        std::fs::write(&archive, b"not an archive").unwrap();
+        let work = tempfile::tempdir_in(dir.path()).unwrap();
+        assert!(replace_binary(&archive, &target, work.path(), &prior()).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+        assert_eq!(std::fs::read(prev_path(&target)).unwrap(), b"kept");
+    }
+
+    #[test]
+    fn no_record_reads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_prev_record(&dir.path().join("fontaine")).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn extracts_the_binary_from_a_dist_layout() {
@@ -411,7 +573,7 @@ mod tests {
         let archive = dir.path().join("a.tar.xz");
         std::fs::write(&archive, xz).unwrap();
         let work = tempfile::tempdir_in(dir.path()).unwrap();
-        replace_binary(&archive, &target, work.path()).unwrap();
+        replace_binary(&archive, &target, work.path(), &prior()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         if cfg!(windows) {
             assert_eq!(std::fs::read(aside_path(&target, None)).unwrap(), b"old");
