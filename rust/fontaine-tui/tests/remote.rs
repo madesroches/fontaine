@@ -258,6 +258,37 @@ async fn a_device_answers_an_approval_and_its_node_reaches_the_ledger_and_audit(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_drops_leaves_the_approval_pending_for_someone_else() {
+    let w = World::new(vec![
+        tool_turn(
+            "c1",
+            "write",
+            json!({"path": "notes.txt", "content": "hello"}),
+        ),
+        text_turn("all done"),
+    ])
+    .with_config(DIRECT_ONLY);
+    let work = w.work.clone();
+    w.run(|ui| async move {
+        let client = attach(&ui).await;
+        ui.send("make a note");
+        ui.wait_for_prompt("Allow write?").await;
+        client.stop();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(ui.live().contains("Allow write?"), "{}", ui.live());
+        assert!(!work.join("notes.txt").exists());
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("all done").await;
+        ui.idle().await;
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(w.work.join("notes.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_device_prompt_while_a_dialog_is_open_is_queued_and_never_answers_it() {
     let w = World::new(vec![
         tool_turn(

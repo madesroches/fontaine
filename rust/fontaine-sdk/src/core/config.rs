@@ -1326,7 +1326,7 @@ pub struct FeedbackSection {
     pub drafts: Option<DraftsMode>,
 }
 
-/// Which network paths the remote inbox's endpoint may use. It never enables the inbox.
+/// Which network paths the remote-control endpoint may use. It never turns remote control on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteRelay {

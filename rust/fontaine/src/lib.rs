@@ -954,9 +954,14 @@ async fn run_interactive(
     watchdog: &mut Option<fontaine_tui::ExitWatchdog>,
 ) -> Outcome {
     let fontaine_tui::Notices {
-        startup: ax_warnings,
+        startup: mut ax_warnings,
         feed,
     } = notices;
+    if cli.remote && (cli.resume.is_some() || cli.continue_session || cli.fork_session) {
+        ax_warnings.push(fontaine_core::notice::Notice::info(
+            "--remote is ignored for a resumed session: remote control is off; turn it on with `/remote on`",
+        ));
+    }
     // Every exit before the screen draws leaves the warnings nowhere else to go.
     let bail = |prep: &SessionPrep| {
         print_warnings(&ax_warnings);

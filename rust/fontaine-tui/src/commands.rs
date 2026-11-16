@@ -144,7 +144,6 @@ impl Command {
             | Command::Recap
             | Command::Compact(_)
             | Command::Context(_)
-            | Command::Loop(_)
             | Command::Goal(_)
             | Command::Init(_)
             | Command::Rename(_)
@@ -152,6 +151,7 @@ impl Command {
             | Command::Status
             | Command::Other { .. } => true,
             Command::Exit
+            | Command::Loop(_)
             | Command::AddDir(_)
             | Command::Denied
             | Command::Agents
@@ -1675,7 +1675,6 @@ mod device_tests {
             "/compact fix",
             "/context",
             "/context all",
-            "/loop 5m x",
             "/goal done",
             "/init",
             "/rename x",
@@ -1686,6 +1685,7 @@ mod device_tests {
             assert!(parsed(line).device_allowed(), "{line}");
         }
         for line in [
+            "/loop 5m x",
             "/guardian-disable",
             "/guardian-enable",
             "/remote on",

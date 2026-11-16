@@ -126,6 +126,11 @@ pub(crate) enum Outcome {
 pub(crate) struct RemoteClientUi {
     pub(crate) app: App,
     waiting: Option<Waiting>,
+    /// The host's dialog as last installed: the host publishes a dialog only when it changes, so
+    /// a device that closed its copy without a taken answer could not otherwise reopen it.
+    shown: Option<Dialog>,
+    /// Set while an answer sent to the host has not yet closed the dialog.
+    answer_sent: bool,
     next_id: u64,
     session: String,
 }
@@ -136,6 +141,8 @@ impl RemoteClientUi {
         RemoteClientUi {
             app,
             waiting: None,
+            shown: None,
+            answer_sent: false,
             next_id: 0,
             session: uuid::Uuid::new_v4().to_string(),
         }
@@ -159,6 +166,8 @@ impl RemoteClientUi {
 
     /// Opens the host's dialog on the device, or closes the one that went away.
     fn install(&mut self, dialog: Option<Dialog>) {
+        self.answer_sent = false;
+        self.shown = dialog.clone();
         self.waiting = None;
         self.app.approval = None;
         self.app.queued_approvals.clear();
@@ -222,8 +231,33 @@ impl RemoteClientUi {
         }
     }
 
+    /// A host warning after an answer was sent means the host may have refused it: the dialog is
+    /// still pending there, so it is opened again here.
+    pub(crate) fn host_warned(&mut self) {
+        if self.answer_sent {
+            self.reopen();
+        }
+    }
+
+    fn reopen(&mut self) {
+        let dialog = self.shown.clone();
+        self.install(dialog);
+    }
+
     /// What a dialog answered on the device means for the host, once the person has picked.
     pub(crate) fn answered(&mut self) -> Option<ClientMsg> {
+        let had_dialog = self.waiting.is_some();
+        let message = self.take_answer();
+        if message.is_some() {
+            self.answer_sent = true;
+        } else if had_dialog && self.waiting.is_none() {
+            // A pick that sent nothing (a decline or a typed reply) closed the device's copy.
+            self.reopen();
+        }
+        message
+    }
+
+    fn take_answer(&mut self) -> Option<ClientMsg> {
         match self.waiting.as_mut()? {
             Waiting::Approval { id, answer } => {
                 let picked = answer.try_recv().ok()?;
@@ -499,6 +533,9 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
                         }
                     }
                     ClientEvent::Notice { severity, text } => {
+                        if severity == Level::Warning {
+                            ui.host_warned();
+                        }
                         ui.app.attach_notice = Some(match severity {
                             Level::Info => text,
                             Level::Warning => format!("warning: {text}"),
@@ -744,6 +781,64 @@ mod tests {
                 reply: "b".into(),
             })
         );
+    }
+
+    #[test]
+    fn a_dialog_the_host_still_has_open_can_be_answered_again() {
+        use fontaine_tools::ask_user::{Question, QuestionOption};
+        let grace = crate::confirm_prompt::ANSWER_GRACE + Duration::from_millis(50);
+        let mut ui = RemoteClientUi::new(app());
+        ui.install(Some(approval_dialog(4, &["allow once", "deny"])));
+        std::thread::sleep(grace);
+        ui.input(key(KeyCode::Char('y')));
+        assert!(ui.answered().is_some());
+        assert!(ui.app.approval.is_none());
+        // The host refused the answer and warned; its dialog is still pending.
+        ui.host_warned();
+        assert!(ui.app.approval.is_some());
+        std::thread::sleep(grace);
+        ui.input(key(KeyCode::Char('y')));
+        assert!(matches!(
+            ui.answered(),
+            Some(ClientMsg::ApprovalAnswer { id: 4, .. })
+        ));
+
+        // A typed reply sends nothing, so the question opens again.
+        let option = |label: &str| QuestionOption {
+            label: label.into(),
+            description: "d".into(),
+        };
+        ui.install(Some(Dialog::Question {
+            id: 5,
+            agent: String::new(),
+            index: 0,
+            questions: vec![Question {
+                question: "q?".into(),
+                header: "h".into(),
+                options: vec![option("a"), option("b")],
+                multi_select: false,
+            }],
+        }));
+        ui.waiting = match ui.waiting.take() {
+            Some(Waiting::Question {
+                id, index, options, ..
+            }) => {
+                let (reply, answer) = oneshot::channel();
+                reply
+                    .send(QuestionReply::Answered(Vec::new()))
+                    .expect("receiver is alive");
+                Some(Waiting::Question {
+                    id,
+                    index,
+                    options,
+                    answer,
+                })
+            }
+            other => other,
+        };
+        assert!(ui.answered().is_none());
+        assert!(matches!(ui.waiting, Some(Waiting::Question { id: 5, .. })));
+        assert!(!ui.app.questions.is_empty());
     }
 
     #[test]

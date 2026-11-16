@@ -78,9 +78,9 @@ A device sends only a prompt or a slash line:
   your draft, your queued input or your prompt history; the transcript marks it `[remote <node>]` and
   the ledger records `remote: { node, message_id }`.
 - A **slash line** runs only if the command is on the device list: `/btw`, `/cost`, `/recap`,
-  `/compact`, `/context`, `/loop`, `/goal`, `/init`, `/rename`, `/help`, `/status` and skills. Every
+  `/compact`, `/context`, `/goal`, `/init`, `/rename`, `/help`, `/status` and skills. Every
   other command is refused with a notice to the device, an audit record, and never reaches the
-  dispatcher. That includes `/guardian-disable` and `/guardian-enable`, every `/remote` subcommand,
+  dispatcher. That includes `/loop`, `/guardian-disable` and `/guardian-enable`, every `/remote` subcommand,
   `/afk`, `/theme`, `/export`, `/config`, `/clear`, `/resume`, `/branch`, `/rewind`, `/model`,
   `/effort`, `/login`, `/exit`, `/add-dir`, `/plugin`, `/mcp` and every panel, toggle or picker of the
   host.

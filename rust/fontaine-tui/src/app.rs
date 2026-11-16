@@ -324,9 +324,9 @@ pub struct App {
     pub guardian_off_prompt: Option<ConfirmPrompt>,
     /// The confirmation of a device pairing while it is open. Only the host terminal answers it.
     pub pairing_prompt: Option<ConfirmPrompt>,
-    /// The remote-inbox ticket dialog while it is open.
+    /// The remote-control ticket dialog while it is open.
     pub ticket_prompt: Option<crate::ticket_prompt::TicketPrompt>,
-    /// What the status bar says of the remote inbox; `None` when it is off.
+    /// What the status bar says of remote control and attached devices; `None` when it is off.
     pub remote_indicator: Option<String>,
     /// The `/bug` preview while it is open.
     pub bug_prompt: Option<crate::bug_prompt::BugPrompt>,

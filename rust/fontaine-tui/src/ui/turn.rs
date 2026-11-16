@@ -1483,7 +1483,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::Submit(..)
                         | Action::Shell(_)
                         | Action::GuardianOff(_)
-                | Action::Pairing(_)
+                        | Action::Pairing(_)
                         | Action::Bug(_)
                         | Action::AfkReview(_)
                         | Action::SkillTrust(_)
