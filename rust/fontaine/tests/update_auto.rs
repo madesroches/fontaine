@@ -620,7 +620,7 @@ async fn a_failed_receipt_write_is_warned_once_and_leaves_no_marker() {
 
 #[cfg(unix)]
 #[test]
-fn the_subcommand_stays_silent_for_an_install_without_a_receipt() {
+fn rollback_exits_3_for_an_install_without_a_receipt() {
     let tmp = tempfile::tempdir().unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_fontaine"))
         .args(["update", "--rollback"])
@@ -897,6 +897,46 @@ async fn windows_mode_stages_a_verified_build_and_starts_a_helper_without_replac
     assert_eq!(launched.borrow().len(), 2);
     assert_eq!(server.received_requests().await.unwrap().len(), before);
     assert!(!install.data.join(auto::STAMP_FILE).exists());
+}
+
+#[tokio::test]
+async fn a_failed_helper_launch_is_warned_once_and_the_network_pass_goes_on() {
+    let server = MockServer::start().await;
+    let signer = Signer::new();
+    let install = Install::new(OLD);
+    serve_signed(&server, &signer, "dev-5", NEW).await;
+    let launched = Cell::new(0);
+    let launcher = |_: &HelperArgs| {
+        launched.set(launched.get() + 1);
+        Err(std::io::Error::other("no copy"))
+    };
+    let keys = signer.keys();
+    let pass = Pass {
+        data_dir: &install.data,
+        now: SystemTime::now(),
+        mode: Mode::Stage,
+        launcher: &launcher,
+    };
+    let first = pass
+        .run(&reqwest::Client::new(), &install.params(&server, &keys))
+        .await;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(
+        first[0]
+            .to_string()
+            .contains("the update helper did not start")
+    );
+    // The stage is still waiting; the next start tries again, fails the same way and stays quiet.
+    std::fs::remove_file(install.data.join(auto::STAMP_FILE)).unwrap();
+    let second = pass
+        .run(&reqwest::Client::new(), &install.params(&server, &keys))
+        .await;
+    assert!(second.is_empty(), "{second:?}");
+    assert!(launched.get() >= 2);
+    assert!(
+        install.data.join(auto::STAMP_FILE).exists(),
+        "the pass went on to the network step"
+    );
 }
 
 #[tokio::test]

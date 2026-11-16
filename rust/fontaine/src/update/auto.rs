@@ -483,19 +483,31 @@ impl Pass<'_> {
         self.launch(info, notices);
     }
 
-    fn launch(&self, info: &InstallInfo, notices: &mut Vec<Notice>) {
+    /// Whether the helper is running (started now or already).
+    fn launch(&self, info: &InstallInfo, notices: &mut Vec<Notice>) -> bool {
         let args = HelperArgs {
             target: info.binary_path.clone(),
             receipt: info.receipt_path.clone(),
             data: self.data_dir.to_path_buf(),
         };
-        if let Err(e) = (self.launcher)(&args) {
-            notices.push(self.warn("the update helper did not start", &e));
+        match (self.launcher)(&args) {
+            Ok(()) => true,
+            Err(e) => {
+                let subject = Subject {
+                    channel: info.channel,
+                    installed: &info.version,
+                    candidate: None,
+                };
+                let reason = format!("the update helper did not start: {}", chain(&e));
+                self.fail(subject, "helper-failed", &reason, notices);
+                false
+            }
         }
     }
 
     /// A stage a previous launch left (the target was running, or the helper gave up) is applied
-    /// without a network check. Returns whether a helper was started.
+    /// without a network check. Returns whether a helper is running; a failed launch lets the pass
+    /// go on to the network check.
     fn hand_off_waiting_stage(&self, info: &InstallInfo, notices: &mut Vec<Notice>) -> bool {
         let mut needs_helper = false;
         for dir in helper::stage_dirs(self.data_dir) {
@@ -510,10 +522,7 @@ impl Pass<'_> {
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
-        if needs_helper {
-            self.launch(info, notices);
-        }
-        needs_helper
+        needs_helper && self.launch(info, notices)
     }
 }
 

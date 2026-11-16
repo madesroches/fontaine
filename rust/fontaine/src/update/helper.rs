@@ -214,12 +214,8 @@ fn sort_oldest_first(stages: &mut [PathBuf]) {
 }
 
 fn apply_stage(args: &HelperArgs, env: &Env<'_>, info: &InstallInfo, dir: &Path) -> Done {
-    let subject_of = |candidate: Option<&str>| {
-        // `Subject` borrows, so each call site builds its own.
-        candidate.map(str::to_string)
-    };
     let record = |kind: &str, candidate: Option<&str>, reason: &str| {
-        let candidate = subject_of(candidate);
+        let candidate = candidate.map(str::to_string);
         let subject = Subject {
             channel: info.channel,
             installed: &info.version,
@@ -321,7 +317,14 @@ fn apply_stage(args: &HelperArgs, env: &Env<'_>, info: &InstallInfo, dir: &Path)
                     channel,
                 },
             ) {
-                record("swap-failed", candidate, &chain(&e));
+                record(
+                    "marker-failed",
+                    candidate,
+                    &format!(
+                        "the update was applied but its notice could not be saved: {}",
+                        chain(&e)
+                    ),
+                );
             }
             let _ = std::fs::remove_dir_all(dir);
             Done::Applied { to }
