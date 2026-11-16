@@ -457,15 +457,16 @@ pub(crate) fn parse_model_services(body: &str) -> Result<(Vec<String>, Option<St
     Ok((ids.into_iter().collect(), next))
 }
 
-/// The Chat wire's thinking-off fragment: sent unless the account says `false`. Only that wire:
-/// the other routes would refuse the unknown field.
+/// The Chat wire's reasoning-off fragment: sent unless the account says `false`. Measured on the
+/// Databricks AI Gateway (#673), the Anthropic-shaped `thinking` field is accepted and ignored on
+/// this wire while `reasoning_effort: "none"` drops the reasoning channel, so that is the one sent.
 fn thinking_off(
     account: Option<bool>,
     model: &str,
     overrides: &BTreeMap<String, Wire>,
 ) -> Option<Value> {
     (account.unwrap_or(true) && wire(model, overrides) == Wire::Chat)
-        .then(|| serde_json::json!({"thinking": {"type": "disabled"}}))
+        .then(|| serde_json::json!({"reasoning_effort": "none"}))
 }
 
 struct DatabricksClient {
@@ -534,7 +535,7 @@ mod tests {
     #[test]
     fn thinking_off_is_on_unless_the_account_says_false_and_follows_the_wire() {
         let none = BTreeMap::new();
-        let off = Some(serde_json::json!({"thinking": {"type": "disabled"}}));
+        let off = Some(serde_json::json!({"reasoning_effort": "none"}));
         assert_eq!(thinking_off(None, "system.ai.glm-5-3", &none), off);
         assert_eq!(thinking_off(Some(true), "system.ai.glm-5-3", &none), off);
         assert_eq!(thinking_off(Some(false), "system.ai.glm-5-3", &none), None);

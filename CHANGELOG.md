@@ -21,12 +21,12 @@ All notable changes are recorded here. The format follows
 ### Added
 
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
-  forced-call requests to a Chat-wire model carry the thinking-off parameter. A workspace that
+  forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and
-  do not send it again for the session. `thinking_off = false` opts out of that first attempt. The
-  parameter is best-effort: the Databricks AI Gateway accepts it and leaves the model reasoning,
-  which the guardian's 1024-token budget does not survive, so a Chat-wire model that thinks by
-  default still cannot judge there.
+  do not send it again for the session. `thinking_off = false` opts out of that first attempt.
+  `reasoning_effort: "none"` is the value Databricks documents for turning a hybrid reasoning model
+  off; its Anthropic-shaped `thinking` field belongs to the Claude models behind the same gateway and
+  is accepted and ignored for the others (#673).
 - Automatic background updates (#175): at interactive start, at most once a day, an install made by
   a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
   minisign signature against the key compiled into the running binary and makes it the next

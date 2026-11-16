@@ -77,20 +77,30 @@ succeeded and were truncated. The eval binary installs no tracing subscriber, so
 warning is invisible, and a run cannot tell a field the gateway ignores from one it refuses and has
 healed away.
 
-**The thinking-off probe (2026-11-16).** `research/deepseek-harness/scripts/probe_dbx_thinking.py`
-asks the gateway directly, seventeen calls: one reasoning prompt with the eight fields a thinking
-model is turned off with, then three forced `submit` calls each with the fragment and without.
-Every call answered 200, and reasoning tokens stayed nonzero on every one of the eight — 62 to 121,
-against a 101-token baseline on the same prompt — so the gateway accepts the fragment and ignores
-it, and the second run's open question is closed: nothing was refused, so the healing has nothing
-to fire on. The one field whose usage report carried no reasoning breakdown,
-`reasoning_effort: "none"`, answered 142 tokens of steps in the content at 3.8 s, so reasoning was
-not off there either. Both ids resolve on the workspace: `system.ai.deepseek-v4-1-flash-1017`, the
-one this account is configured with, and the unsuffixed id the commands here name. The forced calls
-fit the 1024-token budget on this short prompt (88-233 completion tokens, all
-`finish_reason=tool_calls`), so the truncations of the first two runs come from the guardian's long
-prompt, which the reasoning then overruns. The outcome is a finding about the provider rather than a
-verdict on the model, and the measurement of Designs 3-5 does not apply.
+**The thinking-off probe (2026-11-16).** Two scripted probes ask the gateway directly, and they
+change the conclusion. `probe_dbx_thinking.py` sends one reasoning prompt with the eight fields a
+thinking model is turned off with, then three forced `submit` calls each with the fragment and
+without. Every call answered 200. Only `reasoning_effort: "none"` did anything: it takes the
+reasoning channel away entirely (no `completion_tokens_details` on any of three calls) and the
+model writes its steps into the visible answer instead. The other seven — `thinking` as
+`{"type": "disabled"}`, `{"type": "none"}` and `false`, `reasoning_effort: "minimal"`, both
+`chat_template_kwargs` switches and `enable_thinking` — left 62 to 121 reasoning tokens against a
+101-token baseline. `probe_dbx_thinking_routes.py` then tries the gateway's other routes: the
+Messages wire returns a `thinking` block even when told `disabled`, the Responses route answers 400
+(`Responses API passthrough is not supported for model databricks-deepseek-v4-1-flash-1017`), and
+both Chat routes act on `reasoning_effort: "none"` alike. The workspace's model list holds the
+two ids only, `system.ai.deepseek-v4-1-flash-1017` and the unsuffixed one, so there is no
+non-thinking variant to switch to; both resolve and reason by default.
+
+**Why the first two runs truncated (documented).** Databricks' "Query reasoning models" page lists
+this model service as hybrid reasoning and says of it: *"For DeepSeek V4.1 Flash and DeepSeek V4.1
+Flash (1017), this parameter accepts `low`, `high`, `xhigh`, or `max` (default) … `none` or
+`disabled` disables reasoning. Other values are rejected."* The guardian sent no
+`reasoning_effort`, so every call ran at `max` effort, and a third of them spent the 1024-token
+budget on reasoning before the forced call. The `thinking` field is the Claude family's parameter
+on this gateway, which is why it is accepted and inert for DeepSeek. The fix is the fragment
+Design 7 already owns: the databricks `thinking_off` hook sends `{"reasoning_effort": "none"}`.
+Whether the verdict then fits the 1024-token budget is what the re-run measures.
 
 ## Design
 
@@ -307,6 +317,7 @@ the retry budget already allows for.
 | `rust/fontaine-sdk/tests/guardian.rs`, `tests/guardian_scanner.rs` | A refused first request heals: the verdict arrives and later requests omit the fragment. |
 | `docs/configuration.md`, `docs/providers.md`, `docs/guardian.md` | The key, the databricks row and the limitation paragraph. |
 | `research/deepseek-harness/scripts/probe_dbx_thinking.py` | New: the probe behind the 2026-11-16 finding — the eight thinking-off shapes, then the forced call with and without the fragment. Kept as the evidence. |
+| `research/deepseek-harness/scripts/probe_dbx_thinking_routes.py` | New: the follow-up — the same prompt on the gateway's four routes, `reasoning_effort` repeated, and the workspace's own model list. This is what found the field that works. |
 
 ## Trade-offs
 
@@ -329,13 +340,11 @@ the retry budget already allows for.
   without the parameters and stop sending them, so the refusal costs one attempt instead of leaving
   a workspace whose guardian denies everything. `thinking_off = false` opts out of the first
   attempt, for a workspace that knows its gateway refuses the field.
-- 2026-11-16 The Databricks AI Gateway accepts the thinking-off field and ignores it: eight shapes
-  tried (`thinking` disabled, `none` and `false`; `reasoning_effort` `none` and `minimal`; both
-  `chat_template_kwargs` switches; `enable_thinking`) all leave the model reasoning, so a model
-  served there that thinks by default cannot be the guardian under the 1024-token budget, whatever
-  the account's `thinking_off` says. The key stays on by default, because a workspace on a gateway
-  that does honour the field gets it for nothing and one that refuses it pays a single attempt;
-  this deployment pays nothing for it either, and the probe is kept as the evidence.
+- 2026-11-16 The databricks fragment becomes `{"reasoning_effort": "none"}`, the value Databricks
+  documents for turning this model's reasoning off and the only one of eight candidates the gateway
+  acted on. Its `thinking` field is accepted and ignored on the Chat and the Messages wire alike,
+  the Responses route does not serve the deployment, and the default effort is `max`, which is why
+  the first two runs overran the guardian's budget. The account key and its default are unchanged.
 - 2026-11-15 The first full-profile run (Current State) is neither published nor resumed: it was
   stopped at 318 of 430 cases with 102 fail-closed, and its cases were scored without a
   reasoning-off parameter. The measurement re-runs over the whole dataset with the account's
