@@ -44,9 +44,10 @@ check and repair path and shares the same download, verification and install cod
 ```
 TUI start (not -p, not send, receipt install, [updates] auto_update)
   └─ std::thread: background pass
+       receipt::locate        (fails → silent stop: package manager, moved binary, no receipt)
+       Windows only: stage exists for a newer build? yes → start the helper; skip stamp, update.lock, network
        stamp due? (<data>/update.stamp)   no → stop
        try_lock <data>/update.lock   (held elsewhere → stop); write stamp
-       receipt::locate        (fails → silent stop: package manager, moved binary, no receipt)
        release_index::latest  → newer than installed? no → stop
        stage: download archive+sig → verify_file + check_binding   (reuses update())
        Unix:    take the receipt lock, re-compare, replace_binary (atomic persist), write receipt, write marker
@@ -64,8 +65,8 @@ Split `update::update()` into stages that both callers use, in `update/mod.rs`:
   (in a work dir created beside the binary) and `Verified`.
 - `install(prepared) -> Outcome`: takes the receipt lock, re-reads the receipt and re-compares
   versions, then `install::replace_binary` and the receipt rewrite.
-- `update()` = `prepare` + `install` (behavior unchanged, still returns `Outcome::UpToDate` for
-  `Prepare::UpToDate`; its tests keep passing).
+- `update()` = `prepare` + `install` (user-visible results unchanged, still returns `Outcome::UpToDate` for
+  `Prepare::UpToDate`; manual updates also keep `.prev` and no longer hold the receipt lock during the download).
 
 New `update/auto.rs` owns only the background policy: the cadence, the lock, the marker, the log,
 the notices, the Windows hand-off. Move `stamp_due`/`write_stamp` out of `plugin_auto_update.rs`
@@ -82,13 +83,14 @@ like `plugins.auto_update`. Off disables the check and the install; `fontaine up
 
 The pass starts only when `headless.is_none()` (`-p`, `fontaine send` and the other non-interactive
 surfaces never reach it), `config.updates.auto_update`, and `receipt::locate` succeeds for
-`std::env::current_exe()`. A `cargo install`, package-manager, container, moved or receipt-less
+`std::env::current_exe()`. On Windows a launch that finds an existing stage starts the helper right
+after that check, before the stamp and `update.lock`. A `cargo install`, package-manager, container, moved or receipt-less
 binary stops silently. No guardian shortcut is involved and no permission is loosened: the pass
 runs no tool call and gets no new capability.
 
 ### Concurrency and atomicity
 
-- One pass per machine: `file_lock::try_lock(<data>/update.lock)`; a loser stops silently. The
+- One pass per data dir; the receipt lock keeps installs correct across data dirs: `file_lock::try_lock(<data>/update.lock)`; a loser stops silently. The
   stamp is written under that lock before any network call, so an offline machine retries the next
   day and two simultaneous launches stage once.
 - The receipt lock (as `fontaine update` uses) is taken only around compare + install + receipt
@@ -131,16 +133,16 @@ helper and returns. The hand-off holds no receipt lock.
   receipt, writes the marker, removes the stage. Per-user install dir, so no UAC. The helper rebuilds
   a `Release` offline from the manifest's `channel` and `version` (`release_index::tag_build` /
   `dev_build_number`) and the asset name from `archive_name(target)`, so it can call `check_binding`.
-- **Interruption:** the stage stays until applied; a killed helper is replaced by the next launch's
-  pass (stamp permitting, plus a check at every launch for an existing stage with no live helper,
-  which needs no network).
+- **Interruption:** the stage stays until applied. A launch with an existing stage starts a helper
+  (a second helper exits at once via `update-helper.lock`; the helper re-verifies and re-compares
+  under the receipt lock), skips the stamp and `update.lock`, and needs no network.
 - `install::replace_binary` on Windows always renames the target aside to `<exe>.old[-pid]`, for
   the helper swap too. `install::remove_stale` is called at the start of the helper swap (Unix:
   n/a), so auto-updates clean up `.old*` leftovers; `update()` keeps calling it.
 
 ### Rollback
 
-No automatic rollback in this release (a binary that fails to start cannot report itself). The
+No automatic rollback in this release. The
 one-generation `<exe>.prev` is kept (Linux and macOS only) and `fontaine update --rollback` restores
 it under the receipt lock, rewrites the receipt version, and records the rolled-back build in `<data>/update-skip` so
 auto-update does not reinstall that same build; a still newer build clears the skip. `fontaine
@@ -168,7 +170,8 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 
 ## Implementation Steps
 
-1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green.
+1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green, with
+   `tests/update_cmd.rs` updated so its leftovers check ignores `fontaine.prev`.
 2. Extract `stamp.rs` from `plugin_auto_update.rs`; switch the plugin pass to it.
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
@@ -189,7 +192,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - `rust/fontaine/src/update/mod.rs`, `install.rs`, new `auto.rs`, `helper.rs`
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
-- `rust/fontaine/tests/update_cmd.rs`, new `update_auto.rs`; core `tests/config.rs`
+- `rust/fontaine/tests/update_cmd.rs` (leftovers check in `dev_update_replaces_the_binary_and_the_receipt_version` ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
 - `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`
 - `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
@@ -200,7 +203,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - 2026-11-15 (#175): Deviation from Claude Code, which applies updates by its own policy: Fontaine's update is on by default and silent apart from one post-update notice and a once-shown warning on a failed update; `[updates] auto_update` (user scope only) opts out. Reason: the maintainer's scope decision of 2026-11-15.
 - 2026-11-15 (#175): Supersedes the Windows rename-aside note of 2026-11-08 for the background path only; the helper swaps when no process runs the target.
 - 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
-- 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable; `fontaine update --rollback` ships in the first release.
+- 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable.
 
 ## Documentation
 
@@ -239,6 +242,8 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
+- Windows launch with an existing stage starts a helper without stamp, `update.lock` or network, tested with the injected lock probe.
+- Existing `tests/update_cmd.rs` tests still pass (the leftovers check ignores `fontaine.prev`).
 - End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
   catches installer/receipt/updater disagreements and the real Windows file locking that fakes
   cannot reproduce.
