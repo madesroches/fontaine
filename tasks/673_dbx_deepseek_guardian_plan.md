@@ -36,11 +36,6 @@ always asks on the forced-`submit` tool path (`docs/guardian.md`, "Choosing the 
 A deployment that thinks by default and rejects the forced call has every case fail closed on
 infrastructure; the run then exits 1, leaves the models file as it was, and keeps its sidecar.
 
-**The credential.** The account names `ANTHROPIC_AUTH_TOKEN`; a raw key is never inline in config.
-Fontaine withholds every account's `api_key_env` variable from the processes it starts
-(`tools::scrubbed_env`, `rust/fontaine-sdk/src/core/tools.rs`), so the run takes the value from the
-local token file for that one command (see Decisions).
-
 **The models-file merge.** An unfiltered `--profile full` live run rewrites the models file in place
 (`update_models`), and skips it only for a `minimal` profile, a `--filter` run, a `mixed` transport, a
 cascade via `--screen`, or any infrastructure failure. It upserts this run's model and drops every
@@ -98,7 +93,8 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.
 - An exit of 1 means the report is written but is not a measurement: the fail-closed cases are out of
   every rate and the models file is untouched. Clear the cause (rate limit, timeout, auth) and
-  resume; rates computed over a subset are never committed.
+  resume; rates computed over a subset are never committed. A case that fails closed the same way
+  after a resume (a persistent `unparseable`) is handled in Design 5.
 
 ### 3. Outcome A — it clears the bar
 
@@ -158,6 +154,14 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
     limitation is already stated, pointing at the measurement;
   - record the numbers on issue #673;
   - no `CHANGELOG.md` line: the models file is untouched, so nothing a user sees changes.
+- When a few cases stay unscored after a resume (`CaseResult::infrastructure_failure()` counts every
+  fail-closed reason but `low_confidence`, parser failures included), the runner leaves the models
+  file untouched in that run. Follow the `benign-34` precedent in `docs/evals.md`: count each
+  unscored case as the wrong verdict (an attack case as a miss, a benign case as a false deny), and
+  add the `kind = "databricks"` entry by hand only if it still clears the bar on those counted
+  rates. The `docs/evals.md` bullet states both the report's raw rates and the entry's counted
+  rates. Every panel case is then scored or counted against the model, so no committed rate is
+  over a subset.
 
 ### 6. The counts the issue asks for
 
@@ -178,7 +182,7 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
 |---|---|
 | `evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json` | New report; the dataset version in the name is the value the run computes. |
 | `rust/fontaine-sdk/data/guardian_models.toml` | Written by the run: the databricks entry when it clears the bar, and the stale `opencode-go` entry dropped. |
-| `docs/evals.md` | The row, the bullet, the section's prose; in outcomes A and B also the haiku bullet (`:657-661`). |
+| `docs/evals.md` | The row, the bullet, the section's prose; in outcomes A and B also the haiku bullet (`:657-661`); in outcome A, the `## Results` prose (~537-542). |
 | `CHANGELOG.md` | Outcomes A and B: an `### Added` line, and a `### Removed` line for the haiku default guardian. None in C. |
 | `docs/guardian.md` | Outcomes A and B: the `opencode-go` exception at `:783-786`. Outcome C: the pointer from the databricks limitation. |
 | `tasks/completed/673_dbx_deepseek_guardian_plan.md` | This plan, moved by `pr`. |
@@ -189,15 +193,9 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   `<dataset_version>`) rather than the five-character suffix the `*-d1740.json` files carry: the
   short form is lossy, and the full value is what the report and the models entry both record. Only
   the file name is affected.
-- **Letting the run merge the models file** rather than pointing `--models-file` at a scratch copy
-  and hand-applying the entry: the merge is the documented path, and a hand-applied entry would
-  preserve one the same docs call no longer validated.
 - **The row goes in "Other small and hosted guardian models"** beside the `go/deepseek-v4.1-flash`
   row rather than in a section of its own: it is the same model on another endpoint, and that
   section already reads its latencies with the hosted-endpoint caveat.
-- **A ten-case smoke test before the full run** costs about ten calls and settles the forced-call
-  question first. It does not replace the full run: on a refusal the full run still produces the
-  report Outcome C commits, and it is started knowing that is its purpose.
 
 ## Decisions
 
@@ -205,12 +203,16 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   `~/.claude_databricks_token`, exported as `ANTHROPIC_AUTH_TOKEN` for the command only (user),
   because Fontaine withholds every account's `api_key_env` variable from the processes it starts;
   the value never enters the repository, a report or a log.
+- 2026-11-15 The run merges the models file itself through `update_models`; the entry is not
+  hand-applied from a scratch copy.
+- 2026-11-15 The ten-case smoke test runs before the full run; the full run still follows it.
 
 ## Documentation
 
 - `docs/evals.md`: the row in "Other small and hosted guardian models" and the bullet beside the
   `opencode-go` one, with the dataset version, the date, the transport and the fail-closed counts.
-- `docs/evals.md`: in outcomes A and B, the haiku bullet at `:657-661`.
+- `docs/evals.md`: in outcomes A and B, the haiku bullet at `:657-661`; in outcome A, the `## Results`
+  prose (~537-542).
 - `CHANGELOG.md`: outcomes A and B only — the `### Added` line (the measurement and, in A, the
   ranked-list entry) and the `### Removed` line for the haiku default guardian; none in C.
 - `docs/guardian.md`: outcomes A and B, the `opencode-go` exception at `:783-786` (the databricks
