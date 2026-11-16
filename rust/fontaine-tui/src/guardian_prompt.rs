@@ -14,6 +14,23 @@ pub fn new() -> ConfirmPrompt {
     )
 }
 
+/// The confirmation of a device pairing. Only the host terminal can answer it: a device cannot
+/// confirm its own pairing.
+pub fn pairing(node: &str, label: &str) -> ConfirmPrompt {
+    ConfirmPrompt::new(
+        "Pair this device?".into(),
+        vec![
+            Block::Text(format!("A device presented a valid ticket and calls itself \"{label}\".")),
+            Block::Bold(format!("device {node}")),
+            Block::Text(
+                "Once paired it can attach to this session at any time without a ticket, until you revoke it with /remote revoke. It can send messages and answer approvals once, for the session, or deny; it cannot turn the guardian off or change settings."
+                    .into(),
+            ),
+        ],
+        "y pairs it · n declines",
+    )
+}
+
 /// The confirmation before `/afk review` lets a stopped session run again. `summary` is the
 /// report's headline, so the user has read what stopped it before answering.
 pub fn afk_review(summary: String) -> ConfirmPrompt {

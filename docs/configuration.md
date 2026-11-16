@@ -1234,10 +1234,10 @@ drafts = "quiet"
 
 | Key | Meaning | Default |
 |---|---|---|
-| `relay` | Which network paths the [remote inbox](remote-inbox.md)'s endpoint may use: `default` uses the public relays run by the iroh project, so a sender behind a NAT can still reach the session (a relay sees connection metadata, never message text); `disabled` allows direct connections only. | `default` |
+| `relay` | Which network paths the [remote control](remote.md) endpoint may use: `default` uses the public relays run by the iroh project, so a device behind a NAT can still reach the session (a relay sees connection metadata, never content), and **also publishes the host's node id and home relay URL to iroh's address-lookup service** so paired devices can find it again, a metadata exposure beyond relay use (the attaching device only resolves, never publishes); `disabled` allows direct connections only, publishes nothing, and a device dials the addresses it stored and queries no lookup service. | `default` |
 
 Only the user file and `--settings` can set this, and a project file that does is refused. It never
-enables the inbox: only `/remote-inbox on` in a live terminal session does.
+enables remote control: only `fontaine --remote` or `/remote on` in a live terminal session does. `fontaine attach` reads only the user-scope value.
 
 ```toml
 [remote]
@@ -1656,4 +1656,4 @@ with code 2 and names the variable or flag.
 |---|---|
 | 0 | Success. A headless run that finished exits 0 even when tool calls were denied. |
 | 1 | A run error: a provider or model failure, a failed model listing, a run stopped by `--max-turns` or `--max-budget-usd`, a headless [goal](tui.md#goals) that ended impossible or paused, or an `--afk` run that was blocked or stopped (see [AFK mode](afk.md)). |
-| 2 | Configuration or usage error. `fontaine send` also uses 2 for a ticket the session refused; see [the remote inbox](remote-inbox.md#errors-and-exit-codes). |
+| 2 | Configuration or usage error. `fontaine attach --message` also uses 2 for a ticket or pairing the session refused; see [remote control](remote.md#errors-and-exit-codes). |

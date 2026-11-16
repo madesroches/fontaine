@@ -417,7 +417,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.drain_deferred(runtime).await.is_break() {
             return Break(());
         }
-        match end_of_turn(&end, runtime.steering.retract_unheld()) {
+        match end_of_turn(&end, runtime.steering.retract()) {
             EndOfTurn::Submit(submissions) => {
                 self.converse(
                     runtime,
@@ -989,7 +989,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 runtime.steering.set_delivery_hold(false);
                 return Break(());
             }
-            match end_of_turn(&end, runtime.steering.retract_unheld()) {
+            match end_of_turn(&end, runtime.steering.retract()) {
                 EndOfTurn::Submit(submissions) => pending.extend(submissions),
                 EndOfTurn::RestoreToInput(back, remote) => {
                     runtime.steering.set_delivery_hold(false);
@@ -1095,6 +1095,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::EditQueued
                 | Action::Server(_)
                 | Action::GuardianOff(_)
+                | Action::Pairing(_)
                 | Action::Bug(_)
                 | Action::AfkReview(_)
                 | Action::SkillTrust(_)
@@ -1482,6 +1483,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::Submit(..)
                         | Action::Shell(_)
                         | Action::GuardianOff(_)
+                        | Action::Pairing(_)
                         | Action::Bug(_)
                         | Action::AfkReview(_)
                         | Action::SkillTrust(_)

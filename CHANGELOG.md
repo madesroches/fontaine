@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Removed
 
+- `fontaine send` and `/remote-inbox` (#627, #664): replaced by remote control. The `fontaine/send/1`
+  protocol is gone and a `fontaine-send1…` ticket fails to parse. Use `fontaine attach <ticket>`, or
+  `fontaine attach <ticket|host> --message <text>` for one message.
 - Plan mode (#638), a deliberate deviation from Claude Code: `/plan`, the plan stop of the Shift+Tab
   cycle (now manual → accept edits → auto → AFK), `--permission-mode plan`, `default_mode = "plan"`
   (a config error naming the valid modes), `plan` from the Claude Agent SDK's
@@ -28,6 +31,16 @@ All notable changes are recorded here. The format follows
   nothing runs from the install. A deliberate deviation from Claude Code; `fontaine update` shares
   the same download, verification and install code and no longer holds the receipt lock while
   downloading.
+- Remote control (#664): `fontaine --remote` or `/remote on` shows a one-time ticket, and
+  `fontaine attach <ticket>` on another machine opens a full terminal UI that drives the live session
+  over iroh. The first connection pairs the device: you confirm it in the host terminal, and it is
+  stored by node id in `paired_devices.json`, revocable with `/remote revoke` or `fontaine remote
+  revoke`, and later reattaches with no ticket. A device can prompt, answer approvals (once, session
+  or deny; never "always allow") and questions, interrupt, and run a short allow-list of slash
+  commands; it can never run `/guardian-disable` or `/guardian-enable`, reversing the earlier
+  allowance. An attached device is not human presence for AFK. Reconnects resume from a sequence
+  number. `[remote] relay = "default"` also publishes the host's node id and home relay URL to iroh's
+  address-lookup service; `disabled` publishes nothing. See `docs/remote.md`.
 - `/effort` cache-cost warning (#632): changing the level mid-session on an account that caches
   prompts, once the conversation has content, adds a notice that the next request may re-read the
   conversation uncached because a changed effort can invalidate the prompt cache.
@@ -80,7 +93,7 @@ All notable changes are recorded here. The format follows
   before it. The ticket is shown once and never recorded; `--ticket-stdin` and `FONTAINE_TICKET`
   keep it out of shell history. `[remote] relay = "disabled"` (user scope only) allows direct
   connections only. A new `fontaine-remote` crate holds the transport, and the guardian toggles and
-  audit records note the remote identity. See `docs/remote-inbox.md`.
+  audit records note the remote identity. Superseded by remote control (#664); see `docs/remote.md`.
 - Claude Agent SDK compatibility (#582): an unmodified TypeScript or Python Agent SDK application can
   use `fontaine` as its Claude Code executable. SDK mode is selected by the SDK's own command line
   (stream-json in and out, `--verbose`, no `-p`) and serves Claude-shaped messages and control

@@ -166,6 +166,9 @@ pub enum Record {
         tool: String,
         agent: String,
         scope: String,
+        /// The remote device that answered; `message_id` holds the dialog id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<RemoteSender>,
     },
     Grant {
         rule: String,
@@ -201,6 +204,9 @@ pub enum Record {
         /// The rule's explanation without the advice to the model, redacted and cut short.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         explanation: Option<String>,
+        /// The remote device that answered the prompt; `message_id` holds the dialog id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<RemoteSender>,
     },
     Action {
         tool: String,
@@ -1392,6 +1398,7 @@ mod tests {
                 converted: None,
                 fail_closed: None,
                 explanation: None,
+                remote: None,
             })
             .unwrap();
         ledger.append(Record::ContextCleared {}).unwrap();
@@ -1440,6 +1447,7 @@ mod tests {
                 tool: "shell".into(),
                 agent: "main".into(),
                 scope: "once".into(),
+                remote: None,
             })
             .unwrap();
         ledger
@@ -1461,6 +1469,7 @@ mod tests {
                 converted: None,
                 fail_closed: None,
                 explanation: None,
+                remote: None,
             })
             .unwrap();
         say(&ledger, "three");
@@ -1557,6 +1566,7 @@ mod tests {
                 converted: None,
                 fail_closed: None,
                 explanation: None,
+                remote: None,
             })
             .unwrap();
         let check = |ledger: &Ledger, messages: &[&str]| {

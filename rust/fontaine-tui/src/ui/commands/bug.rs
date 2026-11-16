@@ -78,7 +78,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.bug_prompt = None;
                 return ControlFlow::Continue(());
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::Bug(BugAnswer::Level(next)) => {
                     level = next;
                     if level == Level::Full && facts.transcript.is_empty() {

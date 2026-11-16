@@ -57,8 +57,9 @@ pub enum Input {
     Key(KeyEvent),
     Paste(String),
     Resize,
-    /// The remote inbox has something for the loop: a line queued, or the endpoint finished
-    /// starting. It carries nothing; the loop looks in the steering queue and the start slot.
+    /// Remote control has something for the loop: a line queued, a device answer or interrupt,
+    /// a pairing to confirm, a snapshot to provide, or the endpoint finished starting. It carries
+    /// nothing; the loop looks in the surface's slots and the steering queue.
     Remote,
 }
 
@@ -126,6 +127,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// The human answered the confirmation of a device pairing.
+    Pairing(bool),
     /// `c` in the ticket dialog: copy the ticket to the clipboard.
     CopyTicket,
     /// The human answered the `/bug` preview.
@@ -143,32 +146,58 @@ pub enum Action {
     SetupComposition(Option<fontaine_sdk::core::composition_offer::Offer>),
 }
 
-/// The dialogs a remote line may answer.
+/// Where the device that answered a prompt is left for the approver that waits on the reply.
+pub(crate) type Attribution =
+    std::sync::Arc<std::sync::Mutex<Option<fontaine_sdk::core::ledger::RemoteSender>>>;
+
+/// Why a device's answer to a dialog was not applied. The dialog stays as it was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DialogKind {
-    Approval,
-    Question,
-    GuardianDisable,
-    AfkReview,
+pub(crate) enum DeviceRefusal {
+    /// The person at the host is typing into the dialog.
+    LocalInput,
+    /// The choice is not among those the dialog offers.
+    NotOffered,
+    /// The choice exists but a device may not make it.
+    NotReachable,
+    FeedbackTooLong,
+    /// The answer was made against a question or option set the panel has moved past.
+    Stale,
+    /// No open dialog of that kind has that id.
+    NoSuchDialog,
+    /// The dialog is open but only the host terminal may answer it.
+    LocalOnly,
 }
 
-impl DialogKind {
-    pub(crate) fn name(self) -> &'static str {
+impl DeviceRefusal {
+    pub(crate) fn text(self) -> &'static str {
         match self {
-            DialogKind::Approval => "approval",
-            DialogKind::Question => "question",
-            DialogKind::GuardianDisable => "guardian_disable",
-            DialogKind::AfkReview => "afk_review",
+            DeviceRefusal::LocalInput => {
+                "the person at the host is answering this one; try again once they finish"
+            }
+            DeviceRefusal::NotOffered => "that choice is not offered by this dialog",
+            DeviceRefusal::NotReachable => {
+                "that choice changes the host's settings and can only be made at the host"
+            }
+            DeviceRefusal::FeedbackTooLong => "deny feedback is capped at 1 KiB",
+            DeviceRefusal::Stale => "that answer was for a question that is no longer showing",
+            DeviceRefusal::NoSuchDialog => "no such dialog is open",
+            DeviceRefusal::LocalOnly => "this dialog can only be answered at the host",
         }
     }
 }
 
-/// An open dialog a remote line may answer, and the words that answer it.
+/// What a device picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RemoteDialog {
-    pub kind: DialogKind,
-    pub id: u64,
-    pub options: Vec<String>,
+pub(crate) enum DeviceAnswer {
+    Approval {
+        choice: String,
+        feedback: Option<String>,
+    },
+    Question {
+        index: usize,
+        options: Vec<String>,
+        reply: String,
+    },
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -293,10 +322,12 @@ pub struct App {
     pub server: Option<ConfirmPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<ConfirmPrompt>,
-    /// The remote-inbox ticket dialog while it is open.
+    /// The confirmation of a device pairing while it is open. Only the host terminal answers it.
+    pub pairing_prompt: Option<ConfirmPrompt>,
+    /// The remote-control ticket dialog while it is open.
     pub ticket_prompt: Option<crate::ticket_prompt::TicketPrompt>,
-    /// What the status bar says of the remote inbox; `None` when it is off.
-    pub remote_indicator: Option<&'static str>,
+    /// What the status bar says of remote control and attached devices; `None` when it is off.
+    pub remote_indicator: Option<String>,
     /// The `/bug` preview while it is open.
     pub bug_prompt: Option<crate::bug_prompt::BugPrompt>,
     /// Warnings shown this session, newest last, for the bug report. Display-only state.
@@ -422,6 +453,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    pairing_opened: u64,
     ticket_opened: u64,
     bug_opened: u64,
     afk_review_opened: u64,
@@ -518,6 +550,7 @@ impl App {
             transcript_print: false,
             server: None,
             guardian_off_prompt: None,
+            pairing_prompt: None,
             ticket_prompt: None,
             remote_indicator: None,
             bug_prompt: None,
@@ -584,6 +617,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            pairing_opened: 0,
             ticket_opened: 0,
             bug_opened: 0,
             afk_review_opened: 0,
@@ -995,7 +1029,19 @@ impl App {
 
     /// Shows the approval, or queues it behind the one the human is answering.
     pub fn begin_approval(&mut self, request: ApprovalRequest, reply: oneshot::Sender<Answer>) {
+        self.begin_approval_with(request, reply, None);
+    }
+
+    pub(crate) fn begin_approval_with(
+        &mut self,
+        request: ApprovalRequest,
+        reply: oneshot::Sender<Answer>,
+        attribution: Option<Attribution>,
+    ) {
         let mut approval = Approval::new(request, reply);
+        if let Some(slot) = attribution {
+            approval = approval.with_attribution(slot);
+        }
         self.approvals_opened += 1;
         approval.id = self.approvals_opened;
         if self.approval.is_none() {
@@ -1012,7 +1058,20 @@ impl App {
         questions: Vec<Question>,
         reply: oneshot::Sender<QuestionReply>,
     ) {
+        self.begin_question_with(agent, questions, reply, None);
+    }
+
+    pub(crate) fn begin_question_with(
+        &mut self,
+        agent: String,
+        questions: Vec<Question>,
+        reply: oneshot::Sender<QuestionReply>,
+        attribution: Option<Attribution>,
+    ) {
         let mut panel = QuestionPanel::new(agent, questions, reply);
+        if let Some(slot) = attribution {
+            panel = panel.with_attribution(slot);
+        }
         self.questions_opened += 1;
         panel.id = self.questions_opened;
         self.questions.push_back(panel);
@@ -1075,6 +1134,12 @@ impl App {
         let mut prompt = crate::guardian_prompt::new();
         prompt.id = self.guardian_off_opened;
         self.guardian_off_prompt = Some(prompt);
+    }
+
+    pub fn begin_pairing(&mut self, mut prompt: ConfirmPrompt) {
+        self.pairing_opened += 1;
+        prompt.id = self.pairing_opened;
+        self.pairing_prompt = Some(prompt);
     }
 
     pub fn begin_ticket(&mut self, mut prompt: crate::ticket_prompt::TicketPrompt) {
@@ -1157,6 +1222,9 @@ impl App {
         }
         if let Some(p) = &self.server {
             return Some((PromptKind::Server, p.id));
+        }
+        if let Some(p) = &self.pairing_prompt {
+            return Some((PromptKind::Pairing, p.id));
         }
         if let Some(p) = &self.guardian_off_prompt {
             return Some((PromptKind::GuardianOff, p.id));
@@ -1307,6 +1375,7 @@ impl App {
                     || self.usage_pause_prompt.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
+                    || self.pairing_prompt.is_some()
                     || self.bug_prompt.is_some()
                     || self.afk_review_prompt.is_some()
                     || self.skill_trust_prompt.is_some()
@@ -1425,6 +1494,7 @@ impl App {
             || self.usage_pause_prompt.is_some()
             || self.server.is_some()
             || self.guardian_off_prompt.is_some()
+            || self.pairing_prompt.is_some()
             || self.bug_prompt.is_some()
             || self.afk_review_prompt.is_some()
             || self.skill_trust_prompt.is_some()
@@ -1505,6 +1575,15 @@ impl App {
                 Some(answer) => {
                     self.server = None;
                     Action::Server(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.pairing_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.pairing_prompt = None;
+                    Action::Pairing(answer)
                 }
                 None => Action::None,
             };
@@ -2078,6 +2157,14 @@ impl App {
 
     /// Hands `answer` to the call that asked, shows it, and opens the next waiting approval.
     fn finish_approval(&mut self, answer: Answer) {
+        self.finish_approval_by(answer, None);
+    }
+
+    fn finish_approval_by(
+        &mut self,
+        answer: Answer,
+        by: Option<fontaine_sdk::core::ledger::RemoteSender>,
+    ) {
         let Some(approval) = &mut self.approval else {
             return;
         };
@@ -2102,8 +2189,12 @@ impl App {
         };
         let is_root = approval.request.agent.is_empty()
             || approval.request.agent == fontaine_sdk::tools::gate::ROOT_AGENT;
-        approval.reply(answer);
+        approval.reply_by(answer, by.clone());
         self.approval = self.queued_approvals.pop_front();
+        let note = match &by {
+            Some(by) => format!("{note} (device {})", by.short_node()),
+            None => note,
+        };
         if is_root {
             self.transcript.notice(format!("{tool} {note}"));
         } else {
@@ -2111,116 +2202,118 @@ impl App {
         }
     }
 
-    /// The dialog a remote line may answer right now, if the first thing to want an answer is one
-    /// of the four kinds: the approval, the model's question, the `/guardian-disable`
-    /// confirmation or the `/afk review` confirmation. Anything else (a picker, another prompt, a
-    /// reason being typed) is the person's, and the line waits behind it.
-    pub(crate) fn remote_dialog(&self) -> Option<RemoteDialog> {
-        if self.ticket_prompt.is_some()
-            || self.denied.is_some()
-            || self.unavailable.is_some()
-            || self.usage_pause_prompt.is_some()
-            || self.server.is_some()
-        {
-            return None;
-        }
-        if let Some(prompt) = &self.guardian_off_prompt {
-            return Some(RemoteDialog {
-                kind: DialogKind::GuardianDisable,
-                id: prompt.id,
-                options: crate::confirm_prompt::REMOTE_ANSWERS
-                    .map(String::from)
-                    .to_vec(),
-            });
-        }
-        if self.bug_prompt.is_some() {
-            return None;
-        }
-        if let Some(prompt) = &self.afk_review_prompt {
-            return Some(RemoteDialog {
-                kind: DialogKind::AfkReview,
-                id: prompt.id,
-                options: crate::confirm_prompt::REMOTE_ANSWERS
-                    .map(String::from)
-                    .to_vec(),
-            });
-        }
-        if self.skill_trust_prompt.is_some()
-            || self.plugin_prompt.is_some()
-            || self.setup_review.is_some()
-            || self.setup_composition.is_some()
-            || self.models.is_some()
-            || self.resume.is_some()
-            || self.rewind.is_some()
-            || self.config.is_some()
-            || self.providers.is_some()
-            || self.agents.is_some()
-            || self.transcript_view.is_some()
-        {
-            return None;
-        }
-        if let Some(approval) = &self.approval {
-            if approval.is_typing_feedback() {
-                return None;
+    /// Applies a device's answer to the open approval or question, as if the person had picked
+    /// it. It is matched against the dialog's kind together with its id: ids count per kind, so
+    /// an answer with the right id and the wrong kind finds nothing. Elicitations, the
+    /// confirmations and every other prompt are the host's alone.
+    pub(crate) fn device_answer(
+        &mut self,
+        id: u64,
+        answer: DeviceAnswer,
+        by: fontaine_sdk::core::ledger::RemoteSender,
+    ) -> Result<(), DeviceRefusal> {
+        let front = self.pending_prompt();
+        match answer {
+            DeviceAnswer::Approval { choice, feedback } => {
+                let open = self.approval.as_ref().filter(|a| a.id == id);
+                let Some(approval) = open else {
+                    return Err(self.dialog_refusal(id));
+                };
+                if front != Some((PromptKind::Approval, id)) {
+                    return Err(DeviceRefusal::LocalOnly);
+                }
+                let answer = approval.device_answer(&choice, feedback.as_deref())?;
+                self.finish_approval_by(answer, Some(by));
+                Ok(())
             }
-            return Some(RemoteDialog {
-                kind: DialogKind::Approval,
-                id: approval.id,
-                options: approval.remote_options(),
-            });
+            DeviceAnswer::Question {
+                index,
+                options,
+                reply,
+            } => {
+                let open = self.questions.front().filter(|q| q.id == id);
+                if open.is_none() {
+                    return Err(self.dialog_refusal(id));
+                }
+                if front != Some((PromptKind::Question, id)) {
+                    return Err(DeviceRefusal::LocalOnly);
+                }
+                let panel = self
+                    .questions
+                    .front_mut()
+                    .expect("the open question was just found");
+                match panel.device_reply(index, &options, &reply)? {
+                    Some(reply) => {
+                        panel.reply_by(reply, Some(by));
+                        self.questions.pop_front();
+                    }
+                    None => panel.note_device(by),
+                }
+                Ok(())
+            }
         }
-        let panel = self.questions.front()?;
-        // A line must not send the person's half-typed text as a note or discard checked boxes.
-        if panel.is_mid_edit() {
-            return None;
-        }
-        Some(RemoteDialog {
-            kind: DialogKind::Question,
-            // A question panel advances through its questions under one id; the options change
-            // with it, which the caller compares too.
-            id: panel.id,
-            options: panel.remote_options(),
+    }
+
+    /// The one dialog a device is shown: the first prompt that waits for an answer. Only an
+    /// approval and a question carry what a device needs to answer; everything else reaches it as
+    /// a line saying the host is busy with it.
+    pub(crate) fn device_dialog(&self) -> Option<crate::remote::Dialog> {
+        use crate::remote::Dialog;
+        let (kind, id) = self.pending_prompt()?;
+        Some(match kind {
+            PromptKind::Approval => {
+                let approval = self.approval.as_ref()?;
+                Dialog::Approval {
+                    id,
+                    tool: approval.request.tool.clone(),
+                    agent: approval.request.agent.clone(),
+                    agent_name: approval.request.agent_name.clone(),
+                    summary: approval.request.summary.clone(),
+                    reason: approval.request.reason.clone(),
+                    choices: approval.device_choices(),
+                    preview: approval.request.preview.clone(),
+                    proposed_rule: approval.request.proposed_rule.clone(),
+                }
+            }
+            PromptKind::Question => {
+                let panel = self.questions.front()?;
+                Dialog::Question {
+                    id,
+                    agent: panel.agent.clone(),
+                    index: panel.current_index(),
+                    questions: panel.all_questions().to_vec(),
+                }
+            }
+            PromptKind::Elicitation => Dialog::HostOnly {
+                what: "an MCP server's request for input".into(),
+            },
+            PromptKind::Pairing => Dialog::HostOnly {
+                what: "a device pairing".into(),
+            },
+            PromptKind::GuardianOff | PromptKind::AfkReview => Dialog::HostOnly {
+                what: "a confirmation".into(),
+            },
+            PromptKind::Unavailable => Dialog::HostOnly {
+                what: "the guardian is unavailable".into(),
+            },
+            PromptKind::UsagePause => Dialog::HostOnly {
+                what: "a spent usage window".into(),
+            },
+            _ => Dialog::HostOnly {
+                what: "a prompt".into(),
+            },
         })
     }
 
-    /// Applies a remote line to the dialog `kind`, as if the person had picked the option it
-    /// names. Returns what the interface loop does next, like a key would.
-    pub(crate) fn answer_remote_dialog(&mut self, kind: DialogKind, text: &str) -> Action {
-        match kind {
-            DialogKind::Approval => {
-                let answer = self
-                    .approval
-                    .as_mut()
-                    .and_then(|approval| approval.answer_text(text));
-                if let Some(answer) = answer {
-                    self.finish_approval(answer);
-                }
-                Action::None
+    /// Why no dialog of the answered kind matched: another prompt may hold that id.
+    fn dialog_refusal(&self, id: u64) -> DeviceRefusal {
+        match self.pending_prompt() {
+            Some((kind, open))
+                if open == id && !matches!(kind, PromptKind::Approval | PromptKind::Question) =>
+            {
+                DeviceRefusal::LocalOnly
             }
-            DialogKind::Question => {
-                let Some(panel) = self.questions.front_mut() else {
-                    return Action::None;
-                };
-                if let Some(reply) = panel.answer_text(text) {
-                    panel.reply(reply);
-                    self.questions.pop_front();
-                }
-                Action::None
-            }
-            DialogKind::GuardianDisable => match crate::confirm_prompt::answer_text(text) {
-                Some(answer) => {
-                    self.guardian_off_prompt = None;
-                    Action::GuardianOff(answer)
-                }
-                None => Action::None,
-            },
-            DialogKind::AfkReview => match crate::confirm_prompt::answer_text(text) {
-                Some(answer) => {
-                    self.afk_review_prompt = None;
-                    Action::AfkReview(answer)
-                }
-                None => Action::None,
-            },
+            _ => DeviceRefusal::NoSuchDialog,
         }
     }
 
@@ -3130,19 +3223,273 @@ mod tests {
         assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "question");
     }
 
+    fn device() -> fontaine_sdk::core::ledger::RemoteSender {
+        fontaine_sdk::core::ledger::RemoteSender {
+            node: "devicenode0123456789".into(),
+            message_id: "1".into(),
+        }
+    }
+
+    fn open_approval(
+        app: &mut App,
+        offers: fontaine_sdk::core::permissions::Offers,
+    ) -> oneshot::Receiver<Answer> {
+        let (tx, rx) = oneshot::channel();
+        let request = ApprovalRequest {
+            tool: "shell".into(),
+            agent: "main".into(),
+            agent_name: String::new(),
+            tool_use_id: None,
+            args: serde_json::json!({}),
+            summary: "ls".into(),
+            tier: fontaine_sdk::core::tier::Tier::AllowRule,
+            reason: "r".into(),
+            offers,
+            proposed_rule: None,
+            preview: None,
+        };
+        app.begin_approval(request, tx);
+        rx
+    }
+
+    fn pick(choice: &str) -> DeviceAnswer {
+        DeviceAnswer::Approval {
+            choice: choice.into(),
+            feedback: None,
+        }
+    }
+
     #[test]
-    fn a_remote_line_leaves_a_question_alone_while_the_person_is_mid_edit() {
+    fn a_device_answer_is_refused_while_the_local_approval_is_typing_feedback() {
         let mut app = app();
-        let _rx = open_question(&mut app, "root", true);
-        assert!(app.remote_dialog().is_some());
+        let mut rx = open_approval(&mut app, Default::default());
+        std::thread::sleep(crate::confirm_prompt::ANSWER_GRACE);
+        // Enter on the deny row opens the reason field.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "half a reas");
+        assert!(app.approval.as_ref().unwrap().is_typing_feedback());
+        assert_eq!(
+            app.device_answer(1, pick("allow once"), device()),
+            Err(DeviceRefusal::LocalInput)
+        );
+        assert!(
+            app.approval.is_some() && rx.try_recv().is_err(),
+            "left pending"
+        );
+        assert_eq!(
+            app.approval.as_ref().unwrap().field().unwrap().1,
+            "half a reas",
+            "the person's half-typed text is intact"
+        );
+    }
+
+    #[test]
+    fn a_device_answer_is_refused_while_the_question_panel_is_mid_edit() {
+        let mut app = app();
+        let mut rx = open_question(&mut app, "root", true);
+        let options = vec!["a".to_string(), "b".to_string()];
         press(&mut app, KeyCode::Char(' '));
-        assert!(app.remote_dialog().is_none(), "a box is checked");
+        let answer = || DeviceAnswer::Question {
+            index: 0,
+            options: options.clone(),
+            reply: "a".into(),
+        };
+        assert_eq!(
+            app.device_answer(1, answer(), device()),
+            Err(DeviceRefusal::LocalInput),
+            "a box is checked"
+        );
         press(&mut app, KeyCode::Char(' '));
-        assert!(app.remote_dialog().is_some());
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char('x'));
-        assert!(app.remote_dialog().is_none(), "Other holds text");
+        assert_eq!(
+            app.device_answer(1, answer(), device()),
+            Err(DeviceRefusal::LocalInput),
+            "Other holds text"
+        );
+        assert!(rx.try_recv().is_err() && app.questions.len() == 1);
+    }
+
+    #[test]
+    fn a_choice_the_approval_did_not_offer_is_refused_and_leaves_it_pending() {
+        let mut app = app();
+        let mut rx = open_approval(&mut app, Default::default());
+        for choice in [
+            "allow session",
+            "allow always",
+            "always allow",
+            "nonsense",
+            "",
+        ] {
+            let refused = app.device_answer(1, pick(choice), device());
+            assert!(
+                matches!(refused, Err(DeviceRefusal::NotOffered)),
+                "{choice}: {refused:?}"
+            );
+        }
+        assert!(app.approval.is_some() && rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_device_cannot_make_the_always_allow_choice_even_when_it_is_offered() {
+        let mut app = app();
+        let mut rx = open_approval(
+            &mut app,
+            fontaine_sdk::core::permissions::Offers {
+                session: true,
+                always: true,
+            },
+        );
+        assert_eq!(
+            app.device_answer(1, pick("always allow"), device()),
+            Err(DeviceRefusal::NotReachable)
+        );
+        assert!(rx.try_recv().is_err());
+        let dialog = app.device_dialog().expect("a dialog");
+        let crate::remote::Dialog::Approval { choices, .. } = dialog else {
+            panic!("an approval");
+        };
+        assert_eq!(choices, ["allow once", "allow session", "deny"]);
+    }
+
+    #[test]
+    fn deny_feedback_over_a_kibibyte_is_refused_and_a_short_one_travels() {
+        let mut app = app();
+        let mut rx = open_approval(&mut app, Default::default());
+        let long = DeviceAnswer::Approval {
+            choice: "deny".into(),
+            feedback: Some("x".repeat(1025)),
+        };
+        assert_eq!(
+            app.device_answer(1, long, device()),
+            Err(DeviceRefusal::FeedbackTooLong)
+        );
+        assert!(rx.try_recv().is_err());
+        let short = DeviceAnswer::Approval {
+            choice: "deny".into(),
+            feedback: Some("not now".into()),
+        };
+        app.device_answer(1, short, device()).unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Answer::Deny {
+                feedback: Some("not now".into())
+            }
+        );
+    }
+
+    #[test]
+    fn the_first_answer_wins_and_the_device_is_left_for_the_approver() {
+        let mut app = app();
+        let by = Attribution::default();
+        let (tx, mut rx) = oneshot::channel();
+        let request = ApprovalRequest {
+            tool: "shell".into(),
+            agent: "main".into(),
+            agent_name: String::new(),
+            tool_use_id: None,
+            args: serde_json::json!({}),
+            summary: "ls".into(),
+            tier: fontaine_sdk::core::tier::Tier::AllowRule,
+            reason: "r".into(),
+            offers: Default::default(),
+            proposed_rule: None,
+            preview: None,
+        };
+        app.begin_approval_with(request, tx, Some(by.clone()));
+        app.device_answer(1, pick("allow once"), device()).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Answer::AllowOnce);
+        assert_eq!(
+            fontaine_sdk::tools::lock::lock(&by, "test").take(),
+            Some(device())
+        );
+        // The dialog is gone: a second device finds nothing to answer.
+        assert_eq!(
+            app.device_answer(1, pick("deny"), device()),
+            Err(DeviceRefusal::NoSuchDialog)
+        );
+    }
+
+    #[test]
+    fn an_answer_with_the_right_id_but_another_kind_is_refused() {
+        let mut app = app();
+        let mut approval_rx = open_approval(&mut app, Default::default());
+        // Ids count per kind: question 1 and approval 1 coexist.
+        let mut question_rx = open_question(&mut app, "root", false);
+        let q = DeviceAnswer::Question {
+            index: 0,
+            options: vec!["a".into(), "b".into()],
+            reply: "a".into(),
+        };
+        // The approval is in front, so the question is not the dialog a device may answer.
+        assert_eq!(
+            app.device_answer(1, q.clone(), device()),
+            Err(DeviceRefusal::LocalOnly)
+        );
+        assert!(approval_rx.try_recv().is_err() && question_rx.try_recv().is_err());
+        app.device_answer(1, pick("allow once"), device()).unwrap();
+        app.device_answer(1, q, device()).unwrap();
+        assert!(matches!(
+            question_rx.try_recv(),
+            Ok(QuestionReply::Answered(_))
+        ));
+        // An approval answer naming a question's id finds no approval.
+        let _rx = open_question(&mut app, "root", false);
+        assert_eq!(
+            app.device_answer(2, pick("allow once"), device()),
+            Err(DeviceRefusal::NoSuchDialog)
+        );
+    }
+
+    #[test]
+    fn a_stale_question_index_or_option_set_is_refused() {
+        let mut app = app();
+        let mut rx = open_question(&mut app, "root", false);
+        let mismatched = |index: usize, options: &[&str]| DeviceAnswer::Question {
+            index,
+            options: options.iter().map(|o| o.to_string()).collect(),
+            reply: "a".into(),
+        };
+        assert_eq!(
+            app.device_answer(1, mismatched(1, &["a", "b"]), device()),
+            Err(DeviceRefusal::Stale)
+        );
+        assert_eq!(
+            app.device_answer(1, mismatched(0, &["a"]), device()),
+            Err(DeviceRefusal::Stale)
+        );
+        assert_eq!(
+            app.device_answer(1, mismatched(0, &["b", "a"]), device()),
+            Err(DeviceRefusal::Stale)
+        );
+        assert!(rx.try_recv().is_err() && app.questions.len() == 1);
+        app.device_answer(1, mismatched(0, &["a", "b"]), device())
+            .unwrap();
+        assert!(matches!(rx.try_recv(), Ok(QuestionReply::Answered(_))));
+    }
+
+    #[test]
+    fn the_host_only_confirmations_cannot_be_answered_by_a_device() {
+        let mut app = app();
+        app.begin_pairing(crate::guardian_prompt::pairing("node", "label"));
+        let id = app.pairing_prompt.as_ref().unwrap().id;
+        assert_eq!(
+            app.device_answer(id, pick("allow once"), device()),
+            Err(DeviceRefusal::LocalOnly)
+        );
+        assert!(app.pairing_prompt.is_some(), "left pending");
+        app.pairing_prompt = None;
+        app.begin_guardian_off();
+        let id = app.guardian_off_prompt.as_ref().unwrap().id;
+        assert_eq!(
+            app.device_answer(id, pick("allow once"), device()),
+            Err(DeviceRefusal::LocalOnly)
+        );
+        assert!(app.guardian_off_prompt.is_some());
+        let dialog = app.device_dialog().expect("something is pending");
+        assert!(matches!(dialog, crate::remote::Dialog::HostOnly { .. }));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The dialog that shows a remote-inbox ticket once. The ticket is a bearer credential, so it
+//! The dialog that shows a remote pairing ticket once. The ticket is a bearer credential, so it
 //! lives only here: not in the transcript, the ledger, the history or an export. Dismissing the
 //! dialog removes it from the screen and drops the dialog's own copy.
 
@@ -49,12 +49,12 @@ impl TicketPrompt {
     pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let mut out = vec![
-            Line::styled("Remote inbox ticket (shown once)", bold.fg(theme.heading)),
+            Line::styled("Remote ticket (shown once)", bold.fg(theme.heading)),
             Line::raw(format!(
-                "Valid for {}, good for one message. Anyone holding it can send this session a message as you.",
+                "Valid for {}, good for one pairing. Whoever presents it first can ask this terminal to pair a device; you confirm the device here before it is paired.",
                 self.lifetime
             )),
-            Line::raw("On the other device: fontaine send --ticket-stdin \"your message\""),
+            Line::raw("On the other device: FONTAINE_TICKET=<ticket> fontaine attach"),
             Line::raw(""),
         ];
         let width = width.max(1);
@@ -78,5 +78,23 @@ impl Drop for TicketPrompt {
     fn drop(&mut self) {
         // Best effort: the dialog's buffer should not keep the credential; copies made elsewhere (clipboard, encode) are not reached.
         self.ticket.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // An interactive attach refuses --ticket-stdin without --message (attach_cmd's terminal_refusal),
+    // so the hint must name the FONTAINE_TICKET form that attach_cmd accepts.
+    #[test]
+    fn hint_uses_the_env_form_an_interactive_attach_accepts() {
+        let body = TicketPrompt::new("t".into(), "10m".into()).body(80, &Theme::default());
+        let text: Vec<String> = body.iter().map(|l| l.to_string()).collect();
+        assert!(
+            text.iter()
+                .any(|l| l == "On the other device: FONTAINE_TICKET=<ticket> fontaine attach")
+        );
+        assert!(!text.iter().any(|l| l.contains("--ticket-stdin")));
     }
 }

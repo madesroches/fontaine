@@ -1,3 +1,4 @@
+mod attach_cmd;
 mod auto_mode;
 mod claude_compat;
 pub mod cli;
@@ -9,7 +10,6 @@ mod models_cmd;
 mod plugin;
 mod plugin_auto_update;
 pub mod release_signature;
-mod send_cmd;
 mod stamp;
 pub mod telemetry;
 pub mod update;
@@ -359,9 +359,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             data: args.data.clone(),
         });
     }
-    // Sending needs no config, session or credentials: the ticket is everything.
-    if let Some(cli::Command::Send(args)) = &cli.command {
-        return send_cmd::run(args, &host);
+    // Attaching needs no config, session or credentials: the ticket or a paired host is
+    // everything.
+    if let Some(cli::Command::Attach(args)) = &cli.command {
+        return attach_cmd::run(args, &host);
+    }
+    if let Some(cli::Command::Remote(args)) = &cli.command {
+        return attach_cmd::run_remote(args, &host);
     }
     if let Err(code) = check_session_flags(&cli) {
         return code;
@@ -418,6 +422,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
 
     if let Err(code) = check_mode_flags(&cli) {
         return code;
+    }
+    if cli.remote && cli.print {
+        return usage("--remote is interactive only; a headless run cannot be attached to");
     }
     let mode = session_mode(&cli, &config);
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
@@ -585,6 +592,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             };
             cli = Cli {
                 resume: Some(target.source),
+                remote: false,
                 continue_session: false,
                 fork_session: false,
                 session_id: None,
@@ -947,9 +955,14 @@ async fn run_interactive(
     watchdog: &mut Option<fontaine_tui::ExitWatchdog>,
 ) -> Outcome {
     let fontaine_tui::Notices {
-        startup: ax_warnings,
+        startup: mut ax_warnings,
         feed,
     } = notices;
+    if cli.remote && (cli.resume.is_some() || cli.continue_session || cli.fork_session) {
+        ax_warnings.push(fontaine_sdk::core::notice::Notice::info(
+            "--remote is ignored for a resumed session: remote control is off; turn it on with `/remote on`",
+        ));
+    }
     // Every exit before the screen draws leaves the warnings nowhere else to go.
     let bail = |prep: &SessionPrep| {
         print_warnings(&ax_warnings);
@@ -1024,6 +1037,9 @@ async fn run_interactive(
             startup: ax_warnings,
             feed,
         },
+        // Enabled for this launch only: a switch to another session (`/resume`, `/branch`)
+        // starts with remote control off, and `--resume` never turns it back on.
+        cli.remote && cli.resume.is_none() && !cli.continue_session && !cli.fork_session,
     )
     .await
     {

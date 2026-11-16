@@ -141,7 +141,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.setup_composition = None;
                 return Some(None);
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::SetupComposition(answer) => return Some(answer),
                 Action::Quit => return None,
                 _ => {}
@@ -266,7 +266,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.setup_review = None;
                 return Some(false);
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::SetupReview(answer) => return Some(answer),
                 Action::Quit => return None,
                 _ => {}
@@ -323,7 +323,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                         task.abort();
                         return Waited::Cancelled;
                     }
-                    Some(input) => match self.app.handle_input(input) {
+                    Some(input) => match self.dialog_input(runtime, input) {
                         Action::Quit => {
                             task.abort();
                             return Waited::Quit;

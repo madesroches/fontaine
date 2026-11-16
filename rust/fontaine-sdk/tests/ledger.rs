@@ -320,6 +320,7 @@ fn the_ledger_is_append_only_and_owner_only() {
             converted: None,
             fail_closed: None,
             explanation: None,
+            remote: None,
         })
         .unwrap();
     let all = ledger.read().unwrap();

@@ -218,7 +218,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.plugin_prompt = None;
                 return None;
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::PluginApprove(answer) => return Some(answer),
                 Action::Quit => return None,
                 _ => {}
@@ -245,7 +245,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.skill_trust_prompt = None;
                 return None;
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::SkillTrust(answer) => return Some(answer),
                 Action::Quit => return None,
                 _ => {}

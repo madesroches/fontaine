@@ -8,6 +8,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// off for the rest of this session. Interactive-only; nothing is persisted and subagents
     /// are never loosened by it.
     pub(crate) async fn guardian_disable(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
+        // A device cannot reach this command; the check is the last of several.
+        if self.current_remote.is_some() {
+            self.app
+                .transcript
+                .error("the guardian can only be switched at the host terminal");
+            return ControlFlow::Continue(());
+        }
         if runtime.state.guardian_off() {
             self.app
                 .transcript
@@ -28,9 +35,6 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             self.app.transcript.error(message);
             return ControlFlow::Continue(());
         }
-        // The line that asked, if it was a remote one, is recorded with the toggle.
-        let requested_by = self.current_remote.clone();
-        self.remote_confirm = None;
         self.app.begin_guardian_off();
         loop {
             self.draw(runtime);
@@ -41,12 +45,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             let action = self.dialog_input(runtime, input);
             match action {
                 Action::GuardianOff(true) => {
-                    let confirmed_by = self.remote_confirm.take();
-                    let toggle = fontaine_sdk::core::gate::GuardianToggle {
-                        requested_by: requested_by.as_ref(),
-                        confirmed_by: confirmed_by.as_ref(),
-                    };
-                    match runtime.state.set_guardian_off_by(true, toggle) {
+                    match runtime.state.set_guardian_off(true) {
                         Ok(()) => self.app.transcript.notice(
                             "guardian off for this session: every call runs without the guardian or the permission rules — /guardian-enable turns it back on",
                         ),
@@ -73,11 +72,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("the guardian is already on for this session");
             return;
         }
-        let toggle = fontaine_sdk::core::gate::GuardianToggle {
-            requested_by: self.current_remote.as_ref(),
-            confirmed_by: None,
-        };
-        match runtime.state.set_guardian_off_by(false, toggle) {
+        if self.current_remote.is_some() {
+            self.app
+                .transcript
+                .error("the guardian can only be switched at the host terminal");
+            return;
+        }
+        match runtime.state.set_guardian_off(false) {
             Ok(()) => self.app.transcript.notice("guardian on"),
             Err(refusal) => self.app.transcript.error(refusal.to_string()),
         }

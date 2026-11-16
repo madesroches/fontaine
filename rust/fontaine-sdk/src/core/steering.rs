@@ -2,7 +2,7 @@
 //! next tool result, which carries them to the model; only then do they enter the ledger, so the
 //! guardian never judges a call by words the model has not read.
 //!
-//! Lines from the remote inbox share the queue, tagged with their sender, so there is one arrival
+//! Lines from attached remote devices share the queue, tagged with their sender, so there is one arrival
 //! order and one delivery path.
 
 use std::collections::HashMap;
@@ -98,15 +98,6 @@ struct Slot {
     entry: Queued,
 }
 
-struct DialogState {
-    id: u64,
-    /// The sequence number the next entry gets when the dialog opens: remote entries from here
-    /// on arrived after it and are the only ones that can answer it.
-    opened_at: u64,
-    /// The answers it takes, trimmed and lowercased.
-    options: Vec<String>,
-}
-
 #[derive(Default)]
 struct SteeringState {
     queued: Vec<Slot>,
@@ -120,8 +111,6 @@ struct SteeringState {
     /// What the human typed in a subagent's view, by agent.
     agents: HashMap<String, AgentQueue>,
     next_seq: u64,
-    dialogs: Vec<DialogState>,
-    next_dialog: u64,
 }
 
 #[derive(Default)]
@@ -130,31 +119,9 @@ struct AgentQueue {
     delivered: Vec<String>,
 }
 
-/// Keeps a dialog's hold on newer remote entries; dropping it releases the hold.
-pub struct DialogGuard {
-    steering: Steering,
-    id: u64,
-}
-
-impl Drop for DialogGuard {
-    fn drop(&mut self) {
-        self.steering.state().dialogs.retain(|d| d.id != self.id);
-    }
-}
-
-fn normalize(text: &str) -> String {
-    text.trim().to_lowercase()
-}
-
 impl SteeringState {
-    /// A remote entry that arrived after a dialog opened waits for that dialog: it may be its
-    /// answer, and either way it is not delivered while the dialog is open.
-    fn held(&self, slot: &Slot) -> bool {
-        slot.remote.is_some() && self.dialogs.iter().any(|d| slot.seq >= d.opened_at)
-    }
-
-    fn deliverable_head(&self, slot: &Slot) -> bool {
-        matches!(slot.entry, Queued::Message(_)) && !self.held(slot)
+    fn deliverable_head(slot: &Slot) -> bool {
+        matches!(slot.entry, Queued::Message(_))
     }
 
     fn push(&mut self, remote: Option<RemoteSender>, entry: Queued) -> u64 {
@@ -195,7 +162,7 @@ impl Steering {
         self.state().push(None, entry);
     }
 
-    /// Queues a line from the remote inbox. The cap is enforced here, under the queue's lock,
+    /// Queues a line from an attached device. The cap is enforced here, under the queue's lock,
     /// so two senders cannot both take the last place.
     pub fn queue_remote(&self, from: RemoteSender, entry: Queued) -> Result<u64, RemoteFull> {
         let mut state = self.state();
@@ -234,22 +201,6 @@ impl Steering {
             .into_iter()
             .map(retracted)
             .collect()
-    }
-
-    /// `retract` for a turn's end: remote entries an open dialog holds stay queued, since they
-    /// may be its answer and run only once it closes.
-    pub fn retract_unheld(&self) -> Vec<Retracted> {
-        let mut state = self.state();
-        let mut taken = Vec::new();
-        let mut index = 0;
-        while index < state.queued.len() {
-            if state.held(&state.queued[index]) {
-                index += 1;
-            } else {
-                taken.push(retracted(state.remove_at(index)));
-            }
-        }
-        taken
     }
 
     /// Takes what the human typed and leaves remote entries queued, in place: only typed text
@@ -312,48 +263,9 @@ impl Steering {
         );
     }
 
-    /// Whether a remote entry waits that no open dialog holds: at an idle prompt it starts work.
+    /// Whether a remote entry waits: at an idle prompt it starts work.
     pub fn has_remote_ready(&self) -> bool {
-        let state = self.state();
-        state
-            .queued
-            .iter()
-            .any(|slot| slot.remote.is_some() && !state.held(slot))
-    }
-
-    /// Registers a dialog that remote lines may answer. Only lines that arrive after this call
-    /// can answer it; they are held while it is open. `options` are the labels and hotkeys it
-    /// accepts.
-    pub fn open_dialog(&self, options: &[String]) -> DialogGuard {
-        let mut state = self.state();
-        let id = state.next_dialog;
-        state.next_dialog += 1;
-        let opened_at = state.next_seq;
-        state.dialogs.push(DialogState {
-            id,
-            opened_at,
-            options: options.iter().map(|o| normalize(o)).collect(),
-        });
-        drop(state);
-        DialogGuard {
-            steering: self.clone(),
-            id,
-        }
-    }
-
-    /// Takes the oldest remote message that arrived after `guard`'s dialog opened and equals one
-    /// of its options, trimmed and ignoring case.
-    pub fn take_dialog_answer(&self, guard: &DialogGuard) -> Option<Retracted> {
-        let mut state = self.state();
-        let dialog = state.dialogs.iter().find(|d| d.id == guard.id)?;
-        let opened_at = dialog.opened_at;
-        let options = dialog.options.clone();
-        let index = state.queued.iter().position(|slot| {
-            slot.remote.is_some()
-                && slot.seq >= opened_at
-                && matches!(&slot.entry, Queued::Message(text) if options.contains(&normalize(text)))
-        })?;
-        Some(retracted(state.remove_at(index)))
+        self.state().queued.iter().any(|slot| slot.remote.is_some())
     }
 
     /// Holds or releases replay delivery: while held, the hook leaves the whole queue
@@ -370,7 +282,7 @@ impl Steering {
             && state
                 .queued
                 .first()
-                .is_some_and(|s| state.deliverable_head(s))
+                .is_some_and(SteeringState::deliverable_head)
     }
 
     /// Whether the queue holds a command, skill or shell line the model has not been told about.
@@ -480,7 +392,7 @@ fn unannounced_from(state: &SteeringState) -> Option<usize> {
     let leading = state
         .queued
         .iter()
-        .take_while(|slot| state.deliverable_head(slot))
+        .take_while(|slot| SteeringState::deliverable_head(slot))
         .count();
     let from = leading.max(state.announced);
     state.queued[from.min(state.queued.len())..]
@@ -516,7 +428,7 @@ impl SteeringHook {
             let leading = state
                 .queued
                 .iter()
-                .take_while(|slot| state.deliverable_head(slot))
+                .take_while(|slot| SteeringState::deliverable_head(slot))
                 .count();
             if leading == 0 {
                 return OutcomeAction::Proceed;
@@ -1103,83 +1015,6 @@ mod tests {
         steering.requeue(taken[0].clone());
         // The requeued commands were never told about, so they are announced again.
         assert!(steering.has_unannounced());
-    }
-
-    fn options(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn only_a_remote_line_accepted_after_the_dialog_opened_answers_it() {
-        let steering = Steering::default();
-        remote(&steering, 1, "y");
-        let dialog = steering.open_dialog(&options(&["y", "allow once"]));
-        assert!(steering.take_dialog_answer(&dialog).is_none());
-        steering.queue(Queued::Message("y".into()));
-        assert!(steering.take_dialog_answer(&dialog).is_none());
-        remote(&steering, 2, "  Allow Once ");
-        let answer = steering.take_dialog_answer(&dialog).expect("an answer");
-        assert_eq!(answer.remote, Some(sender(2)));
-        assert_eq!(steering.queued(), vec!["y", "y"]);
-    }
-
-    #[test]
-    fn a_dialog_holds_newer_remote_lines_until_it_closes() {
-        let (hook, steering, ledger, _dir) = hook();
-        steering.queue(Queued::Message("typed".into()));
-        let dialog = steering.open_dialog(&options(&["y"]));
-        remote(&steering, 1, "something else");
-        remote(&steering, 2, "y");
-        let ok = answered(ToolResult::success(ToolOutput::text("done")));
-        let action = hook.steer(ROOT_AGENT, &ok);
-        let text = rewritten(&action).unwrap().output().render();
-        assert!(
-            text.contains("typed") && !text.contains("something else"),
-            "{text}"
-        );
-        assert!(!steering.has_deliverable_message());
-        assert!(!steering.has_remote_ready());
-        drop(dialog);
-        assert!(steering.has_remote_ready() && steering.has_deliverable_message());
-        let action = hook.steer(ROOT_AGENT, &ok);
-        assert!(
-            rewritten(&action)
-                .unwrap()
-                .output()
-                .render()
-                .contains("something else")
-        );
-        assert_eq!(ledger.view().user_messages.len(), 3);
-    }
-
-    #[test]
-    fn retract_unheld_leaves_dialog_held_remote_lines_queued() {
-        let steering = Steering::default();
-        steering.queue(Queued::Message("typed".into()));
-        let dialog = steering.open_dialog(&options(&["y"]));
-        remote(&steering, 1, "y");
-        let taken = steering.retract_unheld();
-        assert_eq!(taken.len(), 1);
-        assert_eq!(taken[0].entry.raw(), "typed");
-        assert_eq!(steering.queued(), vec!["y"]);
-        assert!(steering.take_dialog_answer(&dialog).is_some());
-        remote(&steering, 2, "later");
-        drop(dialog);
-        assert_eq!(steering.retract_unheld().len(), 1);
-    }
-
-    #[test]
-    fn a_dialog_taking_an_entry_keeps_the_announcement_consistent() {
-        let steering = Steering::default();
-        steering.queue(Queued::Command("/afk".into()));
-        let dialog = steering.open_dialog(&options(&["y"]));
-        remote(&steering, 1, "y");
-        steering.take_announcement().unwrap();
-        steering.take_dialog_answer(&dialog).unwrap();
-        assert_eq!(steering.queued(), vec!["/afk"]);
-        assert!(!steering.has_unannounced());
-        steering.queue(Queued::Command("/new".into()));
-        assert!(steering.take_announcement().unwrap().contains("`/new`"));
     }
 
     #[test]

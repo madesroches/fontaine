@@ -4,8 +4,10 @@ pub(crate) use commands::Launcher;
 mod mcp;
 mod providers;
 mod remote;
-pub(crate) use remote::{DialogHold, RemoteState};
+pub(crate) use remote::RemoteState;
 mod schedule;
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -255,6 +257,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         {
             runtime.notify_hooks(hook_type, kind.message(), "Fontaine");
         }
+        self.publish_remote();
         (self.render)(&mut self.app);
     }
 
@@ -561,16 +564,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         match prompt {
             // The call's turn was cut short while the prompt sat in the queue.
-            Prompt::Ask(_, reply) if reply.is_closed() => {}
+            Prompt::Ask(_, reply, _) if reply.is_closed() => {}
             Prompt::Unavailable(_, reply) if reply.is_closed() => {}
             Prompt::UsagePaused(_, reply) if reply.is_closed() => {}
-            Prompt::Question(_, _, reply) if reply.is_closed() => {}
+            Prompt::Question(_, _, reply, _) if reply.is_closed() => {}
             Prompt::Elicit(_, reply) if reply.is_closed() => {}
             Prompt::Elicit(request, reply) => self.app.begin_elicitation(*request, reply),
-            Prompt::Question(agent, questions, reply) => {
-                self.app.begin_question(agent, questions, reply);
+            Prompt::Question(agent, questions, reply, by) => {
+                self.app
+                    .begin_question_with(agent, questions, reply, Some(by));
             }
-            Prompt::Ask(request, reply) => self.app.begin_approval(*request, reply),
+            Prompt::Ask(request, reply, by) => {
+                self.app.begin_approval_with(*request, reply, Some(by));
+            }
             Prompt::Unavailable(info, reply) => {
                 let candidates = runtime.map_or_else(Vec::new, AgentRuntime::guardian_candidates);
                 self.app
@@ -619,10 +625,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     })
                 }
                 // A subagent's call is still waiting for its answer.
-                Prompt::Ask(request, reply)
+                Prompt::Ask(request, reply, by)
                     if request.agent != ROOT_AGENT && !reply.is_closed() =>
                 {
-                    self.app.begin_approval(*request, reply);
+                    self.app.begin_approval_with(*request, reply, Some(by));
                 }
                 // Asked while no call was in flight, so the request is still open.
                 Prompt::Elicit(request, reply) if !reply.is_closed() => {
@@ -789,9 +795,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if buffered.is_none() {
                 self.announce_blocked(runtime).await;
             }
-            // What the remote inbox queued runs like typed input, even while AFK is blocked: the
-            // sender is presumed to be the user. Checked every pass, not only on a wake-up, so a
-            // line a closed dialog or picker had been holding is not stranded.
+            // What devices queued runs like typed input, even while AFK is blocked: a paired
+            // device is the user's own. Checked every pass, not only on a wake-up, so a line a
+            // closed dialog or picker had been holding is not stranded.
             if buffered.is_none()
                 && Box::pin(self.remote_idle(runtime, launch_dir))
                     .await
@@ -1000,6 +1006,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
+                | Action::Pairing(_)
                 | Action::CopyTicket
                 | Action::Bug(_)
                 | Action::AfkReview(_)
@@ -1594,7 +1601,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Vim => self.vim(),
             Command::Keybindings => self.keybindings(),
             Command::Exit => self.request_quit(runtime),
-            Command::RemoteInbox(argument) => self.remote_command(runtime, argument),
+            Command::Remote(argument) => self.remote_command(runtime, argument),
             _ => {}
         }
     }
@@ -1725,13 +1732,13 @@ fn warn_once(warned: &mut std::collections::HashSet<String>, account: &str) -> b
 /// back the prompts that ask nothing.
 fn answer_unattended(prompt: Prompt) -> Result<(), Prompt> {
     match prompt {
-        Prompt::Ask(_, reply) => {
+        Prompt::Ask(_, reply, _) => {
             let _ = reply.send(fontaine_sdk::core::permissions::Answer::Deny { feedback: None });
         }
         Prompt::Unavailable(_, reply) => {
             let _ = reply.send(fontaine_sdk::core::permissions::UnavailableChoice::Deny);
         }
-        Prompt::Question(_, _, reply) => {
+        Prompt::Question(_, _, reply, _) => {
             let _ = reply.send(fontaine_sdk::tools::ask_user::QuestionReply::Unavailable);
         }
         Prompt::Elicit(_, reply) => {

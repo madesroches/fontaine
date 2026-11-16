@@ -53,7 +53,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app.skill_trust_prompt = None;
                 return ControlFlow::Continue(());
             };
-            match self.app.handle_input(input) {
+            match self.dialog_input(runtime, input) {
                 Action::SkillTrust(true) => {
                     match skill_trust::trust(
                         runtime.config_dir(),

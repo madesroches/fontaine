@@ -1,7 +1,10 @@
 //! The question dialog: the model's multiple-choice questions, one at a time, with an "Other" row
 //! that takes the human's own words.
 
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use fontaine_sdk::core::ledger::RemoteSender;
 
 use fontaine_sdk::tools::ask_user::{Question, QuestionAnswer, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -39,6 +42,11 @@ pub struct QuestionPanel {
     pub(crate) id: u64,
     questions: Vec<Question>,
     reply: Option<oneshot::Sender<QuestionReply>>,
+    /// Where the answering device is left for the approver that waits on the reply.
+    attribution: Option<Arc<Mutex<Option<RemoteSender>>>>,
+    /// Every device that answered a sub-question, one per node, so a panel finished by the host
+    /// or another device still credits the first of them.
+    contributors: Vec<RemoteSender>,
     current: usize,
     answers: Vec<QuestionAnswer>,
     /// The highlighted row: the options, then "Other". The highlight is the mode: on the
@@ -61,6 +69,8 @@ impl QuestionPanel {
             id: 0,
             questions,
             reply: Some(reply),
+            attribution: None,
+            contributors: Vec::new(),
             current: 0,
             answers: Vec::new(),
             selected: 0,
@@ -68,6 +78,14 @@ impl QuestionPanel {
             other: InputBuffer::default(),
             opened: Instant::now(),
         }
+    }
+
+    pub(crate) fn with_attribution(
+        mut self,
+        slot: Arc<Mutex<Option<RemoteSender>>>,
+    ) -> QuestionPanel {
+        self.attribution = Some(slot);
+        self
     }
 
     /// Whether nobody waits for the answer any more, such as when the turn was cut short.
@@ -83,8 +101,27 @@ impl QuestionPanel {
 
     /// Hands the reply to the waiting tool call. A reply nobody waits for is dropped.
     pub fn reply(&mut self, reply: QuestionReply) {
+        self.reply_by(reply, None);
+    }
+
+    /// `reply` naming the device that answered, which the harness records.
+    pub(crate) fn reply_by(&mut self, reply: QuestionReply, by: Option<RemoteSender>) {
+        if let Some(by) = by {
+            self.note_device(by);
+        }
         if let Some(sender) = self.reply.take() {
+            if let Some(slot) = &self.attribution {
+                *fontaine_sdk::tools::lock::lock(slot, "answering device") =
+                    self.contributors.first().cloned();
+            }
             let _ = sender.send(reply);
+        }
+    }
+
+    /// Remembers a device that answered a sub-question of a panel that is still open.
+    pub(crate) fn note_device(&mut self, by: RemoteSender) {
+        if !self.contributors.iter().any(|known| known.node == by.node) {
+            self.contributors.push(by);
         }
     }
 
@@ -114,38 +151,51 @@ impl QuestionPanel {
         self.other_text().is_some() || self.checked.iter().any(|on| *on)
     }
 
-    /// What a remote line may say to answer the current question: an option's label or its
-    /// number.
-    pub(crate) fn remote_options(&self) -> Vec<String> {
-        let mut options = Vec::new();
-        for (i, option) in self.question().options.iter().enumerate() {
-            options.push(option.label.clone());
-            options.push((i + 1).to_string());
-        }
-        options
+    pub(crate) fn all_questions(&self) -> &[Question] {
+        &self.questions
     }
 
-    /// The reply a remote line gives by naming one option of the current question; `None` when
-    /// it moves on to the next question or names nothing. The "Other" row is the person's own.
-    pub(crate) fn answer_text(&mut self, text: &str) -> Option<QuestionReply> {
-        let said = text.trim().to_lowercase();
+    /// Which question of the panel is showing, from 0.
+    pub(crate) fn current_index(&self) -> usize {
+        self.current
+    }
+
+    /// The reply a device gives by naming one option of the question it saw. A reply for another
+    /// sub-question, or made against another set of options, is refused: it was meant for a
+    /// panel that has since moved on. The "Other" row is the person's own. `Ok(None)` is an
+    /// answer that moved the panel on to its next question.
+    pub(crate) fn device_reply(
+        &mut self,
+        index: usize,
+        options: &[String],
+        reply: &str,
+    ) -> Result<Option<QuestionReply>, crate::app::DeviceRefusal> {
+        use crate::app::DeviceRefusal;
+        if self.is_mid_edit() {
+            return Err(DeviceRefusal::LocalInput);
+        }
+        let shown: Vec<&str> = self
+            .question()
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        if index != self.current || options.iter().map(String::as_str).ne(shown.iter().copied()) {
+            return Err(DeviceRefusal::Stale);
+        }
+        let said = reply.trim().to_lowercase();
         let row = self
             .question()
             .options
             .iter()
             .position(|option| option.label.trim().to_lowercase() == said)
-            .or_else(|| {
-                said.parse::<usize>()
-                    .ok()
-                    .filter(|n| (1..=self.question().options.len()).contains(n))
-                    .map(|n| n - 1)
-            })?;
+            .ok_or(DeviceRefusal::NotOffered)?;
         self.selected = row;
         if self.question().multi_select {
             self.checked = vec![false; self.question().options.len()];
             self.checked[row] = true;
         }
-        self.confirm()
+        Ok(self.confirm())
     }
 
     /// Handles a key; the reply comes back once the human has answered every question or
@@ -667,6 +717,50 @@ mod tests {
         assert!(!panel.is_closed());
         drop(rx);
         assert!(panel.is_closed());
+    }
+
+    fn device(node: &str) -> RemoteSender {
+        RemoteSender {
+            node: node.into(),
+            message_id: "m".into(),
+        }
+    }
+
+    fn slotted(questions: Vec<Question>) -> (QuestionPanel, Arc<Mutex<Option<RemoteSender>>>) {
+        let (panel, _rx) = panel(questions);
+        let slot = Arc::new(Mutex::new(None));
+        (panel.with_attribution(slot.clone()), slot)
+    }
+
+    #[test]
+    fn a_device_answer_to_an_earlier_question_is_credited_when_the_host_finishes() {
+        let (mut panel, slot) = slotted(vec![question("One?", false), question("Two?", false)]);
+        let options: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(panel.device_reply(0, &options, "a"), Ok(None));
+        panel.note_device(device("phone"));
+        panel.settle();
+        let reply = press(&mut panel, KeyCode::Enter).expect("the host finishes");
+        panel.reply(reply);
+        assert_eq!(
+            slot.lock().unwrap().as_ref().map(|d| d.node.as_str()),
+            Some("phone")
+        );
+    }
+
+    #[test]
+    fn a_device_answer_to_the_last_question_is_credited_after_a_host_answer() {
+        let (mut panel, slot) = slotted(vec![question("One?", false), question("Two?", false)]);
+        assert_eq!(press(&mut panel, KeyCode::Enter), None);
+        let options: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let reply = panel
+            .device_reply(1, &options, "b")
+            .unwrap()
+            .expect("the last answer");
+        panel.reply_by(reply, Some(device("phone")));
+        assert_eq!(
+            slot.lock().unwrap().as_ref().map(|d| d.node.as_str()),
+            Some("phone")
+        );
     }
 
     #[test]

@@ -17,9 +17,11 @@ pub struct DriveOptions {
     /// Called once, with the deadline, as a final exit starts: the production caller arms the
     /// process watchdog from it.
     pub on_quit: Option<Box<dyn FnMut(Instant)>>,
-    /// Where the remote inbox's network tasks send their wake-up. Weak, so it never keeps the
+    /// Where the remote surface's network tasks send their wake-up. Weak, so it never keeps the
     /// input channel open past its real senders.
     pub wake: Option<tokio::sync::mpsc::WeakUnboundedSender<crate::Input>>,
+    /// Start with remote control already on, as `fontaine --remote` does. Needs `wake`.
+    pub remote: bool,
 }
 
 impl Default for DriveOptions {
@@ -28,6 +30,7 @@ impl Default for DriveOptions {
             budget: FINAL_SHUTDOWN_BUDGET,
             on_quit: None,
             wake: None,
+            remote: false,
         }
     }
 }

@@ -48,7 +48,7 @@ all tests pass:
 - **The deterministic floor (`deny → ask → protected-path`) gates EVERY mode** — no mode,
   flag, or verdict reaches past it. No regex matching on tool arguments anywhere. The one
   deliberate exception is `/guardian-disable`: after an explicit confirmation in the terminal UI
-  (the terminal may be a remote one: a line from a live `/remote-inbox` ticket is terminal input)
+  (a remote device attached with `fontaine attach` can never run it or answer its confirmation)
   it turns the guardian and the floor off for the current session only, until `/guardian-enable`,
   as a development escape hatch; it is blocked in headless runs, is not inherited by subagents,
   and every toggle is recorded in the ledger and the audit log. The record of this deviation
@@ -85,7 +85,7 @@ all tests pass:
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-sdk` (the embeddable agent; its
   `core`, `tools`, `agents` and `guardian` modules hold what were four crates, and its crate root
   is the one documented, semver-stable surface), `fontaine-tui`, `fontaine-remote` (iroh transport
-  for `fontaine send` and `/remote-inbox`; core-free), `fontaine-evals`, `fontaine-testkit`
+  for `fontaine attach` and `/remote`; core-free), `fontaine-evals`, `fontaine-testkit`
   (dev-only test helpers).
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.

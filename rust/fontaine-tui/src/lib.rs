@@ -31,7 +31,7 @@ pub mod plugin_prompt;
 pub mod provider_dialog;
 pub mod question;
 pub mod recent;
-mod remote;
+pub mod remote;
 pub mod reports;
 pub mod resume_picker;
 pub mod rewind;
@@ -142,14 +142,23 @@ pub fn set_build_info(info: BuildInfo) {
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
-    Ask(Box<ApprovalRequest>, oneshot::Sender<Answer>),
+    Ask(
+        Box<ApprovalRequest>,
+        oneshot::Sender<Answer>,
+        app::Attribution,
+    ),
     /// The pinned guardian cannot be used and the human has to decide what to do.
     Unavailable(Box<GuardianUnavailable>, oneshot::Sender<UnavailableChoice>),
     /// The run is held for a spent usage window; the human may resume, cancel or switch account.
     UsagePaused(Box<PauseInfo>, oneshot::Sender<PauseChoice>),
     /// The model's questions for the human, with the agent that asks. A dropped sender means
     /// nobody could answer.
-    Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
+    Question(
+        String,
+        Vec<Question>,
+        oneshot::Sender<QuestionReply>,
+        app::Attribution,
+    ),
     /// An MCP server's request for input. A dropped sender means nobody could answer.
     Elicit(Box<ElicitRequest>, oneshot::Sender<ElicitReply>),
     Notice(Severity, String),
@@ -183,13 +192,31 @@ struct ChannelApprover {
 
 impl Approver for ChannelApprover {
     fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        Box::pin(async move { self.approve_as(request).await.0 })
+    }
+
+    fn approve_as<'a>(
+        &'a self,
+        request: ApprovalRequest,
+    ) -> BoxFuture<'a, (Answer, Option<fontaine_sdk::core::ledger::RemoteSender>)> {
         Box::pin(async move {
-            let deny = Answer::Deny { feedback: None };
+            let deny = (Answer::Deny { feedback: None }, None);
             let (reply, answer) = oneshot::channel();
-            if self.tx.send(Prompt::Ask(Box::new(request), reply)).is_err() {
+            let by = app::Attribution::default();
+            if self
+                .tx
+                .send(Prompt::Ask(Box::new(request), reply, by.clone()))
+                .is_err()
+            {
                 return deny;
             }
-            answer.await.unwrap_or(deny)
+            match answer.await {
+                Ok(answer) => (
+                    answer,
+                    fontaine_sdk::tools::lock::lock(&by, "answering device").take(),
+                ),
+                Err(_) => deny,
+            }
         })
     }
 
@@ -198,16 +225,42 @@ impl Approver for ChannelApprover {
         agent: &'a str,
         questions: Vec<Question>,
     ) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async move { self.ask_user_as(agent, questions).await.0 })
+    }
+
+    fn ask_user_as<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<
+        'a,
+        (
+            QuestionReply,
+            Option<fontaine_sdk::core::ledger::RemoteSender>,
+        ),
+    > {
         Box::pin(async move {
             let (reply, answer) = oneshot::channel();
+            let by = app::Attribution::default();
             if self
                 .tx
-                .send(Prompt::Question(agent.to_string(), questions, reply))
+                .send(Prompt::Question(
+                    agent.to_string(),
+                    questions,
+                    reply,
+                    by.clone(),
+                ))
                 .is_err()
             {
-                return QuestionReply::Unavailable;
+                return (QuestionReply::Unavailable, None);
             }
-            answer.await.unwrap_or(QuestionReply::Unavailable)
+            match answer.await {
+                Ok(reply) => (
+                    reply,
+                    fontaine_sdk::tools::lock::lock(&by, "answering device").take(),
+                ),
+                Err(_) => (QuestionReply::Unavailable, None),
+            }
         })
     }
 
@@ -378,16 +431,12 @@ struct Ui<R> {
     launcher: ui::Launcher,
     /// Set by `/resume` and `/branch`: the session the caller starts once this one has ended.
     switch: Option<SessionTarget>,
-    /// Where the remote inbox's network tasks wake the loop; `None` where nothing can.
+    /// Where the remote surface's network tasks wake the loop; `None` where nothing can.
     wake: Option<tokio::sync::mpsc::WeakUnboundedSender<Input>>,
-    /// The remote inbox: off, starting, or live for this session.
+    /// Remote control: off, starting, or live for this session.
     remote: ui::RemoteState,
     /// The identity of the remote line being run, so everything it records carries it.
     current_remote: Option<fontaine_sdk::core::ledger::RemoteSender>,
-    /// The remote line that answered the confirmation now being handled.
-    remote_confirm: Option<fontaine_sdk::core::ledger::RemoteSender>,
-    /// What the open remote-answerable dialog holds in the steering queue.
-    dialog_guard: Option<ui::DialogHold>,
     /// One poller per role, main first: the two accounts can differ.
     quota: [fontaine_sdk::core::quota::QuotaPoller; 2],
     quota_rx: [tokio::sync::watch::Receiver<fontaine_sdk::core::quota::QuotaSnapshot>; 2],
@@ -451,6 +500,7 @@ pub async fn drive(
         budget,
         on_quit,
         wake,
+        remote,
     } = options;
     let (tx, prompts) = unbounded_channel();
     let feed_tx = tx.clone();
@@ -551,8 +601,6 @@ pub async fn drive(
         wake,
         remote: ui::RemoteState::Off,
         current_remote: None,
-        remote_confirm: None,
-        dialog_guard: None,
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
@@ -639,6 +687,9 @@ pub async fn drive(
             "AFK mode is on: nothing is asked of you; each call that would have needed approval is denied. Shift+Tab leaves it.",
         );
     }
+    if remote {
+        ui.start_remote(&runtime, remote::DEFAULT_TTL);
+    }
     if ui.start_mcp(&mut runtime).await {
         ui.run(&mut runtime, &launch_dir).await;
     }
@@ -646,8 +697,8 @@ pub async fn drive(
     if let Some(forwarder) = &forwarder {
         forwarder.abort();
     }
-    // The inbox goes down with the session, so a ticket cannot reach a later one; lines still
-    // queued are dropped, never delivered across the boundary.
+    // Remote control goes down with the session, so a ticket cannot reach a later one; lines
+    // still queued are dropped, never delivered across the boundary.
     ui.remote_shutdown(&runtime, "the session ended").await;
     if ui.switch.is_some() {
         // The hooks hear of the end before what runs for the session is stopped.
@@ -775,6 +826,7 @@ pub async fn run(
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
     notices: Notices,
+    remote: bool,
 ) -> Result<RunOutcome, String> {
     enable_raw_mode().map_err(|e| {
         format!(
@@ -901,6 +953,7 @@ pub async fn run(
             budget: FINAL_SHUTDOWN_BUDGET,
             on_quit: Some(Box::new(on_quit)),
             wake: Some(wake),
+            remote,
         },
     )
     .await;
