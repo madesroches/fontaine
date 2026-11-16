@@ -10,6 +10,7 @@ mod plugin;
 mod plugin_auto_update;
 pub mod release_signature;
 mod send_cmd;
+mod stamp;
 pub mod telemetry;
 pub mod update;
 
@@ -347,6 +348,14 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(code);
         }
     };
+    // The detached helper of a Windows update is told everything it needs on its command line.
+    if let Some(cli::Command::UpdateHelper(args)) = &cli.command {
+        return update::helper::main(&update::helper::HelperArgs {
+            target: args.target.clone(),
+            receipt: args.receipt.clone(),
+            data: args.data.clone(),
+        });
+    }
     // Sending needs no config, session or credentials: the ticket is everything.
     if let Some(cli::Command::Send(args)) = &cli.command {
         return send_cmd::run(args, &host);
@@ -397,8 +406,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     if let Some(cli::Command::AutoMode(args)) = &cli.command {
         return auto_mode::run(&cli, args, &config, &dirs, &host);
     }
-    if let Some(cli::Command::Update) = &cli.command {
-        return update::run(&config, &host);
+    if let Some(cli::Command::Update(args)) = &cli.command {
+        return update::run(args, &config, &dirs, &host);
     }
     if let Some(cli::Command::Models(args)) = &cli.command {
         return models_cmd::run(&cli, args, &config, &dirs, &host);
@@ -496,8 +505,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     // Its outcomes wait in the feed, which outlives any one session of a `/resume` chain.
     let (plugin_notices, plugin_feed) = fontaine_tui::notice_feed();
     if headless.is_none() && config.plugins.auto_update {
-        plugin_auto_update::spawn(dirs.clone(), shared_env(&host), plugin_notices);
+        plugin_auto_update::spawn(dirs.clone(), shared_env(&host), plugin_notices.clone());
     }
+    start_self_update(&config, &dirs, &host, headless.is_some(), &plugin_notices);
 
     let export = telemetry::install(
         sink.as_ref(),
@@ -1103,6 +1113,53 @@ async fn start_scanner(launch: &Launch<'_>, prep: &SessionPrep, models: &Models)
         model_base_url: None,
     })
     .await
+}
+
+/// Tells the user how the last background update went, then starts this run's pass. Both stay
+/// silent for an install no receipt describes.
+fn start_self_update(
+    config: &Config,
+    dirs: &Dirs,
+    host: &Host,
+    headless: bool,
+    notices: &tokio::sync::mpsc::UnboundedSender<Notice>,
+) {
+    let receipt_path = update::receipt::receipt_path(&*host.env);
+    let current_exe = std::env::current_exe().ok();
+    if !update::auto::should_start(
+        headless,
+        config.updates.auto_update,
+        receipt_path.as_deref(),
+        current_exe.as_deref(),
+    ) {
+        return;
+    }
+    let (Some(receipt_path), Some(current_exe)) = (receipt_path, current_exe) else {
+        return;
+    };
+    for notice in update::auto::startup_notices(&receipt_path, &current_exe, &dirs.data) {
+        let _ = notices.send(notice);
+    }
+    match config.loaded_network(None) {
+        Ok(network) => {
+            update::auto::spawn(
+                dirs.data.clone(),
+                receipt_path,
+                current_exe,
+                network,
+                notices.clone(),
+            );
+        }
+        Err(e) => {
+            let _ = notices.send(Notice::warning(
+                format!(
+                    "automatic update did not start: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ),
+                None,
+            ));
+        }
+    }
 }
 
 /// The environment, looked up live on every call: the Claude CLI adapter checks for conflicting

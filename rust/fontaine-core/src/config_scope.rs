@@ -124,6 +124,8 @@ const CHECKPOINTS: &str =
     "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
 const PLUGINS: &str =
     "plugin auto-update changes code the user approved at install, so only the user file sets it";
+const UPDATES: &str =
+    "automatic self-update replaces the executable, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const RETRY: &str = "retrying a failed model call is spend, so only the user file or --settings sets how far it goes";
@@ -181,6 +183,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("shell", SHELL),
     Rule::user_only("checkpoints", CHECKPOINTS),
     Rule::user_only("plugins.auto_update", PLUGINS),
+    Rule::user_only("updates.auto_update", UPDATES),
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("models", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
@@ -699,6 +702,11 @@ mod tests {
         (
             "plugins.auto_update",
             "[plugins]\nauto_update = false\n",
+            None,
+        ),
+        (
+            "updates.auto_update",
+            "[updates]\nauto_update = false\n",
             None,
         ),
         ("context", "[context]\nautocompact_window = 150000\n", None),

@@ -1,13 +1,15 @@
 //! `fontaine update`: replace the installed binary with the newest build on the channel it was
 //! installed from, after checking the archive against that channel's embedded key.
 
+pub mod auto;
+pub mod helper;
 pub mod install;
 pub mod receipt;
 pub mod release_index;
 
 use std::cmp::Ordering;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -27,6 +29,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_REDIRECTS: usize = 5;
 const MAX_ARCHIVE: u64 = 512 << 20;
 const MAX_SIGNATURE: usize = 64 << 10;
+/// The directory name prefix of every temporary work directory beside the binary.
+pub const WORK_PREFIX: &str = ".fontaine-update-";
 
 type Cause = Box<dyn std::error::Error + Send + Sync>;
 
@@ -300,15 +304,78 @@ fn check_binding(
     Ok(())
 }
 
-pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Outcome, UpdateError> {
-    let located =
+/// A downloaded, verified and bound archive, with the work directory it lives in. Holds no lock.
+#[derive(Debug)]
+pub struct Prepared {
+    pub info: InstallInfo,
+    pub archive: PathBuf,
+    pub verified: Verified,
+    work: tempfile::TempDir,
+}
+
+impl Prepared {
+    /// For an archive that was verified elsewhere, such as a staged one: the work directory is
+    /// created beside the binary so the swap stays on one filesystem.
+    pub fn new(
+        info: InstallInfo,
+        archive: PathBuf,
+        verified: Verified,
+    ) -> Result<Prepared, UpdateError> {
+        let work = work_dir(&info)?;
+        Ok(Prepared {
+            info,
+            archive,
+            verified,
+            work,
+        })
+    }
+
+    /// Where `prepare` keeps the release's signature next to the archive.
+    pub fn signature_path(&self) -> PathBuf {
+        signature_file(&self.archive)
+    }
+}
+
+fn signature_file(archive: &Path) -> PathBuf {
+    install::sibling(archive, ".minisig")
+}
+
+fn work_dir(info: &InstallInfo) -> Result<tempfile::TempDir, UpdateError> {
+    let dir = info
+        .binary_path
+        .parent()
+        .expect("a binary path always has a parent");
+    tempfile::Builder::new()
+        .prefix(WORK_PREFIX)
+        .tempdir_in(dir)
+        .map_err(|e| UpdateError::Install(Box::new(e)))
+}
+
+#[derive(Debug)]
+pub enum Prepare {
+    UpToDate { channel: Channel, version: String },
+    Ready(Box<Prepared>),
+}
+
+/// What `prepare` takes from and tells its caller beyond the result.
+#[derive(Debug, Default)]
+pub struct PrepareOpts {
+    /// A build `prepare` treats as already installed: one the user rolled back from.
+    pub skip: Option<Build>,
+    /// The tag of the newest release, set as soon as the index has answered.
+    pub candidate: Option<String>,
+}
+
+/// Locates the install, asks the index for the newest build of its channel and, when that is
+/// newer, downloads and verifies it. No receipt lock is held, so a manual update never waits for
+/// a background download.
+pub async fn prepare(
+    client: &reqwest::Client,
+    params: &Params<'_>,
+    opts: &mut PrepareOpts,
+) -> Result<Prepare, UpdateError> {
+    let info =
         receipt::locate(&params.receipt_path, &params.current_exe).map_err(not_self_updatable)?;
-    let _lock = fontaine_core::file_lock::lock(&params.receipt_path)
-        .map_err(|e| UpdateError::Install(Box::new(e)))?;
-    // Another update may have finished while this one waited for the lock.
-    let info: InstallInfo =
-        receipt::locate(&params.receipt_path, &params.current_exe).map_err(not_self_updatable)?;
-    drop(located);
     let channel = info.channel;
     let installed = release_index::installed_build(channel, &info.version).ok_or_else(|| {
         UpdateError::NotSelfUpdatable {
@@ -316,26 +383,15 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
             cause: Box::new(ReceiptError::Malformed("version is not a Fontaine version")),
         }
     })?;
-    let dir = info
-        .binary_path
-        .parent()
-        .expect("a binary path always has a parent");
-
-    // Only Windows renames the old binary aside; elsewhere a matching name is the user's own file.
-    if cfg!(windows)
-        && let Err(e) = install::remove_stale(&info.binary_path)
-    {
-        eprintln!(
-            "fontaine: warning: the previous update's leftover file could not be deleted: {}",
-            chain(&e)
-        );
-    }
 
     let release = release_index::latest(client, params.api_base, channel)
         .await
         .map_err(index_error)?;
-    if release_index::compare(installed, release.build) != Some(Ordering::Greater) {
-        return Ok(Outcome::UpToDate {
+    opts.candidate = Some(release.tag.clone());
+    let up_to_date = release_index::compare(installed, release.build) != Some(Ordering::Greater)
+        || opts.skip == Some(release.build);
+    if up_to_date {
+        return Ok(Prepare::UpToDate {
             channel,
             version: info.version,
         });
@@ -347,10 +403,7 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
             format!("release {} has no {name} for this platform", release.tag).into(),
         )
     })?;
-    let work = tempfile::Builder::new()
-        .prefix(".fontaine-update-")
-        .tempdir_in(dir)
-        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    let work = work_dir(&info)?;
     let archive_path = work.path().join(&name);
     let mut file =
         std::fs::File::create(&archive_path).map_err(|e| UpdateError::Install(Box::new(e)))?;
@@ -384,9 +437,85 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
     .map_err(|e| UpdateError::Verify(Box::new(e)))?;
     check_binding(channel, &release, &name, &verified)
         .map_err(|why| UpdateError::Verify(why.into()))?;
+    if let Some(signature) = &signature {
+        std::fs::write(signature_file(&archive_path), signature)
+            .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    }
+    Ok(Prepare::Ready(Box::new(Prepared {
+        info,
+        archive: archive_path,
+        verified,
+        work,
+    })))
+}
 
-    install::replace_binary(&archive_path, &info.binary_path, work.path())
+/// Replaces the binary with a prepared archive. The receipt lock is held from the re-read of the
+/// receipt to its rewrite, so a concurrent update is either seen here or waits for this one.
+pub fn install(prepared: Prepared) -> Result<Outcome, UpdateError> {
+    let Prepared {
+        info: first,
+        archive,
+        verified,
+        work,
+    } = prepared;
+    let _lock = fontaine_core::file_lock::lock(&first.receipt_path)
         .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    let info: InstallInfo =
+        receipt::locate(&first.receipt_path, &first.binary_path).map_err(not_self_updatable)?;
+    let channel = info.channel;
+    if channel != verified.channel {
+        return Err(UpdateError::Install(
+            "the install changed channel after the update was verified".into(),
+        ));
+    }
+    let build = |version: &str| {
+        release_index::installed_build(channel, version).ok_or_else(|| {
+            UpdateError::Verify(format!("{version} is not a {channel} version").into())
+        })
+    };
+    let (installed, candidate) = (build(&info.version)?, build(&verified.version)?);
+    if release_index::compare(installed, candidate) != Some(Ordering::Greater) {
+        return Ok(Outcome::UpToDate {
+            channel,
+            version: info.version,
+        });
+    }
+
+    // A swap whose receipt rewrite failed left the new binary in place; swapping again would
+    // replace the real previous binary with this one.
+    let already_swapped = install::holds_archive_binary(&archive, &info.binary_path, work.path())
+        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    if already_swapped {
+        let receipt_warning = receipt::write_version(&info.receipt_path, &verified.version)
+            .err()
+            .map(|e| chain(&e));
+        return Ok(Outcome::Updated {
+            channel,
+            from: info.version,
+            to: verified.version,
+            receipt_warning,
+        });
+    }
+
+    // Only Windows renames the old binary aside; elsewhere a matching name is the user's own file.
+    if cfg!(windows)
+        && let Err(e) = install::remove_stale(&info.binary_path)
+    {
+        eprintln!(
+            "fontaine: warning: the previous update's leftover file could not be deleted: {}",
+            chain(&e)
+        );
+    }
+    install::replace_binary(
+        &archive,
+        &info.binary_path,
+        work.path(),
+        &install::Prior {
+            version: &info.version,
+            channel,
+        },
+    )
+    .map_err(|e| UpdateError::Install(Box::new(e)))?;
 
     let receipt_warning = receipt::write_version(&info.receipt_path, &verified.version)
         .err()
@@ -399,6 +528,82 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
     })
 }
 
+pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Outcome, UpdateError> {
+    match prepare(client, params, &mut PrepareOpts::default()).await? {
+        Prepare::UpToDate { channel, version } => Ok(Outcome::UpToDate { channel, version }),
+        Prepare::Ready(prepared) => install(*prepared),
+    }
+}
+
+/// What `rollback` found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Rollback {
+    Restored {
+        channel: Channel,
+        from: String,
+        to: String,
+        /// Set when the receipt could not be rewritten.
+        receipt_warning: Option<String>,
+    },
+    NothingToRestore(&'static str),
+}
+
+/// Restores the previous binary a swap kept, rewrites the receipt version from its record and
+/// writes the build rolled back from to `update-skip`, so the background pass does not install
+/// it again.
+pub fn rollback(
+    receipt_path: &Path,
+    current_exe: &Path,
+    data_dir: &Path,
+) -> Result<Rollback, UpdateError> {
+    let first = receipt::locate(receipt_path, current_exe).map_err(not_self_updatable)?;
+    let _lock = fontaine_core::file_lock::lock(receipt_path)
+        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    let info = receipt::locate(receipt_path, &first.binary_path).map_err(not_self_updatable)?;
+    let prev = install::prev_path(&info.binary_path);
+    let record = install::read_prev_record(&info.binary_path)
+        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    let Some(record) = record.filter(|_| prev.is_file()) else {
+        return Ok(Rollback::NothingToRestore(
+            "there is no previous version to restore",
+        ));
+    };
+    if receipt::channel_of(&record.version) != record.channel {
+        return Err(UpdateError::Install(
+            "the previous-version record names a version of another channel".into(),
+        ));
+    }
+    // A stale record from the other channel (dev auto-update, then the release installer) must
+    // not switch channels.
+    if record.channel != info.channel {
+        return Ok(Rollback::NothingToRestore(
+            "the previous version belongs to another channel",
+        ));
+    }
+    // A swap whose receipt rewrite failed leaves the receipt and the record both naming the
+    // old build while the binary is the new one.
+    if record.version == info.version {
+        return Ok(Rollback::NothingToRestore(
+            "the receipt already names the previous version; run `fontaine update` to repair it",
+        ));
+    }
+    auto::write_skip(data_dir, info.channel, &info.version)
+        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    std::fs::rename(&prev, &info.binary_path).map_err(|e| UpdateError::Install(Box::new(e)))?;
+    // The record described the file that was just moved into place; keeping it would let a
+    // later rollback pair it with nothing.
+    let _ = std::fs::remove_file(install::prev_record_path(&info.binary_path));
+    let receipt_warning = receipt::write_version(&info.receipt_path, &record.version)
+        .err()
+        .map(|e| chain(&e));
+    Ok(Rollback::Restored {
+        channel: record.channel,
+        from: info.version,
+        to: record.version,
+        receipt_warning,
+    })
+}
+
 fn print_error(e: &UpdateError) {
     eprintln!("fontaine: {}", chain(e));
     if let UpdateError::NotSelfUpdatable { channel, .. } = e {
@@ -406,7 +611,15 @@ fn print_error(e: &UpdateError) {
     }
 }
 
-pub fn run(config: &Config, host: &crate::Host) -> ExitCode {
+pub fn run(
+    args: &crate::cli::UpdateArgs,
+    config: &Config,
+    dirs: &fontaine_core::dirs::Dirs,
+    host: &crate::Host,
+) -> ExitCode {
+    if args.rollback {
+        return run_rollback(dirs, host);
+    }
     let network = match config.loaded_network(None) {
         Ok(network) => network,
         Err(e) => {
@@ -450,6 +663,51 @@ pub fn run(config: &Config, host: &crate::Host) -> ExitCode {
         keys,
     };
     exit_for(runtime.block_on(update(&client, &params)))
+}
+
+fn run_rollback(dirs: &fontaine_core::dirs::Dirs, host: &crate::Host) -> ExitCode {
+    if cfg!(windows) {
+        eprintln!(
+            "fontaine: `update --rollback` is not supported on Windows: an update renames the \
+             previous executable aside and deletes it, so there is nothing to restore"
+        );
+        return ExitCode::from(1);
+    }
+    let (Some(receipt_path), Ok(current_exe)) =
+        (receipt::receipt_path(&*host.env), std::env::current_exe())
+    else {
+        let e = UpdateError::NotSelfUpdatable {
+            channel: None,
+            cause: "the install receipt location or the running executable is unknown".into(),
+        };
+        print_error(&e);
+        return ExitCode::from(e.exit_code());
+    };
+    match rollback(&receipt_path, &current_exe, &dirs.data) {
+        Ok(Rollback::Restored {
+            channel,
+            from,
+            to,
+            receipt_warning,
+        }) => {
+            if let Some(why) = receipt_warning {
+                eprintln!(
+                    "fontaine: warning: the binary was restored but the install receipt was not \
+                     updated: {why}"
+                );
+            }
+            println!("fontaine: rolled back from {from} to {to} ({channel} channel)");
+            ExitCode::SUCCESS
+        }
+        Ok(Rollback::NothingToRestore(why)) => {
+            println!("fontaine: {why}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            print_error(&e);
+            ExitCode::from(e.exit_code())
+        }
+    }
 }
 
 fn exit_for(result: Result<Outcome, UpdateError>) -> ExitCode {

@@ -1,0 +1,98 @@
+# End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the newest one, and check the version changed and the receipt is intact.
+# Manual and nightly, never a PR gate: it needs two published `dev-<n>` builds and the network.
+# The binary ships no api-base override, so this uses the default feed. Every leg runs the manual
+# `fontaine update`; the TUI background pass would need the workspace trust prompt bypassed, so it
+# and the Windows helper swap are verified by hand.
+name: Update E2E
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 3 * * *"
+
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FONTAINE_CONFIG_DIR: ${{ github.workspace }}/e2e/config
+      FONTAINE_DATA_DIR: ${{ github.workspace }}/e2e/data
+    steps:
+      - name: Pick the previous dev build
+        id: tags
+        run: |
+          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' | grep -E '^dev-[0-9]+$' | sort -t- -k2 -n -r)
+          newest=$(echo "$tags" | sed -n 1p)
+          previous=$(echo "$tags" | sed -n 2p)
+          if [ -z "$previous" ]; then echo "fewer than two dev builds are published"; exit 1; fi
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
+      # The installers embed the newest archive's sha256 and receipt version, and `dev-<n>` releases
+      # carry no installer, so the previous build is unpacked by hand and its receipt written to match
+      # what an installer writes. The build's version comes from the signed trusted comment.
+      - name: Install the previous build from its archive
+        env:
+          PREVIOUS: ${{ steps.tags.outputs.previous }}
+          HOME_DIR: ${{ github.workspace }}/e2e/home
+        run: |
+          mkdir -p e2e/home/.fontaine/bin e2e/config e2e/data e2e/dl e2e/unpacked
+          case "$RUNNER_OS" in
+            Windows) target=x86_64-pc-windows-msvc; ext=zip; bin=fontaine.exe ;;
+            macOS) target=aarch64-apple-darwin; ext=tar.xz; bin=fontaine ;;
+            *) target=x86_64-unknown-linux-gnu; ext=tar.xz; bin=fontaine ;;
+          esac
+          archive="fontaine-$target.$ext"
+          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --dir e2e/dl --pattern "$archive" --pattern "$archive.minisig"
+          version=$(sed -n 's/^trusted comment:.* version=\([^ ]*\).*/\1/p' "e2e/dl/$archive.minisig")
+          case "$version" in *-dev."${PREVIOUS#dev-}"+*) ;; *) echo "signed version '$version' does not match $PREVIOUS"; exit 1 ;; esac
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -Command "Expand-Archive -Path '$(cygpath -w "e2e/dl/$archive")' -DestinationPath '$(cygpath -w e2e/unpacked)'"
+            prefix="$(cygpath -w "$HOME_DIR/.fontaine")"
+            receipt_dir="$GITHUB_WORKSPACE/e2e/localappdata/fontaine"
+          else
+            tar -xJf "e2e/dl/$archive" -C e2e/unpacked
+            prefix="$HOME_DIR/.fontaine"
+            receipt_dir="$GITHUB_WORKSPACE/e2e/xdg/fontaine"
+          fi
+          found=$(find e2e/unpacked -name "$bin" -type f | head -n 1)
+          [ -n "$found" ] || { echo "no $bin in $archive"; exit 1; }
+          cp "$found" "e2e/home/.fontaine/bin/$bin"
+          chmod +x "e2e/home/.fontaine/bin/$bin"
+          mkdir -p "$receipt_dir"
+          jq -n --arg bin "$bin" --arg prefix "$prefix" --arg version "$version" \
+            '{binaries: [$bin], install_prefix: $prefix, provider: {source: "cargo-dist", version: "0.32.0"}, version: $version}' \
+            > "$receipt_dir/fontaine-receipt.json"
+
+      - name: Update and check
+        env:
+          NEWEST: ${{ steps.tags.outputs.newest }}
+          PREVIOUS: ${{ steps.tags.outputs.previous }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            exe="$GITHUB_WORKSPACE/e2e/home/.fontaine/bin/fontaine.exe"
+            receipt="$GITHUB_WORKSPACE/e2e/localappdata/fontaine/fontaine-receipt.json"
+            export LOCALAPPDATA="$(cygpath -w "$GITHUB_WORKSPACE/e2e/localappdata")"
+          else
+            exe="$GITHUB_WORKSPACE/e2e/home/.fontaine/bin/fontaine"
+            receipt="$GITHUB_WORKSPACE/e2e/xdg/fontaine/fontaine-receipt.json"
+            export HOME="$GITHUB_WORKSPACE/e2e/home" XDG_CONFIG_HOME="$GITHUB_WORKSPACE/e2e/xdg"
+          fi
+          before=$(jq -r .version "$receipt")
+          want_before="${PREVIOUS#dev-}"
+          case "$before" in *"-dev.$want_before+"*) ;; *) echo "installed $before, expected build $want_before"; exit 1 ;; esac
+          "$exe" update
+          after=$(jq -r .version "$receipt")
+          want_after="${NEWEST#dev-}"
+          case "$after" in *"-dev.$want_after+"*) ;; *) echo "receipt says $after, expected build $want_after"; exit 1 ;; esac
+          jq -e '.binaries[0] and .install_prefix' "$receipt" > /dev/null
+          "$exe" --version

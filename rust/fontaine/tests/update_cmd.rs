@@ -99,7 +99,12 @@ impl Install {
         std::fs::read_dir(self.binary.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|n| n != "fontaine")
+            .filter(|n| {
+                !matches!(
+                    n.as_str(),
+                    "fontaine" | "fontaine.prev" | "fontaine.prev.json"
+                )
+            })
             .collect()
     }
 }

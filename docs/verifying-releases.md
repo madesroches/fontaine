@@ -20,7 +20,7 @@ you download.
 | `dev` | the latest CI-passing build of `main`, published as the prerelease `dev-<n>` | the dev key | [`rust/fontaine/keys/dev.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.pub) |
 
 The two channels use different keys, so a compromised dev key cannot sign a release. The keys are
-checked in and compiled into Fontaine. `fontaine update` verifies every archive it downloads with
+checked in and compiled into Fontaine. `fontaine update` and the [automatic background update](installing.md#automatic-updates) verify every archive they download with
 the key of the channel the install came from, requires the signed channel, file name and version to
 match the release it was offered, and replaces nothing if any check fails (see
 [Updating](installing.md#updating)). To verify an archive you downloaded yourself, do it by hand, as

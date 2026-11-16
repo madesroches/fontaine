@@ -167,9 +167,30 @@ pub enum Command {
     /// Add, list, show and remove MCP servers
     Mcp(McpArgs),
     /// Update this installation to the newest build on the channel it was installed from
-    Update,
+    Update(UpdateArgs),
+    /// Internal: applies a staged update once nothing runs from the install (Windows)
+    #[command(name = "update-helper", hide = true)]
+    UpdateHelper(UpdateHelperArgs),
     /// Send one message to a live session that enabled `/remote-inbox`
     Send(SendArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UpdateArgs {
+    /// Restore the version that was installed before the last update, and keep the automatic
+    /// update from installing the build you leave. Not available on Windows
+    #[arg(long)]
+    pub rollback: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UpdateHelperArgs {
+    #[arg(long)]
+    pub target: PathBuf,
+    #[arg(long)]
+    pub receipt: PathBuf,
+    #[arg(long)]
+    pub data: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]

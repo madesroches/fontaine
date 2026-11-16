@@ -1227,6 +1227,12 @@ pub struct PluginsSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct UpdatesSection {
+    pub auto_update: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MemorySection {
     pub auto: Option<bool>,
 }
@@ -1604,6 +1610,7 @@ pub struct Settings {
     pub memory: Option<MemorySection>,
     pub checkpoints: Option<CheckpointsSection>,
     pub plugins: Option<PluginsSection>,
+    pub updates: Option<UpdatesSection>,
     pub goal: Option<GoalSection>,
     pub retry: Option<RetrySection>,
     pub afk: Option<AfkSection>,
@@ -2816,6 +2823,20 @@ impl Default for Plugins {
     }
 }
 
+/// The merged `[updates]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Updates {
+    /// Whether an install made by a Fontaine installer replaces itself in the background at
+    /// interactive start.
+    pub auto_update: bool,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Updates { auto_update: true }
+    }
+}
+
 /// The merged `[memory]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Memory {
@@ -3018,6 +3039,7 @@ pub struct Config {
     pub memory: Memory,
     pub checkpoints: Checkpoints,
     pub plugins: Plugins,
+    pub updates: Updates,
     pub goal: Goal,
     pub retry: Retry,
     pub afk: Afk,
@@ -3149,6 +3171,7 @@ impl Config {
             memory: Memory { auto: true },
             checkpoints: Checkpoints::default(),
             plugins: Plugins::default(),
+            updates: Updates::default(),
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
@@ -3438,6 +3461,9 @@ impl Config {
         }
         if let Some(v) = s.plugins.as_ref().and_then(|c| c.auto_update) {
             self.plugins.auto_update = v;
+        }
+        if let Some(v) = s.updates.as_ref().and_then(|c| c.auto_update) {
+            self.updates.auto_update = v;
         }
         if let Some(g) = &s.goal {
             if let Some(v) = g.max_turns {

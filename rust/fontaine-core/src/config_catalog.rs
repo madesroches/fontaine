@@ -642,6 +642,10 @@ pub const KEYS: &[KeyRow] = &[
         .plugins
         .auto_update
         .to_string()),
+    row!("updates.auto_update", Scalar, |c, _| c
+        .updates
+        .auto_update
+        .to_string()),
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),

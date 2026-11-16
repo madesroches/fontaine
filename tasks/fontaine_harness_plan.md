@@ -482,6 +482,16 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#527): The installers use `install-path = "~/.fontaine/bin"`, not Claude Code's `~/.local/bin` or cargo-dist's `$CARGO_HOME/bin`; reason: the directory is Fontaine's alone, shared with no other tool, and trivial to remove. No automatic migration of older `$CARGO_HOME/bin` installs.
 - 2026-11-14: (#627) iroh 1.4.1 is pinned exactly (`default-features = false, features = ["tls-ring"]`, plus `test-utils` only as a `fontaine-remote` dev-dependency for the in-process relay), in its own `fontaine-remote` crate so its dependency tree stays off `fontaine-guardian` and `fontaine-core`; licenses and advisories are covered by the existing `cargo deny check`.
 - 2026-11-15 (#668): Toolchain and workspace `rust-version` raised from 1.99.1 to 1.100.0; exact-version pin kept for reproducible CI.
+- 2026-11-15 (#175): Background auto-update reuses the minimal updater (no axoupdater); channel stays receipt-derived with no config key, so an update is never a channel switch. Reason: one verification path and the 2026-11-08 decision.
+- 2026-11-15 (#175): No automatic rollback; one `<exe>.prev` generation plus `fontaine update --rollback` and a skip record (`update-skip`). Reason: a binary that cannot start cannot report failure, and a boot-health protocol is out of scope for the first release.
+- 2026-11-15 (#175): Deviation from Claude Code, which applies updates by its own policy: Fontaine's update is on by default and silent apart from one post-update notice and a once-shown warning on a failed update; `[updates] auto_update` (user scope only) opts out. Reason: the maintainer's scope decision of 2026-11-15.
+- 2026-11-15 (#175): Supersedes the Windows rename-aside note of 2026-11-08 for the background path only; the helper swaps when no process runs the target.
+- 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
+- 2026-11-15 (#175): The Windows helper's 24 h give-up is a constant, not configurable.
+- 2026-11-15 (#175, AFK): Rollback reads a sidecar `<exe>.prev.json` (pre-swap receipt version and channel), written by every swap that links `.prev` under the receipt lock; a missing sidecar is treated like a missing `.prev`, and `update-skip` records the newer build rolled back from. Reason: `.prev` is a bare hard link and `receipt::write_version` needs the signed version.
+- 2026-11-15 (#175, AFK): No api-base override ships in the production binary; gating is tested as a pure predicate and the pass is driven through `Params`; `update-e2e.yml` uses the default GitHub feed (`fontaine update` on every OS) and there is no Windows hidden pass entry point. Reason: an override would move the trust root's feed.
+- 2026-11-15 (#175, AFK): The Windows helper (a separate process that waits, then swaps) is kept instead of an in-process rename-aside. Reason: an in-process swap leaves already-running sessions on a renamed `.old` file and lets the session replace itself, which the issue forbids.
+- 2026-11-15 (#175): update-e2e.yml runs the manual `fontaine update` on every OS and does not drive the TUI background pass; reason: the workspace trust prompt would have to be bypassed in CI.
 
 ### Config
 

@@ -29,6 +29,14 @@ impl Channel {
             Channel::Dev => "dev",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Channel> {
+        match s {
+            "release" => Some(Channel::Release),
+            "dev" => Some(Channel::Dev),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Channel {
