@@ -18,11 +18,16 @@ languages use the stdio surfaces that already exist.
 `fontaine-sdk` is the one crate a Rust embedder names. Its crate root is the documented surface:
 `SessionBuilder`, `Session`, `Turn`, `InterruptHandle`, `Event`, `HostTool`, `EmbedError`, and
 `chain` (renders an error's cause chain), and re-exports of `Approver`, `PermissionMode`,
-`CallbackHook`, `HookTransport` and `HookEvent`. The `permissions`, `config`, `events` and `error`
-modules are stable too. The
+`CallbackHook`, `HookTransport` and `HookEvent`. The `permissions`, `config` and `error`
+modules are stable too, and from `events` so are `Event`, the serialization of its payload types
+and `SCHEMA_VERSION`; the builder functions there take core types and are not. The
 `core`, `tools`, `agents`, `guardian`, `assemble` and `run` modules are public because the
 `fontaine` binary, its terminal UI and the evals are built on them, and they carry no stability
 promise. The crate is `0.x` and not published; depend on it by path or git.
+
+`claude-subscription` accounts are not supported for embedding: that provider re-executes the host
+binary with `--internal-claude-inventory`, which only `fontaine` handles, so `build()` fails with
+`EmbedError::Config` when a configured role, the guardian model or `model(..)` uses one.
 
 ## A session in a few lines
 

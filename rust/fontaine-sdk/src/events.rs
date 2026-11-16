@@ -470,6 +470,7 @@ pub fn usage_limit_object(end: PauseEnd, info: &PauseInfo) -> Value {
 }
 
 /// The `usage_paused` or `usage_resumed` event of a pause.
+#[doc(hidden)]
 pub fn usage_event(session_id: &str, pause: &PauseEvent) -> Event {
     match pause {
         PauseEvent::Paused(info) => Event::UsagePaused(Line::new(
@@ -496,6 +497,7 @@ pub fn usage_event(session_id: &str, pause: &PauseEvent) -> Event {
 
 /// The `init` event, from what is in force, not what was configured: the guardian may be the
 /// default pick or the main model, and the profile may have fallen back to `full`.
+#[doc(hidden)]
 pub fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Event {
     let config = &runtime.config;
     let guardian = runtime.state.guardian();
@@ -543,7 +545,7 @@ pub fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Event {
     ))
 }
 
-pub fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Event {
+pub(crate) fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Event {
     Event::GateDecision(Line::new(
         "gate_decision",
         session_id,
@@ -572,6 +574,7 @@ pub fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Event {
 
 /// The event a session event becomes, or `None` for what the stream does not carry (reasoning and
 /// diff previews, and `assistant_delta` unless `include_partial_messages`).
+#[doc(hidden)]
 pub fn session_event(
     session_id: &str,
     event: &SessionEvent,

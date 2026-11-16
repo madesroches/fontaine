@@ -4,8 +4,9 @@
 //! ([`CallbackHook`]), answer approvals through an [`Approver`], and read the run as a stream of
 //! [`Event`]s, which serialize to the same `headless-v1` JSON that `fontaine -p` prints.
 //!
-//! The crate root and the [`permissions`], [`config`], [`events`] and [`error`] modules are the
-//! stable surface. The
+//! The crate root and the [`permissions`], [`config`] and [`error`] modules are the stable
+//! surface, and so are [`Event`], the serialization of its payload types and [`SCHEMA_VERSION`];
+//! the `events` builder functions take core types and are not. The
 //! [`core`], [`tools`], [`agents`], [`guardian`], [`assemble`] and [`run`] trees are public
 //! because the `fontaine` binary, its terminal UI and the evals are built on them; they carry no
 //! stability promise.

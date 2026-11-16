@@ -20,10 +20,13 @@ use crate::assemble::{
 };
 use crate::core::afk_report::AfkReport;
 use crate::core::agent::{AgentRuntime, AgentSetup, EnvLookup};
-use crate::core::config::PermissionMode;
+use crate::core::config::{Config, MatcherKind, PermissionMode};
 use crate::core::dirs::{self, Dirs};
+use crate::core::model_roles::Roles;
+use crate::core::models::ModelRef;
 use crate::core::notice::Notice;
 use crate::core::permissions::{Approver, DenyAll, HumanChannel};
+use crate::core::providers::claude_subscription::PROVIDER_NAME as CLAUDE_SUBSCRIPTION;
 use crate::core::scratch::Scratch;
 use crate::core::turn::SessionEvent;
 use crate::core::usage_pause::PauseEvent;
@@ -89,6 +92,34 @@ pub struct SessionBuilder {
     approver: Option<Arc<dyn Approver>>,
     hooks: Vec<CallbackHook>,
     tools: Vec<Arc<dyn HostTool>>,
+}
+
+/// Refuses a session that could use a `claude-subscription` account: that provider re-executes
+/// the host binary with `--internal-claude-inventory`, which only `fontaine` handles.
+fn refuse_claude_subscription(config: &Config, model: Option<&str>) -> Result<(), EmbedError> {
+    let mut refs: Vec<ModelRef> = Vec::new();
+    if let Ok(roles) = Roles::from_config(config) {
+        for name in roles.names() {
+            refs.extend(roles.get(name).unwrap_or_default().iter().cloned());
+        }
+        if let Some(chain) = model.and_then(|text| roles.chain_from_text(text).ok()) {
+            refs.extend(chain.entries.iter().cloned());
+        }
+    }
+    refs.extend(config.guardian.model.as_deref().and_then(ModelRef::parse));
+    for reference in refs {
+        let is_claude = config
+            .accounts
+            .get(&reference.account)
+            .is_some_and(|a| a.kind.as_str() == CLAUDE_SUBSCRIPTION);
+        if is_claude {
+            return Err(EmbedError::config(format!(
+                "account `{}` is a claude-subscription account; that provider needs the host binary to implement the internal inventory mode (`--internal-claude-inventory`) and is not supported for embedding",
+                reference.account
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// What the builder's arguments came to once they are checked.
@@ -283,6 +314,9 @@ impl SessionBuilder {
             }
         }
         for hook in &self.hooks {
+            if hook.event.matcher_kind() != MatcherKind::Tool {
+                continue;
+            }
             let Some(matcher) = hook.matcher.as_deref() else {
                 continue;
             };
@@ -361,6 +395,7 @@ impl SessionBuilder {
             },
         )
         .map_err(EmbedError::config_from)?;
+        refuse_claude_subscription(&config, self.model.as_deref())?;
         let requested = assemble::requested_mode(self.mode, &config, true);
         let wiring = self.wiring(checked.host_tools);
         let approver = wiring.approver.clone();
