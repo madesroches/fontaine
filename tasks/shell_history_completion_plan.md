@@ -32,9 +32,13 @@ accepted text is ordinary input, classified, run and ledgered exactly as typed.
    prefix. Most recent match first, single-line entries only, existing behavior.
 2. **Dismissal.** Add `ghost_dismissed: Option<String>` to `App`: the exact input text whose
    shell ghost Esc dismissed. `ghost_text` returns `None` for a shell line while the input text
-   equals it, so any edit re-enables the ghost with no reset hook. In the key path next to the
-   existing suggestion-Esc branch (app.rs:1860), an Esc with a visible shell ghost sets it and
-   returns `Action::None` (not counting toward the double-Esc rewind).
+   equals it. After each key, alongside `refresh_slash`/`refresh_completion` in the key path,
+   clear it once the input text differs from it (mirroring `slash_dismissed`), so typing a char
+   and backspacing back to the dismissed text shows the ghost again. In the key path, after the
+   `wakeup_pending` arm and before the double-Esc/`message_key` handling, an Esc with a visible
+   shell ghost, only when idle and not in vim Insert mode, sets it and returns `Action::None`.
+   While a turn runs Esc still interrupts (earlier arm, app.rs ~1839), and vim Insert Esc
+   switches to Normal first.
 3. **Accept.** Unchanged: `accept_ghost` inserts the remainder. Nothing else changes — `shell_mode`
    and submission read the input text, so classification and gating are untouched.
 4. **Config.** Governed by the existing `[tui] history_completion` switch; no new key.
@@ -60,7 +64,8 @@ accepted text is ordinary input, classified, run and ledgered exactly as typed.
 
 - Reusing the unified history over a separate `!`-only store: no new persistence, and `!` lines are
   already recorded per project.
-- Esc state keyed by the dismissed text rather than a flag: avoids hooking every edit path.
+- Esc state keyed by the dismissed text rather than a flag: avoids hooking every edit path; it is
+  cleared post-key once the text differs, as `slash_dismissed` is.
 
 ## Decisions
 
@@ -80,8 +85,8 @@ shell completion and Esc, and mention it under "Shell commands".
   entry never completes plain text and vice versa; bare `!` gives `None`; multi-line entries are
   skipped; `/` still excluded.
 - `app.rs` tests (in `mod ghost`): ghost follows typing and deleting; Tab and Right accept and
-  Enter submits `Action::Submit("!git status", ..)`; Esc dismisses and does not start the
-  double-Esc; typing another character brings it back; off with `history_completion = false`.
+  Enter submits `Action::Submit("!git status", ..)`; Esc dismisses (idle); typing another character brings it back, and so does typing then backspacing to the
+  dismissed text; Esc while a turn runs still interrupts; off with `history_completion = false`.
 - `view.rs` test: shell ghost renders dim after the typed text and is clipped.
 
 ## Open Questions
