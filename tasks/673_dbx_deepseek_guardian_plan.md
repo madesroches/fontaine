@@ -223,13 +223,10 @@ spends the guardian's budget on reasoning and answers nothing, so the report wou
 fail-closed denials rather than a verdict on the model. Its sidecar's cases are deleted before the
 re-run, because `--resume` would mix them in and the sidecar header does not record the setting.
 
-The change: an account-level `thinking_off = true` key, `databricks` only, that makes the
-guardian's and the scanner's forced-call requests carry the Chat wire's
-`{"thinking": {"type": "disabled"}}` — the same fragment `opencode_go::thinking_off` sends. It is
-opt-in rather than the blanket send `opencode-go` makes, because the Databricks gateway's
-acceptance of the parameter is unverified per deployment and an unknown-field 400 would break every
-other `databricks` Chat model's guardian. It applies to the Chat wire only; a refusal still fails
-closed, exactly as today, so the invariant is unchanged.
+The change: an account-level `thinking_off` key, `databricks` only, that makes the guardian's and
+the scanner's forced-call requests carry the Chat wire's `{"thinking": {"type": "disabled"}}` —
+the same fragment `opencode_go::thinking_off` sends — on that wire only. Design 8 makes it the
+default and answers a refusal by dropping it, so the key is an opt-out rather than a switch.
 
 - `rust/fontaine-sdk/src/core/config.rs`: `Account::thinking_off`, declared `databricks` only, with
 a `Provider` capability flag so another kind that sets it is a config error naming the kind.
@@ -241,8 +238,29 @@ Chat-wire model when the account sets the key, `None` otherwise, with a unit tes
 (the databricks row), `docs/guardian.md` (the databricks limitation paragraph), `CHANGELOG.md`
 (`### Added`).
 
-Then the measurement re-runs as Design 2, with `thinking_off = true` set on the account and the
-sidecar deleted first, and Designs 3-5 apply to its report.
+Then the measurement re-runs as Design 2 — after Design 8 the fragment rides by default, so no
+key is needed — with the sidecar deleted first, and Designs 3-5 apply to its report.
+
+### 8. Thinking off by default, and a refusal taken as an answer
+
+A switch that has to be found leaves the obvious configuration off, and the first run shows what that
+costs. So the fragment rides by default on the `databricks` Chat wire, and a provider that refuses it
+is believed the first time:
+
+- `guardian/structured.rs`: the attempt `Options` gains a latch (`&AtomicBool`). Each attempt reads
+it before sending, and a failure the provider refused because of one of the request's additional
+parameters raises it, so that attempt is retried with them left out and every later attempt omits
+them. The refusal is classified from the typed response — status and body — the way
+`lacks_tool_support` is, not from rendered error text.
+- `guardian/guardian.rs`, `guardian/scanner.rs`: each holds the latch for its own lifetime, so a
+session's guardian and scanner stop sending the fragment after the first refusal; `guardian/evasion.rs`
+passes the guardian's latch through.
+- `providers/databricks.rs`: the key's default becomes on — `thinking_off = false` is the opt-out
+for a workspace that would rather never make the refused attempt.
+
+The cost of the healing is one attempt on the first call of a session, and only on a workspace that
+refuses the parameter; on one that accepts it, nothing changes. A worked refusal is one extra call
+the retry budget already allows for.
 
 ## Files to Modify
 
@@ -258,6 +276,9 @@ sidecar deleted first, and Designs 3-5 apply to its report.
 | `rust/fontaine-sdk/src/core/providers/mod.rs` | The `Provider` capability flag for the key. |
 | `rust/fontaine-sdk/src/core/providers/databricks.rs` | The `thinking_off` hook and its unit test. |
 | `rust/fontaine-sdk/tests/providers.rs` | The key parses on `databricks` and is refused elsewhere. |
+| `rust/fontaine-sdk/src/guardian/structured.rs` | The latch in `Options` and the refusal classifier. |
+| `rust/fontaine-sdk/src/guardian/guardian.rs`, `scanner.rs` | Each holds its latch and passes it in. |
+| `rust/fontaine-sdk/tests/guardian.rs`, `tests/guardian_scanner.rs` | A refused first request heals: the verdict arrives and later requests omit the fragment. |
 | `docs/configuration.md`, `docs/providers.md`, `docs/guardian.md` | The key, the databricks row and the limitation paragraph. |
 
 ## Trade-offs
@@ -269,10 +290,11 @@ sidecar deleted first, and Designs 3-5 apply to its report.
 
 ## Decisions
 
-- 2026-11-15 The thinking-off hook is opt-in per account (`thinking_off = true`) rather than a
-  blanket send on the Chat wire: the gateway's acceptance of the parameter is unverified per
-  deployment, and a blanket send would break other `databricks` Chat models' guardians with a 400
-  if it is refused. Verifying the parameter once makes the blanket form a one-line change.
+- 2026-11-15 The thinking-off fragment is sent by default on the `databricks` Chat wire, and a
+  provider that refuses it is taken at its word: the guardian and the scanner raise a latch, retry
+  without the parameters and stop sending them, so the refusal costs one attempt instead of leaving
+  a workspace whose guardian denies everything. `thinking_off = false` opts out of the first
+  attempt, for a workspace that knows its gateway refuses the field.
 - 2026-11-15 The first full-profile run (Current State) is neither published nor resumed: it was
   stopped at 318 of 430 cases with 102 fail-closed, and its cases were scored without a
   reasoning-off parameter. The measurement re-runs over the whole dataset with the account's
