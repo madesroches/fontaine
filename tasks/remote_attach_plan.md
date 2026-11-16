@@ -49,15 +49,21 @@ attach.
   has its oversized text fields truncated (marked) by the `RemoteEvent` mirror.
 - One bidirectional stream per device connection, carrying a sequence of length-prefixed JSON
   messages. First client message is `Hello { v, label, auth }` with `auth = Pair { secret } |
-  Resume { last_seq: Option<u64> }`. Authentication of a device is the iroh connection's
+  Resume { epoch: Option<u64>, last_seq: Option<u64> }`. Authentication of a device is the iroh connection's
   authenticated remote NodeId, never a field the client writes.
-- Client → host: `Prompt{message_id, text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, reply}`,
+- Client → host: `Prompt{message_id, text}`, `ApprovalAnswer{id, answer}`, `QuestionReply{id, index, options, reply}`,
   `Interrupt`, `Slash{message_id, line}`, `Ping`. On the wire, `ApprovalAnswer.answer` is one of the
   choices offered by the open approval (an index/label from its `choices`) plus optional deny
   feedback; the host validates it against the open approval's choices and converts it with
   `Approval::answer_for` (`fontaine-tui/src/approval.rs`) as `answer_text` does today. It is never a
-  raw core `Answer`, and `AllowUpdated` is unreachable from a device.
-  Host → client: `Snapshot{seq, part, of, state}`, `Event{seq, event}`, `Notice{severity, text}`,
+  raw core `Answer`. A device may pick only once, session or deny: `Choice::Always`
+  (`AllowAlways`, which writes a permanent allow rule to user settings) and `AllowUpdated` are
+  not device-reachable, and a device answer naming `Always` is refused like an unoffered choice.
+  Deny feedback is plain text capped at 1 KiB; longer feedback is refused.
+  `QuestionReply{id, index, options, reply}` carries the sub-question index it answers and the
+  option labels that sub-question showed; a mismatch with the open panel's current sub-question
+  is refused like an unknown id.
+  Host → client: `Snapshot{epoch, seq, part, of, state}`, `Event{epoch, seq, event}`, `Notice{severity, text}`,
   `Accepted{message_id}`, `PromptRejected{message_id, reason}`, `Paired`, `Rejected{reason}`,
   `Ping`, `Bye`. Dialog open, close and resolved are `RemoteEvent`s inside `Event{seq, …}`, so they
   replay on `Resume`; a device that resumes while a dialog is open sees it re-sent in the replay or
@@ -69,9 +75,14 @@ attach.
   `App`: transcript entries, status-bar state, prompt/dialog open and close, mode and model.
   The mirror type lives in `fontaine-tui` (it needs `App`/`Transcript` types) and is carried by
   `fontaine-remote` as opaque `serde_json::Value`, keeping the crate core-free. Every event gets
-  a host-assigned monotonic `seq`; the host keeps a bounded ring of recent events
-  (default 4096) so `Resume{last_seq}` replays the gap, and falls back to a full `Snapshot`
-  when the gap fell out of the ring.
+  a host-assigned monotonic `seq` within a stream `epoch`, a random id minted each time the host
+  event stream starts (enable, `/clear`, `/resume`, `/branch`, re-enable); the host keeps a ring
+  of recent events bounded by count (default 4096) and by bytes (default 16 MiB), evicting the
+  oldest, so `Resume{epoch, last_seq}` replays the gap, and falls back to a full `Snapshot`
+  when the gap fell out of the ring or the `epoch` is absent or differs from the current one.
+- Each device has a bounded outbound queue (default 256 events / 8 MiB) that the UI loop
+  pushes to without awaiting; on overflow the host drops that device's connection after a
+  `Notice` saying it fell behind, and the device reconnects with `Resume`.
 
 ### 2. Device identity, pairing and revoke
 
@@ -136,7 +147,7 @@ attach.
   entries: a device `Prompt` sent while a dialog is open is queued like any other message and
   never answers the dialog. The first answer wins (local or any device) because the loop sends the oneshot once;
   the other devices get a resolved `RemoteEvent` that closes their dialog. The answering device's NodeId goes in the ledger and audit
-  record: the answer reaching the permission pipeline carries an optional `RemoteSender` (beside the `Answer` on the approver reply), and `permissions.rs` writes it on `Record::Approval`/`Record::Denial` (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit `explanation`. For an approval or question answer, `message_id` in that `RemoteSender` holds the dialog `id`. The `fontaine-tools` `QuestionReply` type stays unchanged; the sender travels beside it in core: a defaulted `Approver` method (`ask_user_as`) returns the reply together with `Option<RemoteSender>`, its default calls `ask_user` and returns `None` so existing implementations are unchanged, and the TUI's `ChannelApprover` overrides it. `HumanQuestions::ask` (`fontaine-core/src/questions.rs`) unpacks it and fills the existing `remote` field of the `Record::UserMessage{origin: Dialog}` it writes. Audit records for device activity use tool name `remote`.
+  record: the answer reaching the permission pipeline carries an optional `RemoteSender` (beside the `Answer` on the approver reply: a defaulted `Approver::approve_as` returns `(Answer, Option<RemoteSender>)`, its default calls `approve` and returns `None`; `permissions.rs` calls `approve_as`), and `permissions.rs` writes it on `Record::Approval`/`Record::Denial` (serde-defaulted `remote` fields added in `ledger.rs`) and in the audit `explanation`. For an approval or question answer, `message_id` in that `RemoteSender` holds the dialog `id`. The `fontaine-tools` `QuestionReply` type stays unchanged; the sender travels beside it in core: a defaulted `Approver` method (`ask_user_as`) returns the reply together with `Option<RemoteSender>`, its default calls `ask_user` and returns `None` so existing implementations are unchanged. The impls that override `approve_as`/`ask_user_as` are exactly `ChannelApprover` (the TUI) and `AfkApprover` (`permissions.rs`, installed around the session approver in `agent/setup.rs`): `AfkApprover` answers Deny / Unavailable with `None` while AFK is on and otherwise forwards to the inner approver's `approve_as`/`ask_user_as`, so the sender survives the wrapper; every other impl keeps the defaults. `HumanQuestions::ask` (`fontaine-core/src/questions.rs`) unpacks it and fills the existing `remote` field of the `Record::UserMessage{origin: Dialog}` it writes. Audit records for device activity use tool name `remote`.
   A device `ApprovalAnswer`/`QuestionReply` is refused (notice to that device, audit record, dialog left pending) while the local approval is typing feedback or the question panel is mid-edit, so a device answer never discards the local person's half-typed input. A device disconnect closes only that device's
   dialog; the local approval stays pending (if the host UI is quit, the session ends and the
   call is denied as today). A dropped connection never approves. `Prompt` lines that happen to
@@ -157,6 +168,10 @@ attach.
   `Notice`, writes an audit record and never reaches the dispatcher.
 - A device `Interrupt` is `Action::Interrupt` when the main turn is running and a no-op
   otherwise; it never goes through `App::handle_input`'s Esc arms.
+- An attached device is not human presence for AFK: while AFK is on the UI loop keeps
+  answering every approval and question unattended (`answer_unattended`: Deny / Unavailable),
+  so no device is asked. Devices get a `Notice` when AFK turns on or off and on attach while AFK
+  is on, saying approvals are being answered unattended on the host.
 
 ### 4. Client: `fontaine attach <ticket>`
 
@@ -220,8 +235,8 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
    (`tls-ring` suffices); new `protocol` messages and ALPN; `paired` data type (`PairedDevices`);
    store trait for key bytes and the paired list (no file I/O in the crate); `server` rewritten around per-device sessions with a `HostSession`
    trait implemented by the TUI; `client` attach/reconnect; keep one-shot `client::send` (and its callers) until step 5 so the workspace builds.
-3. `fontaine-core`: answering-device identity per §3 (`Approver::ask_user_as`, `remote` on the dialog `UserMessage`, `Approval`/`Denial` and the audit explanation); `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
-4. `fontaine-tui`: `RemoteEvent` mirror and event ring, `RemoteSurface`, typed device
+3. `fontaine-core`: answering-device identity per §3 (`Approver::approve_as`/`ask_user_as`, overridden by `AfkApprover`, with a ledger/audit unit test that runs through `AfkApprover`, `remote` on the dialog `UserMessage`, `Approval`/`Denial` and the audit explanation); `Record::GuardianOff.remote` stays as a read-compatible serde-default field.
+4. `fontaine-tui`: `RemoteEvent` mirror and event ring (count and byte bounds, stream `epoch`), per-device bounded outbound queues, `RemoteSurface`, typed device
    answers as a loop input (first answer wins), the key/paired-file store implementation over
    `fontaine_core::owner_only` and `file_lock`, pairing confirmation dialog (local only), device
    slash allow-list (`Command::device_allowed()`), removal of `DialogHold`/`open_dialog`/
@@ -246,7 +261,7 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
   `rust/fontaine-tui/tests/remote.rs` (rewrite for attach: it drives #627 via
   `fontaine_remote::send` and pins the exact-label dialog answer and remote guardian-disable
   behaviour, both removed), `rust/fontaine-tui/src/ticket_prompt.rs` (mentions `fontaine send`)
-- `rust/fontaine-core/src/{audit,gate,ledger,permissions,questions,steering}.rs` (answering-device identity, defaulted `Approver::ask_user_as`; dialog hold; audit tool name `remote_inbox` → `remote` in gate.rs)
+- `rust/fontaine-core/src/{audit,gate,ledger,permissions,questions,steering}.rs`, `rust/fontaine-core/src/agent/setup.rs` (answering-device identity, defaulted `Approver::approve_as`/`ask_user_as`, `AfkApprover` overrides; dialog hold; audit tool name `remote_inbox` → `remote` in gate.rs)
 - `rust/fontaine/src/{cli,lib,main}.rs`, new `attach_cmd.rs`, delete `send_cmd.rs`
 - `rust/Cargo.toml`, crate manifests, `rust/deny.toml` if licenses change
 - `AGENTS.md`, `SECURITY.md`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`,
@@ -274,11 +289,17 @@ only tighten and cannot touch `[remote]` or `paired_devices.json`.
 - AFK: a device disconnect closes only that device's dialog; the local approval stays pending,
   and quitting the host UI ends the session and denies the call as today.
 - AFK: attach tickets use the prefix `fontaine-attach1` with a bumped `TICKET_VERSION`; an old `fontaine-send1` ticket fails at parse time with the ticket error.
-- AFK: the event ring defaults to 4096 events; a gap beyond it sends a full snapshot.
+- AFK: the event ring defaults to 4096 events (and 16 MiB); a gap beyond it sends a full snapshot.
 - AFK: `[remote] relay = "default"` also publishes the host NodeId and home relay URL to iroh's
   address-lookup service (the attaching client only resolves, never publishes), a metadata exposure beyond relay use; `relay = "disabled"` publishes
   nothing. The master plan Decision (`tasks/fontaine_harness_plan.md`, remote relay) is updated,
   and `docs/remote.md` and `docs/configuration.md` cover the exposure.
+- AFK: an attached device does not count as human presence; while AFK is on every approval and question is still answered unattended (Deny / Unavailable) and no device is asked, and devices are told so by a `Notice`. Reason: AFK semantics stay unchanged and a remote screen is not proof someone is watching.
+- AFK: the answering device's `RemoteSender` travels through defaulted `Approver::approve_as` / `ask_user_as` methods returning `(Answer|QuestionReply, Option<RemoteSender>)` (defaults call `approve`/`ask_user` and return `None`); only `ChannelApprover` and `AfkApprover` override them, `AfkApprover` answering Deny / Unavailable when AFK and otherwise forwarding to the inner approver, and the ledger/audit test runs through `AfkApprover`. Reason: no change to the ~20-30 existing impls and the sender is not lost in the AFK wrapper.
+- AFK: a device may answer an approval only with once, session or deny; `AllowAlways` (permanent user-settings rule) and `AllowUpdated` are not device-reachable; deny feedback is plain text capped at 1 KiB. Reason: a device cannot persist host-wide permission changes.
+- AFK: a device `QuestionReply` carries the sub-question index and the option labels it answered; a mismatch with the open panel is refused like an unknown id. Reason: a stale reply never answers a different sub-question of a multi-question panel.
+- AFK: the event ring is bounded by bytes (default 16 MiB) as well as count, evicting oldest with snapshot fallback; each device has a bounded outbound queue (default 256 events / 8 MiB) the UI loop never awaits, and overflow disconnects that device with a `Notice` so it reconnects with `Resume`. Reason: a slow device or large frames can neither block the host nor grow memory without bound.
+- AFK: `Snapshot`, `Event` and `Resume` carry a per-start stream `epoch`; a `Resume` whose epoch is absent or differs gets a full `Snapshot`. Reason: after `/clear`, `/resume`, `/branch` or re-enable an old `seq` must never be replayed against a new stream.
 
 ## Documentation
 
@@ -303,7 +324,7 @@ revoke closes the live connection; device slash allow-list refuses `/guardian-di
 `/guardian-enable`, `/remote*` and never reaches dispatch; first-answer-wins with local and
 device answers; a device disconnect mid-approval closes only its dialog, leaves the local approval pending
 and never approves, and a second device can still answer; the answering NodeId is in ledger and audit;
-typed answers and dialog events carry the dialog kind with its `id`, and an answer with the right `id` but another kind is refused; event ring resume from sequence and snapshot fallback; `RemoteEvent` serde round trip;
+typed answers and dialog events carry the dialog kind with its `id`, and an answer with the right `id` but another kind is refused; event ring resume from sequence and snapshot fallback, byte-budget eviction, and a `Resume` with a stale `epoch` gets a full `Snapshot`; a device whose outbound queue overflows is disconnected with a notice and the UI loop never blocks; a device answer naming `Always` or with over-cap feedback is refused; a `QuestionReply` with a mismatched index or option set is refused; with AFK on no device is asked and devices get the AFK notice; the answering NodeId reaches ledger and audit through `AfkApprover`; `RemoteEvent` serde round trip;
 host/client `TestBackend` transcript equivalence; ticket never in ledger/audit/history/export; a device `Prompt` sent while a dialog is open is
 queued normally and never answers it; an `ApprovalAnswer`/`QuestionReply` naming the pairing
 confirmation dialog's id, or a locally opened `/guardian-disable` confirmation's id, is refused,
