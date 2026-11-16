@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures::Stream;
+use futures::future::BoxFuture;
 use rig_core::schemars::Schema;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -20,10 +21,12 @@ use crate::assemble::{
 };
 use crate::core::afk_report::AfkReport;
 use crate::core::agent::{AgentRuntime, AgentSetup, EnvLookup};
+#[cfg(test)]
+use crate::core::config::AccountKind;
 use crate::core::config::{Config, MatcherKind, PermissionMode};
 use crate::core::dirs::{self, Dirs};
 use crate::core::notice::Notice;
-use crate::core::permissions::{Approver, DenyAll, HumanChannel};
+use crate::core::permissions::{Answer, ApprovalRequest, Approver, HumanChannel};
 use crate::core::providers::claude_subscription::PROVIDER_NAME as CLAUDE_SUBSCRIPTION;
 use crate::core::scratch::Scratch;
 use crate::core::turn::SessionEvent;
@@ -37,6 +40,20 @@ use crate::run::{
 };
 use crate::tools::host::{self, HostTool};
 use crate::tools::lock::lock;
+
+/// The approver of a session built without one: denies every prompt and routes notices through
+/// `warn`, so the only stderr write is the trait's documented default `warn`.
+struct NoApprover;
+
+impl Approver for NoApprover {
+    fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        Box::pin(async { Answer::Deny { feedback: None } })
+    }
+
+    fn notice(&self, message: &str) {
+        self.warn(message);
+    }
+}
 
 static NO_SEARCH_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -340,7 +357,7 @@ impl SessionBuilder {
             approver: self
                 .approver
                 .clone()
-                .unwrap_or_else(|| Arc::new(DenyAll) as Arc<dyn Approver>),
+                .unwrap_or_else(|| Arc::new(NoApprover) as Arc<dyn Approver>),
             human_channel: human_channel(self.approver.is_some()),
             hooks: self.hooks.clone(),
             host_tools,
@@ -950,6 +967,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unreferenced_claude_subscription_account_is_refused() {
+        let mut config = Config::defaults(PathBuf::from("."));
+        assert!(refuse_claude_subscription(&config).is_ok());
+        config.accounts.insert(
+            "sub".to_string(),
+            crate::core::config::Account::new(AccountKind::named(CLAUDE_SUBSCRIPTION), None),
+        );
+        assert!(matches!(
+            refuse_claude_subscription(&config),
+            Err(EmbedError::Config(_))
+        ));
+    }
+
+    #[test]
     fn a_plain_builder_is_accepted() {
         assert!(builder().check().is_ok());
     }
@@ -1067,7 +1098,7 @@ mod tests {
             builder().wiring(Vec::new()).human_channel,
             HumanChannel::Absent
         );
-        let with = builder().approver(Arc::new(DenyAll));
+        let with = builder().approver(Arc::new(NoApprover));
         assert_eq!(
             with.wiring(Vec::new()).human_channel,
             HumanChannel::Delegate

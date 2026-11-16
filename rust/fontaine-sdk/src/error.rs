@@ -52,7 +52,8 @@ impl EmbedError {
     }
 
     /// The process exit code `fontaine` ends with for this failure: 2 for a usage or settings
-    /// error, 1 for a failed run.
+    /// error, 1 for a failed run, 3 when an account's usage window was still spent. A credentials
+    /// or model error passes through the underlying error's own code.
     pub fn exit_code(&self) -> u8 {
         self.detail().exit_code
     }
