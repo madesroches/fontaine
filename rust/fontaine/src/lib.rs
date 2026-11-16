@@ -175,6 +175,11 @@ fn session_name(cli: &Cli) -> Result<Option<String>, u8> {
 /// What the session flags ask for.
 fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
     session_name(cli).map_err(ExitCode::from)?;
+    if let Some(text) = cli.session_id.as_deref()
+        && let Err(e) = uuid::Uuid::parse_str(text)
+    {
+        return Err(usage(format!("--session-id must be a UUID: {e}")));
+    }
     let continuing = cli.continue_session || cli.resume.is_some();
     if cli.fork_session && !continuing {
         return Err(usage("--fork-session needs --continue or --resume"));
