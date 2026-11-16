@@ -9,13 +9,16 @@ issue or pull request for a vulnerability.
 This covers guardian bypasses (a harmful tool call that is allowed), ways past the deterministic
 permission floor, and ways for project files to loosen a permission decision. The interactive
 `/guardian-disable` command is a deliberate, session-scoped development escape hatch that asks
-for confirmation in the terminal, which may be a remote one reached with a live `/remote-inbox`
-ticket, and is written to the audit log with the remote identity; reports of a way to reach it without the user
-interactively asking (for example from a project file, a subagent, or a headless run) are still
-in scope. A `/remote-inbox` ticket is a bearer credential the user mints on purpose; reports of a
-way to reach the inbox without one (a forged, guessed or replayed ticket), to enable it from a
-project file, a subagent, the model or a headless run, or to put a remote line into the user's
-draft or approve a prompt that opened before it arrived are in scope.
+for confirmation in the host terminal, and is written to the audit log; a device attached with
+`fontaine attach` can never run it or answer its confirmation. Reports of a way to reach it without the user
+interactively asking (for example from a project file, a subagent, a headless run or a remote
+device) are still in scope. A `/remote` ticket is a bearer secret the user mints on purpose that only
+lets a device ask to pair; the user confirms the pairing in the host terminal. Reports of a way to
+attach or pair a device without a valid ticket and that confirmation (a forged, guessed or replayed
+ticket, a device confirming its own pairing, a revoked device still attached), to enable remote
+control from a project file, a subagent, the model or a headless run, to put a device line into the
+user's draft, to have a device answer a local-only dialog or choose "always allow", or to run a
+command outside the device allow-list are in scope.
 
 Include what you did, what you expected and what happened, and the version or commit you tested.
 

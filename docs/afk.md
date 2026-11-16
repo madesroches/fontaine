@@ -47,7 +47,7 @@ call runs before the floor and never prompts, so AFK would convert nothing; ente
 `/guardian-enable` first (the cycle then moves on to `manual`), and `/guardian-disable` is refused
 while AFK is on or a stop waits for a review.
 
-A line from the [remote inbox](remote-inbox.md) is treated exactly like a line you typed: AFK does not hold it, it can change the mode or run `/afk review`, and it resets the stop streak like any prompt. While a stop waits for a review, a remote line that would start a turn is dropped with an audit record, never put back into your input, and a remote `y` or `n` that arrives after the `/afk review` confirmation opens answers it.
+A device attached with [remote control](remote.md) is not human presence. While AFK is on, every approval and question is still answered unattended on the host (denied or unavailable) and no device is asked; devices get a notice when AFK turns on or off, and on attach while it is on. A device cannot run `/afk`, including `/afk review` and its confirmation. A device prompt is an ordinary queued message: AFK does not hold it, and it resets the stop streak like any prompt. While a stop waits for a review, a device prompt that would start a turn is dropped with an audit record and never put back into your input.
 
 A subagent runs at the `auto` rung under AFK, and a child's prompts are converted the same way.
 

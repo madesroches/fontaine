@@ -11,7 +11,7 @@
 - [AFK mode](afk.md)
 - [The guardian](guardian.md)
 - [Subagents](agents.md)
-- [The remote inbox](remote-inbox.md)
+- [Remote control](remote.md)
 - [User hooks](hooks.md)
 - [MCP servers](mcp.md)
 - [Instruction files](instructions.md)
