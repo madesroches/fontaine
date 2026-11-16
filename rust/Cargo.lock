@@ -2079,11 +2079,13 @@ dependencies = [
  "rig-agent",
  "rig-core",
  "rig-tools",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml_edit",
  "url",
+ "uuid",
  "vt100",
  "wiremock",
 ]

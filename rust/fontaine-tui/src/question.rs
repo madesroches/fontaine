@@ -1,7 +1,10 @@
 //! The question dialog: the model's multiple-choice questions, one at a time, with an "Other" row
 //! that takes the human's own words.
 
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use fontaine_sdk::core::ledger::RemoteSender;
 
 use fontaine_sdk::tools::ask_user::{Question, QuestionAnswer, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -39,6 +42,8 @@ pub struct QuestionPanel {
     pub(crate) id: u64,
     questions: Vec<Question>,
     reply: Option<oneshot::Sender<QuestionReply>>,
+    /// Where the answering device is left for the approver that waits on the reply.
+    attribution: Option<Arc<Mutex<Option<RemoteSender>>>>,
     current: usize,
     answers: Vec<QuestionAnswer>,
     /// The highlighted row: the options, then "Other". The highlight is the mode: on the
@@ -61,6 +66,7 @@ impl QuestionPanel {
             id: 0,
             questions,
             reply: Some(reply),
+            attribution: None,
             current: 0,
             answers: Vec::new(),
             selected: 0,
@@ -68,6 +74,14 @@ impl QuestionPanel {
             other: InputBuffer::default(),
             opened: Instant::now(),
         }
+    }
+
+    pub(crate) fn with_attribution(
+        mut self,
+        slot: Arc<Mutex<Option<RemoteSender>>>,
+    ) -> QuestionPanel {
+        self.attribution = Some(slot);
+        self
     }
 
     /// Whether nobody waits for the answer any more, such as when the turn was cut short.
@@ -83,7 +97,15 @@ impl QuestionPanel {
 
     /// Hands the reply to the waiting tool call. A reply nobody waits for is dropped.
     pub fn reply(&mut self, reply: QuestionReply) {
+        self.reply_by(reply, None);
+    }
+
+    /// `reply` naming the device that answered, which the harness records.
+    pub(crate) fn reply_by(&mut self, reply: QuestionReply, by: Option<RemoteSender>) {
         if let Some(sender) = self.reply.take() {
+            if let Some(slot) = &self.attribution {
+                *fontaine_sdk::tools::lock::lock(slot, "answering device") = by;
+            }
             let _ = sender.send(reply);
         }
     }
@@ -114,38 +136,51 @@ impl QuestionPanel {
         self.other_text().is_some() || self.checked.iter().any(|on| *on)
     }
 
-    /// What a remote line may say to answer the current question: an option's label or its
-    /// number.
-    pub(crate) fn remote_options(&self) -> Vec<String> {
-        let mut options = Vec::new();
-        for (i, option) in self.question().options.iter().enumerate() {
-            options.push(option.label.clone());
-            options.push((i + 1).to_string());
-        }
-        options
+    pub(crate) fn all_questions(&self) -> &[Question] {
+        &self.questions
     }
 
-    /// The reply a remote line gives by naming one option of the current question; `None` when
-    /// it moves on to the next question or names nothing. The "Other" row is the person's own.
-    pub(crate) fn answer_text(&mut self, text: &str) -> Option<QuestionReply> {
-        let said = text.trim().to_lowercase();
+    /// Which question of the panel is showing, from 0.
+    pub(crate) fn current_index(&self) -> usize {
+        self.current
+    }
+
+    /// The reply a device gives by naming one option of the question it saw. A reply for another
+    /// sub-question, or made against another set of options, is refused: it was meant for a
+    /// panel that has since moved on. The "Other" row is the person's own. `Ok(None)` is an
+    /// answer that moved the panel on to its next question.
+    pub(crate) fn device_reply(
+        &mut self,
+        index: usize,
+        options: &[String],
+        reply: &str,
+    ) -> Result<Option<QuestionReply>, crate::app::DeviceRefusal> {
+        use crate::app::DeviceRefusal;
+        if self.is_mid_edit() {
+            return Err(DeviceRefusal::LocalInput);
+        }
+        let shown: Vec<&str> = self
+            .question()
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        if index != self.current || options.iter().map(String::as_str).ne(shown.iter().copied()) {
+            return Err(DeviceRefusal::Stale);
+        }
+        let said = reply.trim().to_lowercase();
         let row = self
             .question()
             .options
             .iter()
             .position(|option| option.label.trim().to_lowercase() == said)
-            .or_else(|| {
-                said.parse::<usize>()
-                    .ok()
-                    .filter(|n| (1..=self.question().options.len()).contains(n))
-                    .map(|n| n - 1)
-            })?;
+            .ok_or(DeviceRefusal::NotOffered)?;
         self.selected = row;
         if self.question().multi_select {
             self.checked = vec![false; self.question().options.len()];
             self.checked[row] = true;
         }
-        self.confirm()
+        Ok(self.confirm())
     }
 
     /// Handles a key; the reply comes back once the human has answered every question or

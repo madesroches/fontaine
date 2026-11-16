@@ -111,8 +111,6 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         wake: None,
         remote: crate::ui::RemoteState::Off,
         current_remote: None,
-        remote_confirm: None,
-        dialog_guard: None,
         quit_budget: crate::FINAL_SHUTDOWN_BUDGET,
         on_quit: None,
         quit_started: None,
@@ -147,7 +145,10 @@ fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
         proposed_rule: None,
         preview: None,
     };
-    (Prompt::Ask(Box::new(request), reply), answer)
+    (
+        Prompt::Ask(Box::new(request), reply, Default::default()),
+        answer,
+    )
 }
 
 fn typed(entries: Vec<Queued>) -> Vec<Retracted> {
@@ -798,11 +799,11 @@ fn keybindings_lists_every_action_with_its_effective_keys() {
 
 fn subagent_ask() -> (Prompt, oneshot::Receiver<Answer>) {
     let (prompt, answer) = ask();
-    let Prompt::Ask(mut request, reply) = prompt else {
+    let Prompt::Ask(mut request, reply, _) = prompt else {
         unreachable!("ask() builds an Ask");
     };
     request.agent = "worker-1".into();
-    (Prompt::Ask(request, reply), answer)
+    (Prompt::Ask(request, reply, Default::default()), answer)
 }
 
 use fontaine_sdk::tools::mcp::{ElicitForm, ElicitReply, ElicitRequest};
@@ -854,7 +855,10 @@ fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
     assert_eq!(answer.try_recv(), Ok(Answer::Deny { feedback: None }));
 
     let (reply, mut question) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Question("main".into(), Vec::new(), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Question("main".into(), Vec::new(), reply, Default::default()),
+    );
     assert!(matches!(
         question.try_recv(),
         Ok(QuestionReply::Unavailable)
@@ -1057,7 +1061,10 @@ fn entering_afk_mode_closes_every_open_and_queued_prompt() {
     ui.on_prompt(None, open);
     ui.on_prompt(None, queued);
     let (reply, mut question) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Question("main".into(), Vec::new(), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Question("main".into(), Vec::new(), reply, Default::default()),
+    );
     let (reply, mut choice) = oneshot::channel();
     let info = GuardianUnavailable {
         model: "a/b".into(),

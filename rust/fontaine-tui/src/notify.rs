@@ -11,6 +11,7 @@ pub(crate) enum PromptKind {
     Elicitation,
     Server,
     GuardianOff,
+    Pairing,
     Bug,
     AfkReview,
     Unavailable,
@@ -40,9 +41,10 @@ impl PromptKind {
             PromptKind::Question => "Fontaine has a question",
             PromptKind::Elicitation => "An MCP server asks for input",
             PromptKind::Server => "Fontaine needs an MCP server decision",
-            PromptKind::GuardianOff | PromptKind::AfkReview | PromptKind::Bug => {
-                "Fontaine needs your confirmation"
-            }
+            PromptKind::GuardianOff
+            | PromptKind::Pairing
+            | PromptKind::AfkReview
+            | PromptKind::Bug => "Fontaine needs your confirmation",
             PromptKind::Unavailable => "The guardian is unavailable",
             PromptKind::UsagePause => "A usage window is spent and the run is paused",
             PromptKind::Skills => "Fontaine needs a skill trust decision",

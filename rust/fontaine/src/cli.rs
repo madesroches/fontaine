@@ -20,6 +20,11 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", global = true)]
     pub debug_file: Option<PathBuf>,
 
+    /// Start with remote control on: a ticket is shown once, and a device pairs with it using
+    /// `fontaine attach`. Interactive only; never restored by `--resume`
+    #[arg(long)]
+    pub remote: bool,
+
     /// Run non-interactively: the prompt is the positional argument (stdin when absent) and
     /// the result goes to stdout
     #[arg(short = 'p', long = "print")]
@@ -171,8 +176,10 @@ pub enum Command {
     /// Internal: applies a staged update once nothing runs from the install (Windows)
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(UpdateHelperArgs),
-    /// Send one message to a live session that enabled `/remote-inbox`
-    Send(SendArgs),
+    /// Attach to a live session that enabled remote control (`fontaine --remote` or `/remote on`)
+    Attach(AttachArgs),
+    /// List or revoke the devices paired with remote control
+    Remote(RemoteArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -194,15 +201,40 @@ pub struct UpdateHelperArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct SendArgs {
-    /// `TICKET TEXT`, or just `TEXT` when the ticket comes from `--ticket-stdin` or
-    /// `FONTAINE_TICKET`. A text of `-` is read from stdin
-    #[arg(value_name = "TICKET TEXT", num_args = 1..=2, required = true)]
-    pub words: Vec<String>,
+pub struct AttachArgs {
+    /// A ticket, or the label or node id (a prefix of at least 4 characters) of a host paired
+    /// before. Without it the ticket comes from `--ticket-stdin` or `FONTAINE_TICKET`
+    #[arg(value_name = "TICKET|HOST")]
+    pub target: Option<String>,
     /// Read the ticket from stdin instead of the command line, which shell history and the
-    /// process list would keep. Cannot be combined with a text of `-`
+    /// process list would keep. Cannot be combined with `--message -`
     #[arg(long)]
     pub ticket_stdin: bool,
+    /// Attach, send this one message as a prompt, wait until the host has queued it and exit.
+    /// `-` reads the message from stdin
+    #[arg(long, value_name = "TEXT|-")]
+    pub message: Option<String>,
+    /// What this device calls itself when pairing; the person at the host reads it
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct RemoteArgs {
+    #[command(subcommand)]
+    pub action: RemoteAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum RemoteAction {
+    /// List the paired devices
+    Devices,
+    /// Remove a paired device by its label or a prefix of its node id; a running host closes its
+    /// connection
+    Revoke {
+        #[arg(value_name = "DEVICE")]
+        device: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]

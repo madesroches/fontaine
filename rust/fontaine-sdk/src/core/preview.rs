@@ -10,6 +10,7 @@ use rig_core::tool::{FileChange, HunkLine};
 use rig_tools::Replacement;
 use rig_tools::edit::apply;
 use rig_tools::fs::file_change;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::memory;
@@ -23,7 +24,7 @@ pub const PREVIEW_MAX_LINES: usize = 200;
 
 const TAB_WIDTH: usize = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffKind {
     Context,
     Added,
@@ -32,7 +33,7 @@ pub enum DiffKind {
     Gap,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: DiffKind,
     pub old_no: Option<usize>,
@@ -41,7 +42,7 @@ pub struct DiffLine {
     pub text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffPreview {
     pub path: String,
     pub added: usize,

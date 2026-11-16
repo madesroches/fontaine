@@ -1,6 +1,7 @@
-//! The remote inbox in the interface loop: the `/remote-inbox` command, the wake-up that starts
-//! or answers, the dialog hold, the idle drain of remote lines, and teardown. The terminal is
-//! the only place the inbox can be enabled; a headless run never reaches any of this.
+//! Remote control in the interface loop: the `/remote` command, the wake-up that starts the
+//! endpoint or applies a device's answer, the pairing confirmation, the mirror of the loop's state
+//! that devices render from, the idle drain of remote lines, and teardown. The terminal is the
+//! only place remote control can be enabled; a headless run never reaches any of this.
 
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
@@ -8,38 +9,49 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_remote::{RelayMode, RemoteServer, SystemClock};
+use fontaine_remote::{
+    Clock, DeviceStore, Hub, HubLimits, Level, RelayMode, RemoteServer, ServerConfig, SystemClock,
+};
 use fontaine_sdk::core::agent::AgentRuntime;
 use fontaine_sdk::core::audit::Decision;
 use fontaine_sdk::core::config::RemoteRelay;
+use fontaine_sdk::core::file_lock::{self, FileLock};
 use fontaine_sdk::core::ledger::{MessageOrigin, RemoteSender};
-use fontaine_sdk::core::steering::{DialogGuard, Retracted};
+use fontaine_sdk::core::notice::Severity;
+use fontaine_sdk::core::steering::Retracted;
 use fontaine_sdk::tools::error_chain::chain;
 
-use crate::app::RemoteDialog;
-use crate::remote::{RemoteCommand, RemoteHost, parse_remote_command};
+use crate::app::DeviceRefusal;
+use crate::remote::surface::{InputWaker, PairingRequest};
+use crate::remote::{
+    DeviceInput, FileStore, MirrorTracker, RemoteCommand, RemoteSurface, parse_remote_command,
+};
 use crate::ticket_prompt::TicketPrompt;
 use crate::ui::turn::{Submission, group};
 use crate::{Action, App, Input, Ui};
 
-pub(crate) enum RemoteState {
-    Off,
-    /// The endpoint is being started on a task; its result waits in the host for the loop.
-    Starting {
-        host: Arc<RemoteHost>,
-        ttl: Duration,
-    },
-    Running {
-        host: Arc<RemoteHost>,
-        server: RemoteServer,
-    },
+pub(crate) struct Running {
+    surface: Arc<RemoteSurface>,
+    server: RemoteServer,
+    /// Held while remote control is on, so one session at a time is the remote host.
+    lock: FileLock,
+    store: Arc<FileStore>,
+    mirror: MirrorTracker,
+    /// The pairing the open confirmation dialog stands for.
+    pairing: Option<PairingRequest>,
+    interrupt: bool,
 }
 
-/// What the open remote-answerable dialog holds in the steering queue. It is replaced when the
-/// dialog, or the answers it takes, change.
-pub(crate) struct DialogHold {
-    dialog: RemoteDialog,
-    guard: DialogGuard,
+pub(crate) enum RemoteState {
+    Off,
+    /// The endpoint is being started on a task; its result waits in the surface for the loop.
+    Starting {
+        surface: Arc<RemoteSurface>,
+        ttl: Duration,
+        lock: FileLock,
+        store: Arc<FileStore>,
+    },
+    Running(Box<Running>),
 }
 
 fn lifetime_text(ttl: Duration) -> String {
@@ -53,10 +65,23 @@ fn lifetime_text(ttl: Duration) -> String {
     }
 }
 
+fn short(node: &str) -> String {
+    node.chars().take(10).collect()
+}
+
+const AFK_ON_NOTICE: &str = "AFK mode is on: approvals and questions are being answered unattended on the host, so nothing will ask this device";
+const AFK_OFF_NOTICE: &str = "AFK mode is off: approvals and questions are asked again";
+
 impl<R: FnMut(&mut App)> Ui<R> {
-    /// `/remote-inbox`. A remote line may turn the inbox off or ask its status; it cannot mint
-    /// a ticket, whose only display is this terminal.
+    /// `/remote`. Enabling and minting a ticket are for the terminal only; a command that came in
+    /// as a remote line is refused here as well as at the door.
     pub(crate) fn remote_command(&mut self, runtime: &AgentRuntime, argument: &str) {
+        if self.current_remote.is_some() {
+            self.app
+                .transcript
+                .error("remote control can only be managed at the host terminal");
+            return;
+        }
         let command = match parse_remote_command(argument) {
             Ok(command) => command,
             Err(usage) => {
@@ -68,56 +93,170 @@ impl<R: FnMut(&mut App)> Ui<R> {
             RemoteCommand::Status => self.show_remote_status(),
             RemoteCommand::Off => {
                 if matches!(self.remote, RemoteState::Off) {
-                    self.app
-                        .transcript
-                        .notice("the remote inbox is not enabled");
+                    self.app.transcript.notice("remote control is not enabled");
                 } else {
                     self.remote_teardown(runtime);
-                    self.app.transcript.notice("remote inbox off");
+                    self.app.transcript.notice("remote control off");
                 }
-            }
-            RemoteCommand::On(_) | RemoteCommand::Ticket(_) if self.current_remote.is_some() => {
-                self.app.transcript.error(
-                    "a ticket is shown only on this terminal, so it cannot be minted from a remote line",
-                );
             }
             RemoteCommand::On(ttl) => match self.remote {
                 RemoteState::Off => self.start_remote(runtime, ttl),
                 _ => self.show_remote_status(),
             },
             RemoteCommand::Ticket(ttl) => self.mint_remote_ticket(runtime, ttl),
+            RemoteCommand::Devices => self.list_devices(),
+            RemoteCommand::Revoke(selector) => self.revoke_device(runtime, &selector),
         }
     }
 
     fn show_remote_status(&mut self) {
         let text = match &self.remote {
-            RemoteState::Off => "the remote inbox is off; /remote-inbox on enables it".to_string(),
-            RemoteState::Starting { .. } => "the remote inbox is starting".to_string(),
-            RemoteState::Running { server, .. } => {
-                if server.has_live_ticket() {
-                    "the remote inbox is on; a ticket is live".to_string()
+            RemoteState::Off => "remote control is off; /remote on enables it".to_string(),
+            RemoteState::Starting { .. } => "remote control is starting".to_string(),
+            RemoteState::Running(running) => {
+                let devices = running.surface.hub().device_count();
+                let ticket = if running.server.has_live_ticket() {
+                    "a ticket is live"
                 } else {
-                    "the remote inbox is on; no live ticket: /remote-inbox ticket mints one"
-                        .to_string()
-                }
+                    "no live ticket: /remote ticket mints one"
+                };
+                format!("remote control is on; {devices} device(s) attached; {ticket}")
             }
         };
         self.app.transcript.notice(text);
     }
 
-    fn start_remote(&mut self, runtime: &AgentRuntime, ttl: Duration) {
+    fn store_for_devices(&self) -> Arc<FileStore> {
+        match &self.remote {
+            RemoteState::Running(running) => running.store.clone(),
+            RemoteState::Starting { store, .. } => store.clone(),
+            RemoteState::Off => Arc::new(FileStore::new(&self.data_dir)),
+        }
+    }
+
+    fn list_devices(&mut self) {
+        let store = self.store_for_devices();
+        let attached: Vec<String> = match &self.remote {
+            RemoteState::Running(running) => running
+                .surface
+                .hub()
+                .devices()
+                .into_iter()
+                .map(|(node, _)| node)
+                .collect(),
+            _ => Vec::new(),
+        };
+        match store.devices() {
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("could not read the paired devices: {}", chain(&e))),
+            Ok(list) if list.devices.is_empty() => {
+                self.app.transcript.notice("no devices are paired");
+            }
+            Ok(list) => {
+                let rows: Vec<String> = list
+                    .devices
+                    .iter()
+                    .map(|device| {
+                        format!(
+                            "{} · {} · paired {} · last seen {}{}",
+                            device.label,
+                            short(&device.node),
+                            when(device.paired_at),
+                            when(device.last_seen),
+                            if attached.contains(&device.node) {
+                                " · attached"
+                            } else {
+                                ""
+                            }
+                        )
+                    })
+                    .collect();
+                self.app
+                    .transcript
+                    .notice(format!("paired devices:\n{}", rows.join("\n")));
+            }
+        }
+    }
+
+    fn revoke_device(&mut self, runtime: &AgentRuntime, selector: &str) {
+        let store = self.store_for_devices();
+        let mut outcome = None;
+        if let Err(e) = store.update(&mut |list| outcome = Some(list.revoke(selector))) {
+            self.app.transcript.error(format!(
+                "could not update the paired devices: {}",
+                chain(&e)
+            ));
+            return;
+        }
+        match outcome {
+            Some(Ok(device)) => {
+                let live = match &self.remote {
+                    RemoteState::Running(running) => running.server.revoke(&device.node),
+                    _ => false,
+                };
+                runtime.state.record_remote_event(
+                    "device_revoked",
+                    &format!("device {} (\"{}\") was revoked", device.node, device.label),
+                    Decision::Allow,
+                );
+                self.app.transcript.notice(format!(
+                    "revoked {} ({}){}",
+                    device.label,
+                    short(&device.node),
+                    if live {
+                        "; its connection was closed"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            Some(Err(e)) => self.app.transcript.error(format!("cannot revoke: {e}")),
+            None => {}
+        }
+    }
+
+    /// Enables remote control: takes the host lock, then starts the endpoint on a task.
+    pub(crate) fn start_remote(&mut self, runtime: &AgentRuntime, ttl: Duration) {
         let Some(wake) = self.wake.clone() else {
             self.app
                 .transcript
-                .error("the remote inbox is not available in this terminal session");
+                .error("remote control is not available in this terminal session");
             return;
         };
-        let host = Arc::new(RemoteHost::new(
+        let store = Arc::new(FileStore::new(&self.data_dir));
+        if let Err(e) = crate::remote::ensure_dir(&self.data_dir) {
+            self.app.transcript.error(format!(
+                "could not prepare the data directory: {}",
+                chain(&e)
+            ));
+            return;
+        }
+        let lock = match file_lock::try_lock(&store.host_lock_path()) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                self.app
+                    .transcript
+                    .error("another session is the remote host; turn it off there first");
+                return;
+            }
+            Err(e) => {
+                self.app.transcript.error(format!(
+                    "could not take the remote host lock: {}",
+                    chain(&e)
+                ));
+                return;
+            }
+        };
+        let hub = Hub::new(HubLimits::default(), Arc::new(InputWaker(wake.clone())));
+        let surface = Arc::new(RemoteSurface::new(
             runtime.steering.clone(),
             runtime.state.clone(),
             wake,
+            hub.clone(),
         ));
-        host.set_skills(
+        surface.set_skills(
             runtime
                 .slash_skills()
                 .into_iter()
@@ -127,16 +266,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
             RemoteRelay::Default => RelayMode::Default,
             RemoteRelay::Disabled => RelayMode::Disabled,
         };
+        let config = ServerConfig::new(
+            store.clone(),
+            surface.clone(),
+            hub,
+            Arc::new(SystemClock),
+            relay,
+        );
         self.remote = RemoteState::Starting {
-            host: host.clone(),
+            surface: surface.clone(),
             ttl,
+            lock,
+            store,
         };
-        self.app.transcript.notice("starting the remote inbox…");
+        self.app.transcript.notice("starting remote control…");
         tokio::spawn(async move {
-            let result = RemoteServer::start(host.clone(), Arc::new(SystemClock), relay)
-                .await
-                .map_err(|e| chain(&e));
-            host.finish_start(result).await;
+            let result = RemoteServer::start(config).await.map_err(|e| chain(&e));
+            surface.finish_start(result).await;
         });
     }
 
@@ -145,12 +291,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             RemoteState::Off => self
                 .app
                 .transcript
-                .error("the remote inbox is off; enable it first: /remote-inbox on"),
+                .error("remote control is off; enable it first: /remote on"),
             RemoteState::Starting { .. } => self
                 .app
                 .transcript
-                .notice("the remote inbox is still starting; try again in a moment"),
-            RemoteState::Running { server, .. } => match server.mint_ticket(ttl) {
+                .notice("remote control is still starting; try again in a moment"),
+            RemoteState::Running(running) => match running.server.mint_ticket(ttl) {
                 Ok(ticket) => {
                     self.app
                         .begin_ticket(TicketPrompt::new(ticket.encode(), lifetime_text(ttl)));
@@ -168,27 +314,42 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// What a wake-up input means: the endpoint finished starting, or a remote line may answer
-    /// the open dialog. Returns what the loop does next, like a key would.
+    /// What a wake-up input means: the endpoint finished starting, a device answered or
+    /// interrupted, or a pairing waits. Returns what the loop does next, like a key would.
     pub(crate) fn on_remote_wake(&mut self, runtime: &AgentRuntime) -> Action {
-        self.finish_remote_start(runtime);
-        self.take_remote_answer(runtime)
+        self.sync_remote(runtime);
+        let RemoteState::Running(running) = &mut self.remote else {
+            return Action::None;
+        };
+        let interrupt = std::mem::take(&mut running.interrupt);
+        if interrupt && self.app.running {
+            Action::Interrupt
+        } else {
+            Action::None
+        }
     }
 
     fn finish_remote_start(&mut self, runtime: &AgentRuntime) {
-        let RemoteState::Starting { host, ttl } = &self.remote else {
+        let RemoteState::Starting { surface, .. } = &self.remote else {
             return;
         };
-        let Some(result) = host.take_started() else {
+        let Some(result) = surface.take_started() else {
             return;
         };
-        let (host, ttl) = (host.clone(), *ttl);
+        let RemoteState::Starting {
+            surface,
+            ttl,
+            lock,
+            store,
+        } = std::mem::replace(&mut self.remote, RemoteState::Off)
+        else {
+            return;
+        };
         match result {
             Err(e) => {
-                self.remote = RemoteState::Off;
                 self.app
                     .transcript
-                    .error(format!("could not start the remote inbox: {e}"));
+                    .error(format!("could not start remote control: {e}"));
             }
             Ok(server) => match server.mint_ticket(ttl) {
                 Ok(ticket) => {
@@ -197,102 +358,181 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     runtime.state.record_remote_event(
                         "enabled",
                         &format!(
-                            "the remote inbox was enabled; a ticket valid for {} was minted",
+                            "remote control was enabled; a ticket valid for {} was minted",
                             lifetime_text(ttl)
                         ),
                         Decision::Allow,
                     );
-                    self.remote = RemoteState::Running { host, server };
+                    self.remote = RemoteState::Running(Box::new(Running {
+                        surface,
+                        server,
+                        lock,
+                        store,
+                        mirror: MirrorTracker::new(self.app.afk),
+                        pairing: None,
+                        interrupt: false,
+                    }));
                     self.app.transcript.notice(
-                        "remote inbox on; the ticket is shown once, in the dialog (it is not kept in the transcript)",
+                        "remote control on; the ticket is shown once, in the dialog (it is not kept in the transcript)",
                     );
                 }
                 Err(e) => {
-                    host.close();
-                    tokio::spawn(server.shutdown());
-                    self.remote = RemoteState::Off;
+                    surface.close();
+                    tokio::spawn(async move {
+                        server.shutdown().await;
+                        drop(lock);
+                    });
                     self.app.transcript.error(e.to_string());
                 }
             },
         }
     }
 
-    /// Keeps what the status bar, the command classifier and the dialog hold know about the
-    /// inbox in step with the session. Cheap and idempotent: every draw calls it.
+    /// Keeps what the status bar, the command classifier and the pairing dialog know about remote
+    /// control in step with the session, and applies what devices asked. Cheap and idempotent:
+    /// every draw calls it.
     pub(crate) fn sync_remote(&mut self, runtime: &AgentRuntime) {
         // Level-triggered: a modal loop can swallow the one wake-up the start sends.
         self.finish_remote_start(runtime);
         self.app.remote_indicator = match &self.remote {
             RemoteState::Off => None,
-            RemoteState::Starting { .. } => Some("inbox: starting"),
-            RemoteState::Running { server, .. } => Some(if server.has_live_ticket() {
-                "inbox: ticket live"
-            } else {
-                "inbox: no live ticket"
-            }),
-        };
-        let wanted = match &self.remote {
-            RemoteState::Running { host, .. } => {
-                host.set_skills(
-                    runtime
-                        .slash_skills()
-                        .into_iter()
-                        .map(|(name, ..)| name.to_string()),
-                );
-                self.app.remote_dialog()
+            RemoteState::Starting { .. } => Some("remote: starting".to_string()),
+            RemoteState::Running(running) => {
+                let devices = running.surface.hub().device_count();
+                Some(if devices > 0 {
+                    format!("remote: {devices} device(s)")
+                } else if running.server.has_live_ticket() {
+                    "remote: ticket live".to_string()
+                } else {
+                    "remote: no live ticket".to_string()
+                })
             }
-            _ => None,
         };
-        let held = self.dialog_guard.as_ref().map(|hold| &hold.dialog);
-        if held == wanted.as_ref() {
+        let RemoteState::Running(running) = &mut self.remote else {
             return;
-        }
-        self.dialog_guard = wanted.map(|dialog| {
-            let guard = runtime.steering.open_dialog(&dialog.options);
-            DialogHold { dialog, guard }
-        });
-    }
-
-    /// Takes the remote line that answers the open dialog, if one arrived after it opened, and
-    /// applies it as the person's pick would be applied.
-    fn take_remote_answer(&mut self, runtime: &AgentRuntime) -> Action {
-        self.sync_remote(runtime);
-        let Some(hold) = &self.dialog_guard else {
-            return Action::None;
         };
-        let Some(line) = runtime.steering.take_dialog_answer(&hold.guard) else {
-            return Action::None;
-        };
-        let kind = hold.dialog.kind;
-        let from = line
-            .remote
-            .clone()
-            .expect("a dialog answer is a remote line");
-        runtime.state.record_remote_event(
-            "dialog_answer",
-            &format!(
-                "message {} from {} answered the {} dialog",
-                from.message_id,
-                from.node,
-                kind.name()
-            ),
-            Decision::Allow,
+        running.surface.set_skills(
+            runtime
+                .slash_skills()
+                .into_iter()
+                .map(|(name, ..)| name.to_string()),
         );
-        self.app.transcript.notice(format!(
-            "remote line from {} answered the {} dialog",
-            from.short_node(),
-            kind.name()
-        ));
-        let action = self.app.answer_remote_dialog(kind, line.raw());
-        if matches!(action, Action::GuardianOff(_) | Action::AfkReview(_)) {
-            self.remote_confirm = Some(from);
+        for (level, text) in running.surface.take_notices() {
+            match level {
+                Level::Info => self.app.transcript.notice(text),
+                Level::Warning => {
+                    self.app
+                        .transcript
+                        .push_notice(fontaine_sdk::core::notice::Notice {
+                            severity: Severity::Warning,
+                            headline: text,
+                            hint: None,
+                        })
+                }
+            }
         }
-        self.sync_remote(runtime);
-        action
+        for input in running.surface.take_inputs() {
+            match input {
+                DeviceInput::Interrupt { from } => {
+                    running.interrupt = true;
+                    running.surface.audit(
+                        "interrupt",
+                        &format!("device {from} interrupted the turn"),
+                        Decision::Allow,
+                    );
+                }
+                DeviceInput::Answer { by, id, answer } => {
+                    apply_answer(&mut self.app, running, by, id, answer);
+                }
+            }
+        }
+        // The device that asked went away: its confirmation closes with no reply.
+        if running
+            .pairing
+            .as_ref()
+            .is_some_and(|pairing| pairing.reply.is_closed())
+        {
+            let gone = running.pairing.take().expect("checked above");
+            self.app.pairing_prompt = None;
+            running.surface.audit(
+                "pairing_cancelled",
+                &format!("device {} left before the pairing was confirmed", gone.node),
+                Decision::Deny,
+            );
+        }
+        // Only when nothing else holds the keyboard, so the confirmation is never answered by a
+        // key meant for another dialog.
+        if running.pairing.is_none()
+            && !self.app.covered()
+            && let Some(request) = running.surface.take_pairing()
+        {
+            self.app.begin_pairing(crate::guardian_prompt::pairing(
+                &short(&request.node),
+                &request.label,
+            ));
+            running.pairing = Some(request);
+        }
     }
 
-    /// At an idle prompt with nothing covering the input, runs what the remote inbox queued, in
-    /// arrival order, the way typed lines run. A line a dialog holds is not ready yet.
+    /// The person answered the pairing confirmation at this terminal.
+    pub(crate) fn answer_pairing(&mut self, runtime: &AgentRuntime, answer: bool) {
+        let RemoteState::Running(running) = &mut self.remote else {
+            return;
+        };
+        let Some(request) = running.pairing.take() else {
+            return;
+        };
+        runtime.state.record_remote_event(
+            if answer {
+                "pairing_confirmed"
+            } else {
+                "pairing_declined"
+            },
+            &format!(
+                "device {} (\"{}\") was {} at the host terminal",
+                request.node,
+                request.label,
+                if answer { "confirmed" } else { "declined" }
+            ),
+            if answer {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            },
+        );
+        let _ = request.reply.send(answer);
+    }
+
+    /// Publishes what changed since the last draw to every attached device, and gives a device
+    /// that needs one the whole state. Called with the app complete, just before it renders.
+    pub(crate) fn publish_remote(&mut self) {
+        let RemoteState::Running(running) = &mut self.remote else {
+            return;
+        };
+        let hub = running.surface.hub().clone();
+        if running.mirror.afk_told != self.app.afk {
+            running.mirror.afk_told = self.app.afk;
+            hub.notice(
+                Level::Info,
+                if self.app.afk {
+                    AFK_ON_NOTICE
+                } else {
+                    AFK_OFF_NOTICE
+                },
+            );
+        }
+        for event in running.mirror.diff(&self.app) {
+            hub.publish(serde_json::to_value(&event).expect("a remote event serializes"));
+        }
+        if hub.snapshot_wanted() {
+            let snapshot =
+                serde_json::to_string(&running.mirror.snapshot()).expect("a snapshot serializes");
+            hub.provide_snapshot(&snapshot);
+        }
+    }
+
+    /// At an idle prompt with nothing covering the input, runs what devices queued, in arrival
+    /// order, the way typed lines run.
     pub(crate) async fn remote_idle(
         &mut self,
         runtime: &mut AgentRuntime,
@@ -352,31 +592,45 @@ impl<R: FnMut(&mut App)> Ui<R> {
         ));
     }
 
-    /// Takes the endpoint down at once: from here on a request is answered `Closed`, and the
-    /// network side finishes closing on its own task. The ticket and what it opened are gone.
+    /// Takes the endpoint down at once: devices are told goodbye, a request is answered `Closed`,
+    /// and the network side finishes closing on its own task. The ticket and what it opened are
+    /// gone; paired devices stay in the file and reattach after the next enable.
     pub(crate) fn remote_teardown(&mut self, runtime: &AgentRuntime) {
-        self.dialog_guard = None;
         match std::mem::replace(&mut self.remote, RemoteState::Off) {
             RemoteState::Off => return,
-            RemoteState::Starting { host, .. } => {
-                host.close();
+            RemoteState::Starting { surface, lock, .. } => {
+                surface.close();
                 // A start that finished after the last look would otherwise leak its endpoint.
-                if let Some(Ok(server)) = host.take_started() {
-                    tokio::spawn(server.shutdown());
+                if let Some(Ok(server)) = surface.take_started() {
+                    tokio::spawn(async move {
+                        server.shutdown().await;
+                        drop(lock);
+                    });
                 }
             }
-            RemoteState::Running { host, server } => {
-                host.close();
-                tokio::spawn(server.shutdown());
+            RemoteState::Running(running) => {
+                let Running {
+                    surface,
+                    server,
+                    lock,
+                    ..
+                } = *running;
+                // Dropping the sender of a pairing still waiting declines it.
+                surface.close();
+                tokio::spawn(async move {
+                    server.shutdown().await;
+                    drop(lock);
+                });
             }
         }
+        self.app.pairing_prompt = None;
         self.record_remote_disabled(runtime);
     }
 
     fn record_remote_disabled(&self, runtime: &AgentRuntime) {
         runtime.state.record_remote_event(
             "disabled",
-            "the remote inbox was disabled",
+            "remote control was disabled",
             Decision::Allow,
         );
     }
@@ -384,19 +638,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// The end of a session, or a switch to another: the endpoint closes for good, and entries
     /// still queued are dropped instead of crossing into the next context.
     pub(crate) async fn remote_shutdown(&mut self, runtime: &AgentRuntime, why: &str) {
-        self.dialog_guard = None;
+        self.app.pairing_prompt = None;
         match std::mem::replace(&mut self.remote, RemoteState::Off) {
             RemoteState::Off => {}
-            RemoteState::Starting { host, .. } => {
-                host.close();
-                if let Some(Ok(server)) = host.take_started() {
+            RemoteState::Starting { surface, lock, .. } => {
+                surface.close();
+                if let Some(Ok(server)) = surface.take_started() {
                     server.shutdown().await;
                 }
+                drop(lock);
                 self.record_remote_disabled(runtime);
             }
-            RemoteState::Running { host, server } => {
-                host.close();
+            RemoteState::Running(running) => {
+                let Running {
+                    surface,
+                    server,
+                    lock,
+                    ..
+                } = *running;
+                surface.close();
                 server.shutdown().await;
+                drop(lock);
                 self.record_remote_disabled(runtime);
             }
         }
@@ -418,11 +680,66 @@ impl<R: FnMut(&mut App)> Ui<R> {
         count
     }
 
-    /// The input a loop awaiting a dialog reads: a wake-up may carry an answer.
+    /// The input a loop awaiting a dialog reads: a wake-up may carry a device's answer, and the
+    /// pairing confirmation is answered here, wherever the loop that read the key runs.
     pub(crate) fn dialog_input(&mut self, runtime: &AgentRuntime, input: Input) -> Action {
         match input {
             Input::Remote => self.on_remote_wake(runtime),
-            other => self.app.handle_input(other),
+            other => match self.app.handle_input(other) {
+                Action::Pairing(answer) => {
+                    self.answer_pairing(runtime, answer);
+                    Action::None
+                }
+                action => action,
+            },
         }
     }
+}
+
+fn when(secs: u64) -> String {
+    let now = SystemClock.now_secs();
+    let ago = now.saturating_sub(secs);
+    match ago {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", ago / 60),
+        3600..=86_399 => format!("{}h ago", ago / 3600),
+        _ => format!("{}d ago", ago / 86_400),
+    }
+}
+
+/// Applies a device's answer to the open dialog; a refusal is told to that device and audited,
+/// and the dialog stays as it was.
+fn apply_answer(
+    app: &mut App,
+    running: &Running,
+    by: RemoteSender,
+    id: u64,
+    answer: crate::app::DeviceAnswer,
+) {
+    let node = by.node.clone();
+    match app.device_answer(id, answer, by) {
+        Ok(()) => running.surface.audit(
+            "dialog_answer",
+            &format!("device {node} answered dialog {id}"),
+            Decision::Allow,
+        ),
+        Err(refusal) => {
+            running.surface.audit(
+                "answer_refused",
+                &format!(
+                    "device {node} answered dialog {id}, refused: {}",
+                    refusal.text()
+                ),
+                Decision::Deny,
+            );
+            running
+                .surface
+                .hub()
+                .notice_to(&node, Level::Warning, refusal_text(refusal));
+        }
+    }
+}
+
+fn refusal_text(refusal: DeviceRefusal) -> &'static str {
+    refusal.text()
 }

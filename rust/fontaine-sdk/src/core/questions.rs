@@ -65,7 +65,7 @@ impl QuestionSource for HumanQuestions {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async move {
             let asked = questions.clone();
-            let reply = self.approver.ask_user(agent, questions).await;
+            let (reply, by) = self.approver.ask_user_as(agent, questions).await;
             if let QuestionReply::Answered(answers) = &reply {
                 let lines: Vec<String> = answers
                     .iter()
@@ -74,7 +74,7 @@ impl QuestionSource for HumanQuestions {
                     .collect();
                 if !lines.is_empty() {
                     self.state.append(Record::UserMessage {
-                        remote: None,
+                        remote: by,
                         origin: MessageOrigin::Dialog,
                         text: lines.join("\n"),
                         attachments: Vec::new(),

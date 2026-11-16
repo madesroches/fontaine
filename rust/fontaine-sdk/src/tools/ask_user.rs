@@ -27,7 +27,7 @@ pub struct AskUserArgs {
     pub questions: Vec<Question>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
     pub question: String,
@@ -38,7 +38,7 @@ pub struct Question {
     pub multi_select: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuestionOption {
     pub label: String,

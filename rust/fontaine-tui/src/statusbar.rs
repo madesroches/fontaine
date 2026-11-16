@@ -248,7 +248,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Some((_, true)) => " · ◎ goal paused".to_string(),
         Some((age, false)) => format!(" · ◎ goal {}", goal::duration_text(age)),
     };
-    let goal = match app.remote_indicator {
+    let goal = match &app.remote_indicator {
         Some(text) => format!("{goal} · {text}"),
         None => goal,
     };

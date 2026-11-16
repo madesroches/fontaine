@@ -41,9 +41,9 @@ pub enum Command {
     GuardianDisable,
     /// `/guardian-enable`: turn the guardian and the permission floor back on.
     GuardianEnable,
-    /// `/remote-inbox on [--ttl <dur>] | off | status | ticket [--ttl <dur>]`: the remote inbox
-    /// for one-shot messages from `fontaine send`.
-    RemoteInbox(String),
+    /// `/remote on [--ttl <dur>] | off | status | ticket [--ttl <dur>] | devices | revoke <device>`:
+    /// remote control of this session from `fontaine attach`.
+    Remote(String),
     /// `/auto-mode-setup`: collect this project's environment facts for the guardian.
     AutoModeSetup,
     /// `/login [account]`.
@@ -126,16 +126,73 @@ impl Command {
             | Command::Bug(_)
             | Command::Plugin(_)
             | Command::ReloadPlugins
-            | Command::RemoteInbox(_)
+            | Command::Remote(_)
             | Command::Init(_) => true,
             Command::OutputStyle(argument) => !argument.is_empty(),
             _ => false,
         }
     }
 
+    /// Whether a paired device may send this command from `fontaine attach`. Exhaustive with no
+    /// wildcard arm, so a new command fails to compile until someone decides. A refused command
+    /// is host-side: it opens a panel, toggles or persists host state, writes a host file, or
+    /// weakens or reconfigures the guardian, the permissions or the remote surface itself.
+    pub fn device_allowed(&self) -> bool {
+        match self {
+            Command::Btw(_)
+            | Command::Cost
+            | Command::Recap
+            | Command::Compact(_)
+            | Command::Context(_)
+            | Command::Loop(_)
+            | Command::Goal(_)
+            | Command::Init(_)
+            | Command::Rename(_)
+            | Command::Help
+            | Command::Status
+            | Command::Other { .. } => true,
+            Command::Exit
+            | Command::AddDir(_)
+            | Command::Denied
+            | Command::Agents
+            | Command::Afk(_)
+            | Command::Todos
+            | Command::Transcript
+            | Command::Clear(_)
+            | Command::Config
+            | Command::OutputStyle(_)
+            | Command::Model(_)
+            | Command::Effort(_)
+            | Command::GuardianModel(_)
+            | Command::Bug(_)
+            | Command::GuardianDisable
+            | Command::GuardianEnable
+            | Command::Remote(_)
+            | Command::AutoModeSetup
+            | Command::Login(_)
+            | Command::Theme(_)
+            | Command::Permissions
+            | Command::Mcp(_)
+            | Command::Hooks
+            | Command::Skills(_)
+            | Command::Plugins
+            | Command::Plugin(_)
+            | Command::ReloadPlugins
+            | Command::Copy(_)
+            | Command::Memory(_)
+            | Command::Resume(_)
+            | Command::Branch(_)
+            | Command::Rewind(_)
+            | Command::Expand(_)
+            | Command::Export(_)
+            | Command::Vim
+            | Command::Keybindings => false,
+        }
+    }
+
     /// Whether the command runs immediately, even while a turn works: its handler is
     /// synchronous and touches only UI state — never the turn, the conversation or a blocking
-    /// wait, and the ledger only through one brief read of its view. `/remote-inbox` is the one
+    /// wait, and the ledger only through one brief read of its view. `/remote` is the one
     /// handler that also spawns a task, to start the network endpoint; its result returns as a
     /// wake-up input. Every other built-in queues
     /// like a message and executes once the turn ends; `/loop` and unknown names stay refused
@@ -159,7 +216,7 @@ impl Command {
                 | Command::Cost
                 | Command::Vim
                 | Command::Keybindings
-                | Command::RemoteInbox(_)
+                | Command::Remote(_)
         ) || matches!(
             self,
             Command::Skills(argument) | Command::Mcp(argument) | Command::Plugin(argument)
@@ -436,11 +493,13 @@ pub const BUILTINS: &[Builtin] = &[
         command: |_| Command::ReloadPlugins,
     },
     Builtin {
-        name: "remote-inbox",
+        name: "remote",
         aliases: &[],
-        hint: Some("on [--ttl <dur>] | off | status | ticket [--ttl <dur>]"),
-        description: "let one `fontaine send` message reach this session; prints a one-time ticket",
-        command: Command::RemoteInbox,
+        hint: Some(
+            "on [--ttl <dur>] | off | status | ticket [--ttl <dur>] | devices | revoke <device>",
+        ),
+        description: "let paired devices attach to this session with `fontaine attach`",
+        command: Command::Remote,
     },
     Builtin {
         name: "rename",
@@ -1180,8 +1239,8 @@ mod tests {
             "/usage",
             "/vim",
             "/keybindings",
-            "/remote-inbox status",
-            "/remote-inbox on --ttl 5m",
+            "/remote status",
+            "/remote on --ttl 5m",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");
@@ -1595,5 +1654,79 @@ mod tests {
             parse_loop("list the failing tests"),
             Ok(LoopRequest::SelfPaced("list the failing tests".into()))
         );
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    fn parsed(line: &str) -> Command {
+        parse_command(line).expect(line)
+    }
+
+    #[test]
+    fn a_device_may_send_only_the_listed_commands() {
+        for line in [
+            "/btw why",
+            "/cost",
+            "/recap",
+            "/compact",
+            "/compact fix",
+            "/context",
+            "/context all",
+            "/loop 5m x",
+            "/goal done",
+            "/init",
+            "/rename x",
+            "/help",
+            "/status",
+            "/review 1",
+        ] {
+            assert!(parsed(line).device_allowed(), "{line}");
+        }
+        for line in [
+            "/guardian-disable",
+            "/guardian-enable",
+            "/remote on",
+            "/remote",
+            "/remote revoke x",
+            "/afk review",
+            "/afk report",
+            "/theme dark",
+            "/export /tmp/x",
+            "/config",
+            "/clear",
+            "/resume",
+            "/branch",
+            "/rewind",
+            "/model x",
+            "/effort low",
+            "/guardian-model x",
+            "/output-style x",
+            "/login",
+            "/exit",
+            "/add-dir x",
+            "/bug",
+            "/plugin install x",
+            "/plugins",
+            "/reload-plugins",
+            "/skills trust x",
+            "/mcp",
+            "/hooks",
+            "/permissions",
+            "/agents",
+            "/transcript",
+            "/todos",
+            "/expand",
+            "/denied",
+            "/auto-mode-setup",
+            "/memory",
+            "/copy",
+            "/vim",
+            "/keybindings",
+        ] {
+            assert!(!parsed(line).device_allowed(), "{line}");
+        }
     }
 }

@@ -900,6 +900,7 @@ mod tests {
                 converted: None,
                 fail_closed: None,
                 explanation: Some("because".into()),
+                remote: None,
             },
         )
     }

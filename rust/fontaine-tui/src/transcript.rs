@@ -7,6 +7,7 @@ use fontaine_sdk::core::preview::{DiffPreview, display_text};
 use fontaine_sdk::core::turn::SessionEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands::ExpandTarget;
@@ -18,7 +19,7 @@ use crate::theme::{Glyphs, Theme};
 
 type Cells = Vec<Span<'static>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolStatus {
     Pending,
     Done,
@@ -40,14 +41,14 @@ pub(crate) const REASONING_ROWS: usize = 5;
 const DIFF_ROWS: usize = 20;
 
 /// What a tool call returned, safe to paint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub text: String,
     /// Only the head and the tail of the result were kept.
     pub clipped: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entry {
     User(String),
     Assistant {
@@ -602,6 +603,62 @@ impl Transcript {
             }
             SessionEvent::Usage { .. } => {}
         }
+    }
+
+    /// The entries a device mirrors: every one but the follow-up copies of calls whose original
+    /// already holds the final state, which only exist to patch scrollback the device lacks.
+    pub(crate) fn mirror_entries(&self) -> Vec<&Entry> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !self.follow_ups.contains(at))
+            .map(|(_, entry)| entry)
+            .collect()
+    }
+
+    /// Puts `entry` at `at` as the mirrored host has it; `at` may be one past the end.
+    pub(crate) fn mirror_set(&mut self, at: usize, entry: Entry) {
+        self.touch();
+        if at < self.entries.len() {
+            self.entries[at] = entry;
+        } else {
+            self.entries.push(entry);
+        }
+    }
+
+    /// Adds streamed text to the assistant or reasoning entry at `at`.
+    pub(crate) fn mirror_append(&mut self, at: usize, more: &str, still_streaming: bool) {
+        self.touch();
+        match self.entries.get_mut(at) {
+            Some(Entry::Assistant { text, streaming }) => {
+                text.push_str(more);
+                *streaming = still_streaming;
+            }
+            Some(Entry::Reasoning {
+                text,
+                live,
+                streaming,
+                ..
+            }) => {
+                text.push_str(more);
+                live.push_str(more);
+                *streaming = still_streaming;
+            }
+            _ => {}
+        }
+    }
+
+    /// Cuts the entries back to `len`; whether anything was removed.
+    pub(crate) fn mirror_truncate(&mut self, len: usize) -> bool {
+        if self.entries.len() <= len {
+            return false;
+        }
+        self.touch();
+        self.entries.truncate(len);
+        self.committed = self.committed.min(len);
+        self.committed_chars = 0;
+        self.follow_ups.clear();
+        true
     }
 
     /// The guardian refused call `id`: shown with its rule label and its own explanation, not the

@@ -4,6 +4,9 @@
 use std::cell::Cell;
 use std::time::Instant;
 
+use std::sync::{Arc, Mutex};
+
+use fontaine_sdk::core::ledger::RemoteSender;
 use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, Offers};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -33,7 +36,7 @@ impl Choice {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Choice::Once => "allow once",
             Choice::Session => "allow session",
@@ -63,6 +66,8 @@ pub struct Approval {
     /// Tells this prompt from any other, even one for an identical call. The app assigns it.
     pub id: u64,
     reply: Option<oneshot::Sender<Answer>>,
+    /// Where the answering device is left for the approver that waits on the reply.
+    attribution: Option<Arc<Mutex<Option<RemoteSender>>>>,
     choices: Vec<Choice>,
     selected: usize,
     /// Set while the human types a reason for a denial.
@@ -83,12 +88,18 @@ impl Approval {
             request,
             id: 0,
             reply: Some(reply),
+            attribution: None,
             selected: 0,
             feedback: None,
             scroll: 0,
             max_scroll: Cell::new(0),
             opened: Instant::now(),
         }
+    }
+
+    pub(crate) fn with_attribution(mut self, slot: Arc<Mutex<Option<RemoteSender>>>) -> Approval {
+        self.attribution = Some(slot);
+        self
     }
 
     /// Whether nobody waits for the answer any more, such as when the agent was killed.
@@ -137,35 +148,50 @@ impl Approval {
         }
     }
 
-    /// What a remote line may say to answer: each offered choice's label and hotkey, and `n`.
-    pub(crate) fn remote_options(&self) -> Vec<String> {
-        let mut options = vec!["n".to_string()];
-        for choice in &self.choices {
-            options.push(choice.label().to_string());
-            options.push(choice.key().to_string());
-        }
-        options
+    /// The choices a device is shown: what this prompt offers less `always allow`, which a
+    /// device cannot make.
+    pub(crate) fn device_choices(&self) -> Vec<String> {
+        self.choices
+            .iter()
+            .filter(|c| **c != Choice::Always)
+            .map(|c| c.label().to_string())
+            .collect()
     }
 
-    /// The answer a remote line gives, if it names an offered choice. A denial carries no reason:
-    /// a remote line cannot open the reason field. While the reason is being typed the prompt is
-    /// the person's, and nothing answers it.
-    pub(crate) fn answer_text(&mut self, text: &str) -> Option<Answer> {
+    /// The answer a device gives by naming one of the offered choices. Only once, session and
+    /// deny are device-reachable: `always` writes a permanent rule to the host's settings, so a
+    /// device naming it is refused like a choice that was never offered. While the person types a
+    /// reason the prompt is theirs, and nothing answers it.
+    pub(crate) fn device_answer(
+        &self,
+        choice: &str,
+        feedback: Option<&str>,
+    ) -> Result<Answer, crate::app::DeviceRefusal> {
+        use crate::app::DeviceRefusal;
         if self.feedback.is_some() {
-            return None;
+            return Err(DeviceRefusal::LocalInput);
         }
-        let said = text.trim().to_lowercase();
-        if said == "n" || said == Choice::Deny.label() {
-            return Some(Answer::Deny { feedback: None });
-        }
-        let choice = self
+        let said = choice.trim().to_lowercase();
+        let picked = self
             .choices
             .iter()
             .copied()
-            .find(|c| c.label() == said || c.key().to_string() == said)?;
-        match choice {
-            Choice::Deny => Some(Answer::Deny { feedback: None }),
-            other => self.answer_for(other),
+            .find(|c| c.label() == said)
+            .ok_or(DeviceRefusal::NotOffered)?;
+        match picked {
+            Choice::Always => Err(DeviceRefusal::NotReachable),
+            Choice::Deny => {
+                if feedback.is_some_and(|f| f.len() > fontaine_remote::MAX_FEEDBACK_BYTES) {
+                    return Err(DeviceRefusal::FeedbackTooLong);
+                }
+                let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
+                Ok(Answer::Deny {
+                    feedback: feedback.map(str::to_string),
+                })
+            }
+            other => Ok(self
+                .answer_for(other)
+                .expect("once and session map to an answer")),
         }
     }
 
@@ -244,7 +270,15 @@ impl Approval {
 
     /// Hands the answer to the waiting pipeline. An answer nobody waits for is dropped.
     pub fn reply(&mut self, answer: Answer) {
+        self.reply_by(answer, None);
+    }
+
+    /// `reply` naming the device that answered, which the pipeline records.
+    pub(crate) fn reply_by(&mut self, answer: Answer, by: Option<RemoteSender>) {
         if let Some(reply) = self.reply.take() {
+            if let Some(slot) = &self.attribution {
+                *fontaine_sdk::tools::lock::lock(slot, "answering device") = by;
+            }
             let _ = reply.send(answer);
         }
     }

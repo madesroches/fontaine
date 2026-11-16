@@ -275,6 +275,7 @@ async fn the_guardian_request_after_a_rewind_omits_the_retracted_prompt_but_keep
         converted: None,
         fail_closed: None,
         explanation: None,
+        remote: None,
     });
     say(&built, "change a").await;
     let plan = built.runtime.rewind_plan(2).unwrap();

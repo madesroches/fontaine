@@ -36,7 +36,7 @@ use crate::core::gate::{
     AFK_STOPPED_MESSAGE, CompositionStage, DeniedCall, RetrySource, SessionState,
     UNREGISTERED_AGENT, permission_mode,
 };
-use crate::core::ledger::{Existence, Record};
+use crate::core::ledger::{Existence, Record, RemoteSender};
 use crate::core::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
     parse_rule, propose,
@@ -128,6 +128,15 @@ impl HumanChannel {
 pub trait Approver: Send + Sync {
     fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer>;
 
+    /// `approve` with the remote device that gave the answer, when one did. The pipeline calls
+    /// this one, so the identity reaches the ledger and the audit log.
+    fn approve_as<'a>(
+        &'a self,
+        request: ApprovalRequest,
+    ) -> BoxFuture<'a, (Answer, Option<RemoteSender>)> {
+        Box::pin(async move { (self.approve(request).await, None) })
+    }
+
     /// Something the human should know that is not an answer to a prompt, such as a settings
     /// file that could not be written.
     fn notice(&self, _message: &str) {}
@@ -163,6 +172,15 @@ pub trait Approver: Send + Sync {
         _questions: Vec<Question>,
     ) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async { QuestionReply::Unavailable })
+    }
+
+    /// `ask_user` with the remote device that answered, when one did.
+    fn ask_user_as<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, (QuestionReply, Option<RemoteSender>)> {
+        Box::pin(async move { (self.ask_user(agent, questions).await, None) })
     }
 
     /// An MCP server's request for input. Only a frontend with a dialog answers; every other
@@ -248,6 +266,16 @@ impl Approver for AfkApprover {
         self.inner.approve(request)
     }
 
+    fn approve_as<'a>(
+        &'a self,
+        request: ApprovalRequest,
+    ) -> BoxFuture<'a, (Answer, Option<RemoteSender>)> {
+        if self.state.afk_on() {
+            return Box::pin(async { (Answer::Deny { feedback: None }, None) });
+        }
+        self.inner.approve_as(request)
+    }
+
     fn notice(&self, message: &str) {
         self.inner.notice(message);
     }
@@ -283,6 +311,17 @@ impl Approver for AfkApprover {
             return Box::pin(async { QuestionReply::Unavailable });
         }
         self.inner.ask_user(agent, questions)
+    }
+
+    fn ask_user_as<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, (QuestionReply, Option<RemoteSender>)> {
+        if self.state.afk_on() {
+            return Box::pin(async { (QuestionReply::Unavailable, None) });
+        }
+        self.inner.ask_user_as(agent, questions)
     }
 
     fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
@@ -850,6 +889,14 @@ struct Refusal {
     why: String,
     converted: Option<Converted>,
     fail_closed: Option<&'static str>,
+}
+
+/// The audit explanation of an answer a remote device gave.
+fn answered_by(by: &RemoteSender) -> String {
+    format!(
+        "answered by remote device {} (dialog {})",
+        by.node, by.message_id
+    )
 }
 
 /// The file-tool calls a read-only shell command stands for: every path the pre-classifier
@@ -1741,6 +1788,18 @@ impl PermissionPipeline {
         rule: Option<&str>,
         refusal: &Refusal,
     ) -> Record {
+        self.denial_by(cx, tier, rule, refusal, None)
+    }
+
+    /// `denial` for a call a remote device refused, so the record names the device.
+    fn denial_by(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        rule: Option<&str>,
+        refusal: &Refusal,
+        by: Option<&RemoteSender>,
+    ) -> Record {
         Record::Denial {
             tool: cx.call.tool.to_string(),
             agent: cx.call.agent.to_string(),
@@ -1759,6 +1818,7 @@ impl PermissionPipeline {
             converted: refusal.converted,
             fail_closed: refusal.fail_closed.map(str::to_string),
             explanation: Some(explanation_of(&refusal.why)),
+            remote: by.cloned(),
         }
     }
 
@@ -2107,7 +2167,7 @@ impl PermissionPipeline {
                         Some("retry approved by the user".to_string()),
                         None,
                     ));
-                    self.approved(cx, Tier::Human, "once");
+                    self.approved(cx, Tier::Human, "once", None);
                 }
                 // A hook's grant is not a human's answer: it must not resume paused auto mode
                 // or reset the guardian breaker.
@@ -2617,11 +2677,12 @@ impl PermissionPipeline {
     }
 
     /// The ledger's approval and action records for a call a human allowed.
-    fn approved(&self, cx: &CallCtx<'_>, tier: Tier, scope: &str) {
+    fn approved(&self, cx: &CallCtx<'_>, tier: Tier, scope: &str, by: Option<&RemoteSender>) {
         self.state.append(Record::Approval {
             tool: cx.call.tool.to_string(),
             agent: cx.call.agent.to_string(),
             scope: scope.to_string(),
+            remote: by.cloned(),
         });
         self.state.append(self.action(cx, tier));
         if self.state.auto_paused() {
@@ -2718,20 +2779,21 @@ impl PermissionPipeline {
                 .await;
         }
         let _waiting = self.state.wait_on_human(call.agent);
-        let answer = self
+        let (answer, by) = self
             .approver
-            .approve(request)
+            .approve_as(request)
             .instrument(tracing::info_span!(
                 target: TARGET,
                 "fontaine.tool.blocked_on_user",
                 tool_name = self.state.telemetry_tool_name(call.tool),
             ))
             .await;
+        let by_note = by.as_ref().map(answered_by);
 
         match answer {
             Answer::AllowOnce => {
-                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
-                self.approved(cx, Tier::Human, "once");
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, by_note.clone()));
+                self.approved(cx, Tier::Human, "once", by.as_ref());
                 GateDecision::Allow { args }
             }
             Answer::AllowSession if offers.session => {
@@ -2741,13 +2803,13 @@ impl PermissionPipeline {
                     Tier::Human,
                     Decision::Allow,
                     Some(format!("{rule} [session]")),
-                    None,
+                    by_note.clone(),
                 ));
                 self.state.append(Record::Grant {
                     rule: rule.to_string(),
                 });
                 self.state.grant(rule, RuleSource::Session);
-                self.approved(cx, Tier::Human, "session");
+                self.approved(cx, Tier::Human, "session", by.as_ref());
                 GateDecision::Allow { args }
             }
             Answer::AllowAlways if offers.always => {
@@ -2776,13 +2838,18 @@ impl PermissionPipeline {
                     Tier::Human,
                     Decision::Allow,
                     Some(format!("{rule} [{}]", source.label())),
-                    None,
+                    by_note.clone(),
                 ));
                 self.state.append(Record::Grant {
                     rule: rule.to_string(),
                 });
                 self.state.grant(rule, source);
-                self.approved(cx, Tier::Human, if saved { "always" } else { "session" });
+                self.approved(
+                    cx,
+                    Tier::Human,
+                    if saved { "always" } else { "session" },
+                    by.as_ref(),
+                );
                 GateDecision::Allow { args }
             }
             Answer::AllowUpdated { grants, .. } if !offers.session && !grants.is_empty() => {
@@ -2808,8 +2875,8 @@ impl PermissionPipeline {
                     )
                 });
                 let label = if grants.is_empty() { "once" } else { "session" };
-                self.emit(self.record(cx, Tier::Human, Decision::Allow, rule, None));
-                self.approved(cx, Tier::Human, label);
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, rule, by_note.clone()));
+                self.approved(cx, Tier::Human, label, by.as_ref());
                 GateDecision::Allow { args }
             }
             Answer::AllowUpdated { args: Some(_), .. } if cx.redone => {
@@ -2836,8 +2903,8 @@ impl PermissionPipeline {
             }
             // A grant the prompt did not offer is only the one call.
             Answer::AllowSession | Answer::AllowAlways => {
-                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
-                self.approved(cx, Tier::Human, "once");
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, by_note.clone()));
+                self.approved(cx, Tier::Human, "once", by.as_ref());
                 GateDecision::Allow { args }
             }
             Answer::Deny { feedback } => {
@@ -2858,10 +2925,13 @@ impl PermissionPipeline {
                     Tier::Human,
                     Decision::Deny,
                     None,
-                    Some(refusal.message.clone()),
+                    Some(match &by_note {
+                        Some(note) => format!("{}; {note}", refusal.message),
+                        None => refusal.message.clone(),
+                    }),
                 ));
                 self.state
-                    .append(self.denial(cx, Tier::Human, None, &refusal));
+                    .append(self.denial_by(cx, Tier::Human, None, &refusal, by.as_ref()));
                 GateDecision::Deny {
                     message: refusal.message,
                 }

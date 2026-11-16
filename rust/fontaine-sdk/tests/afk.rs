@@ -794,6 +794,7 @@ async fn the_review_grades_the_stretch_it_is_given_not_the_latest_and_only_once(
         converted: None,
         fail_closed: None,
         explanation: None,
+        remote: None,
     };
     state.set_mode(Afk, AfkSource::Cycle).unwrap();
     state.append(denial());

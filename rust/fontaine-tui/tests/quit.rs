@@ -21,6 +21,7 @@ fn options() -> DriveOptions {
         budget: BUDGET,
         on_quit: None,
         wake: None,
+        remote: false,
     }
 }
 

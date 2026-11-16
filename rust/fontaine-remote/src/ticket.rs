@@ -2,8 +2,10 @@ use data_encoding::BASE32_NOPAD;
 use iroh::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
-pub const PREFIX: &str = "fontaine-send1";
-const TICKET_VERSION: u16 = 1;
+pub const PREFIX: &str = "fontaine-attach1";
+/// The prefix of the one-shot tickets `fontaine send` used to mint; no build reads them now.
+const RETIRED_PREFIX: &str = "fontaine-send1";
+const TICKET_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ticket {
@@ -38,6 +40,8 @@ mod secret_text {
 pub enum TicketError {
     /// The text does not start with the ticket prefix.
     NotATicket,
+    /// A ticket of the removed `fontaine send`.
+    Retired,
     Encoding(data_encoding::DecodeError),
     Json(serde_json::Error),
     UnsupportedVersion(u16),
@@ -47,6 +51,9 @@ impl std::fmt::Display for TicketError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TicketError::NotATicket => write!(f, "not a fontaine ticket (expected `{PREFIX}...`)"),
+            TicketError::Retired => f.write_str(
+                "this is a ticket of the removed `fontaine send`; ask for a new one and use `fontaine attach`",
+            ),
             TicketError::Encoding(_) => f.write_str("the ticket text is corrupted"),
             TicketError::Json(_) => f.write_str("the ticket contents are malformed"),
             TicketError::UnsupportedVersion(v) => {
@@ -86,10 +93,11 @@ impl Ticket {
     }
 
     pub fn parse(text: &str) -> Result<Ticket, TicketError> {
-        let rest = text
-            .trim()
-            .strip_prefix(PREFIX)
-            .ok_or(TicketError::NotATicket)?;
+        let text = text.trim();
+        if text.starts_with(RETIRED_PREFIX) {
+            return Err(TicketError::Retired);
+        }
+        let rest = text.strip_prefix(PREFIX).ok_or(TicketError::NotATicket)?;
         let bytes = BASE32_NOPAD
             .decode(rest.to_uppercase().as_bytes())
             .map_err(TicketError::Encoding)?;
@@ -128,7 +136,11 @@ mod tests {
             Err(TicketError::NotATicket)
         ));
         assert!(matches!(
-            Ticket::parse("fontaine-send1!!!"),
+            Ticket::parse("fontaine-send1mfrggzdf"),
+            Err(TicketError::Retired)
+        ));
+        assert!(matches!(
+            Ticket::parse("fontaine-attach1!!!"),
             Err(TicketError::Encoding(_))
         ));
         let junk = format!("{PREFIX}{}", BASE32_NOPAD.encode(b"{}").to_lowercase());
