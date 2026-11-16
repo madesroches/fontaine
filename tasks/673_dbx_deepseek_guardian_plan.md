@@ -9,7 +9,10 @@ through `opencode-go` — on the live guardian harness, full profile, and record
 under `evals/scorecards/`, a row in `docs/evals.md`, the numbers on the issue, and, only if it clears
 the inclusion bar, the `kind = "databricks"` entry the run itself writes into
 `rust/fontaine-sdk/data/guardian_models.toml`. The same run settles whether this deployment can be
-forced into a tool call at all, which is a property of the route, not of the model (#144).
+forced into a tool call at all, which is a property of the route, not of the model (#144). The
+first run then showed the deployment cannot be scored as it stands — one call in three exhausts the
+guardian's token budget on reasoning and never answers — so this plan also adds the account-level
+thinking-off that a measurement of this deployment needs (Design 7).
 
 ## Current State
 
@@ -33,8 +36,9 @@ gateway's Chat wire: `POST {base_url}/ai-gateway/mlflow/v1/chat/completions`, Be
 (`rust/fontaine-sdk/src/core/providers/databricks.rs`). Unlike `opencode-go`, the kind defines no
 `thinking_off` hook and no `output_probe`, so the guardian sends no reasoning-off parameter and
 always asks on the forced-`submit` tool path (`docs/guardian.md`, "Choosing the guardian model").
-A deployment that thinks by default and rejects the forced call has every case fail closed on
-infrastructure; the run then exits 1, leaves the models file as it was, and keeps its sidecar.
+A deployment that thinks by default rejects the forced call, or answers it only after spending the
+request's token budget on reasoning; either way the case fails closed, the run exits 1, the models
+file is left as it was, and the sidecar is kept.
 
 **The models-file merge.** An unfiltered `--profile full` live run rewrites the models file in place
 (`update_models`), and skips it only for a `minimal` profile, a `--filter` run, a `mixed` transport, a
@@ -57,6 +61,14 @@ computes, and the report is the source for the file name and for the models entr
 `spawn-report-*`, two webpage) are listed as skipped with a reason, which never blocks the models
 file (as in the go scorecard).
 
+**The first run (2026-11-15).** The full-profile run was stopped at 318 of 430 cases. 102 of them
+(32%) had failed closed on infrastructure: 101 `error`, each with `finish_reason=Length` — the
+deployment spent the guardian's 1024-token budget on reasoning and never emitted the forced `submit`
+call — and one `unparseable`. Ten more cases were verdict mismatches. p50 was 2432 ms and the
+maximum 16.4 s, so it is the budget, not the latency. A stopped run writes no report, so none of
+this is published; `evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl` holds
+the cases it scored and is deleted before the re-run.
+
 ## Design
 
 ### 1. Preflight — feasibility, no repository writes
@@ -70,9 +82,10 @@ file (as in the go scorecard).
    `--out` it leaves no report and no sidecar:
    - every case scored (exit 0) → auth, routing and the forced call all work; go to Design 2;
    - cases `UNSCORED` with the provider's refusal in the explanation (exit 1) → the deployment
-     rejects the forced call; go to Design 5, and still run the Design 2 command (with its
-     `--out ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json`) to produce the report
-     Design 5 commits;
+     rejects the forced call, or, with `thinking_off = true` set, the `thinking` parameter itself —
+     the explanation's status and body say which; go to Design 5, and still run the Design 2 command
+     (with its `--out ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json`) to produce the
+     report Design 5 commits;
    - exit 1 with timeouts or rate limits as the reasons → go to Design 2 anyway: its resume rules
      handle transient causes and Design 5 handles persistent ones;
    - exit 2 → the account or its credential did not resolve, and nothing was asked of the model; fix
@@ -90,7 +103,9 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
 
 - Run it as a background job and read the progress lines (`[n/total] <id> <verdict> <latency>ms` on
   stderr): a full-profile run is 430 cases: 331 guardian, 92 pipeline (some reach the guardian), 7 scanner
-  skipped, at tens of minutes to an hour at this model's latencies.
+  skipped, at tens of minutes to an hour at this model's latencies. The account must set
+  `thinking_off = true` (Design 7) first, and the previous sidecar must be deleted: a run refuses to
+  start with one in its way.
 - An interrupted run leaves `<out>.partial.jsonl`; continue it with the same command plus
   `--resume ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl`. `--resume`
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.
@@ -121,14 +136,11 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   (haiku "is the only model that clears all three bars, and it is the first entry in
   `guardian_models.toml`") is corrected to say the entry was dropped on the new dataset version and
   the databricks entry is the list's.
-- The row and the bullet carry the route's one difference from the `go/` row: nothing turns this
-  deployment's thinking off. A `databricks` account has no `thinking_off` hook (`DatabricksClient`,
-  `rust/fontaine-sdk/src/core/providers/databricks.rs`, inherits the `None` default), where
-  `opencode_go::thinking_off` sends `{"thinking": {"type": "disabled"}}` for this model on the Chat
-  wire (`rust/fontaine-sdk/src/core/providers/opencode_go.rs`, pinned by
-  `thinking_off_follows_the_wire`). These numbers are therefore the deployment's own default
-  behavior, and the latency is not transport-identical to the `go/` row's — say so where the row
-  compares the two.
+- The row and the bullet record the parameter the run carried: with `thinking_off = true` on the
+  account (Design 7), the Chat wire's `{"thinking": {"type": "disabled"}}` — the same fragment
+  `opencode_go::thinking_off` sends for the `go/` row — rides the guardian's and the scanner's
+  requests, so the two rows are comparable in that respect. If the deployment refused the parameter,
+  the run fails every case closed and Design 5's all-refused branch applies instead.
 - `docs/guardian.md:783-786`: the exception for "the validated list's own `opencode-go` entry
   (`claude-haiku-5-5`)" is rewritten to the databricks entry — `available_validated` matches on
   `kind`, so any `databricks` account that serves `system.ai.deepseek-v4-1-flash` picks it up as
@@ -204,6 +216,34 @@ A scored case can only carry `fail_closed = "low_confidence"`; count them with
 rate per attack class, including the destructive ones (`git-destructive`,
 `destroy-pre-existing-files`, …).
 
+### 7. The thinking-off hook the first run showed is needed
+
+The first run (Current State) leaves the deployment unmeasurable as it stands: on a call in three it
+spends the guardian's budget on reasoning and answers nothing, so the report would be a floor on
+fail-closed denials rather than a verdict on the model. Its sidecar's cases are deleted before the
+re-run, because `--resume` would mix them in and the sidecar header does not record the setting.
+
+The change: an account-level `thinking_off = true` key, `databricks` only, that makes the
+guardian's and the scanner's forced-call requests carry the Chat wire's
+`{"thinking": {"type": "disabled"}}` — the same fragment `opencode_go::thinking_off` sends. It is
+opt-in rather than the blanket send `opencode-go` makes, because the Databricks gateway's
+acceptance of the parameter is unverified per deployment and an unknown-field 400 would break every
+other `databricks` Chat model's guardian. It applies to the Chat wire only; a refusal still fails
+closed, exactly as today, so the invariant is unchanged.
+
+- `rust/fontaine-sdk/src/core/config.rs`: `Account::thinking_off`, declared `databricks` only, with
+a `Provider` capability flag so another kind that sets it is a config error naming the kind.
+- `rust/fontaine-sdk/src/core/providers/mod.rs`: the capability flag beside `accepts_wires` and kin.
+- `rust/fontaine-sdk/src/core/providers/databricks.rs`: `thinking_off` returns the fragment for a
+Chat-wire model when the account sets the key, `None` otherwise, with a unit test per wire.
+- `rust/fontaine-sdk/tests/providers.rs`: the key parses on `databricks`, is refused by other kinds.
+- `docs/configuration.md` (the account key table and the databricks example), `docs/providers.md`
+(the databricks row), `docs/guardian.md` (the databricks limitation paragraph), `CHANGELOG.md`
+(`### Added`).
+
+Then the measurement re-runs as Design 2, with `thinking_off = true` set on the account and the
+sidecar deleted first, and Designs 3-5 apply to its report.
+
 ## Files to Modify
 
 | Path | Change |
@@ -214,6 +254,11 @@ rate per attack class, including the destructive ones (`git-destructive`,
 | `CHANGELOG.md` | Outcomes A and B: an `### Added` line, and a `### Removed` line for the haiku default guardian. In C only the few-unscored branch, with A's or B's lines. |
 | `docs/guardian.md` | Outcomes A and B: the `opencode-go` exception at `:783-786`. Outcome C: the pointer from the databricks limitation; the few-unscored branch also takes A's or B's edit. |
 | `tasks/completed/673_dbx_deepseek_guardian_plan.md` | This plan, moved by `pr`. |
+| `rust/fontaine-sdk/src/core/config.rs` | `Account::thinking_off` and its per-kind validation. |
+| `rust/fontaine-sdk/src/core/providers/mod.rs` | The `Provider` capability flag for the key. |
+| `rust/fontaine-sdk/src/core/providers/databricks.rs` | The `thinking_off` hook and its unit test. |
+| `rust/fontaine-sdk/tests/providers.rs` | The key parses on `databricks` and is refused elsewhere. |
+| `docs/configuration.md`, `docs/providers.md`, `docs/guardian.md` | The key, the databricks row and the limitation paragraph. |
 
 ## Trade-offs
 
@@ -224,11 +269,14 @@ rate per attack class, including the destructive ones (`git-destructive`,
 
 ## Decisions
 
-- 2026-11-15 The measurement is reported as the route behaves. Nothing turns this deployment's
-  thinking off: a `databricks` account has no `thinking_off` hook and the Chat route's acceptance of
-  the parameter is unverified, so the row, the CHANGELOG line and the issue comment record that
-  caveat rather than this change adding a hook to force it off. The `go/` row stays the only
-  measurement of this model with thinking disabled.
+- 2026-11-15 The thinking-off hook is opt-in per account (`thinking_off = true`) rather than a
+  blanket send on the Chat wire: the gateway's acceptance of the parameter is unverified per
+  deployment, and a blanket send would break other `databricks` Chat models' guardians with a 400
+  if it is refused. Verifying the parameter once makes the blanket form a one-line change.
+- 2026-11-15 The first full-profile run (Current State) is neither published nor resumed: it was
+  stopped at 318 of 430 cases with 102 fail-closed, and its cases were scored without a
+  reasoning-off parameter. The measurement re-runs over the whole dataset with the account's
+  `thinking_off = true` (Design 7).
 - 2026-11-15 The account's credential reaches the run from the local token file
   `~/.claude_databricks_token`, exported as `ANTHROPIC_AUTH_TOKEN` for the command only (user),
   because Fontaine withholds every account's `api_key_env` variable from the processes it starts;
