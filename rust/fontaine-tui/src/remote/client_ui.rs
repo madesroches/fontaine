@@ -289,6 +289,13 @@ impl RemoteClientUi {
                 self.waiting = None;
                 match reply {
                     QuestionReply::Answered(answers) => {
+                        if answers.first().is_some_and(|a| a.selected.len() > 1) {
+                            self.app.attach_notice = Some(
+                                "a device can only give one option per question; answer a multi-select question at the host"
+                                    .to_string(),
+                            );
+                            return None;
+                        }
                         let Some(label) = answers.first().and_then(|a| a.selected.first()) else {
                             self.app.attach_notice = Some(
                                 "a typed answer can only be given at the host; pick an option"
@@ -839,6 +846,55 @@ mod tests {
         assert!(ui.answered().is_none());
         assert!(matches!(ui.waiting, Some(Waiting::Question { id: 5, .. })));
         assert!(!ui.app.questions.is_empty());
+    }
+
+    #[test]
+    fn a_multi_select_answer_with_several_options_is_refused_with_a_notice() {
+        use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionOption};
+        let option = |label: &str| QuestionOption {
+            label: label.into(),
+            description: "d".into(),
+        };
+        let mut ui = RemoteClientUi::new(app());
+        ui.install(Some(Dialog::Question {
+            id: 6,
+            agent: String::new(),
+            index: 0,
+            questions: vec![Question {
+                question: "q?".into(),
+                header: "h".into(),
+                options: vec![option("a"), option("b")],
+                multi_select: true,
+            }],
+        }));
+        ui.waiting = match ui.waiting.take() {
+            Some(Waiting::Question {
+                id, index, options, ..
+            }) => {
+                let (reply, answer) = oneshot::channel();
+                reply
+                    .send(QuestionReply::Answered(vec![QuestionAnswer {
+                        question: "q?".into(),
+                        selected: vec!["a".into(), "b".into()],
+                        other: None,
+                    }]))
+                    .expect("receiver is alive");
+                Some(Waiting::Question {
+                    id,
+                    index,
+                    options,
+                    answer,
+                })
+            }
+            other => other,
+        };
+        assert!(ui.answered().is_none());
+        assert!(
+            ui.app
+                .attach_notice
+                .as_deref()
+                .is_some_and(|n| n.contains("multi-select"))
+        );
     }
 
     #[test]

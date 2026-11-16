@@ -217,6 +217,9 @@ pub struct AttachArgs {
     /// What this device calls itself when pairing; the person at the host reads it
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// The label to store the host under when pairing, so `fontaine attach <label>` finds it
+    #[arg(long, value_name = "LABEL")]
+    pub host_name: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

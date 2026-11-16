@@ -140,14 +140,19 @@ fn user_relay(dirs: &fontaine_sdk::core::dirs::Dirs) -> Result<RelayMode, String
     let table = text
         .parse::<toml::Table>()
         .map_err(|e| format!("cannot parse {}: {}", path.display(), chain(&e)))?;
-    let relay = table
-        .get("remote")
-        .and_then(|remote| remote.get("relay"))
-        .and_then(|relay| relay.as_str());
-    Ok(match relay {
-        Some("disabled") => RelayMode::Disabled,
-        _ => RelayMode::Default,
-    })
+    relay_mode(table.get("remote").and_then(|remote| remote.get("relay")))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn relay_mode(value: Option<&toml::Value>) -> Result<RelayMode, String> {
+    match value {
+        None => Ok(RelayMode::Default),
+        Some(toml::Value::String(s)) if s == "default" => Ok(RelayMode::Default),
+        Some(toml::Value::String(s)) if s == "disabled" => Ok(RelayMode::Disabled),
+        Some(other) => Err(format!(
+            "[remote] relay must be \"default\" or \"disabled\", not {other}"
+        )),
+    }
 }
 
 fn device_label(args: &AttachArgs, host: &Host) -> String {
@@ -202,6 +207,7 @@ pub fn run(args: &AttachArgs, host: &Host) -> ExitCode {
     };
     let options = AttachOptions {
         relay,
+        host_label: args.host_name.clone(),
         ..AttachOptions::new(device_label(args, host))
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -361,6 +367,7 @@ mod tests {
             ticket_stdin,
             message: message.map(str::to_string),
             name: None,
+            host_name: None,
         }
     }
 
@@ -445,5 +452,23 @@ mod tests {
         std::fs::write(&file, "[remote\nrelay =").unwrap();
         let why = user_relay(&dirs).unwrap_err();
         assert!(why.contains("cannot parse"), "{why}");
+    }
+
+    #[test]
+    fn only_default_and_disabled_are_relay_settings() {
+        let value = |text: &str| text.parse::<toml::Table>().unwrap().remove("relay");
+        assert!(matches!(relay_mode(None), Ok(RelayMode::Default)));
+        assert!(matches!(
+            relay_mode(value("relay = \"default\"").as_ref()),
+            Ok(RelayMode::Default)
+        ));
+        assert!(matches!(
+            relay_mode(value("relay = \"disabled\"").as_ref()),
+            Ok(RelayMode::Disabled)
+        ));
+        for bad in ["relay = \"disable\"", "relay = false", "relay = 3"] {
+            let why = relay_mode(value(bad).as_ref()).unwrap_err();
+            assert!(why.contains("[remote] relay must be"), "{why}");
+        }
     }
 }

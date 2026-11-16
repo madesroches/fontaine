@@ -38,6 +38,11 @@ and the dialog cannot be answered from any attached device. An explicit `n` refu
 (`pairing_declined`); no answer within 60 seconds is `pairing_timeout`; a device that disconnects
 while the dialog is open closes it with no reply. In every case the secret is consumed.
 
+`fontaine attach --name <NAME>` sets the label the host's confirmation dialog shows; without it the
+device uses `COMPUTERNAME` or `HOSTNAME`, else `device`. `--host-name <LABEL>` sets the label the
+device stores the host under when pairing, so a later `fontaine attach <LABEL>` finds it; without it
+select the host by a node-id prefix.
+
 A paired device is stored by node id in `paired_devices.json` in your user-scope data directory.
 After that it reattaches with no ticket:
 
@@ -90,7 +95,8 @@ A device sends only a prompt or a slash line:
   dialog offered: allow once, allow for the session, or deny with an optional reason of at most 1 KiB.
   A device cannot choose "always allow", which writes a permanent rule to your user settings: it is
   not shown and an answer naming it is refused. A question reply names the sub-question and the options
-  it saw; a reply for a question the panel has moved past is refused. The first answer wins, whether
+  it saw; a reply for a question the panel has moved past is refused. A device gives one option per
+  question: a multi-select answer with several options is refused with a notice, and is answered at the host. The first answer wins, whether
   it comes from the host or any device; the others see the dialog close. A device answer is refused,
   with a notice to that device, while you are typing a denial reason or have a question panel
   half-answered, so it never discards your input.

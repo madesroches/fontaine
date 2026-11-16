@@ -20,6 +20,13 @@ pub struct HubLimits {
     pub queue_bytes: usize,
 }
 
+impl HubLimits {
+    /// The most snapshot bytes a device's queue accepts at once.
+    fn snapshot_cap(&self) -> usize {
+        self.queue_bytes.saturating_mul(4)
+    }
+}
+
 impl Default for HubLimits {
     fn default() -> HubLimits {
         HubLimits {
@@ -45,6 +52,9 @@ pub enum Close {
 struct QueueState {
     frames: VecDeque<Vec<u8>>,
     bytes: usize,
+    /// Snapshot frames at the front of `frames`: they are bounded by `snapshot_cap`, not by the
+    /// queue's own bounds, or a snapshot over `queue_bytes` could never be delivered.
+    snapshot_frames: usize,
     closing: Option<Close>,
 }
 
@@ -68,6 +78,7 @@ impl DeviceQueue {
             state: Mutex::new(QueueState {
                 frames: VecDeque::new(),
                 bytes: 0,
+                snapshot_frames: 0,
                 closing: None,
             }),
             wake: Notify::new(),
@@ -85,7 +96,7 @@ impl DeviceQueue {
         if state.closing.is_some() {
             return;
         }
-        if state.frames.len() >= self.limits.queue_events
+        if state.frames.len() - state.snapshot_frames >= self.limits.queue_events
             || state.bytes + frame.len() > self.limits.queue_bytes
         {
             state.frames.clear();
@@ -95,11 +106,40 @@ impl DeviceQueue {
                     .to_string(),
             });
             state.bytes = notice.len();
+            state.snapshot_frames = 0;
             state.frames.push_back(notice);
             state.closing = Some(Close::Overflow);
         } else {
             state.bytes += frame.len();
             state.frames.push_back(frame);
+        }
+        drop(state);
+        self.wake.notify_one();
+    }
+
+    /// Queues a snapshot's parts outside the overflow bounds. A snapshot over `snapshot_cap`
+    /// bytes is refused with a notice and the device is closed with `TooLarge`.
+    fn push_snapshot(&self, parts: &[Vec<u8>]) {
+        let total: usize = parts.iter().map(Vec::len).sum();
+        let mut state = self.state();
+        if state.closing.is_some() {
+            return;
+        }
+        if total > self.limits.snapshot_cap() {
+            state.frames.clear();
+            state.snapshot_frames = 0;
+            let notice = encode_frame(&HostMsg::Notice {
+                severity: Level::Warning,
+                text: "the session is too large to attach to remotely".to_string(),
+            });
+            state.bytes = notice.len();
+            state.frames.push_back(notice);
+            state.closing = Some(Close::Reject(Reason::TooLarge));
+        } else {
+            // Snapshot parts precede anything already queued only if nothing is queued: the
+            // device was awaiting the snapshot, so its queue holds no events.
+            state.snapshot_frames += parts.len();
+            state.frames.extend(parts.iter().cloned());
         }
         drop(state);
         self.wake.notify_one();
@@ -119,6 +159,7 @@ impl DeviceQueue {
         let mut state = self.state();
         if !state.frames.is_empty() {
             state.bytes = 0;
+            state.snapshot_frames = 0;
             return Next::Frames(state.frames.drain(..).collect());
         }
         match state.closing {
@@ -375,9 +416,7 @@ impl Hub {
             .collect();
         for device in state.devices.values_mut().filter(|d| d.awaiting_snapshot) {
             device.awaiting_snapshot = false;
-            for part in &parts {
-                device.queue.push(part.clone());
-            }
+            device.queue.push_snapshot(&parts);
         }
     }
 
@@ -550,6 +589,51 @@ mod tests {
             .register(&node("b"), "l", Some((hub.epoch(), 8)))
             .unwrap();
         assert_eq!(seqs(&near.queue), vec![9, 10]);
+    }
+
+    #[test]
+    fn a_snapshot_larger_than_the_queue_bytes_is_still_delivered() {
+        let (hub, _) = hub(HubLimits {
+            queue_bytes: 100_000,
+            ..HubLimits::default()
+        });
+        let reg = hub.register(&node("a"), "l", None).unwrap();
+        hub.publish(serde_json::json!({}));
+        let reg2 = hub
+            .register(&node("b"), "l", Some((hub.epoch() ^ 1, 1)))
+            .unwrap();
+        assert!(hub.snapshot_wanted());
+        hub.provide_snapshot(&format!("{{\"pad\":\"{}\"}}", "x".repeat(200_000)));
+        let Next::Frames(frames) = reg2.queue.take() else {
+            panic!("frames");
+        };
+        assert!(frames.iter().map(Vec::len).sum::<usize>() > 100_000);
+        assert!(frames.iter().all(|f| matches!(
+            serde_json::from_slice::<HostMsg>(f).unwrap(),
+            HostMsg::Snapshot { .. }
+        )));
+        assert!(matches!(reg2.queue.take(), Next::Empty));
+        drop(reg);
+    }
+
+    #[test]
+    fn a_snapshot_past_the_hard_cap_is_refused_not_looped() {
+        let (hub, _) = hub(HubLimits {
+            queue_bytes: 10_000,
+            ..HubLimits::default()
+        });
+        let reg = hub
+            .register(&node("a"), "l", Some((hub.epoch() ^ 1, 1)))
+            .unwrap();
+        hub.provide_snapshot(&format!("{{\"pad\":\"{}\"}}", "x".repeat(100_000)));
+        let Next::Frames(frames) = reg.queue.take() else {
+            panic!("frames");
+        };
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            reg.queue.take(),
+            Next::Closed(Close::Reject(Reason::TooLarge))
+        ));
     }
 
     #[test]
