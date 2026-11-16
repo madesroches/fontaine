@@ -49,6 +49,6 @@ pub trait HostSession: Send + Sync {
     fn refused(&self, reason: Reason, node: &Sender);
 
     /// Something the person at the host should hear of, such as a store that could not be
-    /// written.
-    fn warn(&self, text: &str);
+    /// written. The implementation renders the error's chain after the context.
+    fn warn(&self, context: &str, error: &(dyn std::error::Error + 'static));
 }

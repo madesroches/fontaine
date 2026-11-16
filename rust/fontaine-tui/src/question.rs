@@ -44,6 +44,9 @@ pub struct QuestionPanel {
     reply: Option<oneshot::Sender<QuestionReply>>,
     /// Where the answering device is left for the approver that waits on the reply.
     attribution: Option<Arc<Mutex<Option<RemoteSender>>>>,
+    /// Every device that answered a sub-question, one per node, so a panel finished by the host
+    /// or another device still credits the first of them.
+    contributors: Vec<RemoteSender>,
     current: usize,
     answers: Vec<QuestionAnswer>,
     /// The highlighted row: the options, then "Other". The highlight is the mode: on the
@@ -67,6 +70,7 @@ impl QuestionPanel {
             questions,
             reply: Some(reply),
             attribution: None,
+            contributors: Vec::new(),
             current: 0,
             answers: Vec::new(),
             selected: 0,
@@ -102,11 +106,22 @@ impl QuestionPanel {
 
     /// `reply` naming the device that answered, which the harness records.
     pub(crate) fn reply_by(&mut self, reply: QuestionReply, by: Option<RemoteSender>) {
+        if let Some(by) = by {
+            self.note_device(by);
+        }
         if let Some(sender) = self.reply.take() {
             if let Some(slot) = &self.attribution {
-                *fontaine_sdk::tools::lock::lock(slot, "answering device") = by;
+                *fontaine_sdk::tools::lock::lock(slot, "answering device") =
+                    self.contributors.first().cloned();
             }
             let _ = sender.send(reply);
+        }
+    }
+
+    /// Remembers a device that answered a sub-question of a panel that is still open.
+    pub(crate) fn note_device(&mut self, by: RemoteSender) {
+        if !self.contributors.iter().any(|known| known.node == by.node) {
+            self.contributors.push(by);
         }
     }
 
@@ -702,6 +717,50 @@ mod tests {
         assert!(!panel.is_closed());
         drop(rx);
         assert!(panel.is_closed());
+    }
+
+    fn device(node: &str) -> RemoteSender {
+        RemoteSender {
+            node: node.into(),
+            message_id: "m".into(),
+        }
+    }
+
+    fn slotted(questions: Vec<Question>) -> (QuestionPanel, Arc<Mutex<Option<RemoteSender>>>) {
+        let (panel, _rx) = panel(questions);
+        let slot = Arc::new(Mutex::new(None));
+        (panel.with_attribution(slot.clone()), slot)
+    }
+
+    #[test]
+    fn a_device_answer_to_an_earlier_question_is_credited_when_the_host_finishes() {
+        let (mut panel, slot) = slotted(vec![question("One?", false), question("Two?", false)]);
+        let options: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(panel.device_reply(0, &options, "a"), Ok(None));
+        panel.note_device(device("phone"));
+        panel.settle();
+        let reply = press(&mut panel, KeyCode::Enter).expect("the host finishes");
+        panel.reply(reply);
+        assert_eq!(
+            slot.lock().unwrap().as_ref().map(|d| d.node.as_str()),
+            Some("phone")
+        );
+    }
+
+    #[test]
+    fn a_device_answer_to_the_last_question_is_credited_after_a_host_answer() {
+        let (mut panel, slot) = slotted(vec![question("One?", false), question("Two?", false)]);
+        assert_eq!(press(&mut panel, KeyCode::Enter), None);
+        let options: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let reply = panel
+            .device_reply(1, &options, "b")
+            .unwrap()
+            .expect("the last answer");
+        panel.reply_by(reply, Some(device("phone")));
+        assert_eq!(
+            slot.lock().unwrap().as_ref().map(|d| d.node.as_str()),
+            Some("phone")
+        );
     }
 
     #[test]

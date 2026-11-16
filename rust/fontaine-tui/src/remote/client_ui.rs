@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn a_multi_select_answer_with_several_options_is_refused_with_a_notice() {
-        use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionOption};
+        use fontaine_sdk::tools::ask_user::{Question, QuestionAnswer, QuestionOption};
         let option = |label: &str| QuestionOption {
             label: label.into(),
             description: "d".into(),

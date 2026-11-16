@@ -2242,9 +2242,12 @@ impl App {
                     .questions
                     .front_mut()
                     .expect("the open question was just found");
-                if let Some(reply) = panel.device_reply(index, &options, &reply)? {
-                    panel.reply_by(reply, Some(by));
-                    self.questions.pop_front();
+                match panel.device_reply(index, &options, &reply)? {
+                    Some(reply) => {
+                        panel.reply_by(reply, Some(by));
+                        self.questions.pop_front();
+                    }
+                    None => panel.note_device(by),
                 }
                 Ok(())
             }

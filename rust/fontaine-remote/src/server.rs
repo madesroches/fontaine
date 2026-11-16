@@ -294,10 +294,9 @@ async fn connect(connection: &Connection, shared: &Shared, from: &Sender) {
                 last_seen: now,
             };
             if let Err(e) = shared.store.update(&mut |list| list.upsert(device.clone())) {
-                shared.session.warn(&format!(
-                    "could not store the pairing of device {from}: {}",
-                    chain(&e)
-                ));
+                shared
+                    .session
+                    .warn(&format!("could not store the pairing of device {from}"), &e);
                 return reject(&mut send, connection, shared, from, Reason::Closed).await;
             }
             shared.session.paired(from, &label);
@@ -314,9 +313,7 @@ async fn connect(connection: &Connection, shared: &Shared, from: &Sender) {
                     return reject(&mut send, connection, shared, from, reason).await;
                 }
                 Err(e) => {
-                    shared
-                        .session
-                        .warn(&format!("could not read the paired devices: {}", chain(&e)));
+                    shared.session.warn("could not read the paired devices", &e);
                     return reject(&mut send, connection, shared, from, Reason::NotPaired).await;
                 }
             }
@@ -328,25 +325,14 @@ async fn connect(connection: &Connection, shared: &Shared, from: &Sender) {
     };
     let now = shared.clock.now_secs();
     if let Err(e) = shared.store.update(&mut |list| list.touch(from, now)) {
-        shared.session.warn(&format!(
-            "could not record when device {from} was last seen: {}",
-            chain(&e)
-        ));
+        shared.session.warn(
+            &format!("could not record when device {from} was last seen"),
+            &e,
+        );
     }
     shared.session.attached(from, &label);
     run(connection, shared, from, &label, &registration, send, recv).await;
     shared.session.detached(from);
-}
-
-fn chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
 }
 
 /// Whether the device's entry is gone from the paired list. A list that cannot be read cannot
@@ -355,10 +341,10 @@ fn revoked(shared: &Shared, from: &Sender) -> bool {
     match shared.store.devices() {
         Ok(list) => !list.contains(from),
         Err(e) => {
-            shared.session.warn(&format!(
-                "could not read the paired devices, so device {from} was disconnected: {}",
-                chain(&e)
-            ));
+            shared.session.warn(
+                &format!("could not read the paired devices, so device {from} was disconnected"),
+                &e,
+            );
             true
         }
     }

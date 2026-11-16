@@ -244,9 +244,10 @@ impl HostSession for RemoteSurface {
                     return self.refused_command(from, &line);
                 }
                 let entry = match command {
-                    Command::Other { name, argument }
-                        if lock(&self.skills, "remote skill list").contains(&name) =>
-                    {
+                    Command::Other { name, argument } => {
+                        if !lock(&self.skills, "remote skill list").contains(&name) {
+                            return self.refused_command(from, &line);
+                        }
                         Queued::Skill {
                             raw: line.clone(),
                             name,
@@ -393,8 +394,11 @@ impl HostSession for RemoteSurface {
         );
     }
 
-    fn warn(&self, text: &str) {
-        self.note(Level::Warning, text.to_string());
+    fn warn(&self, context: &str, error: &(dyn std::error::Error + 'static)) {
+        self.note(
+            Level::Warning,
+            format!("{context}: {}", fontaine_sdk::tools::error_chain::chain(error)),
+        );
     }
 }
 
@@ -453,18 +457,13 @@ mod tests {
             "/guardian-enable",
             "/remote on",
             "/remote-inbox on",
+            "/mcp__server__prompt arg",
             "/afk review",
             "/export x",
             "/theme dark",
             "/model x",
         ] {
             let handled = surface.client_message(&node, "l", slash(line));
-            // `/remote-inbox` no longer exists: it parses as an unknown name, a skill candidate.
-            if line.starts_with("/remote-inbox") {
-                assert!(matches!(handled, Handled::Accepted { .. }), "{line}");
-                steering.retract();
-                continue;
-            }
             assert!(
                 matches!(handled, Handled::Notice { .. }),
                 "{line}: {handled:?}"
@@ -477,7 +476,7 @@ mod tests {
                 .iter()
                 .filter(|r| r.rule.as_deref() == Some("command_refused"))
                 .count()
-                >= 7
+                >= 9
         );
     }
 

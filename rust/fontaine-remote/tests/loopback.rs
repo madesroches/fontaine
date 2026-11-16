@@ -61,8 +61,11 @@ impl HostSession for Session {
         self.refused.lock().unwrap().push(reason);
     }
 
-    fn warn(&self, text: &str) {
-        self.warnings.lock().unwrap().push(text.into());
+    fn warn(&self, context: &str, error: &(dyn std::error::Error + 'static)) {
+        self.warnings
+            .lock()
+            .unwrap()
+            .push(format!("{context}: {error}"));
     }
 }
 
