@@ -54,7 +54,7 @@ impl TicketPrompt {
                 "Valid for {}, good for one pairing. Whoever presents it first can ask this terminal to pair a device; you confirm the device here before it is paired.",
                 self.lifetime
             )),
-            Line::raw("On the other device: fontaine attach --ticket-stdin"),
+            Line::raw("On the other device: FONTAINE_TICKET=<ticket> fontaine attach"),
             Line::raw(""),
         ];
         let width = width.max(1);
@@ -78,5 +78,23 @@ impl Drop for TicketPrompt {
     fn drop(&mut self) {
         // Best effort: the dialog's buffer should not keep the credential; copies made elsewhere (clipboard, encode) are not reached.
         self.ticket.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // An interactive attach refuses --ticket-stdin without --message (attach_cmd's terminal_refusal),
+    // so the hint must name the FONTAINE_TICKET form that attach_cmd accepts.
+    #[test]
+    fn hint_uses_the_env_form_an_interactive_attach_accepts() {
+        let body = TicketPrompt::new("t".into(), "10m".into()).body(80, &Theme::default());
+        let text: Vec<String> = body.iter().map(|l| l.to_string()).collect();
+        assert!(
+            text.iter()
+                .any(|l| l == "On the other device: FONTAINE_TICKET=<ticket> fontaine attach")
+        );
+        assert!(!text.iter().any(|l| l.contains("--ticket-stdin")));
     }
 }
