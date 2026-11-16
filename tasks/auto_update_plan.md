@@ -104,12 +104,14 @@ runs no tool call and gets no new capability.
 The verified binary replaces the file with an atomic rename, so running sessions keep the old
 inode and are not interrupted; the next launch executes the new binary. The signature is checked
 once, in the same process that installs (nothing persists unverified across launches). The previous
-binary is kept as `<exe>.prev` (hard link taken before the rename) for rollback.
+binary is kept as `<exe>.prev` for rollback: on every swap an existing `.prev` is removed, then the
+running binary is hard-linked to it before the rename (so it is replaced each time). If the
+filesystem rejects the hard link, `.prev` is skipped.
 
 ### Windows
 
 The running executable is locked, so the session never replaces itself. After verification the pass
-keeps the verified archive, its `.minisig` and a manifest (`channel`, `version`, `sha256`) in
+keeps the verified archive, its `.minisig` and a manifest (`channel`, `version`) in
 `<data>/update-staged/<version>/` (copied from the work dir, not renamed: it may be on another
 filesystem; the manifest is written to a temp name and renamed), then starts a detached
 helper and returns. The hand-off holds no receipt lock.
@@ -126,7 +128,9 @@ helper and returns. The hand-off holds no receipt lock.
   `.fontaine-update-*` work dir beside the binary, re-verifies the staged archive with
   `verify_file` + `check_binding` against the embedded key (the stage persisted across launches),
   re-compares versions (a newer build installed meanwhile wins), calls `replace_binary`, rewrites the
-  receipt, writes the marker, removes the stage. Per-user install dir, so no UAC.
+  receipt, writes the marker, removes the stage. Per-user install dir, so no UAC. The helper rebuilds
+  a `Release` offline from the manifest's `channel` and `version` (`release_index::tag_build` /
+  `dev_build_number`) and the asset name from `archive_name(target)`, so it can call `check_binding`.
 - **Interruption:** the stage stays until applied; a killed helper is replaced by the next launch's
   pass (stamp permitting, plus a check at every launch for an existing stage with no live helper,
   which needs no network).
@@ -137,10 +141,11 @@ helper and returns. The hand-off holds no receipt lock.
 ### Rollback
 
 No automatic rollback in this release (a binary that fails to start cannot report itself). The
-one-generation `<exe>.prev` is kept and `fontaine update --rollback` restores it under the receipt
-lock, rewrites the receipt version, and records the rolled-back build in `<data>/update-skip` so
+one-generation `<exe>.prev` is kept (Linux and macOS only) and `fontaine update --rollback` restores
+it under the receipt lock, rewrites the receipt version, and records the rolled-back build in `<data>/update-skip` so
 auto-update does not reinstall that same build; a still newer build clears the skip. `fontaine
-update` (manual) ignores the skip.
+update` (manual) ignores the skip. On Windows `--rollback` is unsupported: it exits 1 with a
+clear message. Where `.prev` is absent (hard link rejected), it reports there is nothing to restore.
 
 ### Failure reporting
 
@@ -168,7 +173,8 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
-5. Unix: keep `<exe>.prev` in `install::replace_binary`; add `fontaine update --rollback` and the
+5. Unix: remove any existing `<exe>.prev` then re-link it in `install::replace_binary` (skip if the
+   link fails); Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
    skip file (cli.rs, update/mod.rs).
 6. Windows: staged dir, hidden helper subcommand (cli.rs, `update/helper.rs`), lock wait, re-verify
    and swap.
@@ -193,15 +199,16 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - 2026-11-15 (#175): No automatic rollback; one `<exe>.prev` generation plus `fontaine update --rollback` and a skip record. Reason: a binary that cannot start cannot report failure, and a boot-health protocol is out of scope for the first release.
 - 2026-11-15 (#175): Deviation from Claude Code, which applies updates by its own policy: Fontaine's update is on by default and silent apart from one post-update notice and a once-shown warning on a failed update; `[updates] auto_update` (user scope only) opts out. Reason: the maintainer's scope decision of 2026-11-15.
 - 2026-11-15 (#175): Supersedes the Windows rename-aside note of 2026-11-08 for the background path only; the helper swaps when no process runs the target.
+- 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
 - 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable; `fontaine update --rollback` ships in the first release.
 
 ## Documentation
 
-- `docs/installing.md`: automatic updates, the opt-out, silent cases, rollback, Windows behavior,
+- `docs/installing.md`: automatic updates, the opt-out, silent cases, rollback (Linux/macOS only), Windows behavior,
   log and marker files; the uninstall sections name the new files (`.prev`, `update-staged`,
   `update-helper`, `update.lock`, `update.stamp`, `update-helper.lock`, `updates.jsonl`, `update-applied.json`,
   `update-state.json`, `update-skip`).
-- `docs/headless.md`: `fontaine update`, including `--rollback`.
+- `docs/headless.md`: `fontaine update`, including `--rollback` (Linux/macOS only).
 - `docs/configuration.md`: `[updates]` section, the user-only matrix row and the new data files
   in the data-file table (validated by `cargo test -p fontaine-core --test docs`).
 - `docs/tui.md`: the post-update notice.
@@ -227,7 +234,8 @@ Unit and integration tests with wiremock and the existing release-index and sign
   deleted silently; a dev-shaped `VERSION` (`<pkg>-dev+<sha12>`) with a receipt at
   `<base>-dev.<N>+<sha7>` still shows the notice.
 - Rollback: `--rollback` restores `.prev`, rewrites the receipt, and the skip file stops reinstall of
-  that build.
+  that build; a second update replaces an existing `.prev`; on Windows `--rollback` prints the
+  unsupported message and exits 1; with no `.prev` it reports nothing to restore.
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
