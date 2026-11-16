@@ -31,7 +31,7 @@ pub fn pairing(node: &str, label: &str) -> ConfirmPrompt {
     )
 }
 
-/// The confirmation before `/afk review' lets a stopped session run again. `summary` is the
+/// The confirmation before `/afk review` lets a stopped session run again. `summary` is the
 /// report's headline, so the user has read what stopped it before answering.
 pub fn afk_review(summary: String) -> ConfirmPrompt {
     ConfirmPrompt::new(

@@ -306,13 +306,6 @@ impl RemoteClientUi {
                 message_id,
                 line: text,
             }),
-            // A line that starts with `!` is plain text for the model there; say so here, so
-            // nobody expects a shell.
-            None if text.starts_with('!') => {
-                self.app.attach_notice =
-                    Some("sent as a message: shell lines run at the host terminal".to_string());
-                Outcome::Send(ClientMsg::Prompt { message_id, text })
-            }
             None => Outcome::Send(ClientMsg::Prompt { message_id, text }),
         }
     }
@@ -329,7 +322,8 @@ impl RemoteClientUi {
             Action::Queue(queued) => {
                 use fontaine_sdk::core::steering::Queued;
                 match queued {
-                    Queued::Message(text) | Queued::Shell(text) => self.line(text),
+                    Queued::Message(text) => self.line(text),
+                    Queued::Shell(_) => self.local("shell lines run at the host terminal"),
                     Queued::Command(raw) | Queued::Skill { raw, .. } => self.line(raw),
                 }
             }
@@ -492,6 +486,11 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
                             Ok(snapshot) => ui.snapshot(snapshot),
                             Err(e) => break AttachEnd::Failed(AttachError::Protocol(e.to_string())),
                         }
+                    }
+                    // The host's stand-in for an event too large to send; it is not a RemoteEvent.
+                    ClientEvent::Event { event, .. } if event["kind"] == "oversized" => {
+                        ui.app.attach_notice =
+                            Some("the host skipped an update that was too large".to_string());
                     }
                     ClientEvent::Event { event, .. } => {
                         match serde_json::from_value::<RemoteEvent>(event) {

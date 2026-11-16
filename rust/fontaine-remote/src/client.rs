@@ -10,6 +10,7 @@ use iroh::address_lookup::{DnsAddressLookup, PkarrResolver};
 use iroh::endpoint::{ConnectionError, RecvStream, SendStream, presets};
 use iroh::tls::CaTlsConfig;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -239,14 +240,17 @@ enum Frame {
     Lost(AttachError),
 }
 
-async fn next_frame(link: &mut Link) -> Frame {
-    match read_frame(&mut link.recv, HOST_FRAME_CAP, Wait::Body).await {
+async fn next_frame<R: AsyncRead + Unpin>(
+    recv: &mut R,
+    connection: Option<&iroh::endpoint::Connection>,
+) -> Frame {
+    match read_frame(recv, HOST_FRAME_CAP, Wait::Body).await {
         Ok(body) => match serde_json::from_slice::<HostMsg>(&body) {
             Ok(message) => Frame::Host(message),
             Err(e) => Frame::Lost(AttachError::Protocol(e.to_string())),
         },
         Err(crate::protocol::FrameError::Io(io)) => {
-            Frame::Lost(match link.connection.close_reason() {
+            Frame::Lost(match connection.and_then(|c| c.close_reason()) {
                 Some(ConnectionError::ApplicationClosed(_)) | None => connect_error(io),
                 Some(other) => connect_error(other),
             })
@@ -269,8 +273,45 @@ struct Progress {
     assembler: SnapshotAssembler,
 }
 
+/// Reads frames on their own task: `read_frame` is not cancel-safe, so it must never be a
+/// `select!` branch that can lose to another one mid-frame.
+fn spawn_reader<R: AsyncRead + Unpin + Send + 'static>(
+    mut recv: R,
+    connection: Option<iroh::endpoint::Connection>,
+) -> (mpsc::Receiver<Frame>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel(32);
+    let task = tokio::spawn(async move {
+        loop {
+            let frame = next_frame(&mut recv, connection.as_ref()).await;
+            let last = matches!(frame, Frame::Lost(_));
+            if tx.send(frame).await.is_err() || last {
+                return;
+            }
+        }
+    });
+    (rx, task)
+}
+
 async fn pump(
-    mut link: Link,
+    link: Link,
+    events: &mpsc::UnboundedSender<ClientEvent>,
+    input: &mut mpsc::UnboundedReceiver<ClientMsg>,
+    progress: &mut Progress,
+) -> Ended {
+    let Link {
+        mut send,
+        recv,
+        connection,
+    } = link;
+    let (frames, reader) = spawn_reader(recv, Some(connection));
+    let ended = pump_frames(frames, &mut send, events, input, progress).await;
+    reader.abort();
+    ended
+}
+
+async fn pump_frames<W: AsyncWrite + Unpin>(
+    mut frames: mpsc::Receiver<Frame>,
+    send: &mut W,
     events: &mpsc::UnboundedSender<ClientEvent>,
     input: &mut mpsc::UnboundedReceiver<ClientMsg>,
     progress: &mut Progress,
@@ -280,11 +321,12 @@ async fn pump(
     let mut last_heard = Instant::now();
     loop {
         tokio::select! {
-            frame = next_frame(&mut link) => {
+            frame = frames.recv() => {
                 last_heard = Instant::now();
                 match frame {
-                    Frame::Lost(error) => return Ended::Lost(error),
-                    Frame::Host(message) => {
+                    None => return Ended::Lost(AttachError::Closed),
+                    Some(Frame::Lost(error)) => return Ended::Lost(error),
+                    Some(Frame::Host(message)) => {
                         if let Some(ended) = apply(message, events, progress) {
                             return ended;
                         }
@@ -295,7 +337,7 @@ async fn pump(
                 let Some(message) = message else {
                     return Ended::Over(Ok(()));
                 };
-                if write_frame(&mut link.send, &message).await.is_err() {
+                if write_frame(send, &message).await.is_err() {
                     // The message is lost with the connection; the caller sees the reconnect.
                     return Ended::Lost(AttachError::Closed);
                 }
@@ -304,7 +346,7 @@ async fn pump(
                 if last_heard.elapsed() >= IDLE_LIMIT {
                     return Ended::Lost(AttachError::Timeout);
                 }
-                if write_frame(&mut link.send, &ClientMsg::Ping).await.is_err() {
+                if write_frame(send, &ClientMsg::Ping).await.is_err() {
                     return Ended::Lost(AttachError::Closed);
                 }
             }
@@ -357,12 +399,7 @@ fn apply(
             let _ = events.send(ClientEvent::PromptRejected { message_id, reason });
         }
         HostMsg::Rejected { reason } => {
-            return Some(match reason {
-                Reason::Superseded | Reason::Locked => {
-                    Ended::Over(Err(AttachError::Rejected(reason)))
-                }
-                other => Ended::Over(Err(AttachError::Rejected(other))),
-            });
+            return Some(Ended::Over(Err(AttachError::Rejected(reason))));
         }
         HostMsg::Bye => {
             let _ = events.send(ClientEvent::Bye);
@@ -524,7 +561,7 @@ async fn first_reply(link: &mut Link, pairing: bool) -> Result<(), AttachError> 
         return Ok(());
     }
     let answer = async {
-        match next_frame(link).await {
+        match next_frame(&mut link.recv, Some(&link.connection)).await {
             Frame::Host(HostMsg::Paired) => Ok(()),
             Frame::Host(HostMsg::Rejected { reason }) => Err(AttachError::Rejected(reason)),
             Frame::Host(other) => Err(AttachError::Protocol(format!("{other:?}"))),
@@ -590,5 +627,77 @@ pub async fn send_message(
             Some(ClientEvent::Bye) | None => return Err(AttachError::Closed),
             Some(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+    use crate::protocol::encode_frame;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keepalive_and_input_during_a_slow_frame_leave_the_stream_intact() {
+        let (device, mut host) = tokio::io::duplex(1024);
+        let (device_read, mut device_write) = tokio::io::split(device);
+        let (frames, reader) = spawn_reader(device_read, None);
+        let (events, mut seen) = mpsc::unbounded_channel();
+        let (input_tx, mut input) = mpsc::unbounded_channel();
+        let mut progress = Progress {
+            epoch: None,
+            last_seq: None,
+            assembler: SnapshotAssembler::default(),
+        };
+        let pump = tokio::spawn(async move {
+            pump_frames(
+                frames,
+                &mut device_write,
+                &events,
+                &mut input,
+                &mut progress,
+            )
+            .await
+        });
+
+        let body = encode_frame(&HostMsg::Event {
+            epoch: 1,
+            seq: 1,
+            event: serde_json::json!({ "kind": "x" }),
+        });
+        let mut wire = u32::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+        wire.extend_from_slice(&body);
+        // Half a length prefix, then silence past a keepalive tick: the interrupted read must
+        // not lose these bytes.
+        host.write_all(&wire[..2]).await.unwrap();
+        tokio::time::sleep(KEEPALIVE + Duration::from_secs(1)).await;
+        input_tx.send(ClientMsg::Interrupt).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        host.write_all(&wire[2..6]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        host.write_all(&wire[6..]).await.unwrap();
+
+        let Some(ClientEvent::Event { seq, event, .. }) = seen.recv().await else {
+            panic!("the event was not delivered intact");
+        };
+        assert_eq!((seq, event["kind"].as_str()), (1, Some("x")));
+
+        // The device wrote a ping and the interrupt meanwhile, each whole.
+        let first = crate::protocol::read_frame(&mut host, 1024, Wait::Body)
+            .await
+            .unwrap();
+        let second = crate::protocol::read_frame(&mut host, 1024, Wait::Body)
+            .await
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_slice(&first),
+            Ok(ClientMsg::Ping | ClientMsg::Interrupt)
+        ));
+        assert!(matches!(
+            serde_json::from_slice(&second),
+            Ok(ClientMsg::Ping | ClientMsg::Interrupt)
+        ));
+        pump.abort();
+        reader.abort();
     }
 }

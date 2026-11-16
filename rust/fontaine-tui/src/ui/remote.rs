@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use fontaine_remote::{
@@ -52,6 +53,25 @@ pub(crate) enum RemoteState {
         store: Arc<FileStore>,
     },
     Running(Box<Running>),
+}
+
+/// A device interrupt stored while idle or in a modal loop would cancel a later, unrelated turn.
+fn stored_interrupt(stored: bool, turn_running: bool) -> bool {
+    stored || turn_running
+}
+
+/// Endpoints whose shutdown task still holds the host lock.
+static STOPPING: AtomicUsize = AtomicUsize::new(0);
+
+/// The lock is released only once the endpoint has closed, so a quick `/remote on` has to be told
+/// to wait instead of blaming another session.
+fn shut_down_in_background(server: RemoteServer, lock: FileLock) {
+    STOPPING.fetch_add(1, Ordering::SeqCst);
+    tokio::spawn(async move {
+        server.shutdown().await;
+        drop(lock);
+        STOPPING.fetch_sub(1, Ordering::SeqCst);
+    });
 }
 
 fn lifetime_text(ttl: Duration) -> String {
@@ -235,6 +255,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         let lock = match file_lock::try_lock(&store.host_lock_path()) {
             Ok(Some(lock)) => lock,
+            Ok(None) if STOPPING.load(Ordering::SeqCst) > 0 => {
+                self.app
+                    .transcript
+                    .error("remote control is still shutting down; try again in a moment");
+                return;
+            }
             Ok(None) => {
                 self.app
                     .transcript
@@ -378,10 +404,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 Err(e) => {
                     surface.close();
-                    tokio::spawn(async move {
-                        server.shutdown().await;
-                        drop(lock);
-                    });
+                    shut_down_in_background(server, lock);
                     self.app.transcript.error(e.to_string());
                 }
             },
@@ -434,7 +457,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         for input in running.surface.take_inputs() {
             match input {
                 DeviceInput::Interrupt { from } => {
-                    running.interrupt = true;
+                    running.interrupt = stored_interrupt(running.interrupt, self.app.running);
                     running.surface.audit(
                         "interrupt",
                         &format!("device {from} interrupted the turn"),
@@ -602,10 +625,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 surface.close();
                 // A start that finished after the last look would otherwise leak its endpoint.
                 if let Some(Ok(server)) = surface.take_started() {
-                    tokio::spawn(async move {
-                        server.shutdown().await;
-                        drop(lock);
-                    });
+                    shut_down_in_background(server, lock);
                 }
             }
             RemoteState::Running(running) => {
@@ -617,10 +637,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 } = *running;
                 // Dropping the sender of a pairing still waiting declines it.
                 surface.close();
-                tokio::spawn(async move {
-                    server.shutdown().await;
-                    drop(lock);
-                });
+                shut_down_in_background(server, lock);
             }
         }
         self.app.pairing_prompt = None;
@@ -742,4 +759,16 @@ fn apply_answer(
 
 fn refusal_text(refusal: DeviceRefusal) -> &'static str {
     refusal.text()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_interrupt;
+
+    #[test]
+    fn a_device_interrupt_outside_a_turn_is_not_kept() {
+        assert!(!stored_interrupt(false, false));
+        assert!(stored_interrupt(false, true));
+        assert!(stored_interrupt(true, false));
+    }
 }
