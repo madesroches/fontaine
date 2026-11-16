@@ -122,7 +122,10 @@ helper and returns. The hand-off holds no receipt lock. The launching process pr
 is free; the helper keeps its own `try_lock` as the authoritative check.
 
 - **Helper** = a per-spawn copy of the currently running, already trusted `fontaine.exe`
-  (`<data>/update-helper/fontaine-helper-<pid>.exe`) started with a hidden internal subcommand. The
+  (`<data>/update-helper/fontaine-helper-<pid>.exe`) started with a hidden internal subcommand taking
+  the target exe path, the receipt path and the data dir as arguments; it passes the target exe path
+  as `current_exe` to `receipt::locate` (the same `Params` shape `update()` uses), never its own
+  `std::env::current_exe()`. The
   helper is therefore never the swap target; the next pass deletes stale copies (best effort, a
   running one is skipped).
 - **One helper:** `try_lock(<data>/update-helper.lock)`; a second helper exits at once.
@@ -186,13 +189,13 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 
 ## Implementation Steps
 
-1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green, with
-   the `leftovers()` helper in `tests/update_cmd.rs` updated to ignore `fontaine.prev`.
+1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green.
 2. Extract `stamp.rs` from `plugin_auto_update.rs` (`THROTTLE` and the stamp helpers move there; each pass supplies its own stamp file name); switch the plugin pass and `plugin_auto_update/tests.rs` (it calls `stamp_due`/`write_stamp`) to it.
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
-5. Unix: `install::replace_binary` keeps `<exe>.prev` per "Linux and macOS"; Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
+5. Unix: `install::replace_binary` keeps `<exe>.prev` per "Linux and macOS" (with the `leftovers()`
+   helper in `tests/update_cmd.rs` updated to ignore `fontaine.prev`); Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
    skip file (cli.rs, update/mod.rs).
 6. Windows: staged dir, hidden helper subcommand (cli.rs, `update/helper.rs`), lock wait, re-verify
    and swap.
@@ -243,7 +246,7 @@ Unit and integration tests with wiremock and the existing release-index and sign
   older feed do nothing (no downgrade).
 - Gating: no activity under `-p` and `fontaine send` (no request reaches the mock); receipt for
   another binary, no receipt: silent; `auto_update = false`: no request.
-- Cadence: stamp due/not due, clock moved back.
+- Cadence: the existing stamp tests in `plugin_auto_update/tests.rs` move to `stamp.rs`.
 - Cleanup: a fresh `.fontaine-update-*` dir of a concurrent update survives the start-of-pass
   cleanup; one older than 24 h is removed.
 - Concurrency: two passes against one data dir stage once (second `try_lock` loses); a pass racing
@@ -259,6 +262,7 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
+- Windows helper's `receipt::locate` uses the target exe path: a helper running from a copy still finds the receipt for the target.
 - Windows launch with an existing stage starts a helper without stamp, `update.lock` or network, tested with the injected lock probe.
 - Windows stage whose manifest channel differs from the receipt's (e.g. dev installer run while a release stage waits): no swap, stage deleted, failure logged.
 - Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
