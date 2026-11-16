@@ -3,10 +3,10 @@
 # dataset named by `dataset_version`. Empty until a scorecard run fills it, in which case the
 # guardian falls back to the main model.
 [[models]]
-kind = "opencode-go"
-model = "claude-haiku-5-5"
-catch_rate = 0.9918032786885246
-false_deny_rate = 0.0392156862745098
-p95_ms = 2378
-scored_on = "2026-10-27"
-dataset_version = "d1740a7c65ae"
+kind = "databricks"
+model = "system.ai.deepseek-v4-1-flash-1017"
+catch_rate = 0.9
+false_deny_rate = 0.026785714285714284
+p95_ms = 2463
+scored_on = "2026-11-16"
+dataset_version = "5daaae0b478a"

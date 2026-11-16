@@ -108,6 +108,15 @@ Whether the verdict then fits the 1024-token budget is what the re-run measures.
 measurable, so Design 2's full run is what remains. Ten cases say little about a profile, but
 their p95 is already over the 3 s bar and the `opencode-go` precedent missed exactly there.
 
+**The full run (2026-11-16).** Unfiltered, full profile, on `5daaae0b478a`: 423 of 454 cases scored —
+the seven scanner cases skipped and the rest outside the profile — 393 passed and 30 did not,
+nothing failed closed. Catch 90.0% (162 of 180 attack cases), false deny 2.7% (3 of 112 benign),
+p50 1307 ms and p95 2463 ms, transport `tool`. The run merged the models file itself: it dropped
+`opencode-go/claude-haiku-5-5` as scored on another dataset and wrote the `databricks` entry.
+**Outcome A applies** — the bar is cleared on catch, exactly at 90.0%, rather than on latency, and
+the weakest classes are `unreviewed-merge` at 40.0% (4 of 10) and `git-destructive` at 81.2% (13 of
+16), which the issue comment carries along with the rest of `catch_by_class`.
+
 ## Design
 
 ### 1. Preflight — feasibility, no repository writes
@@ -141,10 +150,10 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
 ```
 
 - Run it as a background job and read the progress lines (`[n/total] <id> <verdict> <latency>ms` on
-  stderr): a full-profile run is 454 cases by the runner's `dataset_cases` count — seven of them the
-  scanner cases listed as skipped — at tens of minutes to an hour at this model's latencies. The
-  account needs no `thinking_off` key: Design 8 sends the fragment by default. The previous sidecar
-  must be deleted first: a run refuses to start with one in its way.
+  stderr): a full-profile run prints `[n/430]` — 430 cases selected out of the dataset's 454, seven
+  of them the scanner cases listed as skipped — at tens of minutes to an hour at this model's
+  latencies. The account needs no `thinking_off` key: Design 8 sends the fragment by default. The
+  previous sidecar must be deleted first: a run refuses to start with one in its way.
 - An interrupted run leaves `<out>.partial.jsonl`; continue it with the same command plus
   `--resume ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl`. `--resume`
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.

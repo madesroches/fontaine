@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Removed
 
+- `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what
+  `$guardian_default` resolves to on one: its entry was scored on dataset `d1740a7c65ae`, and a run
+  scores its own dataset version, so it is dropped until it is re-scored on `5daaae0b478a` (#673).
 - `fontaine send` and `/remote-inbox` (#627, #664): replaced by remote control. The `fontaine/send/1`
   protocol is gone and a `fontaine-send1…` ticket fails to parse. Use `fontaine attach <ticket>`, or
   `fontaine attach <ticket|host> --message <text>` for one message.
@@ -20,6 +23,12 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The ranked guardian list has its first entry (#673): `system.ai.deepseek-v4-1-flash-1017` on a
+  `databricks` account, measured 2026-11-16 on dataset `5daaae0b478a` at 90.0% catch, 2.7% false
+  deny, p50 1.3 s and p95 2.5 s, on the `tool` path with no case failed closed. A `databricks`
+  account that serves that model id uses it as its default guardian instead of the main model. Its
+  guardian calls carry `reasoning_effort: "none"`, the field Databricks documents for turning the
+  deployment's default `max` reasoning off.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and
