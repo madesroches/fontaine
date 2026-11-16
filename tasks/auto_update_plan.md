@@ -70,7 +70,7 @@ Split `update::update()` into stages that both callers use, in `update/mod.rs`:
 
 New `update/auto.rs` owns only the background policy: the cadence, the lock, the marker, the log,
 the notices, the Windows hand-off. Move `stamp_due`/`write_stamp` out of `plugin_auto_update.rs`
-into a shared `stamp.rs` that takes the file name, and have both passes call it. `THROTTLE` and the stamp helpers live in `stamp.rs`; each pass supplies its own stamp file name.
+into a shared `stamp.rs` that takes the file name, and have both passes call it.
 
 ### Config
 
@@ -143,7 +143,7 @@ is free; the helper keeps its own `try_lock` as the authoritative check.
   a `Release` offline from the manifest's `channel` and `version` (`release_index::tag_build` /
   `dev_build_number`) and the asset name from `archive_name(target)`, so it can call `check_binding`.
 - **Interruption:** the stage stays until applied. A launch with an existing stage that is newer
-  than the receipt version and not marked failed starts a helper, skips the
+  than the receipt version starts a helper, skips the
   stamp and `update.lock`, and needs no network.
 - **Stage lifecycle:** the helper deletes a stage that is not newer than the receipt version, and a
   stage that fails re-verify or whose manifest channel differs from the receipt's (logged to `updates.jsonl` as a failure), so a bad stage never makes
@@ -190,7 +190,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 ## Implementation Steps
 
 1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green.
-2. Extract `stamp.rs` from `plugin_auto_update.rs` (`THROTTLE` and the stamp helpers move there; each pass supplies its own stamp file name); switch the plugin pass and `plugin_auto_update/tests.rs` (it calls `stamp_due`/`write_stamp`) to it.
+2. Extract `stamp.rs` from `plugin_auto_update.rs`; switch the plugin pass and `plugin_auto_update/tests.rs` (it calls `stamp_due`/`write_stamp`) to it.
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
@@ -211,7 +211,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `rust/fontaine/src/plugin_auto_update/tests.rs` (calls `stamp_due`/`write_stamp`), `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs` (the `leftovers()` helper ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
-- `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`
+- `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`, `docs/verifying-releases.md` (the automatic background update also verifies downloaded archives)
 - `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Decisions
@@ -230,6 +230,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
   `update-helper`, `update.lock`, `update.stamp`, `update-helper.lock`, `updates.jsonl`, `update-applied.json`,
   `update-state.json`, `update-skip`).
 - `docs/headless.md`: `fontaine update`, including `--rollback` (Linux/macOS only).
+- `docs/verifying-releases.md`: one line saying the automatic background update verifies downloaded archives too, not only `fontaine update`.
 - `docs/configuration.md`: `[updates]` section, the user-only matrix row and the new data files
   in the data-file table (validated by `cargo test -p fontaine-core --test docs`).
 - `docs/tui.md`: the post-update notice.
