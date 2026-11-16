@@ -73,11 +73,24 @@ the cases it scored and is deleted before the re-run.
 the first eight `attack:iam-grant` cases, five answered (all `deny`, 1.7 s to 6.3 s) and three failed
 closed exactly as before — a 200 whose answer stopped at `finish_reason=Length`. The healing never
 fired: its trigger is a provider refusal (a 400 or 422 naming a parameter), and these calls
-succeeded and were truncated. So the fragment is not an effective fix on this deployment: the
-gateway either accepts the field and ignores it, or refuses it and has it healed away — the eval
-binary installs no tracing subscriber, so the healing's warning is invisible and the two cannot be
-told apart from a run. Either way the outcome is a finding about the provider rather than a verdict
-on the model, and the measurement of Designs 3-5 does not apply.
+succeeded and were truncated. The eval binary installs no tracing subscriber, so the healing's
+warning is invisible, and a run cannot tell a field the gateway ignores from one it refuses and has
+healed away.
+
+**The thinking-off probe (2026-11-16).** `research/deepseek-harness/scripts/probe_dbx_thinking.py`
+asks the gateway directly, seventeen calls: one reasoning prompt with the eight fields a thinking
+model is turned off with, then three forced `submit` calls each with the fragment and without.
+Every call answered 200, and reasoning tokens stayed nonzero on every one of the eight — 62 to 121,
+against a 101-token baseline on the same prompt — so the gateway accepts the fragment and ignores
+it, and the second run's open question is closed: nothing was refused, so the healing has nothing
+to fire on. The one field whose usage report carried no reasoning breakdown,
+`reasoning_effort: "none"`, answered 142 tokens of steps in the content at 3.8 s, so reasoning was
+not off there either. Both ids resolve on the workspace: `system.ai.deepseek-v4-1-flash-1017`, the
+one this account is configured with, and the unsuffixed id the commands here name. The forced calls
+fit the 1024-token budget on this short prompt (88-233 completion tokens, all
+`finish_reason=tool_calls`), so the truncations of the first two runs come from the guardian's long
+prompt, which the reasoning then overruns. The outcome is a finding about the provider rather than a
+verdict on the model, and the measurement of Designs 3-5 does not apply.
 
 ## Design
 
@@ -293,6 +306,7 @@ the retry budget already allows for.
 | `rust/fontaine-sdk/src/guardian/guardian.rs`, `scanner.rs` | Each holds its latch and passes it in. |
 | `rust/fontaine-sdk/tests/guardian.rs`, `tests/guardian_scanner.rs` | A refused first request heals: the verdict arrives and later requests omit the fragment. |
 | `docs/configuration.md`, `docs/providers.md`, `docs/guardian.md` | The key, the databricks row and the limitation paragraph. |
+| `research/deepseek-harness/scripts/probe_dbx_thinking.py` | New: the probe behind the 2026-11-16 finding — the eight thinking-off shapes, then the forced call with and without the fragment. Kept as the evidence. |
 
 ## Trade-offs
 
@@ -315,6 +329,13 @@ the retry budget already allows for.
   without the parameters and stop sending them, so the refusal costs one attempt instead of leaving
   a workspace whose guardian denies everything. `thinking_off = false` opts out of the first
   attempt, for a workspace that knows its gateway refuses the field.
+- 2026-11-16 The Databricks AI Gateway accepts the thinking-off field and ignores it: eight shapes
+  tried (`thinking` disabled, `none` and `false`; `reasoning_effort` `none` and `minimal`; both
+  `chat_template_kwargs` switches; `enable_thinking`) all leave the model reasoning, so a model
+  served there that thinks by default cannot be the guardian under the 1024-token budget, whatever
+  the account's `thinking_off` says. The key stays on by default, because a workspace on a gateway
+  that does honour the field gets it for nothing and one that refuses it pays a single attempt;
+  this deployment pays nothing for it either, and the probe is kept as the evidence.
 - 2026-11-15 The first full-profile run (Current State) is neither published nor resumed: it was
   stopped at 318 of 430 cases with 102 fail-closed, and its cases were scored without a
   reasoning-off parameter. The measurement re-runs over the whole dataset with the account's

@@ -761,9 +761,11 @@ again for the rest of the session. `thinking_off = false` skips that first attem
 known to refuse it. Sending it is best-effort: a deployment that does not honour the field leaves the
 model thinking, and the guardian's 1024-token output budget can then go entirely to reasoning — the
 call answers nothing and fails closed as `error` with `finish_reason=Length`, which no retry fixes,
-so the model is not usable as a guardian there. On an `openai-compatible` or `kimi`
-account, a model that thinks by default cannot be the guardian: every call is denied as
-`GuardianUnavailable`. Pick a model without default thinking.
+so the model is not usable as a guardian there. Measured on the Databricks AI Gateway: eight
+candidate fields (`thinking` in three shapes, `reasoning_effort`, both `chat_template_kwargs`
+switches and `enable_thinking`) were all accepted and none of them stopped the reasoning. On an
+`openai-compatible` or `kimi` account, a model that thinks by default cannot be the guardian: every
+call is denied as `GuardianUnavailable`. Pick a model without default thinking.
 
 A guardian on a `claude-subscription` account takes the same structured-answer path: the verdict
 arrives as the model's typed output or a forced call of an aliased tool of the inert tool
