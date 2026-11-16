@@ -420,7 +420,10 @@ impl HostSession for RemoteSurface {
     fn warn(&self, context: &str, error: &(dyn std::error::Error + 'static)) {
         self.note(
             Level::Warning,
-            format!("{context}: {}", fontaine_sdk::tools::error_chain::chain(error)),
+            format!(
+                "{context}: {}",
+                fontaine_sdk::tools::error_chain::chain(error)
+            ),
         );
     }
 }

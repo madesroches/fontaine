@@ -1,6 +1,7 @@
 //! The device that answered a prompt reaches the ledger and the audit log, through the AFK
 //! backstop that wraps the session's approver.
 
+#[path = "core_common/mod.rs"]
 mod common;
 
 use std::sync::{Arc, OnceLock};
