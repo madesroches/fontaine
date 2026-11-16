@@ -73,6 +73,15 @@ fn shut_down_in_background(server: RemoteServer, lock: FileLock) {
     });
 }
 
+/// A start still in flight shuts its own rejected endpoint down; the lock waits for that.
+fn hold_lock_until_start_ends(surface: &RemoteSurface, lock: FileLock) {
+    STOPPING.fetch_add(1, Ordering::SeqCst);
+    surface.after_start_ends(Box::new(move || {
+        drop(lock);
+        STOPPING.fetch_sub(1, Ordering::SeqCst);
+    }));
+}
+
 fn lifetime_text(ttl: Duration) -> String {
     let secs = ttl.as_secs();
     if secs.is_multiple_of(3600) {
@@ -634,8 +643,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             RemoteState::Starting { surface, lock, .. } => {
                 surface.close();
                 // A start that finished after the last look would otherwise leak its endpoint.
-                if let Some(Ok(server)) = surface.take_started() {
-                    shut_down_in_background(server, lock);
+                match surface.take_started() {
+                    Some(Ok(server)) => shut_down_in_background(server, lock),
+                    Some(Err(_)) => {}
+                    None => hold_lock_until_start_ends(&surface, lock),
                 }
             }
             RemoteState::Running(running) => {
@@ -670,10 +681,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             RemoteState::Off => {}
             RemoteState::Starting { surface, lock, .. } => {
                 surface.close();
-                if let Some(Ok(server)) = surface.take_started() {
-                    server.shutdown().await;
+                match surface.take_started() {
+                    Some(Ok(server)) => {
+                        server.shutdown().await;
+                        drop(lock);
+                    }
+                    Some(Err(_)) => drop(lock),
+                    None => hold_lock_until_start_ends(&surface, lock),
                 }
-                drop(lock);
                 self.record_remote_disabled(runtime);
             }
             RemoteState::Running(running) => {

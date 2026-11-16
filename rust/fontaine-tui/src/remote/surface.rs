@@ -72,7 +72,11 @@ pub(crate) struct RemoteSurface {
     notices: Mutex<VecDeque<(Level, String)>>,
     /// Where the endpoint start leaves its result for the interface loop to pick up.
     started: Mutex<Option<Result<RemoteServer, String>>>,
+    /// What a switched-off start runs once it has shut its rejected endpoint down; `None` after.
+    after_rejected_start: Mutex<Option<Option<Release>>>,
 }
+
+type Release = Box<dyn FnOnce() + Send>;
 
 impl RemoteSurface {
     pub(crate) fn new(
@@ -92,6 +96,7 @@ impl RemoteSurface {
             pairings: Mutex::new(VecDeque::new()),
             notices: Mutex::new(VecDeque::new()),
             started: Mutex::new(None),
+            after_rejected_start: Mutex::new(Some(None)),
         }
     }
 
@@ -139,6 +144,24 @@ impl RemoteSurface {
         match rejected {
             Some(server) => server.shutdown().await,
             None => self.wake(),
+        }
+        // Taking the slot marks the start as over, whether or not a release was left in it.
+        let release = lock(&self.after_rejected_start, "start release slot").take();
+        if let Some(Some(release)) = release {
+            release();
+        }
+    }
+
+    /// Runs `release` once the start task is over, so a lock can be held until a rejected
+    /// endpoint has closed; at once if it already is.
+    pub(crate) fn after_start_ends(&self, release: Box<dyn FnOnce() + Send>) {
+        let mut slot = lock(&self.after_rejected_start, "start release slot");
+        match slot.as_mut() {
+            Some(pending) => *pending = Some(release),
+            None => {
+                drop(slot);
+                release();
+            }
         }
     }
 

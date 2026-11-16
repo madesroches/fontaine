@@ -2,7 +2,7 @@
 //! its paired devices, and the client's device key and known hosts. Project scope never reads or
 //! writes any of them.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use fontaine_remote::{AttachHosts, ClientStore, DeviceStore, PairedDevices, fresh_key};
@@ -70,16 +70,13 @@ fn key_at(path: &Path) -> io::Result<[u8; 32]> {
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the key file is not 32 bytes"))
     };
-    match owner_only::create_new(path) {
-        Ok(mut file) => {
-            let key = fresh_key();
-            file.write_all(&key)?;
-            file.flush()?;
-            Ok(key)
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => read(path),
-        Err(e) => Err(e),
+    // Written whole and renamed into place, so a reader or a crash never sees a partial key.
+    if path.exists() {
+        return read(path);
     }
+    let key = fresh_key();
+    owner_only::write_atomic(path, &key)?;
+    Ok(key)
 }
 
 fn read_text(path: &Path) -> io::Result<Option<String>> {

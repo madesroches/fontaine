@@ -434,9 +434,6 @@ async fn run(
                         return;
                     }
                 }
-                // A write the peer drained shows it alive; the select below may not get to its
-                // own reads for a long while on a slow link.
-                last_heard = Instant::now();
                 continue;
             }
             Next::Closed(how) => {
