@@ -7,10 +7,10 @@
 A `databricks` account is `Billing::Unpriced`, so a dbx session counts nothing in dollars even when
 the gateway serves a Claude, GPT or Gemini model whose price rig's catalog already knows. This plan
 prices such a model at the *served* vendor's list price and labels the figure an estimate, leaving
-genuinely unpriceable models (GLM, Kimi, DeepSeek, `gpt-oss-*`, custom `catalog.schema.name`
-endpoints) exactly as they are today. Spend, `total_cost_usd`, the OTLP cost metric and the dollar
-cost caps then all describe what the session's tokens would have cost on the served vendor's own
-API — never the workspace's DBU bill, which Fontaine cannot read per call.
+genuinely unpriceable models (GLM, Kimi, DeepSeek, `gpt-oss-*`, unmapped custom
+`catalog.schema.name` endpoints) exactly as they are today. Spend, `total_cost_usd`, the OTLP cost
+metric and the dollar cost caps then all describe what the session's tokens would have cost on the
+served vendor's own API — never the workspace's DBU bill, which Fontaine cannot read per call.
 
 ## Current State
 
@@ -162,8 +162,6 @@ An estimate is rendered, never inferred: `spend_text` (`agents_panel.rs`) and `c
 `TOOL` and truncation rules for these rows are unchanged; `est.` rides with the dollar segment.
 A cost cap binds on a list-price estimate: an `--max-budget-usd`, a session cap and a goal's cost
 cap all compare against the estimated figure, and every figure a cap shows carries ` est.`.
-The master plan's `### Providers` decisions keep a cap inactive only for a model with no catalog
-price, and prefer a cap that binds to one silently loosened by a stripped price.
 
 Every other figure a dollar or a cap shows is marked the same way: the `/cost` footer
 `Session cost budget: ${spent:.4} / ${cap:.2}` (`reports.rs:848-849`) through `UsageReport.budget`
@@ -225,9 +223,7 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 2. `providers/databricks.rs`: pass `Price::Keep` from `facts_for`, `Price::Strip` from
    `check_model_facts`; add `pub fn listed_price(model) -> Option<Pricing>` next to `facts_for`.
    `tests/databricks.rs`: `:249`'s `assert_eq!(spec.pricing, None)` on the Messages-bound
-   `system.ai.claude-haiku-5-5` becomes `Some`, and the wiremock cases the Testing Strategy's
-   databricks bullet describes are added — the kept price under the served id on each wire, and
-   none for `system.ai.glm-5-3` or the derived `system.ai.gemini-3-pro`.
+   `system.ai.claude-haiku-5-5` becomes `Some`.
 3. `providers/mod.rs`: add `Billing::Estimated` and the `listed_price(provider, model)` seam;
    `databricks::billing()` returns `Estimated`.
 
@@ -238,8 +234,10 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
    not list (`glm-*` → `Unpriced`). `tests/databricks.rs`: `:144-145`'s `!handle.priced()` and
    `!handle.catalog_billed()` become assertions that a listed id is `priced()`, `catalog_billed()`
    and `cost_basis() == Estimated`, and the wiremock cases the Testing Strategy's databricks
-   bullet describes are added — `say_hi` returning the response so `usage.cost` can be read, and
-   the new `system.ai.gemini-3-5-flash` entry, route constant and reply.
+   bullet describes are added — the kept price under the served id on each wire, none for
+   `system.ai.glm-5-3` or the derived `system.ai.gemini-3-pro`, `say_hi` returning the response so
+   `usage.cost` can be read, and the new `system.ai.gemini-3-5-flash` entry, route constant and
+   reply.
 5. Replace the `priced`/`billed` booleans with `CostBasis` at every site listed in Design §4 — the
    turn and per-agent paths, `guardian/guardian.rs` `Settings.priced`, `guardian/scanner.rs`
    `LlmScanner.priced`, the `permissions.rs`/`afk.rs`/`setup.rs` record calls and
@@ -310,7 +308,7 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   `rust/fontaine-sdk/tests/{agent_reply,max_tokens,memory,multimodal,native_search}.rs`,
   `rust/fontaine-sdk/tests/{output_styles,prefix_stability,rewind,teams,tool_search,priced,goal}.rs`,
   `rust/fontaine-sdk/tests/ledger.rs`
-- `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`,
+- `docs/{providers,configuration,tui,headless,telemetry,agent-sdk}.md`, `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -331,9 +329,12 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 - **No `pricing` config key** — every dbx user wants the figure, and a key would add a validation
   surface, docs and tests for an opt-out nobody asked for. The `est.` marker is what keeps the
   figure honest.
-- **`total_cost_usd` keeps its JSON type** — adding a sibling boolean to the `result` object
-  breaks the Claude-SDK-compatible contract consumers parse. The figure stays a plain number and
-  the qualifier is documented in `docs/headless.md`, and shown in the TUI where a human reads it.
+- **`total_cost_usd` keeps its JSON type** — adding a sibling boolean breaks the Agent SDK output
+  (`rust/fontaine/src/claude_compat/`), which writes its own `total_cost_usd` and
+  `modelUsage[..].costUSD` from the same ledger buckets and so becomes an estimate with no code
+  change; the `headless-v1` result, Fontaine's own schema, keeps the same shape. The qualifier is
+  documented in `docs/agent-sdk.md` and `docs/headless.md`, and shown in the TUI where a human
+  reads it.
 
 ## Documentation
 
@@ -347,8 +348,11 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 - `docs/tui.md:195`, `:866` and `:1355-1366` — the statusline's `cost.total_cost_usd` is a
   list-price estimate for an estimate-priced run, the dollar figure ends in ` est.` when it is an
   estimate, and the agents-panel paragraph gets the same clause.
-- `docs/headless.md:40`, `:62`, `:312` — `total_cost_usd` is a list-price estimate for an
-  estimate-priced run; a priced dbx model makes `--max-budget-usd` and a preference list work.
+- `docs/headless.md:40`, `:62`, `:312-313` — `total_cost_usd` and each bucket's `usage.*.cost_usd`
+  are a list-price estimate for an estimate-priced run; a priced dbx model makes
+  `--max-budget-usd` and a preference list work.
+- `docs/agent-sdk.md:219` — the Agent SDK `result.total_cost_usd` and `modelUsage[..].costUSD` are
+  list-price estimates for an estimate-priced run.
 - `docs/telemetry.md:130-138` — `fontaine.cost.usage` is present for a dbx model the catalog lists
   and carries `estimated = "true"`.
 - `docs/telemetry.md:156` — the `api_request` row: its `cost_usd` (when priced) is the same
@@ -372,9 +376,13 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   (`:27-74`, extended to take the basis and to return the flags with the reported cost and root
   spend): with `CostBasis::Estimated` the reported cost is kept and the root `Spend` and the main
   ledger bucket both have `estimated == true`.
-- **Display** (`agents_panel.rs`, `reports.rs` unit tests): `$0.0066 est.`, the budgeted form, a
-  mixed bucket marked, and an unpriced bucket still `n/a` / `· N unpriced tok`. These are the
-  strings the docs promise, so they are pinned where they are built.
+- **Display** (`agents_panel.rs`, `reports.rs`, `agents/budget.rs`, `core/goal.rs` and
+  `core/project_env.rs` unit tests): `$0.0066 est.`, the budgeted form, a mixed bucket marked, and
+  an unpriced bucket still `n/a` / `· N unpriced tok`; `Exhausted::{Cost,SessionCost}` described
+  from an estimated `Spend` read `its cost budget is spent ($0.0120 est. of $2.00)`;
+  `PauseReason::CostCap`'s Display reads `the goal's spend passed $2.00 est.`; the `/cost` footer's
+  ` est.` joins the existing footer test, and `usage_line`'s is a new `project_env.rs` case. These
+  are the strings the docs promise, so they are pinned where they are built.
 - **Telemetry** (`span_bridge.rs` unit tests): a `databricks` completion under `model.priced` yields
   `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` on the metric
   and `estimated = true` on its `api_request` event under a `model.estimated` span, a `gcp.gemini`
