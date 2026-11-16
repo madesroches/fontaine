@@ -1119,7 +1119,7 @@ tune. See [Cascade scorecards](evals.md#cascade-scorecards).
 
 ## Prompt versioning
 
-The prompts are versioned assets in `rust/fontaine-guardian/prompts/` (`guardian_prompt.md`,
+The prompts are versioned assets in `rust/fontaine-sdk/prompts/guardian/` (`guardian_prompt.md`,
 `guardian_minimal.md`, `scanner_llm.md`, `critique.md`, `env_scan.md`) compiled into the binary, so a prompt change ships with a release and is
 re-scored on the golden dataset before the list of validated models is regenerated. A change to a
 prompt or to the shipped rule lists changes the cache key, and an entry in the model list is only

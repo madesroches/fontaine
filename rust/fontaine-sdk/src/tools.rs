@@ -1,0 +1,46 @@
+pub mod advisor_tool;
+pub mod ask_user;
+pub mod bug_draft;
+pub mod builtins;
+pub mod checkpoint;
+pub mod child_env;
+pub mod command_shell;
+pub mod descriptor;
+pub mod display;
+pub mod error_chain;
+pub mod gate;
+pub mod git_bash;
+pub mod guarded;
+pub mod host;
+pub mod jobs;
+pub mod kills;
+pub mod live;
+pub mod lock;
+pub mod lsp;
+pub mod mcp;
+pub mod models_tool;
+pub mod names;
+pub mod notebook;
+pub mod powershell;
+pub mod preclassify;
+pub mod procgroup;
+pub mod result_pipeline;
+pub mod risk;
+pub mod schedule;
+pub mod scope;
+pub mod search;
+pub mod shell_cwd;
+pub mod skill;
+pub mod tls;
+pub mod todo;
+pub mod tool_search;
+pub mod webfetch;
+pub mod websearch;
+
+// Wikimedia and many CDNs answer a request without a User-Agent with 403; gateways that ask
+// clients to identify themselves read it too.
+pub const FONTAINE_USER_AGENT: &str = concat!(
+    "fontaine/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/madesroches/fontaine)"
+);

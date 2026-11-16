@@ -10,15 +10,12 @@ publish.workspace = true
 dist = false
 
 [features]
-pg2 = ["fontaine-core/pg2"]
+pg2 = ["fontaine-sdk/pg2"]
 
 [dependencies]
 clap.workspace = true
 dirs.workspace = true
-fontaine-agents.workspace = true
-fontaine-core.workspace = true
-fontaine-guardian = { workspace = true, features = ["composition"] }
-fontaine-tools.workspace = true
+fontaine-sdk.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

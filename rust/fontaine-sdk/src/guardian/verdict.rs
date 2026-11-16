@@ -1,0 +1,407 @@
+//! The guardian's answer, and what the harness makes of it. The model's own answer is the
+//! [`Verdict`]; every outcome that is not a verdict is turned into a denial by code, with a
+//! label the model is never offered.
+
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+
+use crate::guardian::rule_label::RuleLabel;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Decision {
+    Allow,
+    Deny,
+    Escalate,
+}
+
+impl Decision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Decision::Allow => "allow",
+            Decision::Deny => "deny",
+            Decision::Escalate => "escalate",
+        }
+    }
+}
+
+/// The verdict as the model writes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawVerdict {
+    /// `allow`, `deny` or `escalate`. It must agree with `rule`: `allow` goes with the `allow`
+    /// label only, `deny` and `escalate` with any other label.
+    decision: Decision,
+    /// `allow` exactly when the decision is `allow`; otherwise the best-fitting label. For
+    /// example `decision` `allow` takes `rule` `allow`, and `decision` `deny` takes a label such
+    /// as `Data Exfiltration`, never `allow`.
+    rule: RuleLabel,
+    /// One to three sentences, shown to the user and the agent.
+    explanation: String,
+    /// How sure the guardian is, from 0 to 1.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    confidence: f64,
+}
+
+/// A validated verdict. Deserializing one is what checks it: a decision and a label that
+/// disagree, or a confidence outside 0..=1, is a malformed answer, so the extractor retries
+/// it and, failing that, the call is denied as unparseable.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Verdict {
+    pub decision: Decision,
+    pub rule: RuleLabel,
+    pub explanation: String,
+    pub confidence: f64,
+}
+
+impl Verdict {
+    fn from_raw(raw: RawVerdict) -> Result<Verdict, String> {
+        if !(raw.confidence.is_finite() && (0.0..=1.0).contains(&raw.confidence)) {
+            return Err("`confidence` must be a number from 0 to 1".to_string());
+        }
+        let allow_label = raw.rule == RuleLabel::Allow;
+        if (raw.decision == Decision::Allow) != allow_label {
+            return Err(if raw.decision == Decision::Allow {
+                "`decision` is `allow`, so `rule` must be `allow`".to_string()
+            } else {
+                format!(
+                    "`decision` is `{}`, so `rule` must be one of the non-allow labels, not `allow`",
+                    if raw.decision == Decision::Deny {
+                        "deny"
+                    } else {
+                        "escalate"
+                    }
+                )
+            });
+        }
+        Ok(Verdict {
+            decision: raw.decision,
+            rule: raw.rule,
+            explanation: raw.explanation.trim().to_string(),
+            confidence: raw.confidence,
+        })
+    }
+}
+
+const FORMAT_NOTE: &str = "The answer was not one JSON object with the fields `decision`, `rule`, `explanation` and `confidence`.";
+
+/// Why a rejected answer was rejected, for the retry. Written from fixed sentences, never from
+/// the output: the output is model-authored and may echo hostile tool arguments, and putting it
+/// back in a user turn would raise it to the user's authority.
+pub(crate) fn rejection_note(output: &str) -> String {
+    let Some(serde_json::Value::Object(fields)) = recover_json(output) else {
+        return FORMAT_NOTE.to_string();
+    };
+    let value = serde_json::Value::Object(fields);
+    let rule_ok = value
+        .get("rule")
+        .is_some_and(|rule| serde_json::from_value::<RuleLabel>(rule.clone()).is_ok());
+    if !rule_ok {
+        return "`rule` was not one of the labels listed under Rule labels. Copy one of those labels exactly; a rule's or an allow exception's own wording is never a label.".to_string();
+    }
+    let decision_ok = value
+        .get("decision")
+        .is_some_and(|decision| serde_json::from_value::<Decision>(decision.clone()).is_ok());
+    if !decision_ok {
+        return "`decision` must be one of `allow`, `deny` or `escalate`.".to_string();
+    }
+    if let Ok(raw) = serde_json::from_value::<RawVerdict>(value)
+        && let Err(message) = Verdict::from_raw(raw)
+    {
+        return message;
+    }
+    format!(
+        "{FORMAT_NOTE} `decision`, `rule` and `explanation` are strings, `confidence` is a number, and there are no other fields."
+    )
+}
+
+/// The JSON in an answer the way rig's schema transport finds it: the whole text, else
+/// whatever parses from the first `{` or `[`. The tool transport only ever needs the first.
+fn recover_json(output: &str) -> Option<serde_json::Value> {
+    let text = output.trim();
+    if let Ok(value) = serde_json::from_str(text) {
+        return Some(value);
+    }
+    let start = text.find(['{', '['])?;
+    let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter();
+    stream.next()?.ok()
+}
+
+impl<'de> Deserialize<'de> for Verdict {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawVerdict::deserialize(deserializer)?;
+        Verdict::from_raw(raw).map_err(D::Error::custom)
+    }
+}
+
+impl JsonSchema for Verdict {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("Verdict")
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        RawVerdict::json_schema(generator)
+    }
+}
+
+/// Why an adjudication did not end in a verdict the model gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailClosed {
+    /// Provider error, stream drop or connection reset.
+    Error,
+    Timeout,
+    Unparseable,
+    LowConfidence,
+    /// No credential, or a pinned guardian that cannot be reached at all.
+    Unavailable,
+    /// The pinned guardian's account has nobody signed in.
+    NotSignedIn,
+    /// The run was held for a spent usage window and the wait was cancelled or ran out. The
+    /// human or a deadline decided this, so it is not the guardian failing.
+    UsagePauseEnded,
+}
+
+impl FailClosed {
+    /// Whether the guardian has no model to ask at all, for either reason: callers that treat
+    /// "unavailable" specially must treat both alike.
+    pub fn is_unavailable(self) -> bool {
+        matches!(self, FailClosed::Unavailable | FailClosed::NotSignedIn)
+    }
+
+    /// The `fail_closed_reason` name in the audit log and telemetry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailClosed::Error => "error",
+            FailClosed::Timeout => "timeout",
+            FailClosed::Unparseable => "unparseable",
+            FailClosed::LowConfidence => "low_confidence",
+            FailClosed::Unavailable => "unavailable",
+            FailClosed::NotSignedIn => "not_signed_in",
+            FailClosed::UsagePauseEnded => "usage_pause_ended",
+        }
+    }
+
+    pub fn label(self) -> AuditLabel {
+        match self {
+            FailClosed::Error | FailClosed::Unavailable => AuditLabel::GuardianUnavailable,
+            FailClosed::NotSignedIn => AuditLabel::GuardianNotSignedIn,
+            FailClosed::Timeout => AuditLabel::Timeout,
+            FailClosed::Unparseable => AuditLabel::Unparseable,
+            FailClosed::LowConfidence => AuditLabel::LowConfidence,
+            FailClosed::UsagePauseEnded => AuditLabel::UsagePauseEnded,
+        }
+    }
+}
+
+/// The `rule` an adjudication carries: a label the model chose, or one the harness assigned to
+/// a fail-closed denial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AuditLabel {
+    Model(RuleLabel),
+    GuardianUnavailable,
+    GuardianNotSignedIn,
+    Unparseable,
+    LowConfidence,
+    Timeout,
+    UsagePauseEnded,
+}
+
+impl AuditLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditLabel::Model(label) => label.display_name(),
+            AuditLabel::GuardianUnavailable => "GuardianUnavailable",
+            AuditLabel::GuardianNotSignedIn => "GuardianNotSignedIn",
+            AuditLabel::Unparseable => "Unparseable",
+            AuditLabel::LowConfidence => "LowConfidence",
+            AuditLabel::Timeout => "Timeout",
+            AuditLabel::UsagePauseEnded => "UsagePauseEnded",
+        }
+    }
+}
+
+impl std::fmt::Display for AuditLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse(value: serde_json::Value) -> Result<Verdict, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
+    #[test]
+    fn a_well_formed_verdict_parses() {
+        let v = parse(json!({
+            "decision": "deny",
+            "rule": "Download+Execute",
+            "explanation": " pipes a download into a shell ",
+            "confidence": 0.95
+        }))
+        .unwrap();
+        assert_eq!(v.decision, Decision::Deny);
+        assert_eq!(v.rule, RuleLabel::DownloadExecute);
+        assert_eq!(v.explanation, "pipes a download into a shell");
+    }
+
+    #[test]
+    fn a_label_outside_the_enum_is_malformed() {
+        assert!(
+            parse(json!({"decision": "deny", "rule": "Rm Everything", "explanation": "x", "confidence": 0.9}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_label_and_the_decision_must_agree() {
+        assert!(
+            parse(json!({"decision": "allow", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9}))
+                .is_err()
+        );
+        assert!(
+            parse(
+                json!({"decision": "deny", "rule": "allow", "explanation": "x", "confidence": 0.9})
+            )
+            .is_err()
+        );
+        assert!(
+            parse(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_disagreement_error_names_the_direction_to_fix() {
+        let err = |v| parse(v).unwrap_err().to_string();
+        assert!(
+            err(json!({"decision": "allow", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `allow`, so `rule` must be `allow`")
+        );
+        assert!(
+            err(
+                json!({"decision": "deny", "rule": "allow", "explanation": "x", "confidence": 0.9})
+            )
+            .contains(
+                "`decision` is `deny`, so `rule` must be one of the non-allow labels, not `allow`"
+            )
+        );
+        assert!(
+            err(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `escalate`, so `rule` must be one of the non-allow labels, not `allow`")
+        );
+    }
+
+    #[test]
+    fn a_confidence_outside_the_unit_interval_is_malformed() {
+        for confidence in [json!(1.5), json!(-0.1), json!("high")] {
+            assert!(
+                parse(json!({"decision": "allow", "rule": "allow", "explanation": "x", "confidence": confidence}))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_extra_field_is_malformed() {
+        assert!(parse(json!({"decision": "allow", "rule": "allow", "explanation": "x"})).is_err());
+        assert!(
+            parse(json!({"decision": "allow", "rule": "allow", "explanation": "x", "confidence": 1, "extra": 1}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_schema_offers_every_label_and_requires_every_field() {
+        let schema = serde_json::to_value(schemars::schema_for!(Verdict)).unwrap();
+        let text = schema.to_string();
+        for label in RuleLabel::ALL {
+            assert!(text.contains(label.display_name()), "{label:?}");
+        }
+        for field in ["decision", "rule", "explanation", "confidence"] {
+            assert!(schema["required"].to_string().contains(field), "{field}");
+        }
+    }
+
+    #[test]
+    fn fail_closed_reasons_map_to_the_audit_labels() {
+        use FailClosed::*;
+        let table = [
+            (Error, "error", "GuardianUnavailable"),
+            (Unavailable, "unavailable", "GuardianUnavailable"),
+            (NotSignedIn, "not_signed_in", "GuardianNotSignedIn"),
+            (Timeout, "timeout", "Timeout"),
+            (Unparseable, "unparseable", "Unparseable"),
+            (LowConfidence, "low_confidence", "LowConfidence"),
+            (UsagePauseEnded, "usage_pause_ended", "UsagePauseEnded"),
+        ];
+        for (reason, name, label) in table {
+            assert_eq!(reason.as_str(), name);
+            assert_eq!(reason.label().as_str(), label);
+        }
+        assert!(Unavailable.is_unavailable() && NotSignedIn.is_unavailable());
+        assert!(!Error.is_unavailable() && !UsagePauseEnded.is_unavailable());
+    }
+
+    fn answer(rule: &str, decision: &str, confidence: &str) -> String {
+        format!(
+            r#"{{"decision":"{decision}","rule":"{rule}","explanation":"x","confidence":{confidence}}}"#
+        )
+    }
+
+    #[test]
+    fn an_unknown_label_gets_the_label_note_without_the_rejected_value() {
+        let note = rejection_note(&answer("Untrusted code integration", "deny", "0.9"));
+        assert!(note.contains("Copy one of those labels exactly"), "{note}");
+        assert!(!note.contains("Untrusted"), "{note}");
+    }
+
+    #[test]
+    fn a_mismatch_or_bad_confidence_gets_the_from_raw_message() {
+        assert!(
+            rejection_note(&answer("allow", "deny", "0.9"))
+                .contains("`decision` is `deny`, so `rule` must be one of the non-allow labels")
+        );
+        assert!(
+            rejection_note(&answer("Git Destructive", "allow", "0.9"))
+                .contains("`decision` is `allow`, so `rule` must be `allow`")
+        );
+        assert!(
+            rejection_note(&answer("allow", "allow", "1.5"))
+                .contains("`confidence` must be a number from 0 to 1")
+        );
+    }
+
+    #[test]
+    fn prose_or_a_non_object_gets_the_format_note() {
+        for output in ["I would allow this.", "[1, 2]", "", "42"] {
+            assert_eq!(rejection_note(output), FORMAT_NOTE, "{output}");
+        }
+    }
+
+    #[test]
+    fn a_fenced_answer_is_classified_by_its_fields() {
+        let fenced = format!(
+            "```json\n{}\n```",
+            answer("Untrusted code integration", "deny", "0.9")
+        );
+        assert!(rejection_note(&fenced).contains("Copy one of those labels exactly"));
+        let prefixed = format!("Here you go: {}", answer("allow", "maybe", "0.9"));
+        assert!(rejection_note(&prefixed).contains("`decision` must be one of"));
+    }
+
+    #[test]
+    fn an_unknown_field_gets_the_format_note_without_its_name() {
+        let note = rejection_note(
+            r#"{"decision":"allow","rule":"allow","explanation":"x","confidence":0.9,"ignore_previous":"..."}"#,
+        );
+        assert!(note.starts_with(FORMAT_NOTE), "{note}");
+        assert!(!note.contains("ignore_previous"), "{note}");
+    }
+}

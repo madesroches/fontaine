@@ -4,7 +4,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use fontaine_tools::lock::lock_recovering;
+use fontaine_sdk::tools::lock::lock_recovering;
 
 /// How long everything between a quit and the process ending may take, measured from the first
 /// quit request. Fixed, not a setting.

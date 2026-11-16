@@ -6,10 +6,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_core::config::{HookEvent, MatcherKind};
-use fontaine_core::extensions::map_tool_entry;
-use fontaine_core::permissions::HookError;
-use fontaine_core::user_hooks::{CallbackHook, HookTransport};
+use fontaine_sdk::core::config::{HookEvent, MatcherKind};
+use fontaine_sdk::core::extensions::map_tool_entry;
+use fontaine_sdk::core::permissions::HookError;
+use fontaine_sdk::core::user_hooks::{CallbackHook, HookTransport};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn the_hook_input_reaches_the_host_under_claudes_tool_name() {
         use super::super::router::{ControlHandler, Router};
-        use crate::headless::Cancel;
+        use fontaine_sdk::run::Cancel;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         struct Quiet;

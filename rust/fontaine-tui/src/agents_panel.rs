@@ -5,9 +5,9 @@
 
 use std::time::Duration;
 
-use fontaine_agents::runner::ChildStatus;
-use fontaine_tools::display::compact_count;
-use fontaine_tools::jobs::format_age;
+use fontaine_sdk::agents::runner::ChildStatus;
+use fontaine_sdk::tools::display::compact_count;
+use fontaine_sdk::tools::jobs::format_age;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_stopped_row_formats_its_token_budget_with_trimmed_counts() {
-        let why = fontaine_agents::budget::Exhausted::Tokens {
+        let why = fontaine_sdk::agents::budget::Exhausted::Tokens {
             spent: 200_000,
             cap: 500_000,
         };

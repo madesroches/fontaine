@@ -1,7 +1,7 @@
 use std::ops::ControlFlow;
 
 use crate::{Action, Ui};
-use fontaine_core::agent::AgentRuntime;
+use fontaine_sdk::core::agent::AgentRuntime;
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// `/guardian-disable`: after a confirmation, turns the guardian and the permission floor
@@ -17,9 +17,9 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         let afk = runtime.state.afk();
         if afk.stopped.is_some() || afk.stretch.is_some() {
             let message = if afk.stopped.is_some() {
-                fontaine_core::gate::AfkRefusal::Stopped.to_string()
+                fontaine_sdk::core::gate::AfkRefusal::Stopped.to_string()
             } else {
-                let refusal = fontaine_core::gate::AfkRefusal::AfkOn.to_string();
+                let refusal = fontaine_sdk::core::gate::AfkRefusal::AfkOn.to_string();
                 match crate::statusbar::cycle_keys(&self.app) {
                     Some(key) => format!("{refusal} ({key})"),
                     None => refusal,
@@ -42,7 +42,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             match action {
                 Action::GuardianOff(true) => {
                     let confirmed_by = self.remote_confirm.take();
-                    let toggle = fontaine_core::gate::GuardianToggle {
+                    let toggle = fontaine_sdk::core::gate::GuardianToggle {
                         requested_by: requested_by.as_ref(),
                         confirmed_by: confirmed_by.as_ref(),
                     };
@@ -73,7 +73,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("the guardian is already on for this session");
             return;
         }
-        let toggle = fontaine_core::gate::GuardianToggle {
+        let toggle = fontaine_sdk::core::gate::GuardianToggle {
             requested_by: self.current_remote.as_ref(),
             confirmed_by: None,
         };

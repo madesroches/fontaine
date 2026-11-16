@@ -1,0 +1,1702 @@
+//! The built-in tool set, each tool wrapped in the gate. File tools and `shell` are rig's own,
+//! configured rather than forked: one confined instance per workspace root.
+
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use rig_core::completion::ToolAnnotations;
+use rig_core::tool::{
+    DynamicTool, ExitStatus, OutputCut, Tool, ToolContext, ToolExecutionError, args_schema,
+};
+pub use rig_tools::Seen;
+use rig_tools::process::{Launcher, Process, Spawn};
+use rig_tools::{
+    Edit, List, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell, ShellArgs,
+    ShellRun, Write,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::tools::error_chain::chain;
+use crate::tools::gate::{AgentId, ROOT_AGENT};
+use crate::tools::git_bash::{COMMAND_VAR, CWD_FILE_VAR, GitBash, RUN_TRACKED_SCRIPT, sh_command};
+use crate::tools::guarded::{Guard, GuardedTool};
+use crate::tools::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
+use crate::tools::jobs::{
+    AgentKills, AgentWaits, End, Foreground, JobError, Jobs, Kill, MAX_RUNNING, NoPromote,
+    OUTPUT_CAP, QUIET_LIMIT, Start, WaitWake, cut,
+};
+use crate::tools::mcp::output::{DEFAULT_CHAR_LIMIT, OutputLimits, cap};
+use crate::tools::mcp::{McpResourceQueries, listings::Listings};
+use crate::tools::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
+use crate::tools::powershell::{self, PowerShellSettings};
+use crate::tools::preclassify::{GitCommand, Preclassifier};
+use crate::tools::result_pipeline::{ToolOutcome, text_view};
+use crate::tools::risk::{RiskClass, ToolSource, registered_risk};
+use crate::tools::scope::{Scope, glob_target};
+use crate::tools::search::{GrepArgs, LsArgs, footprint, run_grep, run_ls};
+use crate::tools::shell_cwd::{CwdFile, ShellCwd, TRACKED_SCRIPT};
+use crate::tools::tls::LoadedNetwork;
+use crate::tools::webfetch::{Webfetch, WebfetchConfig};
+use crate::tools::websearch::{SearxngChild, Websearch, WebsearchConfig};
+
+/// The directory listing tool; the model sees it as `ls`.
+#[derive(Clone, Debug)]
+pub struct Ls {
+    pub list: List,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
+}
+
+impl Tool for Ls {
+    const NAME: &'static str = "ls";
+    type Args = LsArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        format!(
+            "List the files under a directory, sorted, one path per line below it. Skips files \
+             ignored by git and, unless `hidden` is set or the glob names one, hidden files. With \
+             `depth`, directories below that depth are listed once as `dir/`. `ignore` takes globs \
+             of files and directories to leave out: `node_modules` names one at any depth, \
+             `src/gen` a path below the listed directory. Use it to see what a directory holds, \
+             not {}.",
+            if self.posix_shell {
+                "`ls` or `find` in `shell`"
+            } else {
+                "`Get-ChildItem` in `powershell`"
+            }
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<LsArgs>()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.list.annotations()
+    }
+
+    fn footprint(&self, args: &LsArgs) -> rig_core::tool::Touches {
+        footprint(
+            &self.list.workspace,
+            self.list.base.as_deref(),
+            args.path.as_deref(),
+        )
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: LsArgs,
+    ) -> Result<String, ToolExecutionError> {
+        run_ls(&self.list, context, args).await
+    }
+}
+
+/// rig's `write`, pointed away from notebooks in its description.
+#[derive(Clone, Debug)]
+pub struct WriteTool {
+    pub write: Write,
+}
+
+impl Tool for WriteTool {
+    const NAME: &'static str = Write::NAME;
+    type Args = <Write as Tool>::Args;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        self.write.description() + NOTEBOOK_STEER
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.write.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.write.annotations()
+    }
+
+    fn footprint(&self, args: &Self::Args) -> rig_core::tool::Touches {
+        self.write.footprint(args)
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<String, ToolExecutionError> {
+        self.write.call(context, args).await
+    }
+}
+
+/// rig's `edit`, pointed away from notebooks in its description.
+#[derive(Clone, Debug)]
+pub struct EditTool {
+    pub edit: Edit,
+}
+
+impl Tool for EditTool {
+    const NAME: &'static str = Edit::NAME;
+    type Args = <Edit as Tool>::Args;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        self.edit.description() + NOTEBOOK_STEER
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.edit.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.edit.annotations()
+    }
+
+    fn footprint(&self, args: &Self::Args) -> rig_core::tool::Touches {
+        self.edit.footprint(args)
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<String, ToolExecutionError> {
+        self.edit.call(context, args).await
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobArgs {
+    pub pattern: String,
+    pub path: Option<String>,
+}
+
+/// Finds files by name with a glob pattern.
+#[derive(Clone, Debug)]
+pub struct Glob {
+    pub search: Search,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
+}
+
+impl Tool for Glob {
+    const NAME: &'static str = "glob";
+    type Args = GlobArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        format!(
+            "Find files whose path matches a glob pattern such as `src/**/*.rs`. Skips files \
+             ignored by git and hidden files unless the pattern names one. Returns one path per \
+             line, at most {MAX_FILES}. `path` is the directory to search (default: the working \
+             root). Use it to find files by name, not {}.",
+            if self.posix_shell {
+                "`find` in `shell`"
+            } else {
+                "`Get-ChildItem` in `powershell`"
+            }
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string", "description": "The glob pattern to match, such as `**/*.rs`." },
+                "path": { "type": "string", "description": "The directory to search; default the working root." },
+            },
+            "required": ["pattern"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.search.annotations()
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: GlobArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let (base, tail) = glob_target(args.path.as_deref(), &args.pattern);
+        let search = SearchArgs {
+            pattern: String::new(),
+            path: Some(base),
+            glob: (!tail.is_empty()).then_some(tail),
+            hidden: false,
+            files: true,
+        };
+        self.search.call(context, search).await
+    }
+}
+
+/// Searches file contents with a regular expression.
+#[derive(Clone, Debug)]
+pub struct Grep {
+    pub search: Search,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
+}
+
+impl Tool for Grep {
+    const NAME: &'static str = "grep";
+    type Args = GrepArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        format!(
+            "Search file contents with a regular expression (Rust regex syntax). Skips files \
+             ignored by git and, unless `hidden` is set or the glob names one, hidden files. \
+             `output_mode` is `files_with_matches` (the default: the paths of the files with a \
+             match, at most {MAX_FILES}), `content` (`path:line: text`, at most {MAX_MATCHES} \
+             matches; `-n` false drops the line numbers, `-A`, `-B` and `-C` add lines of \
+             context) or `count` (`path:N` per file). `-i` ignores case, `type` keeps one \
+             file type such as `rust` or `py`, `head_limit` caps the entries returned. An \
+             empty pattern with `files_with_matches` lists every file. Use it to find code, \
+             not {}.",
+            if self.posix_shell {
+                "`grep` or `rg` in `shell`"
+            } else {
+                "`Select-String` in `powershell`"
+            }
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<GrepArgs>()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.search.annotations()
+    }
+
+    fn footprint(&self, args: &GrepArgs) -> rig_core::tool::Touches {
+        footprint(
+            &self.search.workspace,
+            self.search.base.as_deref(),
+            args.path.as_deref(),
+        )
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: GrepArgs,
+    ) -> Result<String, ToolExecutionError> {
+        run_grep(&self.search, context, args).await
+    }
+}
+
+/// The seconds a call waits before its command moves to the background or is stopped.
+const DEFAULT_TIMEOUT: u64 = 120;
+
+/// How long a call may print nothing: only a call with the default timeout has a limit, since
+/// one that names its timeout may be quiet as long as that.
+fn quiet_for(timeout_secs: Option<u64>, timeout: Duration) -> Option<Duration> {
+    match timeout_secs {
+        None => Some(QUIET_LIMIT).filter(|quiet| *quiet < timeout),
+        Some(_) => None,
+    }
+}
+
+/// The arguments of `shell`: rig's, and whether the command starts in the background.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellCall {
+    pub command: String,
+    pub timeout_secs: Option<u64>,
+    pub cwd: Option<String>,
+    pub run_in_background: Option<bool>,
+}
+
+impl ShellCall {
+    fn shell_args(&self) -> ShellArgs {
+        ShellArgs {
+            command: self.command.clone(),
+            timeout_secs: self.timeout_secs,
+            cwd: self.cwd.clone(),
+        }
+    }
+}
+
+/// What a shell tool needs to carry the working directory from one call to the next.
+#[derive(Clone, Debug)]
+pub struct Tracking {
+    pub cwd: ShellCwd,
+    pub scope: Arc<Scope>,
+    /// Where each call's final directory is written. With none, tracking is off.
+    pub scratch: Option<PathBuf>,
+}
+
+impl Tracking {
+    /// The pre-gate step that makes a call's starting directory explicit.
+    fn start_in(&self) -> crate::tools::guarded::PreGate {
+        let this = self.clone();
+        Arc::new(move |agent, args| this.cwd.start_in(agent, &this.scope, args))
+    }
+}
+
+/// rig's `shell`, with the command kept off the Windows command line when it runs through
+/// Git Bash. For the main agent a call is a job: one that outlives its timeout moves to the
+/// background instead of being stopped.
+pub type GitFastPathRunner = Arc<
+    dyn Fn(
+            GitCommand,
+            &Path,
+            Option<&Path>,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync + 'static>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone)]
+pub struct ShellTool {
+    pub shell: Shell,
+    /// The longest timeout a call may ask for; a longer one is cut to it.
+    pub max_timeout: u64,
+    pub through_env: bool,
+    /// Where the main agent's calls run as jobs; without it `shell` is rig's, unchanged.
+    pub jobs: Option<Arc<Jobs>>,
+    /// Where a foreground call's final directory is kept; `None` leaves every call in the
+    /// directory it names or the primary root.
+    pub track: Option<Tracking>,
+    /// The scope used to resolve `cwd` and path containment for the git fast path.
+    pub scope: Option<Arc<Scope>>,
+    /// The gix-based runner for supported read-only git commands.
+    pub git_fast_path_runner: Option<GitFastPathRunner>,
+}
+
+impl std::fmt::Debug for ShellTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellTool")
+            .field("shell", &self.shell)
+            .field("max_timeout", &self.max_timeout)
+            .field("through_env", &self.through_env)
+            .field("jobs", &self.jobs)
+            .field("track", &self.track)
+            .field("scope", &self.scope)
+            .field("git_fast_path_runner", &self.git_fast_path_runner.is_some())
+            .finish()
+    }
+}
+
+impl ShellTool {
+    fn prepared(&self, args: ShellArgs) -> (Shell, ShellArgs) {
+        let sh = sh_command(&args.command, self.through_env);
+        let Some((name, value)) = sh.env else {
+            return (self.shell.clone(), args);
+        };
+        let mut shell = self.shell.clone();
+        shell.launcher = shell.launcher.with_env(name, value);
+        let script = sh.script.to_string();
+        (
+            shell,
+            ShellArgs {
+                command: script,
+                ..args
+            },
+        )
+    }
+
+    /// rig's `shell` no longer bounds a call's timeout, so the default and the cap are applied
+    /// here.
+    fn bounded(&self, mut args: ShellArgs) -> ShellArgs {
+        let max = self.max_timeout.max(1);
+        args.timeout_secs = Some(
+            args.timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.max_timeout))
+                .clamp(1, max),
+        );
+        args
+    }
+
+    pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
+        let (shell, args) = self.prepared(self.bounded(args));
+        shell.run(args).await
+    }
+
+    /// If the command is a supported read-only git invocation, run it through the configured
+    /// gix-based runner instead of spawning a shell.
+    fn try_git_fast_path(&self, args: &ShellCall) -> Option<Result<String, ToolExecutionError>> {
+        if args.run_in_background == Some(true) {
+            return None;
+        }
+        let (scope, runner) = (self.scope.as_ref()?, self.git_fast_path_runner.as_ref()?);
+        let cwd = args.cwd.as_deref();
+        let env = crate::tools::preclassify::Environment { scope, cwd };
+        let (cmd, _paths) = Preclassifier::default().parse_git(&args.command, &env)?;
+        let repo_root = self.shell.launcher.cwd.as_deref()?;
+        let resolved_cwd = env.base();
+        Some(
+            runner(cmd, repo_root, resolved_cwd.as_deref())
+                .map_err(|e| ToolExecutionError::other(chain(&*e))),
+        )
+    }
+
+    /// Starts the command `args` names in the workspace, as rig's `shell` does, its stdout and
+    /// stderr in pipes of their own.
+    pub(crate) fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
+        let (shell, args) = self.prepared(args);
+        let line = [OsString::from("-c"), OsString::from(&args.command)];
+        launch_in(&shell, &args, OsStr::new("sh"), &line)
+    }
+
+    /// `launch` for a foreground call: the command runs under a wrapper that writes the
+    /// directory it ended in to `file`.
+    fn launch_tracked(&self, args: ShellArgs, file: &Path) -> Result<Process, ToolExecutionError> {
+        if self.through_env {
+            let mut shell = self.shell.clone();
+            shell.launcher = shell
+                .launcher
+                .with_env(COMMAND_VAR, &args.command)
+                .with_env(CWD_FILE_VAR, file);
+            let line = [OsString::from("-c"), OsString::from(RUN_TRACKED_SCRIPT)];
+            return launch_in(&shell, &args, OsStr::new("sh"), &line);
+        }
+        let line = [
+            OsString::from("-c"),
+            OsString::from(TRACKED_SCRIPT),
+            OsString::from("sh"),
+            OsString::from(&args.command),
+            file.as_os_str().to_owned(),
+        ];
+        launch_in(&self.shell, &args, OsStr::new("sh"), &line)
+    }
+}
+
+/// Starts `program` with `argv` for the call `args` names, in the shell's workspace and
+/// directory, its stdout and stderr in pipes of their own.
+fn launch_in(
+    shell: &Shell,
+    args: &ShellArgs,
+    program: &OsStr,
+    argv: &[OsString],
+) -> Result<Process, ToolExecutionError> {
+    let base = shell.launcher.cwd.as_deref();
+    let dir = match &args.cwd {
+        Some(dir) => {
+            if shell.confine {
+                shell.workspace.place(base, true, dir)?;
+            }
+            Some(
+                shell
+                    .workspace
+                    .join(base.unwrap_or(Path::new("")), Path::new(dir)),
+            )
+        }
+        None => base.map(Path::to_path_buf),
+    };
+    let how = Spawn {
+        stdin: None,
+        merge_stderr: false,
+    };
+    shell
+        .workspace
+        .spawn(&shell.launcher, dir.as_deref(), program, argv, how)
+        .map_err(|source| ToolExecutionError::other(chain(&JobError::Spawn { source })))
+}
+
+/// Runs `call` as a job in `jobs` and waits for it, as `shell` and `powershell` both do: one
+/// that outlives its timeout moves to the background when `promotable`, and is stopped
+/// otherwise.
+///
+/// A foreground call that ends moves `agent`'s tracked directory to where its command ended,
+/// when `track` is set and the call is not a harness call whose output is spliced elsewhere.
+/// `launch` gets the file the final directory goes to when the call is tracked.
+async fn run_job(
+    shell: &Shell,
+    jobs: &Jobs,
+    context: &mut ToolContext,
+    (call, agent, max_timeout): (ShellCall, &str, u64),
+    promotable: bool,
+    track: Option<&Tracking>,
+    launch: impl FnOnce(ShellArgs, Option<&Path>) -> Result<Process, ToolExecutionError>,
+) -> Result<String, ToolExecutionError> {
+    let max = max_timeout.max(1);
+    let timeout = Duration::from_secs(
+        call.timeout_secs
+            .unwrap_or(DEFAULT_TIMEOUT.min(max_timeout))
+            .clamp(1, max),
+    );
+    let quiet = quiet_for(call.timeout_secs, timeout);
+    let background = call.run_in_background.unwrap_or(false);
+    if background && !jobs.has_room() {
+        return Err(job_error(&JobError::TooMany));
+    }
+    let harness_call = context
+        .get::<NoPromote>()
+        .ok()
+        .flatten()
+        .is_some_and(|flag| flag.0);
+    let no_promote = !promotable || harness_call;
+    // Dropped when the call returns, which also removes the file of a call that moved to the
+    // background.
+    let cwd_file = track
+        .filter(|_| !background && !harness_call)
+        .and_then(|track| track.scratch.as_deref())
+        .map(CwdFile::new);
+    let process = launch(call.shell_args(), cwd_file.as_ref().map(CwdFile::path))?;
+    let id = jobs
+        .start(
+            Start {
+                command: call.command,
+                background,
+                monitor: None,
+            },
+            process,
+        )
+        .map_err(|e| job_error(&e))?;
+    if background {
+        return Ok(format!(
+            "[started in the background as {id}. You are told when it ends; use job_output to read its output, job_cancel to stop it.]"
+        ));
+    }
+    let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
+    let mut rendered = render_foreground(shell, &ran, &id, (timeout, quiet), max)?;
+    if let (Some(info), Some(file), Some(track)) = (&ran.end, &cwd_file, track)
+        && matches!(info.end, End::Exited(_))
+        && let Some(reported) = file.reported()
+        && let Some(reset) = track.cwd.observe(agent, &reported, &track.scope)
+    {
+        rendered.text.push('\n');
+        rendered.text.push_str(&reset.notice(track.scope.primary()));
+    }
+    if let Some(status) = rendered.status {
+        context.insert_result(status)?;
+    }
+    if let Some(fact) = rendered.fact {
+        context.insert_result(fact)?;
+    }
+    Ok(rendered.text)
+}
+
+/// What a foreground call tells the model and the context.
+struct Rendered {
+    text: String,
+    /// `None` when the command moved to the background and has no status yet.
+    status: Option<ExitStatus>,
+    fact: Option<OutputCut>,
+}
+
+/// The text of a foreground call that came back from `Jobs::foreground`: its output cut to the
+/// shell's limit and the line saying how it ended, or that it moved to the background.
+fn render_foreground(
+    shell: &Shell,
+    ran: &Foreground,
+    id: &str,
+    (timeout, quiet): (Duration, Option<Duration>),
+    max: u64,
+) -> Result<Rendered, ToolExecutionError> {
+    let limit = shell.cut.unwrap_or_default();
+    let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
+    let silent = ran.chunk.lines.is_empty();
+    let status = match &ran.end {
+        None => {
+            let why = match (ran.quiet, quiet) {
+                (true, Some(quiet)) => format!("printed nothing for {}s", quiet.as_secs()),
+                _ => format!("still running after {}s", timeout.as_secs()),
+            };
+            text.push_str(&format!(
+                "[{why}; moved to background job {id}. Its output so far is above. Use \
+                 job_output to read more or wait for it, job_cancel to stop it. You are \
+                 told when it ends.]"
+            ));
+            None
+        }
+        Some(info) => {
+            let stopped = cut::stopped(info.forced, info.remote.as_deref());
+            let (line, status) = match info.end {
+                End::Exited(status) => cut::exit_line(status),
+                End::Killed(Kill::Timeout) => {
+                    cut::timed_out_line(timeout.as_secs(), max, &stopped, silent)
+                }
+                End::Killed(Kill::Quiet) => {
+                    cut::quiet_line(quiet.unwrap_or_default().as_secs(), &stopped, silent)
+                }
+                End::Killed(Kill::Cap) => (
+                    format!(
+                        "[stopped: {MAX_RUNNING} jobs are already running, so it could not \
+                         move to the background; {stopped}. Stop one with job_cancel and \
+                         run it again]"
+                    ),
+                    ExitStatus::Killed,
+                ),
+                End::Runaway => cut::runaway_line(OUTPUT_CAP / 1024 / 1024, &stopped),
+                End::Killed(_) => (
+                    format!("[terminated before it ended: {stopped}]"),
+                    ExitStatus::Killed,
+                ),
+                End::Lost => {
+                    return Err(ToolExecutionError::other("waiting for the command failed"));
+                }
+            };
+            text.push_str(&line);
+            Some(status)
+        }
+    };
+    Ok(Rendered { text, status, fact })
+}
+
+/// `schema` with the `run_in_background` property added to the arguments rig's `shell` takes.
+fn with_background(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        if let Some(cwd) = properties
+            .get_mut("cwd")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cwd.insert(
+                "description".to_owned(),
+                json!(
+                    "Directory to start in, inside the workspace. A relative path is relative \
+                     to the primary workspace root. Omit it to start in the current directory, \
+                     where the last call left off."
+                ),
+            );
+        }
+        properties.insert(
+            "run_in_background".to_owned(),
+            json!({
+                "type": ["boolean", "null"],
+                "description": "Main agent only. Start the command as a background job and \
+                    return at once; you are told when it ends.",
+            }),
+        );
+    }
+    schema
+}
+
+impl Tool for ShellTool {
+    const NAME: &'static str = Shell::NAME;
+    type Args = ShellCall;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        let max = self.max_timeout.max(1);
+        let kept = match self.shell.cut {
+            Some(cut) => format!(
+                "; past {} lines or {} KB, its first and last lines and the lines with errors \
+                 or failures from between",
+                cut.lines,
+                cut.bytes / 1024
+            ),
+            None => String::new(),
+        };
+        format!(
+            "Run a shell command with `sh -c` in the current directory, or in cwd. stdin is \
+             empty. Returns the exit code and stdout and stderr interleaved line by line{kept}. \
+             A command still running at timeout_secs (default {}, at most {max}), or, with the \
+             default, once it printed nothing for {}s, keeps running as a background job and \
+             you are told when it ends; pass run_in_background for a server or a long build you \
+             do not need to wait for, and keep its process in the foreground of the command \
+             (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
+             wait_secs. Background jobs are for the main agent only: a subagent's command is \
+             stopped at its timeout and run_in_background is refused. A command that prints \
+             more than {} MB is killed. Use it to build, test, run programs and use git; to read or search files use `read`, \
+             `glob` and `grep`, not `cat`, `find`, `grep` or `rg`. Each \
+             call starts a fresh `sh`; only the working directory carries over to the next call \
+             (a `cd` stays unless it leaves the workspace), not variables or exports. Do not start programs that wait for input, such \
+             as editors or pagers. Do not assume a git repository: a failed `git` command ends \
+             a `&&` chain. Check formatting only of files you changed.",
+            DEFAULT_TIMEOUT.min(self.max_timeout).max(1),
+            QUIET_LIMIT.as_secs(),
+            OUTPUT_CAP / 1024 / 1024,
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        with_background(self.shell.parameters())
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.shell.annotations()
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ShellCall,
+    ) -> Result<String, ToolExecutionError> {
+        if let Some(result) = self.try_git_fast_path(&args) {
+            return result;
+        }
+        let agent = context
+            .get::<AgentId>()
+            .ok()
+            .flatten()
+            .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        let launch = |a: ShellArgs, file: Option<&Path>| match file {
+            Some(file) => self.launch_tracked(a, file),
+            None => self.launch(a),
+        };
+        match (&self.jobs, agent == ROOT_AGENT) {
+            (Some(jobs), true) => {
+                let jobs = jobs.clone();
+                let track = self.track.as_ref();
+                run_job(
+                    &self.shell,
+                    &jobs,
+                    context,
+                    (args, &agent, self.max_timeout),
+                    true,
+                    track,
+                    launch,
+                )
+                .await
+            }
+            (Some(_), false) => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let local = Jobs::new();
+                let track = self.track.as_ref();
+                run_job(
+                    &self.shell,
+                    &local,
+                    context,
+                    (args, &agent, self.max_timeout),
+                    false,
+                    track,
+                    launch,
+                )
+                .await
+            }
+            (None, _) => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let (shell, shell_args) = self.prepared(self.bounded(args.shell_args()));
+                shell.call(context, shell_args).await
+            }
+        }
+    }
+}
+
+/// Runs a command in PowerShell on Windows. The interpreter is started with the command encoded
+/// into its arguments, so PowerShell parses exactly the text the guardian judged; nothing about
+/// the text is ever analysed as POSIX shell.
+#[derive(Clone, Debug)]
+pub struct PowerShellTool {
+    /// Carries the launcher, confinement, timeout cap and output cut, as for `shell`.
+    pub shell: Shell,
+    /// As for `shell`.
+    pub max_timeout: u64,
+    pub interpreter: PathBuf,
+    /// Where the main agent's calls run as jobs; a subagent's call waits in a registry of its own.
+    pub jobs: Option<Arc<Jobs>>,
+    /// As for `shell`.
+    pub track: Option<Tracking>,
+    /// Whether `shell` is registered; the description points at it only then.
+    pub posix_shell: bool,
+}
+
+impl PowerShellTool {
+    fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
+        let argv = powershell::launch_args(&args.command);
+        launch_in(&self.shell, &args, self.interpreter.as_os_str(), &argv)
+    }
+
+    /// `launch` for a foreground call: the command is followed by a trailer that writes the
+    /// directory it ended in to `file`.
+    fn launch_tracked(&self, args: ShellArgs, file: &Path) -> Result<Process, ToolExecutionError> {
+        let argv = powershell::launch_args_tracked(&args.command);
+        let mut shell = self.shell.clone();
+        shell.launcher = shell.launcher.with_env(powershell::CWD_FILE_VAR, file);
+        launch_in(&shell, &args, self.interpreter.as_os_str(), &argv)
+    }
+
+    /// Runs `args` in the foreground and returns what it printed and how it ended, as
+    /// `ShellTool::run` does. The command is stopped, not moved to the background, when it
+    /// outlives its timeout, and dropping the future stops it.
+    pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
+        let max = self.max_timeout.max(1);
+        let timeout = Duration::from_secs(
+            args.timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.max_timeout))
+                .clamp(1, max),
+        );
+        let quiet = quiet_for(args.timeout_secs, timeout);
+        let process = self.launch(args.clone())?;
+        let jobs = Jobs::new();
+        let id = jobs
+            .start(
+                Start {
+                    command: args.command,
+                    background: false,
+                    monitor: None,
+                },
+                process,
+            )
+            .map_err(|e| job_error(&e))?;
+        let ran = jobs.foreground(&id, timeout, quiet, false).await;
+        let rendered = render_foreground(&self.shell, &ran, &id, (timeout, quiet), max)?;
+        Ok(ShellRun {
+            output: rendered.text,
+            status: rendered
+                .status
+                .expect("a call that cannot move to the background ends"),
+        })
+    }
+
+    fn edition(&self) -> &'static str {
+        let name = self.interpreter.file_stem().map(|n| n.to_ascii_lowercase());
+        if name.as_deref() == Some(OsStr::new("pwsh")) {
+            "PowerShell 7"
+        } else {
+            "Windows PowerShell 5.1, which has no `&&`, `||` or ternary operator"
+        }
+    }
+}
+
+impl Tool for PowerShellTool {
+    const NAME: &'static str = "powershell";
+    type Args = ShellCall;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        let max = self.max_timeout.max(1);
+        let kept = match self.shell.cut {
+            Some(cut) => format!(
+                "; past {} lines or {} KB, its first and last lines and the lines with errors \
+                 or failures from between",
+                cut.lines,
+                cut.bytes / 1024
+            ),
+            None => String::new(),
+        };
+        format!(
+            "Run a PowerShell command in the current directory, or in cwd, with {}. Write \
+                PowerShell syntax, not POSIX `sh`{}. stdin is empty. Returns \
+                the exit code and stdout and stderr interleaved line by line{kept}. A literal \
+                `exit N` sets the exit code; a failing last statement exits 1, not the native \
+                program's code, and an earlier failure does not change it (end with `exit \
+                $LASTEXITCODE` to keep a native code). A command still \
+                running at timeout_secs (default {}, at most {max}), or, with the default, once it \
+                printed nothing for {}s, keeps running as a background job and you are told when \
+                it ends; pass run_in_background for a server or a long build you do not need to \
+                wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background \
+                jobs are for the main agent only: a subagent's command is stopped at its timeout \
+                and run_in_background is refused. A command that prints more than {} MB is killed. \
+                Each call starts a fresh process; only the working directory carries over to the \
+                next call (a `Set-Location` stays unless it leaves the workspace), not variables \
+                or environment changes. Do not start programs that wait for input. Use the dedicated file \
+                tools to read, search and edit files, not `Get-Content` or `Select-String`.",
+            self.edition(),
+            if self.posix_shell {
+                ": use `shell` for that"
+            } else {
+                ""
+            },
+            DEFAULT_TIMEOUT.min(self.max_timeout).max(1),
+            QUIET_LIMIT.as_secs(),
+            OUTPUT_CAP / 1024 / 1024,
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        with_background(self.shell.parameters())
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations::default().with_title("PowerShell")
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ShellCall,
+    ) -> Result<String, ToolExecutionError> {
+        let agent = context
+            .get::<AgentId>()
+            .ok()
+            .flatten()
+            .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        let launch = |a: ShellArgs, file: Option<&Path>| match file {
+            Some(file) => self.launch_tracked(a, file),
+            None => self.launch(a),
+        };
+        let track = self.track.as_ref();
+        match (&self.jobs, agent == ROOT_AGENT) {
+            (Some(jobs), true) => {
+                let jobs = jobs.clone();
+                run_job(
+                    &self.shell,
+                    &jobs,
+                    context,
+                    (args, &agent, self.max_timeout),
+                    true,
+                    track,
+                    launch,
+                )
+                .await
+            }
+            _ => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let local = Jobs::new();
+                run_job(
+                    &self.shell,
+                    &local,
+                    context,
+                    (args, &agent, self.max_timeout),
+                    false,
+                    track,
+                    launch,
+                )
+                .await
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShellSettings {
+    /// The longest timeout a call may ask for; a longer one is cut to it.
+    pub max_timeout_secs: u64,
+    /// Variables the shell's child processes never inherit.
+    pub scrub_env: Vec<OsString>,
+    /// Variables set after the scrub, from the user's `[env]`.
+    pub set_env: Vec<(OsString, OsString)>,
+    pub git_bash: Option<GitBash>,
+    /// The interpreter of the `powershell` tool; with none, the tool does not exist.
+    pub powershell: Option<PowerShellSettings>,
+}
+
+impl ShellSettings {
+    /// Whether the POSIX `shell` and `monitor` tools can run: always off Windows, and with Git
+    /// Bash found on it. Without one `powershell` is the only command tool.
+    pub fn posix_shell_available(&self, windows: bool) -> bool {
+        crate::tools::git_bash::posix_shell_available(windows, self.git_bash.as_ref())
+    }
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        ShellSettings {
+            max_timeout_secs: 600,
+            scrub_env: Vec::new(),
+            set_env: Vec::new(),
+            git_bash: None,
+            powershell: None,
+        }
+    }
+}
+
+pub fn read_for(root: &Path, seen: &Seen) -> Read {
+    Read {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        seen: seen.clone(),
+        ..Read::default()
+    }
+}
+
+/// The unconfined external-read fallback: the gate has already adjudicated the resolved
+/// target, so nothing here re-checks containment.
+pub fn read_external(primary: &Path, seen: &Seen) -> Read {
+    Read {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Read::default()
+    }
+}
+
+pub fn write_for(root: &Path, seen: &Seen) -> Write {
+    Write {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        seen: seen.clone(),
+        ..Write::default()
+    }
+}
+
+/// The unconfined external-write fallback: the gate has already adjudicated the resolved
+/// target, so nothing here re-checks containment.
+pub fn write_external(primary: &Path, seen: &Seen) -> Write {
+    Write {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Write::default()
+    }
+}
+
+pub fn edit_for(root: &Path, seen: &Seen) -> Edit {
+    Edit {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        seen: seen.clone(),
+        ..Edit::default()
+    }
+}
+
+/// The unconfined external-write fallback for `edit`.
+pub fn edit_external(primary: &Path, seen: &Seen) -> Edit {
+    Edit {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Edit::default()
+    }
+}
+
+pub fn notebook_edit_for(root: &Path, seen: &Seen) -> NotebookEdit {
+    NotebookEdit {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        seen: seen.clone(),
+        ..NotebookEdit::default()
+    }
+}
+
+/// The unconfined external-write fallback for `notebook_edit`.
+pub fn notebook_edit_external(primary: &Path, seen: &Seen) -> NotebookEdit {
+    NotebookEdit {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..NotebookEdit::default()
+    }
+}
+
+pub fn list_for(root: &Path) -> List {
+    List {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        ..List::default()
+    }
+}
+
+/// The unconfined external-read fallback for `ls`.
+pub fn list_external(primary: &Path) -> List {
+    List {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        ..List::default()
+    }
+}
+
+pub fn search_for(root: &Path) -> Search {
+    Search {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        ..Search::default()
+    }
+}
+
+/// The unconfined external-read fallback for `glob` and `grep`.
+pub fn search_external(primary: &Path) -> Search {
+    Search {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        ..Search::default()
+    }
+}
+
+pub fn shell_for(root: &Path, settings: &ShellSettings, scope: Arc<Scope>) -> ShellTool {
+    let mut launcher = Launcher::default()
+        .in_dir(root)
+        .without_env(settings.scrub_env.iter().cloned());
+    for (name, value) in &settings.set_env {
+        launcher = launcher.with_env(name, value);
+    }
+    if let Some(git_bash) = &settings.git_bash {
+        launcher = launcher.with_env(
+            "PATH",
+            git_bash.path_value(crate::tools::git_bash::base_path(&settings.set_env)),
+        );
+    }
+    ShellTool {
+        shell: Shell {
+            launcher,
+            confine: true,
+            cut: Some(OutputLimit::default()),
+            ..Shell::default()
+        },
+        max_timeout: settings.max_timeout_secs,
+        through_env: settings.git_bash.is_some(),
+        jobs: None,
+        track: None,
+        scope: Some(scope),
+        git_fast_path_runner: None,
+    }
+}
+
+/// The `powershell` tool for one root. It does not inherit Git Bash's PATH: it runs outside it.
+pub fn powershell_for(
+    root: &Path,
+    settings: &ShellSettings,
+    interpreter: &PowerShellSettings,
+) -> PowerShellTool {
+    let mut launcher = Launcher::default()
+        .in_dir(root)
+        .without_env(settings.scrub_env.iter().cloned());
+    for (name, value) in &settings.set_env {
+        launcher = launcher.with_env(name, value);
+    }
+    PowerShellTool {
+        shell: Shell {
+            launcher,
+            confine: true,
+            cut: Some(OutputLimit::default()),
+            ..Shell::default()
+        },
+        max_timeout: settings.max_timeout_secs,
+        interpreter: interpreter.path.clone(),
+        jobs: None,
+        track: None,
+        posix_shell: settings.posix_shell_available(cfg!(windows)),
+    }
+}
+
+pub struct BuiltinEnv {
+    pub scope: Arc<Scope>,
+    /// How the MCP resource tools reach the session's connected servers.
+    pub mcp_resources: Arc<dyn McpResourceQueries>,
+    /// The capping policy a resource result is held to, as for an MCP tool result.
+    pub mcp_limits: Arc<OutputLimits>,
+    /// Reports a failed spill save from the MCP resource tools, at most once per limits.
+    pub mcp_warn: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Read-before-edit tracking shared by every `read` and `edit` instance. Passing the same
+    /// one again when the registry is rebuilt keeps what the model has already read.
+    pub seen: Seen,
+    pub guard: Guard,
+    pub shell: ShellSettings,
+    pub webfetch: WebfetchConfig,
+    /// Present only when a search backend is configured; with none, the tool does not exist.
+    pub websearch: Option<WebsearchConfig>,
+    /// The SearXNG process a session launches. Passing the same one again when the registry is
+    /// rebuilt keeps the instance running.
+    pub searxng: Arc<SearxngChild>,
+    pub network: Arc<LoadedNetwork>,
+    /// The session's jobs. Passing the same one again when the registry is rebuilt keeps the
+    /// running ones.
+    pub jobs: Arc<Jobs>,
+    /// How `job_output` waits on a subagent; with none, agent ids are refused.
+    pub agent_waits: Option<Arc<dyn AgentWaits>>,
+    /// How `job_cancel` stops a subagent; with none, agent ids are refused.
+    pub agent_kills: Option<Arc<dyn AgentKills>>,
+    /// What ends a `job_output` wait early.
+    pub wait_wake: Option<Arc<dyn WaitWake>>,
+    /// Each agent's shell directory. Passing the same one again when the registry is rebuilt
+    /// keeps where the agents are.
+    pub shell_cwd: ShellCwd,
+    /// The session scratch directory, where a call's final directory is written. With none,
+    /// the shell directory never moves.
+    pub scratch: Option<PathBuf>,
+    /// The gix-based runner for supported read-only git commands. With none, the shell tool
+    /// falls back to normal shell execution for all git invocations.
+    pub git_fast_path_runner: Option<GitFastPathRunner>,
+}
+
+pub struct Registered {
+    pub name: &'static str,
+    pub risk: RiskClass,
+    pub source: ToolSource,
+    pub tool: DynamicTool,
+}
+
+/// Lists the resources of every connected MCP server: the `@<uri>` completion inserts a token
+/// the model reads back through [`ReadMcpResource`].
+#[derive(Clone)]
+pub struct ListMcpResources {
+    pub queries: Arc<dyn McpResourceQueries>,
+    pub limits: Arc<OutputLimits>,
+    /// Reports a failed spill save, at most once per limits.
+    pub warn: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListMcpResourcesArgs {}
+
+impl Tool for ListMcpResources {
+    const NAME: &'static str = "list_mcp_resources";
+    type Args = ListMcpResourcesArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "List the resources of every connected MCP server that declared the resources \
+         capability: one line per resource with its server, uri, name, description and mime \
+         type. An `@<uri>` token in the user's message names one of these; read its content \
+         with `read_mcp_resource`. You cannot know a resource's content without reading it. \
+         A result over the MCP output limit is saved to a file whose path the result names. \
+         When nothing is connected or no server declared resources, the result says so."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: ListMcpResourcesArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let connected: Vec<(String, Listings)> = self.queries.connected();
+        let mut lines = Vec::new();
+        for (server, listings) in &connected {
+            for resource in &listings.resources {
+                let mut line = format!("{server}: {}", resource.uri);
+                if !resource.name.is_empty() {
+                    line.push_str(&format!(" — {}", resource.name));
+                }
+                if let Some(description) = &resource.description {
+                    line.push_str(&format!(" · {description}"));
+                }
+                if let Some(mime) = &resource.mime_type {
+                    line.push_str(&format!(" ({mime})"));
+                }
+                lines.push(line);
+            }
+        }
+        if lines.is_empty() {
+            return Ok("no connected MCP server declared resources".to_string());
+        }
+        // The same cap as an MCP tool result: a huge listing spills like any oversized result.
+        match cap(
+            Ok(rig_core::tool::ToolOutput::text(lines.join("\n"))),
+            Self::NAME,
+            DEFAULT_CHAR_LIMIT,
+            &self.limits,
+            &*self.warn,
+        ) {
+            Ok(capped) => Ok(text_view(&capped)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Reads one MCP resource through its server, behind the same gate as every other tool; the
+/// result is server-controlled text and passes the result scanner like any tool result.
+#[derive(Clone)]
+pub struct ReadMcpResource {
+    pub queries: Arc<dyn McpResourceQueries>,
+    pub limits: Arc<OutputLimits>,
+    /// Reports a failed spill save, at most once per limits.
+    pub warn: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadMcpResourceArgs {
+    pub server: String,
+    pub uri: String,
+}
+
+impl Tool for ReadMcpResource {
+    const NAME: &'static str = "read_mcp_resource";
+    type Args = ReadMcpResourceArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Read one MCP resource through the server that offers it. Arguments: `server` (from \
+         `list_mcp_resources`) and `uri`. Text contents come back as text; a blob is noted by \
+         its mime type and size, like an image result. A result over the MCP output limit is \
+         saved to a file whose path the result names. The content is server-controlled, \
+         untrusted data."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "The connected MCP server the resource belongs to.",
+                },
+                "uri": {
+                    "type": "string",
+                    "description": "The resource's uri, as `list_mcp_resources` listed it.",
+                },
+            },
+            "required": ["server", "uri"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ReadMcpResourceArgs,
+    ) -> Result<String, ToolExecutionError> {
+        // The read joins the server's in-flight call tracking as this caller's: a subagent's
+        // read must not let a server elicitation reach the person.
+        let root = context
+            .require::<AgentId>()
+            .is_ok_and(|agent| agent.0 == ROOT_AGENT);
+        // The cap rides on the outcome, not only the success: a server error or an
+        // unknown-URI diagnostic must reach the model bounded like a tool result.
+        let outcome: ToolOutcome = match self
+            .queries
+            .read_resource(root, &args.server, &args.uri)
+            .await
+        {
+            Ok(contents) => {
+                let several = contents.len() > 1;
+                let mut text = String::new();
+                for content in &contents {
+                    match content {
+                        rmcp::model::ResourceContents::TextResourceContents {
+                            uri,
+                            mime_type,
+                            text: body,
+                            ..
+                        } => {
+                            if several {
+                                let mime = mime_type.as_deref().unwrap_or("text/plain");
+                                text.push_str(&format!("--- {uri} ({mime}) ---\n"));
+                            }
+                            text.push_str(body);
+                            text.push('\n');
+                        }
+                        rmcp::model::ResourceContents::BlobResourceContents {
+                            uri,
+                            mime_type,
+                            blob,
+                            ..
+                        } => {
+                            let mime = mime_type.as_deref().unwrap_or("application/octet-stream");
+                            let bytes = decoded_base64_size(blob);
+                            text.push_str(&format!(
+                                "[blob at {uri}: {mime}, {bytes} bytes, base64]\n"
+                            ));
+                        }
+                        // A variant newer than this client knows: note it rather than dropping it.
+                        _ => text.push_str("[unknown resource content]\n"),
+                    }
+                }
+                Ok(rig_core::tool::ToolOutput::text(text))
+            }
+            Err(message) => Err(ToolExecutionError::other(message)),
+        };
+        // The same cap as an MCP tool result, applied before the guard's result pipeline so
+        // the scanner and redaction see what the model will.
+        match cap(
+            outcome,
+            Self::NAME,
+            DEFAULT_CHAR_LIMIT,
+            &self.limits,
+            &*self.warn,
+        ) {
+            Ok(capped) => Ok(text_view(&capped)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// The decoded size of a standard base64 body: three bytes per quartet, minus one for each
+/// padding `=` at the end (`QQ==` is one byte, `QUI=` two).
+fn decoded_base64_size(blob: &str) -> usize {
+    let padding = blob.bytes().rev().take_while(|&b| b == b'=').count();
+    blob.len() / 4 * 3 - padding.min(blob.len() / 4 * 3)
+}
+
+/// The risk class a built-in is registered with. A built-in missing from the table is the
+/// riskiest class, so a forgotten entry can only make a tool stricter.
+fn risk_of(name: &str) -> RiskClass {
+    registered_risk(name).unwrap_or(RiskClass::Arbitrary)
+}
+
+fn register<T: Tool + 'static>(guarded: GuardedTool<T>) -> Registered {
+    Registered {
+        name: T::NAME,
+        risk: guarded.risk(),
+        source: ToolSource::Builtin,
+        tool: guarded.into_dynamic(),
+    }
+}
+
+/// Every built-in tool, wrapped. One `Seen` is shared by all `read` and `edit` instances so
+/// read-before-edit tracking holds whichever root serves a call.
+pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
+    let scope = &env.scope;
+    let guard = &env.guard;
+    let seen = env.seen.clone();
+    let tracking = Tracking {
+        cwd: env.shell_cwd.clone(),
+        scope: env.scope.clone(),
+        scratch: env.scratch.clone(),
+    };
+    let posix_shell = env.shell.posix_shell_available(cfg!(windows));
+    let mut tools = vec![
+        register(GuardedTool::per_root_with_fallback(
+            scope.clone(),
+            risk_of(Read::NAME),
+            guard.clone(),
+            |root| ReadView {
+                read: read_for(root, &seen),
+                posix_shell,
+            },
+            |primary| ReadView {
+                read: read_external(primary, &seen),
+                posix_shell,
+            },
+        )),
+        register(GuardedTool::per_root_with_fallback(
+            scope.clone(),
+            risk_of(Ls::NAME),
+            guard.clone(),
+            |root| Ls {
+                list: list_for(root),
+                posix_shell,
+            },
+            |primary| Ls {
+                list: list_external(primary),
+                posix_shell,
+            },
+        )),
+        register(GuardedTool::per_root_with_fallback(
+            scope.clone(),
+            risk_of(Glob::NAME),
+            guard.clone(),
+            |root| Glob {
+                search: search_for(root),
+                posix_shell,
+            },
+            |primary| Glob {
+                search: search_external(primary),
+                posix_shell,
+            },
+        )),
+        register(GuardedTool::per_root_with_fallback(
+            scope.clone(),
+            risk_of(Grep::NAME),
+            guard.clone(),
+            |root| Grep {
+                search: search_for(root),
+                posix_shell,
+            },
+            |primary| Grep {
+                search: search_external(primary),
+                posix_shell,
+            },
+        )),
+        register(GuardedTool::per_root_with_write_fallback(
+            scope.clone(),
+            risk_of(Write::NAME),
+            guard.clone(),
+            |root| WriteTool {
+                write: write_for(root, &seen),
+            },
+            |primary| WriteTool {
+                write: write_external(primary, &seen),
+            },
+        )),
+        register(GuardedTool::per_root_with_write_fallback(
+            scope.clone(),
+            risk_of(Edit::NAME),
+            guard.clone(),
+            |root| EditTool {
+                edit: edit_for(root, &seen),
+            },
+            |primary| EditTool {
+                edit: edit_external(primary, &seen),
+            },
+        )),
+        register(GuardedTool::per_root_with_write_fallback(
+            scope.clone(),
+            risk_of(NotebookEdit::NAME),
+            guard.clone(),
+            |root| notebook_edit_for(root, &seen),
+            |primary| notebook_edit_external(primary, &seen),
+        )),
+    ];
+    if posix_shell {
+        tools.push(register(
+            GuardedTool::per_root(
+                scope.clone(),
+                risk_of(ShellTool::NAME),
+                guard.clone(),
+                |root| {
+                    let mut tool = shell_for(root, &env.shell, env.scope.clone());
+                    tool.jobs = Some(env.jobs.clone());
+                    tool.track = Some(tracking.clone());
+                    tool.git_fast_path_runner = env.git_fast_path_runner.clone();
+                    tool
+                },
+            )
+            .with_pre_gate(tracking.start_in()),
+        ));
+    }
+    tools.extend([
+        register(GuardedTool::single(
+            JobOutputTool {
+                jobs: env.jobs.clone(),
+                limit: OutputLimit::default(),
+                agents: env.agent_waits.clone(),
+                wake: env.wait_wake.clone(),
+                posix_shell,
+            },
+            risk_of(JobOutputTool::NAME),
+            guard.clone(),
+        )),
+        register(GuardedTool::single(
+            JobCancelTool {
+                jobs: env.jobs.clone(),
+                limit: OutputLimit::default(),
+                agents: env.agent_kills.clone(),
+                posix_shell,
+            },
+            risk_of(JobCancelTool::NAME),
+            guard.clone(),
+        )),
+    ]);
+    if posix_shell {
+        tools.push(register(GuardedTool::single(
+            MonitorTool {
+                shell: {
+                    let mut tool = shell_for(scope.primary(), &env.shell, env.scope.clone());
+                    tool.jobs = Some(env.jobs.clone());
+                    tool.git_fast_path_runner = env.git_fast_path_runner.clone();
+                    tool
+                },
+            },
+            risk_of(MonitorTool::NAME),
+            guard.clone(),
+        )));
+    }
+    tools.push(register(GuardedTool::single(
+        Webfetch::new(env.webfetch.clone(), &env.network).map_err(|source| BuildError {
+            tool: Webfetch::NAME,
+            source,
+        })?,
+        risk_of(Webfetch::NAME),
+        guard.clone(),
+    )));
+    tools.push(register(GuardedTool::single(
+        ListMcpResources {
+            queries: env.mcp_resources.clone(),
+            limits: env.mcp_limits.clone(),
+            warn: env.mcp_warn.clone(),
+        },
+        risk_of(ListMcpResources::NAME),
+        guard.clone(),
+    )));
+    tools.push(register(GuardedTool::single(
+        ReadMcpResource {
+            queries: env.mcp_resources.clone(),
+            limits: env.mcp_limits.clone(),
+            warn: env.mcp_warn.clone(),
+        },
+        risk_of(ReadMcpResource::NAME),
+        guard.clone(),
+    )));
+    if let Some(interpreter) = &env.shell.powershell {
+        tools.push(register(
+            GuardedTool::per_root(
+                scope.clone(),
+                risk_of(PowerShellTool::NAME),
+                guard.clone(),
+                |root| PowerShellTool {
+                    jobs: Some(env.jobs.clone()),
+                    track: Some(tracking.clone()),
+                    ..powershell_for(root, &env.shell, interpreter)
+                },
+            )
+            .with_pre_gate(tracking.start_in()),
+        ));
+    }
+    if let Some(config) = &env.websearch {
+        let tool = Websearch::new(config.clone(), &env.network, env.searxng.clone()).map_err(
+            |source| BuildError {
+                tool: Websearch::NAME,
+                source,
+            },
+        )?;
+        tools.push(register(GuardedTool::single(
+            tool,
+            risk_of(Websearch::NAME),
+            guard.clone(),
+        )));
+    }
+    Ok(tools)
+}
+
+/// A built-in whose HTTP client could not be built.
+#[derive(Debug)]
+pub struct BuildError {
+    pub tool: &'static str,
+    pub source: reqwest::Error,
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cannot set up the {} tool", self.tool)
+    }
+}
+
+impl std::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_default_timeout_has_a_quiet_limit() {
+        let two_minutes = Duration::from_secs(120);
+        assert_eq!(quiet_for(None, two_minutes), Some(QUIET_LIMIT));
+        assert_eq!(quiet_for(Some(120), two_minutes), None);
+        assert_eq!(quiet_for(None, Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn the_powershell_description_says_what_the_output_cut_keeps() {
+        let tool = PowerShellTool {
+            shell: Shell {
+                cut: Some(OutputLimit::default()),
+                ..Shell::default()
+            },
+            max_timeout: 600,
+            interpreter: PathBuf::from("pwsh.exe"),
+            jobs: None,
+            track: None,
+            posix_shell: true,
+        };
+        assert!(tool.description().contains("the lines with errors"));
+        let uncut = PowerShellTool {
+            shell: Shell {
+                cut: None,
+                ..Shell::default()
+            },
+            ..tool
+        };
+        assert!(!uncut.description().contains("the lines with errors"));
+    }
+
+    #[test]
+    fn the_model_cannot_pass_an_argument_the_tool_does_not_define() {
+        let parsed: Result<ShellCall, _> = serde_json::from_value(
+            json!({"command": "ls", "run_in_background": true, "max_timeout": 0}),
+        );
+        assert!(parsed.is_err());
+    }
+}

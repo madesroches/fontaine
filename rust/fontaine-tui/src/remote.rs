@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fontaine_core::audit::Decision;
-use fontaine_core::duration::parse_duration;
-use fontaine_core::gate::SessionState;
-use fontaine_core::ledger::RemoteSender;
-use fontaine_core::steering::{Queued, Steering};
 use fontaine_remote::{Delivery, DeliveryError, Reason, RemoteServer, Sender};
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::duration::parse_duration;
+use fontaine_sdk::core::gate::SessionState;
+use fontaine_sdk::core::ledger::RemoteSender;
+use fontaine_sdk::core::steering::{Queued, Steering};
 use tokio::sync::mpsc::WeakUnboundedSender;
 
 use crate::Input;
@@ -96,7 +96,7 @@ impl RemoteHost {
     pub(crate) fn close(&self) {
         // Under the `started` lock so a start finishing concurrently sees either the close or
         // its stored result, and never a server stored after the final `take_started`.
-        let _started = fontaine_tools::lock::lock_recovering(&self.started);
+        let _started = fontaine_sdk::tools::lock::lock_recovering(&self.started);
         self.closed.store(true, Ordering::SeqCst);
     }
 
@@ -106,7 +106,7 @@ impl RemoteHost {
 
     pub(crate) fn set_skills(&self, names: impl IntoIterator<Item = String>) {
         // A stale skill list only misfiles one line as a command; a poisoned lock holds it still.
-        *fontaine_tools::lock::lock_recovering(&self.skills) = names.into_iter().collect();
+        *fontaine_sdk::tools::lock::lock_recovering(&self.skills) = names.into_iter().collect();
     }
 
     pub(crate) fn wake(&self) {
@@ -119,7 +119,7 @@ impl RemoteHost {
     pub(crate) async fn finish_start(&self, result: Result<RemoteServer, String>) {
         let rejected = {
             // The slot holds one result at a time and is read out whole; a poisoned lock still holds it.
-            let mut started = fontaine_tools::lock::lock_recovering(&self.started);
+            let mut started = fontaine_sdk::tools::lock::lock_recovering(&self.started);
             if self.is_closed() {
                 // Switched off while it started: nothing waits for this endpoint.
                 result.ok()
@@ -135,7 +135,7 @@ impl RemoteHost {
     }
 
     pub(crate) fn take_started(&self) -> Option<Result<RemoteServer, String>> {
-        fontaine_tools::lock::lock_recovering(&self.started).take()
+        fontaine_sdk::tools::lock::lock_recovering(&self.started).take()
     }
 
     pub(crate) fn audit(&self, rule: &str, explanation: &str, decision: Decision) {
@@ -153,7 +153,7 @@ impl RemoteHost {
         }
         match parse_command(line) {
             Some(Command::Other { name, argument })
-                if fontaine_tools::lock::lock_recovering(&self.skills).contains(&name) =>
+                if fontaine_sdk::tools::lock::lock_recovering(&self.skills).contains(&name) =>
             {
                 Queued::Skill {
                     raw: line.to_string(),

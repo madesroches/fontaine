@@ -6,30 +6,30 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use fontaine_agents::registry::TypeOrigin;
-use fontaine_core::afk_report::{AfkOutcome, AfkReport, Attempt, LinkKind};
-use fontaine_core::config::{
+use fontaine_sdk::agents::registry::TypeOrigin;
+use fontaine_sdk::core::afk_report::{AfkOutcome, AfkReport, Attempt, LinkKind};
+use fontaine_sdk::core::config::{
     HandlerKind, Hook, HookEvent, Hooks, MatcherKind, McpServer, Origin, PermissionMode,
     ProjectScope, Slot,
 };
-use fontaine_core::context::ContextUsage;
-use fontaine_core::extensions::{Extensions, Scope};
-use fontaine_core::gate::Rules;
-use fontaine_core::instructions::{MemoryEntry, MemoryKind};
-use fontaine_core::ledger::LedgerRecap;
-use fontaine_core::mcp_auth::McpAuth;
-use fontaine_core::permission_rules::SourcedRule;
-use fontaine_core::plugins::Registry;
-use fontaine_core::skill_trust::TrustState;
-use fontaine_core::usage_ledger::{Bucket, Served, UsageSource};
-use fontaine_guardian::evasion::AttemptDecision;
-use fontaine_tools::display::compact_count;
+use fontaine_sdk::core::context::ContextUsage;
+use fontaine_sdk::core::extensions::{Extensions, Scope};
+use fontaine_sdk::core::gate::Rules;
+use fontaine_sdk::core::instructions::{MemoryEntry, MemoryKind};
+use fontaine_sdk::core::ledger::LedgerRecap;
+use fontaine_sdk::core::mcp_auth::McpAuth;
+use fontaine_sdk::core::permission_rules::SourcedRule;
+use fontaine_sdk::core::plugins::Registry;
+use fontaine_sdk::core::skill_trust::TrustState;
+use fontaine_sdk::core::usage_ledger::{Bucket, Served, UsageSource};
+use fontaine_sdk::guardian::evasion::AttemptDecision;
+use fontaine_sdk::tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
 use crate::keymap::Keymap;
 use crate::statusbar::mode_label;
 use crate::transcript::truncate;
-use fontaine_core::keybindings::TuiAction;
+use fontaine_sdk::core::keybindings::TuiAction;
 
 /// What became of an MCP server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -291,7 +291,7 @@ pub fn mcp_with_origins(
                 }
                 McpState::Pending { attempt } => format!(
                     "pending (reconnecting, attempt {attempt} of {})",
-                    fontaine_core::agent::MCP_RECONNECT_ATTEMPTS
+                    fontaine_sdk::core::agent::MCP_RECONNECT_ATTEMPTS
                 ),
                 McpState::Failed(error) => format!("failed: {error}"),
                 McpState::LeftOff => "left off".to_string(),
@@ -456,7 +456,7 @@ pub fn plugins(
                             .is_some_and(|origin| origin.slot == Slot::Plugin)
                 })
                 .count();
-            let pin = fontaine_core::plugins::short_pin(&plugin.pin);
+            let pin = fontaine_sdk::core::plugins::short_pin(&plugin.pin);
             format!(
                 "{} ({}): {} — pin {} — {} skill(s), {} agent(s), {} style(s), {} hook(s), {} server(s)",
                 plugin.name,
@@ -518,10 +518,10 @@ pub fn memory(entries: &[MemoryEntry], auto: &AutoMemory<'_>) -> String {
 
 fn afk_outcome_words(report: &AfkReport) -> String {
     let source = match report.stretch.source {
-        fontaine_core::afk_report::AfkSource::Command => "/afk",
-        fontaine_core::afk_report::AfkSource::Cli => "the session start",
-        fontaine_core::afk_report::AfkSource::Cycle => "Shift+Tab",
-        fontaine_core::afk_report::AfkSource::Sdk => "the host program",
+        fontaine_sdk::core::afk_report::AfkSource::Command => "/afk",
+        fontaine_sdk::core::afk_report::AfkSource::Cli => "the session start",
+        fontaine_sdk::core::afk_report::AfkSource::Cycle => "Shift+Tab",
+        fontaine_sdk::core::afk_report::AfkSource::Sdk => "the host program",
     };
     let span = match (report.stretch.ended_ts_ms, report.stretch.started_ts_ms) {
         (Some(end), start) => format!(", lasted {}s", end.saturating_sub(start) / 1000),
@@ -554,9 +554,9 @@ fn afk_attempt_line(attempt: &Attempt, start_ms: u64) -> String {
             line,
             " — {}",
             match attempt.outcome {
-                Some(fontaine_core::afk_report::OutcomeStatus::Ok) => "succeeded",
-                Some(fontaine_core::afk_report::OutcomeStatus::Error) => "failed",
-                Some(fontaine_core::afk_report::OutcomeStatus::Cancelled) => "cancelled",
+                Some(fontaine_sdk::core::afk_report::OutcomeStatus::Ok) => "succeeded",
+                Some(fontaine_sdk::core::afk_report::OutcomeStatus::Error) => "failed",
+                Some(fontaine_sdk::core::afk_report::OutcomeStatus::Cancelled) => "cancelled",
                 None => "outcome not recorded",
             }
         );
@@ -775,7 +775,7 @@ pub fn cost(report: &UsageReport) -> String {
         ("advisor", UsageSource::Advisor),
         ("suggestions", UsageSource::PromptSuggestion),
     ];
-    let total = fontaine_core::usage_ledger::total(&report.by_source);
+    let total = fontaine_sdk::core::usage_ledger::total(&report.by_source);
     let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
     let split = total.cache_write_5m_tokens + total.cache_write_1h_tokens > 0;
     let cost_cell = |b: &Bucket| {
@@ -1026,9 +1026,9 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::config::{Origin, Slot};
-    use fontaine_core::extensions::Skill;
-    use fontaine_core::permission_rules::{RuleSource, parse_rule};
+    use fontaine_sdk::core::config::{Origin, Slot};
+    use fontaine_sdk::core::extensions::Skill;
+    use fontaine_sdk::core::permission_rules::{RuleSource, parse_rule};
 
     fn recap_input(recap: &LedgerRecap) -> RecapInput<'_> {
         RecapInput {
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn a_recap_lists_what_the_ledger_holds_and_leaves_out_what_is_empty() {
-        use fontaine_core::ledger::DenialEntry;
+        use fontaine_sdk::core::ledger::DenialEntry;
         let recap = LedgerRecap {
             user_messages: ["one", "two", "three", "four", "five", "six\nsecond line"]
                 .map(String::from)
@@ -1065,7 +1065,7 @@ mod tests {
                 rule: "deny(shell)".into(),
                 summary: "rm -rf x".into(),
             }),
-            afk: Some(fontaine_core::afk_report::AfkOutcome::Blocked),
+            afk: Some(fontaine_sdk::core::afk_report::AfkOutcome::Blocked),
             agents_spawned: 3,
         };
         let text = super::recap(&RecapInput {
@@ -1372,7 +1372,7 @@ mod tests {
     fn plugins_lists_components_with_their_counts() {
         let registry = Registry {
             marketplace: Vec::new(),
-            plugin: vec![fontaine_core::plugins::InstalledPlugin {
+            plugin: vec![fontaine_sdk::core::plugins::InstalledPlugin {
                 name: "p".to_string(),
                 marketplace: "team".to_string(),
                 source: "./plugins/p".to_string(),
@@ -1496,7 +1496,7 @@ mod tests {
 
     #[test]
     fn memory_lists_numbered_entries_with_their_origin_and_what_is_not_created() {
-        use fontaine_core::instructions::Origin;
+        use fontaine_sdk::core::instructions::Origin;
         let entries = vec![
             MemoryEntry {
                 path: "/repo/CLAUDE.md".into(),
@@ -1591,14 +1591,14 @@ mod tests {
             ],
             ..Extensions::default()
         };
-        let record = |name: &str, digest: &str| fontaine_core::skill_trust::TrustRecord {
+        let record = |name: &str, digest: &str| fontaine_sdk::core::skill_trust::TrustRecord {
             name: name.into(),
             digest: digest.into(),
             tools: Vec::new(),
             commands: Vec::new(),
         };
-        extensions.trusted = fontaine_core::skill_trust::TrustedSkills::from_file(
-            fontaine_core::skill_trust::TrustFile {
+        extensions.trusted = fontaine_sdk::core::skill_trust::TrustedSkills::from_file(
+            fontaine_sdk::core::skill_trust::TrustFile {
                 skill: vec![
                     record("p:fresh", "sha256:p:fresh"),
                     record("p:old", "sha256:earlier"),

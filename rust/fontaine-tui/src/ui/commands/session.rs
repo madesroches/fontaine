@@ -2,11 +2,11 @@ use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::{Path, PathBuf};
 
 use crate::{App, SessionTarget, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::ledger::Record;
-use fontaine_core::session::{self, Session};
-use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::session::{self, Session};
+use fontaine_sdk::tools::error_chain::chain;
+use fontaine_sdk::tools::gate::ROOT_AGENT;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// Leaves for the session `text` names (an id or a name), once it is known to exist.
@@ -121,7 +121,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// holding `main.md` and one `<agent-id>.md` per subagent.
     pub(crate) async fn export(&mut self, runtime: &AgentRuntime, launch_dir: &Path, path: &str) {
         let path = path.trim_matches(|c| c == '"' || c == '\'');
-        let agents = fontaine_core::export::subagents(&runtime.session, runtime.state.agents());
+        let agents =
+            fontaine_sdk::core::export::subagents(&runtime.session, runtime.state.agents());
         let path: PathBuf = if path.is_empty() {
             let id = &runtime.session.id;
             let base = format!("fontaine-{}", id.get(..8).unwrap_or(id));
@@ -133,8 +134,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         } else {
             launch_dir.join(path)
         };
-        match fontaine_core::export::export_session(&runtime.session, runtime.state.agents(), &path)
-            .await
+        match fontaine_sdk::core::export::export_session(
+            &runtime.session,
+            runtime.state.agents(),
+            &path,
+        )
+        .await
         {
             Ok(()) if agents.is_empty() => self
                 .app

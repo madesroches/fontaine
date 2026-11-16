@@ -8,15 +8,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fontaine_core::accounts::{self, AccountsError, ExternalCheckError};
-use fontaine_core::agent::EnvLookup;
-use fontaine_core::config::{Config, MainSource, OneOrMany};
-use fontaine_core::dirs::Dirs;
-use fontaine_core::models::{self, Models, ResolveParams, Switcher};
-use fontaine_core::notice::Notice;
-use fontaine_core::providers::ExternalLogin;
-use fontaine_core::user_config;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::accounts::{self, AccountsError, ExternalCheckError};
+use fontaine_sdk::core::agent::EnvLookup;
+use fontaine_sdk::core::config::{Config, MainSource, OneOrMany};
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::models::{self, Models, ResolveParams, Switcher};
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::providers::ExternalLogin;
+use fontaine_sdk::core::user_config;
+use fontaine_sdk::tools::error_chain::chain;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -499,7 +499,7 @@ impl Setup {
     /// Whether a picked model may be saved as `[model] model`: not when the settings give the main
     /// model as a role or a list, since a second `main` key beside it would stop the next start.
     fn may_save_pick(&mut self) -> bool {
-        use fontaine_core::user_config::MainShape;
+        use fontaine_sdk::core::user_config::MainShape;
         if !matches!(
             self.config.main_source,
             MainSource::Unset | MainSource::ModelKeyString
@@ -597,7 +597,7 @@ impl Setup {
                 DialogKey::LogOut(account)
                     if self.config.accounts.get(&account).is_some_and(|a| {
                         a.kind.provider().credential()
-                            == fontaine_core::providers::CredentialPolicy::ExternalCli
+                            == fontaine_sdk::core::providers::CredentialPolicy::ExternalCli
                     }) =>
                 {
                     self.dialog
@@ -698,7 +698,7 @@ impl Setup {
                     .finish(Outcome::Failed(format!("unknown account `{name}`"))),
             ));
         };
-        let network = match fontaine_core::models::account_network(&self.config, name) {
+        let network = match fontaine_sdk::core::models::account_network(&self.config, name) {
             Ok(network) => network,
             Err(reason) => return Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
         };
@@ -766,7 +766,7 @@ impl Setup {
                     .finish(Outcome::Failed(format!("unknown account `{name}`"))),
             ));
         };
-        let network = match fontaine_core::models::account_network(&self.config, name) {
+        let network = match fontaine_sdk::core::models::account_network(&self.config, name) {
             Ok(network) => network,
             Err(reason) => return Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
         };
@@ -853,7 +853,7 @@ enum After {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::config::{self, LoadParams};
+    use fontaine_sdk::core::config::{self, LoadParams};
     use ratatui::backend::TestBackend;
 
     #[test]

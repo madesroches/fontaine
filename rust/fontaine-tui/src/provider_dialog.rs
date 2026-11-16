@@ -3,12 +3,12 @@
 //! go in, requests for the host to carry out come out, and nothing here touches a file, the
 //! network or the session. The `/login` overlay and the pre-session setup screen both host it.
 
-use fontaine_core::accounts::{
+use fontaine_sdk::core::accounts::{
     self, AccountRow, BaseUrlPolicy, NewAccount, SignInState, SignInStep,
 };
-use fontaine_core::config::AccountKind;
-use fontaine_core::providers::{self as accounts_providers, CredentialPolicy};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::config::AccountKind;
+use fontaine_sdk::core::providers::{self as accounts_providers, CredentialPolicy};
+use fontaine_sdk::tools::error_chain::chain;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -940,7 +940,7 @@ impl ProviderDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::accounts::SignInState;
+    use fontaine_sdk::core::accounts::SignInState;
     use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {

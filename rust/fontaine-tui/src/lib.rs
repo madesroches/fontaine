@@ -61,18 +61,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::gate::AgentViewEvent;
-use fontaine_core::notice::{Notice, Severity};
-use fontaine_core::permissions::{
+use fontaine_sdk::core::agent::{AgentRuntime, AgentSetup, EnvLookup};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::gate::AgentViewEvent;
+use fontaine_sdk::core::notice::{Notice, Severity};
+use fontaine_sdk::core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, PauseChoice, UnavailableChoice,
 };
-use fontaine_core::statusline::{StatuslineScript, StatuslineState};
-use fontaine_core::usage_pause::PauseInfo;
-use fontaine_tools::ask_user::{Question, QuestionReply};
-use fontaine_tools::kills::KILL_SETTLE;
-use fontaine_tools::mcp::{ElicitReply, ElicitRequest, ElicitUrl};
+use fontaine_sdk::core::statusline::{StatuslineScript, StatuslineState};
+use fontaine_sdk::core::usage_pause::PauseInfo;
+use fontaine_sdk::tools::ask_user::{Question, QuestionReply};
+use fontaine_sdk::tools::kills::KILL_SETTLE;
+use fontaine_sdk::tools::mcp::{ElicitReply, ElicitRequest, ElicitUrl};
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
@@ -211,7 +211,10 @@ impl Approver for ChannelApprover {
         })
     }
 
-    fn elicit<'a>(&'a self, form: fontaine_tools::mcp::ElicitForm) -> BoxFuture<'a, ElicitReply> {
+    fn elicit<'a>(
+        &'a self,
+        form: fontaine_sdk::tools::mcp::ElicitForm,
+    ) -> BoxFuture<'a, ElicitReply> {
         Box::pin(async move {
             let (reply, answer) = oneshot::channel();
             let request = ElicitRequest::Form(form);
@@ -360,7 +363,7 @@ struct Ui<R> {
     /// Requests the provider dialog made while a turn ran, carried out once it is over.
     pending_provider: VecDeque<DialogKey>,
     data_dir: PathBuf,
-    pending_drafts: fontaine_core::bug_drafts::Pending,
+    pending_drafts: fontaine_sdk::core::bug_drafts::Pending,
     user_config: Option<PathBuf>,
     env: EnvLookup,
     /// What starting each MCP server came to, for `/mcp`.
@@ -380,14 +383,14 @@ struct Ui<R> {
     /// The remote inbox: off, starting, or live for this session.
     remote: ui::RemoteState,
     /// The identity of the remote line being run, so everything it records carries it.
-    current_remote: Option<fontaine_core::ledger::RemoteSender>,
+    current_remote: Option<fontaine_sdk::core::ledger::RemoteSender>,
     /// The remote line that answered the confirmation now being handled.
-    remote_confirm: Option<fontaine_core::ledger::RemoteSender>,
+    remote_confirm: Option<fontaine_sdk::core::ledger::RemoteSender>,
     /// What the open remote-answerable dialog holds in the steering queue.
     dialog_guard: Option<ui::DialogHold>,
     /// One poller per role, main first: the two accounts can differ.
-    quota: [fontaine_core::quota::QuotaPoller; 2],
-    quota_rx: [tokio::sync::watch::Receiver<fontaine_core::quota::QuotaSnapshot>; 2],
+    quota: [fontaine_sdk::core::quota::QuotaPoller; 2],
+    quota_rx: [tokio::sync::watch::Receiver<fontaine_sdk::core::quota::QuotaSnapshot>; 2],
     /// Accounts whose quota failure was already reported, so a poller re-pointed by a credential
     /// rebuild does not repeat it.
     quota_warned: std::collections::HashSet<String>,
@@ -467,14 +470,14 @@ pub async fn drive(
     let env_lookup = env.clone();
     let launcher = ui::Launcher::for_platform(setup.git_bash.clone());
     let mut runtime =
-        AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
+        AgentRuntime::new(setup).map_err(|e| fontaine_sdk::tools::error_chain::chain(&e))?;
     let (agent_sink, agent_events) = unbounded_channel();
     runtime.state.set_agent_event_sink(agent_sink);
     // A pause waits for as long as it takes while the human can cancel it; while AFK nobody
     // can, so it gets the cap a headless run has.
     runtime
         .state
-        .set_usage_wait(fontaine_core::gate::UsageWait {
+        .set_usage_wait(fontaine_sdk::core::gate::UsageWait {
             cap: None,
             afk_cap: Some(Duration::from_secs(
                 runtime.config.headless.max_usage_wait_secs,
@@ -502,8 +505,8 @@ pub async fn drive(
     });
     let theme = Theme::preset(runtime.config.tui.theme);
     let quota = [
-        fontaine_core::quota::QuotaPoller::new(),
-        fontaine_core::quota::QuotaPoller::new(),
+        fontaine_sdk::core::quota::QuotaPoller::new(),
+        fontaine_sdk::core::quota::QuotaPoller::new(),
     ];
     let (statusline_tx, statusline_rx) = tokio::sync::mpsc::unbounded_channel();
     let (statusline_result_tx, statusline_result_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -511,13 +514,13 @@ pub async fn drive(
         StatuslineScript::new(
             command,
             runtime.scrub_env().to_vec(),
-            fontaine_core::tools::subprocess_env(&runtime.config),
+            fontaine_sdk::core::tools::subprocess_env(&runtime.config),
             runtime.command_shell(),
             runtime.state.scope().primary().to_path_buf(),
         )
     });
     let mut ui = Ui {
-        hook_notifier: notify::Notifier::new(fontaine_core::config::NotifyMethod::Off),
+        hook_notifier: notify::Notifier::new(fontaine_sdk::core::config::NotifyMethod::Off),
         afk_stops: runtime.state.afk_stop_signal(),
         app: App::new(mode, model),
         input,
@@ -605,7 +608,9 @@ pub async fn drive(
     {
         ui.app.transcript.push_notice(notice);
     }
-    if let fontaine_core::agent::SessionOrigin::Continued { source, how, .. } = runtime.origin() {
+    if let fontaine_sdk::core::agent::SessionOrigin::Continued { source, how, .. } =
+        runtime.origin()
+    {
         ui.app.transcript.notice(format!(
             "continuing session {source} ({how}) in {mode} mode, with no grants carried over",
             mode = mode.as_str()
@@ -774,7 +779,7 @@ pub async fn run(
     enable_raw_mode().map_err(|e| {
         format!(
             "could not start the terminal UI: {}",
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
@@ -797,7 +802,7 @@ pub async fn run(
                 restore_terminal();
                 return Err(format!(
                     "could not start the terminal UI: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ));
             }
         }
@@ -859,7 +864,7 @@ pub async fn run(
         move |deadline: Instant| {
             let watchdog = ExitWatchdog::arm(deadline, restore_terminal, || std::process::exit(0));
             // Display-only slot for the watchdog handle; a poisoned lock still holds it.
-            *fontaine_tools::lock::lock_recovering(&armed) = Some(watchdog);
+            *fontaine_sdk::tools::lock::lock_recovering(&armed) = Some(watchdog);
         }
     };
     let result = drive(
@@ -901,7 +906,7 @@ pub async fn run(
     .await;
     stop.store(true, Ordering::Relaxed);
     // The slot only holds the watchdog handle; a poisoned lock still holds it.
-    let watchdog = fontaine_tools::lock::lock_recovering(&armed).take();
+    let watchdog = fontaine_sdk::tools::lock::lock_recovering(&armed).take();
     // A reader stuck in a read must not hold the exit past its deadline.
     let _ = match watchdog.as_ref() {
         Some(watchdog) => tokio::time::timeout(

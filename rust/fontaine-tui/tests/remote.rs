@@ -7,8 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{Ui, World, text_turn, tool_turn};
-use fontaine_core::config::PermissionMode;
 use fontaine_remote::{Reason, SendError, SendOptions, Ticket, send};
+use fontaine_sdk::core::config::PermissionMode;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use serde_json::json;
 

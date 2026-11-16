@@ -3,8 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use fontaine_core::bug_report::Level;
-use fontaine_core::bug_submit::{REPO, Submit};
+use fontaine_sdk::core::bug_report::Level;
+use fontaine_sdk::core::bug_submit::{REPO, Submit};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;

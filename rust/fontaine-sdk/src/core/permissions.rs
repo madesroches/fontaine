@@ -1,0 +1,3157 @@
+//! The permission pipeline: the one place that decides whether a tool call runs. Every wrapped
+//! tool reaches it through the `ToolGate` trait. The order is the one in the design: user
+//! pre-tool-use hooks, the deterministic floor (deny rules, ask rules, protected paths) in every
+//! mode, then the read-only fast path, the shell pre-classifier, allow rules and
+//! finally what the mode does with a call nobody pre-approved.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::guardian::composition::{self, Composed, Decided, ReadRecord};
+use crate::guardian::{
+    Adjudication, Decision as GuardianDecision, FailClosed, Guardian as LlmGuardian, WireIds,
+};
+use crate::tools::ask_user::{Question, QuestionReply};
+use crate::tools::descriptor::is_shell_class;
+use crate::tools::error_chain::chain;
+use crate::tools::gate::{CallView, GateDecision, ToolGate};
+use crate::tools::lock::lock;
+use crate::tools::mcp::{ElicitForm, ElicitReply, ElicitUrl};
+use crate::tools::preclassify::{Environment, Preclassifier, analyze};
+use crate::tools::risk::RiskClass;
+use crate::tools::scope::{Scope, ScopeError, is_external_read, is_external_write};
+use futures::future::BoxFuture;
+use serde_json::Value;
+use tracing::Instrument;
+
+use crate::core::adjudication::{self, action_summary};
+use crate::core::afk_report::AfkSource;
+use crate::core::audit::{Converted, Decision, DecisionRecord, args_digest};
+use crate::core::config::PermissionMode;
+use crate::core::destructive::touched_paths;
+use crate::core::floor;
+use crate::core::gate::{
+    AFK_STOPPED_MESSAGE, CompositionStage, DeniedCall, RetrySource, SessionState,
+    UNREGISTERED_AGENT, permission_mode,
+};
+use crate::core::ledger::{Existence, Record};
+use crate::core::permission_rules::{
+    CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
+    parse_rule, propose,
+};
+use crate::core::preview::{self, DiffPreview};
+use crate::core::runtime_error::RuntimeError;
+use crate::core::tier::Tier;
+use crate::core::trust::{self, Tracking};
+use crate::core::usage_ledger::Served;
+use crate::core::usage_pause::PauseInfo;
+use crate::core::user_config;
+use crate::core::user_hooks::LivePlugins;
+
+const TARGET: &str = "fontaine::telemetry";
+
+/// What the human is asked at an approval prompt.
+#[derive(Clone, Debug)]
+pub struct ApprovalRequest {
+    pub tool: String,
+    pub agent: String,
+    /// The subagent's name; empty for the root.
+    pub agent_name: String,
+    pub tool_use_id: Option<String>,
+    pub args: Value,
+    /// The call: the full command, path or URL.
+    pub summary: String,
+    /// Which part of the pipeline asked.
+    pub tier: Tier,
+    /// Why the call needs approval.
+    pub reason: String,
+    pub offers: Offers,
+    /// The exact rule "allow session" and "always allow" would add.
+    pub proposed_rule: Option<String>,
+    /// The change an `edit` or `write` call would make, for the human to see.
+    pub preview: Option<DiffPreview>,
+}
+
+/// Which answers beyond "allow once" and "deny" the prompt offers. Prompts forced by the floor
+/// and shell calls that are not one literal simple command offer neither, because no allow rule
+/// can act there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Offers {
+    pub session: bool,
+    pub always: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    AllowOnce,
+    AllowSession,
+    AllowAlways,
+    /// An answer from a host that can also change the call: the session allows and the mode it
+    /// asks for hold from the next call, and new `args` send the call back through the whole
+    /// pipeline.
+    AllowUpdated {
+        args: Option<Value>,
+        grants: Vec<Rule>,
+        mode: Option<PermissionMode>,
+    },
+    Deny {
+        feedback: Option<String>,
+    },
+}
+
+/// Who answers a prompt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HumanChannel {
+    /// A person at the terminal.
+    Present,
+    /// Nobody: every would-prompt outcome becomes a denial.
+    #[default]
+    Absent,
+    /// A host program answers for the person. It is asked exactly where a person would be, but it
+    /// is never offered "always allow": nothing it says outlives the session.
+    Delegate,
+}
+
+impl HumanChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HumanChannel::Present => "present",
+            HumanChannel::Absent => "absent",
+            HumanChannel::Delegate => "delegate",
+        }
+    }
+}
+
+/// The human-approval callback.
+pub trait Approver: Send + Sync {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer>;
+
+    /// Something the human should know that is not an answer to a prompt, such as a settings
+    /// file that could not be written.
+    fn notice(&self, _message: &str) {}
+
+    /// A warning about the session itself. Defaults to stderr; a full-screen frontend must
+    /// override it, since a stray line corrupts the screen.
+    fn warn(&self, message: &str) {
+        eprintln!("fontaine: warning: {message}");
+    }
+
+    /// The pinned guardian cannot be used at all (no credential, unknown account). Nothing is
+    /// substituted silently: the human chooses whether to try again, to run with `manual`
+    /// instead, or to leave the call denied.
+    fn guardian_unavailable<'a>(
+        &'a self,
+        _info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        Box::pin(async { UnavailableChoice::Deny })
+    }
+
+    /// The run is on hold because an account's usage window is spent. A frontend with a dialog
+    /// offers resuming now, cancelling and switching account, and returns the choice; every
+    /// other approver waits for the reset.
+    fn usage_paused<'a>(&'a self, _info: PauseInfo) -> BoxFuture<'a, PauseChoice> {
+        Box::pin(async { PauseChoice::Wait })
+    }
+
+    /// The model's multiple-choice questions for the human. Only a frontend with a dialog
+    /// answers; every other approver reports that nobody can.
+    fn ask_user<'a>(
+        &'a self,
+        _agent: &'a str,
+        _questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async { QuestionReply::Unavailable })
+    }
+
+    /// An MCP server's request for input. Only a frontend with a dialog answers; every other
+    /// approver cancels, as Claude Code does in a non-interactive session.
+    fn elicit<'a>(&'a self, _form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async { ElicitReply::Cancel })
+    }
+
+    /// An MCP server's request to open a link. Only a frontend with a dialog answers; every
+    /// other approver cancels, like every other unattended elicitation.
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        let _ = request;
+        Box::pin(async { ElicitReply::Cancel })
+    }
+}
+
+/// Why the guardian could not be asked, for the human who has to decide what to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardianUnavailable {
+    /// `<account>/<model>`.
+    pub model: String,
+    pub reason: String,
+    /// The call that needed it.
+    pub tool: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnavailableChoice {
+    /// Ask the guardian again; the surface has re-resolved or replaced it.
+    Retry,
+    /// Switch the session to `manual` and prompt for this call.
+    Manual,
+    /// Leave the call denied.
+    Deny,
+}
+
+/// What the human chose while the run waits for a usage window to reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseChoice {
+    /// Nothing: keep waiting.
+    Wait,
+    /// Go on now. The first request to meet the limit again pauses the run anew. A surface that
+    /// switched to another account answers this too.
+    Resume,
+    /// Give up: waiting calls fail and pending gated calls are denied.
+    Cancel,
+}
+
+/// An approver that denies everything, for runs where nobody can answer.
+pub struct DenyAll;
+
+impl Approver for DenyAll {
+    fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        Box::pin(async { Answer::Deny { feedback: None } })
+    }
+
+    /// With no interface to show it on, a notice goes to stderr.
+    fn notice(&self, message: &str) {
+        eprintln!("fontaine: {message}");
+    }
+}
+
+/// Wraps the session's approver so that nothing can reach the user while AFK mode is on: a
+/// prompt is denied, a question goes unanswered and the guardian-unavailable dialog is skipped.
+/// The pipeline already converts every would-prompt outcome with the right words and audit
+/// fields; this is the backstop for any call site that asks anyway.
+pub struct AfkApprover {
+    inner: Arc<dyn Approver>,
+    state: Arc<SessionState>,
+}
+
+impl AfkApprover {
+    pub fn new(inner: Arc<dyn Approver>, state: Arc<SessionState>) -> AfkApprover {
+        AfkApprover { inner, state }
+    }
+}
+
+impl Approver for AfkApprover {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        if self.state.afk_on() {
+            return Box::pin(async { Answer::Deny { feedback: None } });
+        }
+        self.inner.approve(request)
+    }
+
+    fn notice(&self, message: &str) {
+        self.inner.notice(message);
+    }
+
+    fn warn(&self, message: &str) {
+        self.inner.warn(message);
+    }
+
+    fn guardian_unavailable<'a>(
+        &'a self,
+        info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        if self.state.afk_on() {
+            return Box::pin(async { UnavailableChoice::Deny });
+        }
+        self.inner.guardian_unavailable(info)
+    }
+
+    fn usage_paused<'a>(&'a self, info: PauseInfo) -> BoxFuture<'a, PauseChoice> {
+        // Nobody can answer while AFK, so the pause runs to its deadline.
+        if self.state.afk_on() {
+            return Box::pin(async { PauseChoice::Wait });
+        }
+        self.inner.usage_paused(info)
+    }
+
+    fn ask_user<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { QuestionReply::Unavailable });
+        }
+        self.inner.ask_user(agent, questions)
+    }
+
+    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { ElicitReply::Cancel });
+        }
+        self.inner.elicit(form)
+    }
+
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { ElicitReply::Cancel });
+        }
+        self.inner.elicit_url(request)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookPermission {
+    Deny,
+    Ask,
+    Allow,
+}
+
+/// What one `pre_tool_use` hook answered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HookDecision {
+    pub permission: Option<HookPermission>,
+    /// Replaces the call's arguments; every later step judges the rewritten call.
+    pub updated_input: Option<Value>,
+    pub reason: Option<String>,
+    /// A note for the guardian, shown to it inside an untrusted block.
+    pub guardian_context: Option<String>,
+}
+
+/// The denial of a call whose guardian check was waiting on a usage window that never reopened.
+fn pause_ended(guardian: &LlmGuardian, ended: &crate::core::gate::UsagePauseEnded) -> Adjudication {
+    let reason = FailClosed::UsagePauseEnded;
+    Adjudication {
+        decision: GuardianDecision::Deny,
+        rule: reason.label(),
+        explanation: ended.to_string(),
+        confidence: None,
+        fail_closed: Some(reason),
+        cache_hit: false,
+        latency_ms: 0,
+        model: guardian.label().to_string(),
+        profile: guardian.profile(),
+        usage: Default::default(),
+        transport: None,
+        cause: None,
+    }
+}
+
+/// What a fail-closed hook's failure turns into: a denial that says why.
+fn fail_closed_denial(reason: String) -> HookDecision {
+    HookDecision {
+        permission: Some(HookPermission::Deny),
+        reason: Some(reason),
+        ..HookDecision::default()
+    }
+}
+
+/// The words of a PowerShell command hook's fail-closed denial.
+pub const GIT_BASH_FAIL_CLOSED: &str = "blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict";
+
+#[derive(Debug)]
+pub enum HookError {
+    Failed {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+    Malformed {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+}
+
+impl HookError {
+    pub fn failed(context: impl Into<String>) -> Self {
+        HookError::Failed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn failed_by(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        HookError::Failed {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    pub fn malformed(context: impl Into<String>) -> Self {
+        HookError::Malformed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn malformed_by(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        HookError::Malformed {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl std::fmt::Display for HookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookError::Failed { context, .. } | HookError::Malformed { context, .. } => {
+                f.write_str(context)
+            }
+        }
+    }
+}
+
+impl std::error::Error for HookError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HookError::Failed { source, .. } | HookError::Malformed { source, .. } => source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static)),
+        }
+    }
+}
+
+pub struct PreToolUseEvent<'a> {
+    pub tool: &'a str,
+    pub args: &'a Value,
+    pub agent: &'a str,
+    pub tool_use_id: Option<&'a str>,
+    pub session_id: &'a str,
+    /// The primary workspace root.
+    pub cwd: &'a Path,
+    /// The agent's permission mode in force for this call, by its settings name.
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
+}
+
+/// The slot for user `pre_tool_use` hooks. A hook that errors, times out or answers something
+/// unreadable contributes no decision; it never loosens anything. The exception is a hook that
+/// [fails closed](PreToolUseHook::fails_closed): its failure or timeout denies the call.
+pub trait PreToolUseHook: Send + Sync {
+    fn id(&self) -> String;
+
+    /// The matcher the hook is configured with, in the permission-rule grammar. A hook `allow`
+    /// skips the guardian in `auto` only when this is a narrow rule; a hook that names none, or
+    /// a broad one, is suspended there like a broad allow rule.
+    fn matcher(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Whether this hook's `allow` counts. A hook the repository defines can tighten a call
+    /// but never approve one.
+    fn can_allow(&self) -> bool {
+        true
+    }
+
+    /// Whether a run that fails or times out denies the call instead of deciding nothing. It
+    /// only tightens: output that cannot be read still decides nothing.
+    fn fails_closed(&self) -> bool {
+        false
+    }
+
+    /// Why a [fail-closed](PreToolUseHook::fails_closed) hook's failure denied the call.
+    fn fail_closed_reason(&self, failure: &str) -> String {
+        format!("{GIT_BASH_FAIL_CLOSED} ({failure})")
+    }
+
+    /// Waits for whatever the hook needs before its run starts, outside its timeout: a hook that
+    /// asks a model waits out a usage pause here. An `Err` is the hook failing.
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn run<'a>(
+        &'a self,
+        event: PreToolUseEvent<'a>,
+    ) -> BoxFuture<'a, Result<HookDecision, HookError>>;
+}
+
+/// What the pipeline tells a `permission_denied` hook.
+pub struct PermissionDeniedEvent<'a> {
+    pub tool: &'a str,
+    pub args: &'a Value,
+    pub agent: &'a str,
+    pub tool_use_id: Option<&'a str>,
+    pub session_id: &'a str,
+    pub cwd: &'a Path,
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
+    pub tier: Tier,
+    pub reason: &'a str,
+}
+
+/// The slot for user `permission_denied` hooks. The answer can only say the agent may retry
+/// the call; the floor and the guardian are not consulted differently because of it.
+pub trait PermissionDeniedHook: Send + Sync {
+    fn id(&self) -> String;
+
+    fn matcher(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Whether its `retry` counts. A hook the repository defines never loosens a decision.
+    fn can_retry(&self) -> bool {
+        true
+    }
+
+    /// As [`PreToolUseHook::gate`].
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// `Ok(true)` when the hook says the agent may retry exactly this call.
+    fn run<'a>(
+        &'a self,
+        event: PermissionDeniedEvent<'a>,
+    ) -> BoxFuture<'a, Result<bool, HookError>>;
+}
+
+/// What the pipeline tells an `elicitation` hook about an MCP server's request for input.
+#[derive(Clone, Copy)]
+pub struct ElicitationEvent<'a> {
+    pub server: &'a str,
+    /// "form" or "url".
+    pub mode: &'a str,
+    /// Untrusted text from the server.
+    pub message: &'a str,
+    pub url: Option<&'a str>,
+    pub elicitation_id: &'a str,
+    pub requested_schema: Option<&'a Value>,
+    pub session_id: &'a str,
+    pub cwd: &'a Path,
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
+}
+
+/// The slot for `elicitation` hooks. A hook that errors, times out or answers something
+/// unreadable contributes no verdict, so the request falls through to the dialog or the
+/// unattended `cancel`.
+pub trait ElicitationHook: Send + Sync {
+    fn id(&self) -> String;
+
+    /// The MCP server names the hook is configured for, `|`-separated.
+    fn matcher(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Whether this hook's `accept` counts. A hook the repository defines can tighten a
+    /// request but never answer for the person.
+    fn can_accept(&self) -> bool {
+        true
+    }
+
+    /// As [`PreToolUseHook::gate`].
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// `Ok(None)` when the hook has no opinion on the request.
+    fn run<'a>(
+        &'a self,
+        event: ElicitationEvent<'a>,
+    ) -> BoxFuture<'a, Result<Option<ElicitReply>, HookError>>;
+}
+
+fn elicitation_matcher_covers(matcher: Option<&str>, server: &str) -> bool {
+    match matcher {
+        None | Some("") | Some("*") => true,
+        Some(matcher) => matcher.split('|').any(|name| name == server),
+    }
+}
+
+/// Runs the matching `elicitation` hooks, the frozen ones before the plugin layer's, and
+/// returns their combined verdict. The most conservative answer wins (cancel, then decline,
+/// then accept), and an accept counts only from a hook that may accept. A hook that fails
+/// decides nothing and is told to the human; `None` means nobody answered.
+pub async fn run_elicitation_hooks(
+    hooks: &[Arc<dyn ElicitationHook>],
+    plugins: &LivePlugins,
+    event: ElicitationEvent<'_>,
+    approver: &dyn Approver,
+) -> Option<ElicitReply> {
+    let layer = plugins.get();
+    let mut cancel = false;
+    let mut decline = false;
+    let mut accept: Option<ElicitReply> = None;
+    for hook in hooks.iter().chain(layer.elicitation.iter()) {
+        if !elicitation_matcher_covers(hook.matcher().as_deref(), event.server) {
+            continue;
+        }
+        let id = hook.id();
+        let ran = match hook.gate().await {
+            Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+            Err(e) => Ok(Err(e)),
+        };
+        let verdict = match ran {
+            Ok(Ok(verdict)) => verdict,
+            Ok(Err(e)) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` failed: {}; it decides nothing",
+                    chain(&e)
+                ));
+                continue;
+            }
+            Err(_) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` timed out; it decides nothing"
+                ));
+                continue;
+            }
+        };
+        match verdict {
+            Some(ElicitReply::Cancel) => cancel = true,
+            Some(ElicitReply::Decline) => decline = true,
+            Some(reply @ ElicitReply::Accept(_)) if hook.can_accept() => {
+                accept.get_or_insert(reply);
+            }
+            Some(ElicitReply::Accept(_)) => {
+                approver.warn(&format!(
+                    "the elicitation hook `{id}` is not from your own config, so its accept is ignored"
+                ));
+            }
+            None => {}
+        }
+    }
+    if cancel {
+        Some(ElicitReply::Cancel)
+    } else if decline {
+        Some(ElicitReply::Decline)
+    } else {
+        accept
+    }
+}
+
+pub struct PipelineParams {
+    pub state: Arc<SessionState>,
+    pub approver: Arc<dyn Approver>,
+    /// Who answers a prompt; with `Absent`, every would-prompt outcome becomes a denial.
+    pub human: HumanChannel,
+    pub hooks: Vec<Arc<dyn PreToolUseHook>>,
+    pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
+    /// The hooks plugins bring, consulted after `hooks` and `denied_hooks`; a reload swaps them.
+    pub plugin_hooks: LivePlugins,
+    /// `[shell_preclassifier] allow_extra`.
+    pub allow_extra: Vec<String>,
+    /// The user settings file "always allow" appends to.
+    pub user_config: Option<PathBuf>,
+}
+
+pub struct PermissionPipeline {
+    state: Arc<SessionState>,
+    approver: Arc<dyn Approver>,
+    human: HumanChannel,
+    hooks: Vec<Arc<dyn PreToolUseHook>>,
+    denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
+    plugin_hooks: LivePlugins,
+    preclassifier: Preclassifier,
+    user_config: Option<PathBuf>,
+    /// The diff an approval prompt already built, by agent, so the allowed call does not read
+    /// the file a second time. Calls run one at a time per agent.
+    prompted: Mutex<HashMap<String, DiffPreview>>,
+}
+
+#[derive(Default)]
+struct HookOutcome {
+    deny: Option<(String, Option<String>)>,
+    ask: Option<String>,
+    /// The hook id, whether its matcher is narrow enough to act in `auto`, and the parsed
+    /// matcher itself, revalidated against the normalized arguments before the allow takes
+    /// effect.
+    allow: Option<(String, bool, Option<Rule>)>,
+    updated_input: Option<Value>,
+    guardian_context: Vec<String>,
+}
+
+/// One call as the pipeline carries it from the first hook to the last record.
+struct CallCtx<'a> {
+    call: &'a CallView<'a>,
+    /// The execution arguments every allow returns: the model's, a hook's rewrite, or an
+    /// out-of-root read resolved once to its canonical absolute target.
+    args: Value,
+    /// Why out-of-root read arguments are unusable, when they are. Set after the floor has
+    /// judged the call, they end in an immediate argument error: never a prompt, never the
+    /// guardian.
+    arg_error: Option<String>,
+    tool_use_id: Option<String>,
+    digest: String,
+    original_digest: Option<String>,
+    mode: PermissionMode,
+    started: Instant,
+    /// This is the second pass of a call whose host changed its input; the host may not change
+    /// it again.
+    redone: bool,
+    /// What a host's answer left to do once its changed input has been judged again.
+    again: Mutex<Option<Again>>,
+}
+
+/// A host's answer that changed the call: the call goes through the whole pipeline again with
+/// `args`, and the session allows and the mode apply only if that pass allows it.
+struct Again {
+    args: Value,
+    grants: Vec<Rule>,
+    mode: Option<PermissionMode>,
+}
+
+/// What one pass of the pipeline came to.
+enum Pass {
+    Decided(GateDecision),
+    Again(Again),
+}
+
+/// What the second pass keeps of the first.
+struct Redo {
+    original_digest: String,
+}
+
+/// What the composition made of a call, for the audit record of whatever decides it.
+struct Screened {
+    reads: Vec<ReadRecord>,
+    outcome: &'static str,
+    latency_ms: Option<u64>,
+    model: Option<String>,
+    dropped: Option<Dropped>,
+}
+
+/// The guardian request a settling composition cut short.
+struct Dropped {
+    input_tokens: u64,
+    provider: String,
+    model: String,
+    priced: bool,
+}
+
+impl Screened {
+    fn score(&self, name: &str) -> Option<f64> {
+        self.reads
+            .iter()
+            .find(|read| read.name == name)
+            .and_then(|read| read.result.as_ref().ok().copied())
+    }
+
+    fn annotate(&self, record: &mut DecisionRecord) {
+        record.screen_risk = self.score("stop");
+        record.screen_allow_risk = self.score("allow");
+        record.screen_steering = self.score("steering");
+        let others: std::collections::BTreeMap<String, f64> = self
+            .reads
+            .iter()
+            .filter(|read| !matches!(read.name.as_str(), "stop" | "allow" | "steering"))
+            .filter_map(|read| read.result.as_ref().ok().map(|v| (read.name.clone(), *v)))
+            .collect();
+        record.screen_scores = (!others.is_empty()).then_some(others);
+        record.screen_model = self.model.clone();
+        record.screen_latency_ms = self.latency_ms;
+        record.screen_outcome = Some(self.outcome.to_string());
+        if let Some(dropped) = &self.dropped {
+            record.guardian_dropped_input_tokens = Some(dropped.input_tokens);
+            record.guardian_dropped_provider = Some(dropped.provider.clone());
+            record.guardian_dropped_model = Some(dropped.model.clone());
+            record.guardian_dropped_priced = Some(dropped.priced);
+        }
+    }
+}
+
+/// A call that needs the human, or is denied because there is none.
+struct Prompt {
+    tier: Tier,
+    rule: Option<String>,
+    reason: String,
+    /// The floor forced it: no allow rule can act on it.
+    forced: bool,
+}
+
+enum Verdict {
+    Allow {
+        tier: Tier,
+        rule: Option<String>,
+    },
+    Deny {
+        tier: Tier,
+        rule: Option<String>,
+        why: String,
+        /// Set when a prompt nobody could answer became this denial.
+        converted: Option<Converted>,
+    },
+    Prompt(Prompt),
+    /// Nothing before the mode pre-approved or refused the call: the guardian decides.
+    Guardian,
+}
+
+/// Who is missing when a would-prompt outcome has to become a denial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoHuman {
+    /// A headless run: nobody is there to ask.
+    Headless,
+    /// AFK mode: the user is there in principle, but away.
+    Afk,
+}
+
+impl NoHuman {
+    /// The reason fragment that follows the original reason of a converted prompt.
+    fn clause(self) -> &'static str {
+        match self {
+            NoHuman::Headless => "a headless run cannot ask the user",
+            NoHuman::Afk => "the user is away (AFK mode)",
+        }
+    }
+}
+
+/// What a denied model is told to do next in AFK mode: finish what the rules still allow, or stop
+/// and report. It never says to ask, and never to route around the denial.
+const AFK_RECOVERY: &str = "The user is not available. Do not retry this call, evade the denial, or use another tool to achieve the same denied effect. Complete the rest of the request through independently allowed work; if the whole request cannot be done within those bounds, reduce it to a useful allowed subset. If no useful allowed progress remains, stop and report what was completed, what was blocked and why, and what remains. Do not ask for approval.";
+
+const ATTENDED_RECOVERY: &str = "Do not retry it or look for another route to the same effect; tell the user what you could not do.";
+
+/// The one sentence every denial ends with. Attended and headless runs get the same words.
+fn recovery(no_human: Option<NoHuman>) -> &'static str {
+    match no_human {
+        Some(NoHuman::Afk) => AFK_RECOVERY,
+        Some(NoHuman::Headless) | None => ATTENDED_RECOVERY,
+    }
+}
+
+fn denied_text(tool: &str, why: &str, no_human: Option<NoHuman>) -> String {
+    format!("`{tool}` was denied: {why}. {}", recovery(no_human))
+}
+
+/// Which kind of would-prompt outcome a prompt of this tier was.
+fn converted_of(tier: Tier) -> Converted {
+    match tier {
+        Tier::Guardian => Converted::BreakerPaused,
+        Tier::AskRule => Converted::AskRule,
+        Tier::ProtectedPath => Converted::Floor,
+        Tier::Hook => Converted::Hook,
+        _ => Converted::Mode,
+    }
+}
+
+/// A denial as the pipeline carries it: what the model is told, the rule's own explanation, and
+/// what it stands in for.
+struct Refusal {
+    message: String,
+    why: String,
+    converted: Option<Converted>,
+    fail_closed: Option<&'static str>,
+}
+
+/// The file-tool calls a read-only shell command stands for: every path the pre-classifier
+/// validated as a `read` of it, and as the matching `ls`/`grep` when the
+/// command is one. Words that are not paths only cause an extra look at the rules.
+fn ruled_hit<'a>(
+    list: impl IntoIterator<Item = &'a SourcedRule>,
+    reads: &[(&'static str, Value)],
+    scope: &Scope,
+    home: Option<&std::path::Path>,
+    posture: Posture,
+) -> Option<&'a SourcedRule> {
+    list.into_iter().find(|r| {
+        reads.iter().any(|(tool, args)| {
+            let ctx = CallContext {
+                tool,
+                args,
+                scope,
+                home,
+            };
+            matches(&r.rule, &ctx, posture)
+        })
+    })
+}
+
+fn ruled_read_calls(
+    command: &str,
+    paths: &[String],
+    cwd: Option<&str>,
+    scope: &Scope,
+) -> Vec<(&'static str, Value)> {
+    let Some(argv) = analyze(command).simple else {
+        return Vec::new();
+    };
+    let base = match cwd {
+        Some(cwd) => scope.resolved(cwd),
+        None => scope.primary().to_path_buf(),
+    };
+    let tools: &[&'static str] = match argv[0].rsplit(['/', '\\']).next().unwrap_or("") {
+        "ls" => &["read", "ls"],
+        "grep" | "rg" => &["read", "grep"],
+        _ => &["read"],
+    };
+    let mut calls = Vec::new();
+    for candidate in paths {
+        let path = base.join(candidate).to_string_lossy().into_owned();
+        for tool in tools {
+            calls.push((*tool, serde_json::json!({ "path": path })));
+        }
+    }
+    calls
+}
+
+/// The operands of a pre-classified read-only command that name a credential file, each with
+/// the pattern it matched and the read calls synthesized for it alone. `ls` lists names only.
+fn secret_read_calls(
+    command: &str,
+    paths: &[String],
+    cwd: Option<&str>,
+    scope: &Scope,
+) -> Vec<(String, Vec<(&'static str, Value)>)> {
+    let Some(argv) = analyze(command).simple else {
+        return Vec::new();
+    };
+    if argv[0].rsplit(['/', '\\']).next() == Some("ls") {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter_map(|path| {
+            let calls = ruled_read_calls(command, std::slice::from_ref(path), cwd, scope);
+            let given = calls.first()?.1.get("path")?.as_str()?;
+            let pattern = floor::secret_path(scope, given)?;
+            Some((pattern, calls))
+        })
+        .collect()
+}
+
+/// What the ledger keeps of a denial's reason: the rule's own words, redacted and cut short.
+fn explanation_of(why: &str) -> String {
+    let text = rig_core::redact::text(why);
+    let text = text.trim();
+    if text.chars().count() <= adjudication::SUMMARY_CHARS {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(adjudication::SUMMARY_CHARS - 1).collect();
+    format!("{cut}…")
+}
+
+impl PermissionPipeline {
+    pub fn new(params: PipelineParams) -> PermissionPipeline {
+        PermissionPipeline {
+            preclassifier: Preclassifier::new(&params.allow_extra),
+            state: params.state,
+            approver: params.approver,
+            human: params.human,
+            hooks: params.hooks,
+            denied_hooks: params.denied_hooks,
+            plugin_hooks: params.plugin_hooks,
+            user_config: params.user_config,
+            prompted: Mutex::default(),
+        }
+    }
+
+    pub fn state(&self) -> &Arc<SessionState> {
+        &self.state
+    }
+
+    /// The mode this agent's calls are judged under right now. The root's is the session mode;
+    /// a child's is the tighter of its own and its parent's, so a child is never looser than its
+    /// parent and follows it on every call. `None` for an agent the tree no longer knows, which
+    /// has no posture to judge it by.
+    fn posture_of(&self, agent: &str) -> Option<PermissionMode> {
+        if agent == crate::tools::gate::ROOT_AGENT {
+            return Some(self.state.mode().rules());
+        }
+        let tree = self.state.agents();
+        if !tree.lineage_intact(agent) {
+            return None;
+        }
+        let posture = tree.posture(agent);
+        Some(permission_mode(posture.mode))
+    }
+
+    fn workspace_view(&self) -> (PathBuf, Vec<String>) {
+        let scope = self.state.scope();
+        (
+            scope.primary().to_path_buf(),
+            scope
+                .roots()
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect(),
+        )
+    }
+
+    async fn run_hooks(
+        &self,
+        call: &CallView<'_>,
+        tool_use_id: Option<&str>,
+        mode: PermissionMode,
+    ) -> HookOutcome {
+        let mut outcome = HookOutcome::default();
+        let layer = self.plugin_hooks.get();
+        if self.hooks.is_empty() && layer.pre.is_empty() {
+            return outcome;
+        }
+        let mut args = call.args.clone();
+        let scope = self.state.scope();
+        let home = self.state.home.as_deref();
+        let (cwd, roots) = self.workspace_view();
+        for hook in self.hooks.iter().chain(layer.pre.iter()) {
+            let rule = hook.matcher().and_then(|text| parse_rule(&text).ok());
+            // A hook that names a matcher runs for the calls it covers; one that cannot be read
+            // runs for every call, since a hook can only tighten by running.
+            let covers = |args: &Value, posture: Posture| match &rule {
+                Some(rule) => matches(
+                    rule,
+                    &CallContext {
+                        tool: call.tool,
+                        args,
+                        scope: &scope,
+                        home,
+                    },
+                    posture,
+                ),
+                None => true,
+            };
+            if !covers(&args, Posture::Deny) {
+                continue;
+            }
+            let event = PreToolUseEvent {
+                tool: call.tool,
+                args: &args,
+                agent: call.agent,
+                tool_use_id,
+                session_id: &self.state.session_id,
+                cwd: &cwd,
+                permission_mode: mode.as_str(),
+                workspace_roots: &roots,
+            };
+            let id = hook.id();
+            let ran = match hook.gate().await {
+                Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+                Err(e) => Ok(Err(e)),
+            };
+            let decision = match ran {
+                Ok(Ok(decision)) => decision,
+                Ok(Err(e @ HookError::Failed { .. })) if hook.fails_closed() => {
+                    tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it denies the call");
+                    fail_closed_denial(hook.fail_closed_reason(&chain(&e)))
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it decides nothing");
+                    continue;
+                }
+                Err(_) if hook.fails_closed() => {
+                    tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it denies the call");
+                    fail_closed_denial(hook.fail_closed_reason("it timed out"))
+                }
+                Err(_) => {
+                    tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it decides nothing");
+                    continue;
+                }
+            };
+            if let Some(updated) = decision.updated_input {
+                if updated.is_object() {
+                    args = updated.clone();
+                    // An allow vouches for the arguments it saw, not for a rewrite.
+                    outcome.allow = None;
+                    outcome.updated_input = Some(updated);
+                } else {
+                    tracing::warn!(hook = %id, "a pre_tool_use hook returned input that is not an object; ignored");
+                }
+            }
+            match decision.permission {
+                Some(HookPermission::Deny) => {
+                    outcome.deny.get_or_insert((id, decision.reason));
+                }
+                Some(HookPermission::Ask) => {
+                    outcome.ask.get_or_insert(id);
+                }
+                Some(HookPermission::Allow) if !hook.can_allow() => {
+                    tracing::debug!(hook = %id, "a project hook's allow is ignored");
+                }
+                // Like an allow rule, it acts only where its matcher would match as an allow rule
+                // does: exactly one simple command (after at most one workspace `cd <dir> &&`), not a chain.
+                Some(HookPermission::Allow) if covers(&args, Posture::Allow) => {
+                    let narrow = rule
+                        .as_ref()
+                        .is_some_and(|rule| !is_broad_code_execution(rule));
+                    outcome.allow.get_or_insert((id, narrow, rule.clone()));
+                }
+                Some(HookPermission::Allow) => {}
+                None => {}
+            }
+            if let Some(note) = decision.guardian_context {
+                outcome.guardian_context.push(note);
+            }
+        }
+        outcome
+    }
+
+    /// The verdict for one call, with no side effects. `judged` is the post-hook form the
+    /// floor's deny and ask rules see, so a rule for the path as written keeps matching;
+    /// `cx.args` is the resolved execution form every allow returns.
+    fn evaluate(
+        &self,
+        call: &CallView<'_>,
+        judged: &Value,
+        cx: &CallCtx<'_>,
+        hook: &HookOutcome,
+        mode: PermissionMode,
+    ) -> Verdict {
+        let scope = self.state.scope();
+        let rules = self.state.rules();
+        let home = self.state.home.as_deref();
+        let ctx = CallContext {
+            tool: call.tool,
+            args: judged,
+            scope: &scope,
+            home,
+        };
+        let allow_ctx = CallContext {
+            tool: call.tool,
+            args: &cx.args,
+            scope: &scope,
+            home,
+        };
+        let tool = call.tool;
+        let edit_class = call.risk == RiskClass::WorkspaceWrite;
+        let args = &cx.args;
+
+        if let Some((id, reason)) = &hook.deny {
+            let why = match reason {
+                Some(reason) => format!("the pre_tool_use hook `{id}` forbids it ({reason})"),
+                None => format!("the pre_tool_use hook `{id}` forbids it"),
+            };
+            return Verdict::Deny {
+                tier: Tier::Hook,
+                rule: Some(id.clone()),
+                why,
+                converted: None,
+            };
+        }
+        if let Some(rule) = rules
+            .deny
+            .iter()
+            .find(|r| matches(&r.rule, &ctx, Posture::Deny))
+        {
+            return Verdict::Deny {
+                tier: Tier::DenyRule,
+                rule: Some(rule.label()),
+                why: format!("the permission rule `{}` forbids it", rule.label()),
+                converted: None,
+            };
+        }
+        if let Some(why) = self.state.child_restriction(call.agent, &ctx) {
+            return Verdict::Deny {
+                tier: Tier::DenyRule,
+                rule: Some("agent tools".to_string()),
+                why,
+                converted: None,
+            };
+        }
+
+        let forced_ask = rules
+            .ask
+            .iter()
+            .find(|r| matches(&r.rule, &ctx, Posture::Ask))
+            .map(|r| {
+                let rule = r.label();
+                let reason = format!("`{rule}` asks for approval before this runs");
+                (Tier::AskRule, rule, reason)
+            })
+            .or_else(|| {
+                call.requires_user_interaction.then(|| {
+                    (
+                        Tier::AskRule,
+                        crate::tools::mcp::REQUIRES_USER_INTERACTION.to_string(),
+                        "the MCP server requires a person's approval for every call of this tool"
+                            .to_string(),
+                    )
+                })
+            })
+            .or_else(|| {
+                hook.ask.clone().map(|id| {
+                    let reason = format!("`{id}` asks for approval before this runs");
+                    (Tier::Hook, id, reason)
+                })
+            });
+        if let Some((tier, rule, reason)) = forced_ask {
+            return self.would_prompt(
+                mode,
+                Prompt {
+                    tier,
+                    reason,
+                    rule: Some(rule),
+                    forced: true,
+                },
+            );
+        }
+        if cx.arg_error.is_none()
+            && matches!(tool, "edit" | "write" | "notebook_edit")
+            && let Some(found) =
+                floor::protected_path(&scope, home, &self.state.protected_dirs, args)
+        {
+            // In `auto` the guardian takes the place of the forced prompt. An in-root path
+            // is one the file tool can reach at all; an external one has a write fallback
+            // that can, and both leave the protection policy to the floor in the asking
+            // modes and to the guardian in `auto`.
+            if mode == PermissionMode::Auto
+                && (scope.locate(tool, args).is_ok() || is_external_write(tool))
+            {
+                return Verdict::Guardian;
+            }
+            return self.would_prompt(
+                mode,
+                Prompt {
+                    tier: Tier::ProtectedPath,
+                    reason: format!("it writes a protected location ({found})"),
+                    rule: Some(found),
+                    forced: true,
+                },
+            );
+        }
+        // The memory tool writes the session's store without naming a path, so the floor
+        // above cannot see it; it takes the store's protected-path outcome here instead,
+        // before any allow rule or hook allow — a raw write to the store cannot be
+        // allow-ruled past the floor either. `auto` (and AFK, which routes like it) reaches
+        // the guardian; the asking modes keep the protected prompt.
+        if tool == "memory" && self.state.memory_root.is_some() {
+            if matches!(mode, PermissionMode::Auto | PermissionMode::Afk) {
+                return Verdict::Guardian;
+            }
+            return self.would_prompt(
+                mode,
+                Prompt {
+                    tier: Tier::ProtectedPath,
+                    reason: "it writes a protected location (the memory store)".to_string(),
+                    rule: None,
+                    forced: true,
+                },
+            );
+        }
+
+        // Unusable out-of-root file arguments end here, after the floor: they are never
+        // put to a human or the guardian.
+        if let Some(why) = &cx.arg_error {
+            return Verdict::Deny {
+                tier: Tier::Mode,
+                rule: None,
+                why: format!("its arguments could not be read ({why})"),
+                converted: None,
+            };
+        }
+
+        let located = scope.locate(tool, judged);
+        // A credential file read leaves both containment skips: the call goes on to allow rules,
+        // hooks and the mode, so a human or the guardian sees it unless an allow rule says so.
+        let mut secret_note: Option<String> = None;
+        if call.risk == RiskClass::ReadOnly
+            && matches!(tool, "read" | "grep" | "lsp")
+            && let Some(given) = judged.get("path").and_then(Value::as_str)
+            && let Some(pattern) = floor::secret_path(&scope, given)
+        {
+            secret_note = Some(format!("it reads a secret file ({pattern})"));
+        }
+        if call.risk == RiskClass::ReadOnly
+            && secret_note.is_none()
+            && (located.is_ok() || names_no_path(tool))
+        {
+            return Verdict::Allow {
+                tier: Tier::ReadOnlyFastPath,
+                rule: None,
+            };
+        }
+        // The child's toolset is enforced by Fontaine and every call it makes is gated, so a
+        // spawn of a type that can only read is contained like a read.
+        if tool == "agent"
+            && adjudication::spawn_changes_state(
+                &self.state.agent_types(),
+                self.state.agents().known_tools_of(call.agent).as_deref(),
+                args,
+            )
+            .is_some_and(|changes_state| !changes_state)
+        {
+            return Verdict::Allow {
+                tier: Tier::ReadOnlyFastPath,
+                rule: None,
+            };
+        }
+        // Only `shell` is classified here: a monitor is a long-lived watcher whose command the
+        // read-only table says nothing about, so it needs a `Monitor` allow rule or the guardian.
+        if tool == "shell"
+            && let Some(command) = args.get("command").and_then(Value::as_str)
+        {
+            let env = Environment {
+                scope: &scope,
+                cwd: args.get("cwd").and_then(Value::as_str),
+            };
+            if let Some(paths) = self.preclassifier.read_paths(command, &env) {
+                // The read-only commands read the paths they are given, so the file-read rules
+                // apply to those paths as they would to the read tool.
+                let reads = ruled_read_calls(command, &paths, env.cwd, &scope);
+                if let Some(rule) = ruled_hit(&rules.deny, &reads, &scope, home, Posture::Deny) {
+                    return Verdict::Deny {
+                        tier: Tier::DenyRule,
+                        rule: Some(rule.label()),
+                        why: format!("the permission rule `{}` forbids it", rule.label()),
+                        converted: None,
+                    };
+                }
+                if let Some(rule) = ruled_hit(&rules.ask, &reads, &scope, home, Posture::Ask) {
+                    let rule = rule.label();
+                    return self.would_prompt(
+                        mode,
+                        Prompt {
+                            tier: Tier::AskRule,
+                            reason: format!("`{rule}` asks for approval before this runs"),
+                            rule: Some(rule),
+                            forced: true,
+                        },
+                    );
+                }
+                let secrets = secret_read_calls(command, &paths, env.cwd, &scope);
+                if secrets.is_empty() {
+                    return Verdict::Allow {
+                        tier: Tier::Tier05,
+                        rule: None,
+                    };
+                }
+                // Every secret operand needs an allow of its own: one rule matching a plain
+                // operand must not vouch for the secret next to it.
+                let grants = self.state.skill_grants(call.agent);
+                let allows = rules.allow.iter().chain(grants.iter());
+                let mut restored = None;
+                for (_, calls) in &secrets {
+                    match ruled_hit(allows.clone(), calls, &scope, home, Posture::Allow) {
+                        Some(rule) => restored = Some(rule.label()),
+                        None => {
+                            restored = None;
+                            break;
+                        }
+                    }
+                }
+                if restored.is_some() {
+                    return Verdict::Allow {
+                        tier: Tier::AllowRule,
+                        rule: restored,
+                    };
+                }
+                secret_note = Some(format!("it reads a secret file ({})", secrets[0].0));
+            }
+        }
+        // `auto` sets broad code-execution rules aside for as long as it is on: a blanket
+        // `shell` or `python *` grant would otherwise run anything past the guardian.
+        let suspended = |rule: &SourcedRule| {
+            mode == PermissionMode::Auto && is_broad_code_execution(&rule.rule)
+        };
+        let skill_grants = self.state.skill_grants(call.agent);
+        if let Some(rule) = rules
+            .allow
+            .iter()
+            .chain(skill_grants.iter())
+            .find(|r| !suspended(r) && matches(&r.rule, &allow_ctx, Posture::Allow))
+        {
+            return Verdict::Allow {
+                tier: Tier::AllowRule,
+                rule: Some(rule.label()),
+            };
+        }
+        if let Some((id, narrow, matcher)) = &hook.allow
+            && (mode != PermissionMode::Auto || *narrow)
+        {
+            // The allow vouches for the target it saw: a hook that allowed the written path
+            // must not approve a call the resolution no longer covers, so an allow that no
+            // longer matches falls through to the mode.
+            let still_covers = matcher
+                .as_ref()
+                .is_none_or(|rule| matches(rule, &allow_ctx, Posture::Allow));
+            if still_covers {
+                return Verdict::Allow {
+                    tier: Tier::Hook,
+                    rule: Some(id.clone()),
+                };
+            }
+        }
+
+        let outside = match &located {
+            // Model-facing text; the scope error has no source. The containment hard deny
+            // survives only for tools with no external route (`lsp`); an out-of-root write
+            // follows the mode like an out-of-root read, and `shell`/`powershell` are
+            // `Arbitrary` and never reach this branch. A path-free tool (`memory`) names
+            // nothing for containment to check either, so its locate error denies nothing
+            // here: the call falls through to the mode dispatch exactly as its descriptor
+            // row intends — the guardian in `auto`, a prompt in the asking modes.
+            Err(e)
+                if call.risk != RiskClass::Arbitrary
+                    && !is_external_read(tool)
+                    && !is_external_write(tool)
+                    && !names_no_path(tool) =>
+            {
+                let mut why = match &self.state.scratch {
+                    Some(scratch) => format!(
+                        "{e}; file tools work inside the workspace roots only. Put temporary files in the session scratch directory {} (or add a root with /add-dir)",
+                        scratch.display()
+                    ),
+                    None => format!(
+                        "{e}; file tools work inside the workspace roots only (add one with /add-dir)"
+                    ),
+                };
+                if let Some(memory) = &self.state.memory_root {
+                    why.push_str(&format!(
+                        ". Notes for later sessions go in the memory directory {}",
+                        memory.display()
+                    ));
+                }
+                Some(why)
+            }
+            _ => None,
+        };
+        // The tool refuses an out-of-scope path whatever the answer, so asking would only offer
+        // grants that cannot take effect.
+        if let Some(why) = outside
+            && mode != PermissionMode::DontAsk
+        {
+            return Verdict::Deny {
+                tier: Tier::Mode,
+                rule: None,
+                why,
+                converted: None,
+            };
+        }
+        let needs_approval = || Prompt {
+            tier: Tier::Mode,
+            rule: None,
+            reason: secret_note
+                .clone()
+                .unwrap_or_else(|| "it needs the user's approval".to_string()),
+            forced: false,
+        };
+        // The tree's own messaging and board reach nothing outside it, and every call its agents
+        // make is gated, so no mode needs a verdict or a prompt for them (`dontAsk` included, or an
+        // unattended team run could never talk).
+        if crate::tools::descriptor::is_coordination(tool) {
+            return Verdict::Allow {
+                tier: Tier::Coordination,
+                rule: None,
+            };
+        }
+        // Writes only a redacted local draft; submission stays with the human.
+        if tool == crate::tools::descriptor::DRAFT_BUG_REPORT {
+            return Verdict::Allow {
+                tier: Tier::BugDraft,
+                rule: None,
+            };
+        }
+        // Every call the child makes is gated on its own way out and its mode is never looser
+        // than the parent's, so judging the spawn's prompt with a model would only repeat that
+        // coverage, at the point the user just asked for the spawn.
+        if tool == "agent" {
+            return match mode {
+                PermissionMode::Auto | PermissionMode::Afk => Verdict::Allow {
+                    tier: Tier::Spawn,
+                    rule: None,
+                },
+                PermissionMode::Manual | PermissionMode::AcceptEdits => {
+                    self.would_prompt(mode, needs_approval())
+                }
+                PermissionMode::DontAsk => Verdict::Deny {
+                    tier: Tier::DontAsk,
+                    rule: None,
+                    why: "dontAsk mode only runs calls that are pre-approved".to_string(),
+                    converted: None,
+                },
+            };
+        }
+        match mode {
+            PermissionMode::DontAsk => Verdict::Deny {
+                tier: Tier::DontAsk,
+                rule: None,
+                why: "dontAsk mode only runs calls that are pre-approved".to_string(),
+                converted: None,
+            },
+            PermissionMode::Manual => self.would_prompt(mode, needs_approval()),
+            PermissionMode::Auto | PermissionMode::Afk => match self.unjudged_edit(call, args) {
+                Some(tier) => Verdict::Allow { tier, rule: None },
+                None => Verdict::Guardian,
+            },
+            PermissionMode::AcceptEdits => {
+                if edit_class && located.is_ok() {
+                    Verdict::Allow {
+                        tier: Tier::Mode,
+                        rule: None,
+                    }
+                } else {
+                    self.would_prompt(mode, needs_approval())
+                }
+            }
+        }
+    }
+
+    /// The execution arguments of an out-of-root file call: the target resolved once,
+    /// after the hooks, so an approval and the call it approves cannot drift to two
+    /// spellings of one target and a symlink retargeted mid-decision cannot redirect the
+    /// call. In-root calls and every other tool pass through unchanged; malformed or
+    /// unresolvable external arguments become an argument error the floor still gets to
+    /// precede.
+    fn normalize_external(&self, tool: &str, judged: &Value) -> (Value, Option<String>) {
+        let route = is_external_read(tool) || is_external_write(tool);
+        if !route {
+            return (judged.clone(), None);
+        }
+        let scope = self.state.scope();
+        let unusable = |error: &ScopeError| match error {
+            ScopeError::Unreadable(why) => Some(why.clone()),
+            ScopeError::OutOfScope(_) => None,
+        };
+        let normalized = |scope: &Scope| match scope.locate(tool, judged) {
+            Ok(_) => Ok(judged.clone()),
+            Err(ScopeError::OutOfScope(_)) if is_external_read(tool) => {
+                scope.external_read(tool, judged)
+            }
+            Err(ScopeError::OutOfScope(_)) => scope.external_write(tool, judged),
+            Err(error @ ScopeError::Unreadable(_)) => Err(error),
+        };
+        match normalized(&scope) {
+            Ok(args) => (args, None),
+            Err(failed) => (judged.clone(), unusable(&failed)),
+        }
+    }
+
+    /// The tier of an `auto` edit that needs no guardian verdict: a file-tool write into the
+    /// session scratch directory, or an edit to a file git tracks, a file that does not exist yet
+    /// or one this session created. Only reached after the whole floor and the hooks have passed,
+    /// and a protected path never gets here. Anything uncertain answers `None`, which leaves the
+    /// call to the guardian.
+    fn unjudged_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
+        if call.risk != RiskClass::WorkspaceWrite
+            || !matches!(call.tool, "edit" | "write" | "notebook_edit")
+        {
+            return None;
+        }
+        let given = args.get("path")?.as_str()?;
+        let scope = self.state.scope();
+        let (root, resolved) = scope.find(given).ok()?;
+        let edits = self.state.auto_edits;
+
+        if edits.scratch
+            && let Some(scratch) = &self.state.scratch
+            && floor::under(&resolved, scratch).is_some()
+        {
+            return Some(Tier::ScratchWrite);
+        }
+        if !edits.tracked || root != 0 {
+            return None;
+        }
+        let primary = scope.primary();
+        if let Some(memory) = &self.state.memory_root
+            && floor::under(&resolved, memory).is_some()
+        {
+            return None;
+        }
+        // Relative to the root, so a directory named `rules` above the workspace means nothing.
+        let excluded = |path: &Path| {
+            floor::under(path, primary)
+                .is_some_and(|rel| floor::is_instruction_or_ci_path(&rel, floor::FOLD_CASE))
+        };
+        if excluded(&resolved) || excluded(&scope.written(given)) {
+            return None;
+        }
+        match trust::tracking(primary, &resolved) {
+            Tracking::Tracked => Some(Tier::TrackedEdit),
+            Tracking::Untracked => {
+                let absent = matches!(
+                    std::fs::symlink_metadata(&resolved),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                );
+                let created = self
+                    .state
+                    .ledger
+                    .view()
+                    .existence(&resolved.to_string_lossy())
+                    == Existence::CreatedThisSession;
+                (absent || created).then_some(Tier::TrackedEdit)
+            }
+            Tracking::Unknown => None,
+        }
+    }
+
+    /// Who cannot be asked right now, AFK first: a headless run with AFK on is told the AFK
+    /// guidance, but it never has anyone to ask either way.
+    fn no_human(&self) -> Option<NoHuman> {
+        if self.state.afk_on() {
+            Some(NoHuman::Afk)
+        } else if self.human == HumanChannel::Absent {
+            Some(NoHuman::Headless)
+        } else {
+            None
+        }
+    }
+
+    /// The words of a denial for `tool`, ending in what to do next.
+    fn denied(&self, tool: &str, why: &str) -> String {
+        denied_text(tool, why, self.no_human())
+    }
+
+    /// A refusal that stands for nothing: the call is simply not allowed.
+    fn refuse(&self, tool: &str, why: &str) -> Refusal {
+        Refusal {
+            message: self.denied(tool, why),
+            why: why.to_string(),
+            converted: None,
+            fail_closed: None,
+        }
+    }
+
+    /// A prompt becomes a denial when nobody can answer it: in a headless run, in AFK mode and
+    /// in `dontAsk`.
+    fn would_prompt(&self, mode: PermissionMode, prompt: Prompt) -> Verdict {
+        if mode == PermissionMode::DontAsk {
+            return Verdict::Deny {
+                tier: prompt.tier,
+                rule: prompt.rule,
+                why: format!(
+                    "dontAsk mode denies what would need approval: {}",
+                    prompt.reason
+                ),
+                converted: Some(Converted::Mode),
+            };
+        }
+        if let Some(no_human) = self.no_human() {
+            return Verdict::Deny {
+                tier: prompt.tier,
+                rule: prompt.rule,
+                why: format!("{}, and {}", prompt.reason, no_human.clause()),
+                converted: Some(converted_of(prompt.tier)),
+            };
+        }
+        Verdict::Prompt(prompt)
+    }
+
+    fn record(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        decision: Decision,
+        rule: Option<String>,
+        explanation: Option<String>,
+    ) -> DecisionRecord {
+        let mut record = DecisionRecord::new(
+            self.state.session_id.clone(),
+            cx.call.agent.to_string(),
+            cx.call.tool.to_string(),
+            cx.digest.clone(),
+            tier,
+            decision,
+            cx.mode.as_str().to_string(),
+            self.human != HumanChannel::Present,
+        );
+        record.human_channel = self.human.as_str().to_string();
+        record.afk = self.state.afk_on();
+        record.agent_name = self
+            .state
+            .agents()
+            .is_child(cx.call.agent)
+            .then(|| self.state.agents().name_of(cx.call.agent));
+        record.tool_use_id = cx.tool_use_id.clone();
+        record.original_args_digest = cx.original_digest.clone();
+        record.rule = rule;
+        record.latency_ms = cx.started.elapsed().as_millis() as u64;
+        record.explanation = explanation;
+        record
+    }
+
+    /// The guardian's part of a record.
+    fn with_guardian(
+        mut record: DecisionRecord,
+        adjudication: &Adjudication,
+        screened: Option<&Screened>,
+    ) -> DecisionRecord {
+        if let Some(screened) = screened {
+            screened.annotate(&mut record);
+        }
+        record.confidence = adjudication.confidence;
+        record.guardian_model = Some(adjudication.model.clone());
+        record.guardian_profile = Some(adjudication.profile.as_str().to_string());
+        record.guardian_verdict = Some(adjudication.decision.as_str().to_string());
+        record.guardian_cache_hit = Some(adjudication.cache_hit);
+        record.verdict_transport = adjudication.transport.map(|t| t.as_str().to_string());
+        record.guardian_latency_ms = Some(adjudication.latency_ms);
+        record.fail_closed_reason = adjudication.fail_closed.map(|r| r.as_str().to_string());
+        record
+            .explanation
+            .get_or_insert_with(|| adjudication.explanation.clone());
+        record
+    }
+
+    /// Puts the decision on the `fontaine.permission` span.
+    fn note(tier: Tier, decision: Decision) {
+        let span = tracing::Span::current();
+        span.record("tier", tier.as_str());
+        span.record("decision", decision.as_str());
+    }
+
+    /// What the ledger keeps of an executed call. The paths a read-only fast-path call names
+    /// are not kept: reading does not create anything.
+    fn action(&self, cx: &CallCtx<'_>, tier: Tier) -> Record {
+        let paths = if matches!(tier, Tier::ReadOnlyFastPath | Tier::Tier05) {
+            Vec::new()
+        } else {
+            touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            )
+        };
+        // Checked before the tool runs. A shell command only names paths, so its words prove
+        // nothing was created; only `write` and `memory` create files (`edit` reads its target
+        // first) — without `memory` here a follow-up save of its own topic would read back as
+        // possibly pre-existing.
+        let created = if matches!(cx.call.tool, "write" | "memory") {
+            paths
+                .iter()
+                .filter(|p| !Path::new(p).exists())
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Record::Action {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            paths,
+            created,
+            summary: action_summary(cx.call.tool, &cx.args),
+            tier: Some(tier),
+            tool_use_id: cx.tool_use_id.clone(),
+            digest: Some(cx.digest.clone()),
+        }
+    }
+
+    fn denial(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        rule: Option<&str>,
+        refusal: &Refusal,
+    ) -> Record {
+        Record::Denial {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            reason: refusal.message.clone(),
+            rule: Some(rule.unwrap_or(tier.as_str()).to_string()),
+            summary: action_summary(cx.call.tool, &cx.args),
+            tier: Some(tier),
+            tool_use_id: cx.tool_use_id.clone(),
+            digest: Some(cx.digest.clone()),
+            paths: touched_paths(
+                cx.call.tool,
+                &cx.args,
+                &self.state.scope(),
+                self.state.memory_root.as_deref(),
+            ),
+            converted: refusal.converted,
+            fail_closed: refusal.fail_closed.map(str::to_string),
+            explanation: Some(explanation_of(&refusal.why)),
+        }
+    }
+
+    fn allow(&self, cx: &CallCtx<'_>, tier: Tier, rule: Option<String>) -> GateDecision {
+        Self::note(tier, Decision::Allow);
+        self.emit(self.record(cx, tier, Decision::Allow, rule, None));
+        self.state.append(self.action(cx, tier));
+        // Routine edits between denials keep a run of them from pausing `auto` for an absent
+        // user; the guardian breaker's pause itself is only lifted by a human.
+        if matches!(tier, Tier::TrackedEdit | Tier::ScratchWrite) {
+            self.state.guardian_allowed();
+        }
+        GateDecision::Allow {
+            args: cx.args.clone(),
+        }
+    }
+
+    async fn deny(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        rule: Option<String>,
+        refusal: Refusal,
+    ) -> GateDecision {
+        Self::note(tier, Decision::Deny);
+        let mut record = self.record(
+            cx,
+            tier,
+            Decision::Deny,
+            rule.clone(),
+            Some(refusal.message.clone()),
+        );
+        record.converted = refusal.converted;
+        self.emit(record);
+        self.state
+            .append(self.denial(cx, tier, rule.as_deref(), &refusal));
+        // The deterministic floor and the mode have no retry grant to give, so a hook's `retry`
+        // changes nothing here; the hook still hears about the denial.
+        self.denied_hooks(cx, tier, &refusal.message).await;
+        GateDecision::Deny {
+            message: refusal.message,
+        }
+    }
+
+    /// Tells the `permission_denied` hooks about a denial. Returns whether one of them, one the
+    /// user defined, says the agent may retry exactly this call; names that hook.
+    async fn denied_hooks(&self, cx: &CallCtx<'_>, tier: Tier, reason: &str) -> Option<String> {
+        let layer = self.plugin_hooks.get();
+        if self.denied_hooks.is_empty() && layer.denied.is_empty() {
+            return None;
+        }
+        let scope = self.state.scope();
+        let (cwd, roots) = self.workspace_view();
+        let mut retry = None;
+        for hook in self.denied_hooks.iter().chain(layer.denied.iter()) {
+            let covered = match hook.matcher().and_then(|text| parse_rule(&text).ok()) {
+                Some(rule) => matches(
+                    &rule,
+                    &CallContext {
+                        tool: cx.call.tool,
+                        args: &cx.args,
+                        scope: &scope,
+                        home: self.state.home.as_deref(),
+                    },
+                    Posture::Deny,
+                ),
+                None => true,
+            };
+            if !covered {
+                continue;
+            }
+            let event = PermissionDeniedEvent {
+                tool: cx.call.tool,
+                args: &cx.args,
+                agent: cx.call.agent,
+                tool_use_id: cx.tool_use_id.as_deref(),
+                session_id: &self.state.session_id,
+                cwd: &cwd,
+                permission_mode: cx.mode.as_str(),
+                workspace_roots: &roots,
+                tier,
+                reason,
+            };
+            let id = hook.id();
+            let ran = match hook.gate().await {
+                Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+                Err(e) => Ok(Err(e)),
+            };
+            match ran {
+                Ok(Ok(true)) if hook.can_retry() => retry = retry.or(Some(id.to_string())),
+                Ok(Ok(true)) => {
+                    tracing::debug!(hook = %id, "a project hook's retry is ignored");
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(hook = %id, error = ?e, "a permission_denied hook failed; it decides nothing");
+                }
+                Err(_) => {
+                    tracing::warn!(hook = %id, "a permission_denied hook timed out; it decides nothing");
+                }
+            }
+        }
+        retry
+    }
+
+    async fn adjudicate(&self, call: CallView<'_>) -> GateDecision {
+        let again = match self.adjudicate_pass(&call, None).await {
+            Pass::Decided(decision) => return decision,
+            Pass::Again(again) => again,
+        };
+        // The host's changed input is judged from the top, hooks included, so no stage is
+        // skipped for it. The original digest stays on the record.
+        let args = again.args.clone();
+        let view = CallView {
+            args: &args,
+            ..call
+        };
+        let redo = Redo {
+            original_digest: args_digest(call.args),
+        };
+        let decision = match self.adjudicate_pass(&view, Some(&redo)).await {
+            Pass::Decided(decision) => decision,
+            Pass::Again(_) => GateDecision::Deny {
+                message: self.denied(call.tool, "the host changed the input twice"),
+            },
+        };
+        if !matches!(decision, GateDecision::Allow { .. }) {
+            return decision;
+        }
+        match self.apply_updates(again.mode, again.grants) {
+            Ok(()) => decision,
+            Err(why) => GateDecision::Deny {
+                message: self.denied(call.tool, &why),
+            },
+        }
+    }
+
+    /// The session allows and the mode a host's answer asked for: the mode first, and a refusal
+    /// of it applies nothing.
+    fn apply_updates(&self, mode: Option<PermissionMode>, grants: Vec<Rule>) -> Result<(), String> {
+        if let Some(mode) = mode {
+            // Only the user's own flag or key press enters AFK mode.
+            if mode == PermissionMode::Afk {
+                return Err("a host cannot turn AFK mode on".to_string());
+            }
+            if let Err(refusal) = self.state.set_mode(mode, AfkSource::Sdk) {
+                return Err(format!("the mode change was refused: {refusal}"));
+            }
+        }
+        for rule in grants {
+            self.state.append(Record::Grant {
+                rule: rule.to_string(),
+            });
+            self.state.grant(rule, RuleSource::Session);
+        }
+        Ok(())
+    }
+
+    async fn adjudicate_pass(&self, call: &CallView<'_>, redo: Option<&Redo>) -> Pass {
+        let started = Instant::now();
+        let tool_use_id = self.state.current_call(call.agent);
+        let Some(mode) = self.posture_of(call.agent) else {
+            // Hooks and the guardian never see a caller nobody can identify.
+            let cx = CallCtx {
+                call,
+                digest: args_digest(call.args),
+                original_digest: None,
+                args: call.args.clone(),
+                arg_error: None,
+                tool_use_id,
+                mode: PermissionMode::DontAsk,
+                started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
+            };
+            return Pass::Decided(
+                self.deny(
+                    &cx,
+                    Tier::DenyRule,
+                    Some("agent registry".to_string()),
+                    self.refuse(call.tool, UNREGISTERED_AGENT),
+                )
+                .await,
+            );
+        };
+        // A temperature stop denies every call of every agent, before the escape hatch and the
+        // floor. It can only deny.
+        if self.state.afk().stopped.is_some() {
+            let cx = CallCtx {
+                call,
+                digest: args_digest(call.args),
+                original_digest: None,
+                args: call.args.clone(),
+                arg_error: None,
+                tool_use_id,
+                mode,
+                started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
+            };
+            return Pass::Decided(
+                self.deny(
+                    &cx,
+                    Tier::Afk,
+                    Some("afk_stopped".to_string()),
+                    Refusal {
+                        message: AFK_STOPPED_MESSAGE.to_string(),
+                        why: AFK_STOPPED_MESSAGE.to_string(),
+                        converted: None,
+                        fail_closed: None,
+                    },
+                )
+                .await,
+            );
+        }
+        // The interactive-only escape hatch: every root call runs before the floor and the
+        // guardian. Children are never loosened by it, and no call from an unregistered agent
+        // reaches it.
+        if call.agent == crate::tools::gate::ROOT_AGENT && self.state.guardian_off() {
+            // The call still executes the resolved form of an out-of-root file call, as
+            // every allow does; nothing else of the pipeline runs.
+            let scope = self.state.scope();
+            let args = match scope.locate(call.tool, call.args) {
+                Err(ScopeError::OutOfScope(_)) if is_external_read(call.tool) => scope
+                    .external_read(call.tool, call.args)
+                    .unwrap_or_else(|_| call.args.clone()),
+                Err(ScopeError::OutOfScope(_)) if is_external_write(call.tool) => scope
+                    .external_write(call.tool, call.args)
+                    .unwrap_or_else(|_| call.args.clone()),
+                _ => call.args.clone(),
+            };
+            let cx = CallCtx {
+                call,
+                digest: args_digest(&args),
+                original_digest: None,
+                args,
+                arg_error: None,
+                tool_use_id,
+                mode,
+                started,
+                redone: redo.is_some(),
+                again: Mutex::new(None),
+            };
+            return Pass::Decided(self.allow(
+                &cx,
+                Tier::GuardianOff,
+                Some("guardian disabled".to_string()),
+            ));
+        }
+        let hook = self.run_hooks(call, tool_use_id.as_deref(), mode).await;
+        let judged = hook
+            .updated_input
+            .clone()
+            .unwrap_or_else(|| call.args.clone());
+        let (args, arg_error) = self.normalize_external(call.tool, &judged);
+        let cx = CallCtx {
+            call,
+            digest: args_digest(&args),
+            original_digest: redo
+                .map(|redo| redo.original_digest.clone())
+                .or_else(|| hook.updated_input.is_some().then(|| args_digest(call.args))),
+            args,
+            arg_error,
+            tool_use_id,
+            mode,
+            started,
+            redone: redo.is_some(),
+            again: Mutex::new(None),
+        };
+
+        let decision = match self.evaluate(call, &judged, &cx, &hook, mode) {
+            Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
+            Verdict::Deny {
+                tier,
+                rule,
+                why,
+                converted,
+            } => {
+                let refusal = Refusal {
+                    converted,
+                    ..self.refuse(call.tool, &why)
+                };
+                self.deny(&cx, tier, rule, refusal).await
+            }
+            Verdict::Prompt(prompt) => self.prompt_or_ask(&cx, prompt).await,
+            Verdict::Guardian => self.guardian_branch(&cx, &hook).await,
+        };
+        // A host that changed the input left the new input here; the decision above is only
+        // the placeholder deny that keeps a missed hand-off closed.
+        let again = lock(&cx.again, "host re-judgement").take();
+        match again {
+            Some(again) => Pass::Again(again),
+            None => Pass::Decided(decision),
+        }
+    }
+
+    /// Records the prompt and puts it to the human.
+    async fn prompt_or_ask(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+        Self::note(prompt.tier, Decision::Prompt);
+        self.emit(self.record(cx, prompt.tier, Decision::Prompt, prompt.rule.clone(), None));
+        self.ask_human(cx, prompt, None).await
+    }
+
+    /// A prompt that nobody can answer is a denial; otherwise it is asked.
+    async fn human_or_deny(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+        match self.would_prompt(cx.mode, prompt) {
+            Verdict::Prompt(prompt) => self.prompt_or_ask(cx, prompt).await,
+            Verdict::Deny {
+                tier,
+                rule,
+                why,
+                converted,
+            } => {
+                let refusal = Refusal {
+                    converted,
+                    ..self.refuse(cx.call.tool, &why)
+                };
+                self.deny(cx, tier, rule, refusal).await
+            }
+            Verdict::Allow { .. } | Verdict::Guardian => {
+                self.deny(
+                    cx,
+                    Tier::Guardian,
+                    None,
+                    self.refuse(cx.call.tool, "it needs the user's approval"),
+                )
+                .await
+            }
+        }
+    }
+
+    /// The guardian decides, unless the human already settled this exact call.
+    async fn guardian_branch(&self, cx: &CallCtx<'_>, hook: &HookOutcome) -> GateDecision {
+        let call = cx.call;
+        // `/denied` then `r`: the human approved this exact call once. The floor has already
+        // run; the guardian is not asked and the approval never enters the cache or the
+        // breaker.
+        if let Some(source) = self.state.take_retry(call.agent, call.tool, &cx.digest) {
+            match source {
+                RetrySource::Human => {
+                    Self::note(Tier::Human, Decision::Allow);
+                    self.emit(self.record(
+                        cx,
+                        Tier::Human,
+                        Decision::Allow,
+                        Some("retry approved by the user".to_string()),
+                        None,
+                    ));
+                    self.approved(cx, Tier::Human, "once");
+                }
+                // A hook's grant is not a human's answer: it must not resume paused auto mode
+                // or reset the guardian breaker.
+                RetrySource::Hook(id) => {
+                    Self::note(Tier::Hook, Decision::Allow);
+                    self.emit(self.record(
+                        cx,
+                        Tier::Hook,
+                        Decision::Allow,
+                        Some(id),
+                        Some("retry approved by a permission_denied hook".to_string()),
+                    ));
+                    self.state.append(self.action(cx, Tier::Hook));
+                }
+            }
+            return GateDecision::Allow {
+                args: cx.args.clone(),
+            };
+        }
+        if self.state.auto_paused() {
+            return self
+                .human_or_deny(
+                    cx,
+                    Prompt {
+                        tier: Tier::Guardian,
+                        rule: None,
+                        reason: "auto mode is paused after repeated guardian denials; approving this call resumes it".to_string(),
+                        forced: true,
+                    },
+                )
+                .await;
+        }
+
+        let request = adjudication::build(
+            &self.state,
+            call.agent,
+            call.tool,
+            &cx.args,
+            hook.guardian_context.clone(),
+            call.annotations,
+        );
+        let request = Arc::new(request);
+        // A spent usage window holds the call pending, neither denied nor run, and the guardian
+        // judges it again from the start once the window is open. Every pass waits at the gate
+        // first, outside the guardian's own timeout, so a pause is never turned into one.
+        let (mut adjudication, screened) = loop {
+            let stage = self.state.composition();
+            let guardian = self.state.guardian();
+            if let Err(ended) = self
+                .state
+                .usage_gate_for(crate::core::usage_ledger::account_of(guardian.label()))
+                .await
+            {
+                break (pause_ended(&guardian, &ended), None);
+            }
+            let (decided, screened) = match stage {
+                None => (
+                    Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
+                    None,
+                ),
+                Some(stage) => {
+                    let composed = composition::adjudicate(
+                        stage.composition.clone(),
+                        guardian.clone(),
+                        request.clone(),
+                    )
+                    .await;
+                    let screened = self.note_composition(&stage, &composed, &guardian);
+                    if let Some(usage) = &composed.llm_usage {
+                        let served = Served::direct(guardian.label());
+                        self.state
+                            .add_guardian_usage(cx.call.agent, usage, true, &served);
+                    }
+                    // Reads that share a request share its usage, which one of them carries.
+                    for read in &composed.reads {
+                        if let Some(usage) = &read.usage {
+                            let served = Served::direct(&read.model);
+                            self.state
+                                .add_guardian_usage(cx.call.agent, usage, true, &served);
+                        }
+                    }
+                    (composed.decided, Some(screened))
+                }
+            };
+            let adjudication = match decided {
+                Decided::Escalate { node, reason } => {
+                    let screened = screened.expect("an escalation comes from a composition");
+                    return self.screen_stop(cx, &screened, &node, &reason).await;
+                }
+                Decided::Allow {
+                    node,
+                    score,
+                    threshold,
+                } => {
+                    let screened = screened.expect("an allow comes from a composition");
+                    return self.screen_allow(cx, &screened, &node, score, threshold);
+                }
+                Decided::Deny {
+                    node,
+                    reason,
+                    fail_closed: None,
+                    ..
+                } => {
+                    let screened = screened.expect("a deny comes from a composition");
+                    return self.screen_deny(cx, &screened, &node, &reason).await;
+                }
+                // A composition that failed is a guardian denial like any other: it can be approved
+                // from `/denied`, retried by a hook, and counts toward the breaker.
+                Decided::Deny {
+                    reason,
+                    fail_closed: Some(kind),
+                    cause,
+                    ..
+                } => Adjudication {
+                    decision: GuardianDecision::Deny,
+                    rule: kind.label(),
+                    explanation: reason,
+                    confidence: None,
+                    fail_closed: Some(kind),
+                    cache_hit: false,
+                    latency_ms: 0,
+                    model: guardian.label().to_string(),
+                    profile: guardian.profile(),
+                    usage: Default::default(),
+                    transport: None,
+                    cause,
+                },
+                Decided::Guardian(adjudication) => *adjudication,
+            };
+            let spent = adjudication
+                .cause
+                .as_deref()
+                .and_then(|cause| crate::core::usage_limit::usage_limit(cause));
+            let Some(limit) = spent else {
+                break (adjudication, screened);
+            };
+            self.state.add_guardian_adjudication(
+                cx.call.agent,
+                &adjudication.usage,
+                adjudication.transport.is_some() && !adjudication.cache_hit,
+                false,
+                &Served::direct(guardian.label()),
+            );
+            let account = crate::core::usage_ledger::account_of(guardian.label());
+            match self
+                .state
+                .pause_for_usage(
+                    crate::core::quota::UsageRole::Guardian,
+                    account,
+                    &limit,
+                    self.state.guardian_quota(),
+                )
+                .await
+            {
+                Ok(()) => continue,
+                Err(ended) => break (pause_ended(&guardian, &ended), None),
+            }
+        };
+        if adjudication
+            .fail_closed
+            .is_some_and(FailClosed::is_unavailable)
+            && self.no_human().is_none()
+        {
+            let mut reason = self
+                .state
+                .guardian()
+                .unavailable_reason()
+                .unwrap_or_default()
+                .to_string();
+            if adjudication.fail_closed == Some(FailClosed::NotSignedIn)
+                && let Some((account, _)) = adjudication.model.split_once('/')
+            {
+                reason.push_str(&format!("; sign in with `/login {account}`"));
+            }
+            let info = GuardianUnavailable {
+                model: adjudication.model.clone(),
+                reason,
+                tool: call.tool.to_string(),
+            };
+            let _waiting = self.state.wait_on_human(call.agent);
+            match self.approver.guardian_unavailable(info).await {
+                UnavailableChoice::Retry => {
+                    adjudication = self.state.guardian().adjudicate(&request).await;
+                }
+                UnavailableChoice::Manual => {
+                    self.state
+                        .set_mode(PermissionMode::Manual, AfkSource::Command)
+                        .expect("only entering AFK mode is refused");
+                    return self
+                        .prompt_or_ask(
+                            cx,
+                            Prompt {
+                                tier: Tier::Mode,
+                                rule: None,
+                                reason: "it needs the user's approval".to_string(),
+                                forced: false,
+                            },
+                        )
+                        .await;
+                }
+                UnavailableChoice::Deny => {}
+            }
+        }
+        self.state.add_guardian_adjudication(
+            cx.call.agent,
+            &adjudication.usage,
+            adjudication.transport.is_some() && !adjudication.cache_hit,
+            adjudication.fail_closed.is_none(),
+            &Served::direct(self.state.guardian().label()),
+        );
+        self.settle(cx, adjudication, screened.as_ref()).await
+    }
+
+    /// What the composition made of a call, for the audit record. One that cannot run to the end
+    /// is reported once per session.
+    fn note_composition(
+        &self,
+        stage: &CompositionStage,
+        composed: &Composed,
+        guardian: &LlmGuardian,
+    ) -> Screened {
+        if let Some(reason) = composed.unavailable_reason()
+            && self.state.first_composition_warning()
+        {
+            self.approver.warn(&format!(
+                "the guardian composition over {} did not run to the end ({reason}); a call it could not judge is left to the guardian or denied",
+                stage.label
+            ));
+        }
+        let models = composed.models();
+        let dropped = composed.dropped_input_tokens.and_then(|input_tokens| {
+            guardian
+                .wire_ids()
+                .map(|WireIds { provider, model }| Dropped {
+                    input_tokens,
+                    provider,
+                    model,
+                    priced: guardian.settings().priced,
+                })
+        });
+        Screened {
+            reads: composed.reads.clone(),
+            outcome: composed.outcome_name(),
+            latency_ms: (!composed.reads.is_empty()).then(|| composed.reads_latency_ms()),
+            model: (!models.is_empty()).then_some(models),
+            dropped,
+        }
+    }
+
+    /// A node of the composition allowed the call on a score it read. The guardian was dropped or
+    /// never asked, so its breaker and cache are untouched.
+    fn screen_allow(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        node: &str,
+        score: f64,
+        threshold: f64,
+    ) -> GateDecision {
+        // A hosted screen declares no steering read.
+        let steering = screened
+            .score("steering")
+            .map(|value| format!(", steering {value:.2e}"))
+            .unwrap_or_default();
+        let explanation = format!(
+            "the guardian composition allowed this call at {node} (score {score:.2e} below {threshold:.2e}{steering})"
+        );
+        Self::note(Tier::Screen, Decision::Allow);
+        let mut record = self.record(
+            cx,
+            Tier::Screen,
+            Decision::Allow,
+            Some(node.to_string()),
+            Some(explanation),
+        );
+        screened.annotate(&mut record);
+        self.emit(record);
+        self.state.append(self.action(cx, Tier::Screen));
+        GateDecision::Allow {
+            args: cx.args.clone(),
+        }
+    }
+
+    /// A node of the composition stopped the call. It escalates exactly as a guardian escalation
+    /// does; the guardian, its cache and its breaker are not involved.
+    async fn screen_stop(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        node: &str,
+        stopped: &str,
+    ) -> GateDecision {
+        let reason = format!("the guardian composition stopped this call at {node}: {stopped}");
+        let rule = node.to_string();
+        let annotated = |decision, explanation| {
+            let mut record =
+                self.record(cx, Tier::Screen, decision, Some(rule.clone()), explanation);
+            screened.annotate(&mut record);
+            record
+        };
+        let Some(no_human) = self.no_human() else {
+            Self::note(Tier::Screen, Decision::Prompt);
+            self.emit(annotated(Decision::Prompt, None));
+            return self
+                .ask_human(
+                    cx,
+                    Prompt {
+                        tier: Tier::Screen,
+                        rule: Some(rule),
+                        reason,
+                        forced: true,
+                    },
+                    None,
+                )
+                .await;
+        };
+        let refusal = Refusal {
+            converted: Some(Converted::ScreenEscalate),
+            ..self.refuse(
+                cx.call.tool,
+                &format!("{reason}, and {}", no_human.clause()),
+            )
+        };
+        // The composition has nothing to retry, so a hook's retry offer is dropped.
+        self.denied_hooks(cx, Tier::Screen, &reason).await;
+        Self::note(Tier::Screen, Decision::Deny);
+        let mut record = annotated(Decision::Deny, Some(refusal.message.clone()));
+        record.converted = refusal.converted;
+        self.emit(record);
+        self.state
+            .append(self.denial(cx, Tier::Screen, Some(&rule), &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
+        }
+    }
+
+    /// A node of the composition denied the call outright: no prompt, in any surface.
+    async fn screen_deny(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        node: &str,
+        why: &str,
+    ) -> GateDecision {
+        let reason = format!("the guardian composition denied this call at {node}: {why}");
+        let refusal = self.refuse(cx.call.tool, &reason);
+        self.denied_hooks(cx, Tier::Screen, &reason).await;
+        Self::note(Tier::Screen, Decision::Deny);
+        let mut record = self.record(
+            cx,
+            Tier::Screen,
+            Decision::Deny,
+            Some(node.to_string()),
+            Some(refusal.message.clone()),
+        );
+        screened.annotate(&mut record);
+        self.emit(record);
+        self.state
+            .append(self.denial(cx, Tier::Screen, Some(node), &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
+        }
+    }
+
+    /// Acts on what the guardian came to.
+    async fn settle(
+        &self,
+        cx: &CallCtx<'_>,
+        adjudication: Adjudication,
+        screened: Option<&Screened>,
+    ) -> GateDecision {
+        let call = cx.call;
+        let rule = adjudication.rule.as_str().to_string();
+        let no_human = self.no_human();
+        match adjudication.decision {
+            GuardianDecision::Allow => {
+                self.state.guardian_allowed();
+                Self::note(Tier::Guardian, Decision::Allow);
+                self.emit(Self::with_guardian(
+                    self.record(cx, Tier::Guardian, Decision::Allow, Some(rule), None),
+                    &adjudication,
+                    screened,
+                ));
+                self.state.append(self.action(cx, Tier::Guardian));
+                GateDecision::Allow {
+                    args: cx.args.clone(),
+                }
+            }
+            GuardianDecision::Escalate if no_human.is_none() => {
+                Self::note(Tier::Guardian, Decision::Prompt);
+                self.emit(Self::with_guardian(
+                    self.record(
+                        cx,
+                        Tier::Guardian,
+                        Decision::Prompt,
+                        Some(rule.clone()),
+                        None,
+                    ),
+                    &adjudication,
+                    screened,
+                ));
+                self.ask_human(
+                    cx,
+                    Prompt {
+                        tier: Tier::Guardian,
+                        reason: format!(
+                            "the guardian wants you to decide: [{rule}] {}",
+                            adjudication.explanation
+                        ),
+                        rule: Some(rule),
+                        forced: true,
+                    },
+                    Some(Converted::Escalate),
+                )
+                .await
+            }
+            GuardianDecision::Deny | GuardianDecision::Escalate => {
+                let escalated = adjudication.decision == GuardianDecision::Escalate;
+                let why = match no_human {
+                    Some(no_human) if escalated => format!(
+                        "{}, and {}",
+                        adjudication.explanation.trim_end_matches('.'),
+                        no_human.clause()
+                    ),
+                    _ => adjudication.explanation.clone(),
+                };
+                let converted = if escalated {
+                    Some(Converted::Escalate)
+                } else if adjudication
+                    .fail_closed
+                    .is_some_and(FailClosed::is_unavailable)
+                    && no_human.is_some()
+                {
+                    Some(Converted::GuardianUnavailable)
+                } else {
+                    None
+                };
+                let mut message =
+                    format!("Denied by guardian: [{rule}] {why}. {}", recovery(no_human));
+                // A user's `permission_denied` hook may allow exactly one retry, as `/denied`
+                // then `r` does. It is asked first so the agent is told the truth.
+                let retry = self
+                    .denied_hooks(cx, Tier::Guardian, &adjudication.explanation)
+                    .await;
+                if let Some(hook_id) = &retry {
+                    message = format!(
+                        "Denied by guardian: [{rule}] {why}. A permission_denied hook approved one retry of exactly this call: you may run it again once, unchanged."
+                    );
+                    self.state.grant_retry(
+                        RetrySource::Hook(hook_id.clone()),
+                        call.agent,
+                        call.tool,
+                        &cx.digest,
+                    );
+                }
+                // The human or a deadline ended a usage wait, which is not the guardian failing.
+                let counts_toward_breaker =
+                    adjudication.fail_closed != Some(FailClosed::UsagePauseEnded);
+                Self::note(Tier::Guardian, Decision::Deny);
+                let mut record = Self::with_guardian(
+                    self.record(
+                        cx,
+                        Tier::Guardian,
+                        Decision::Deny,
+                        Some(rule.clone()),
+                        Some(message.clone()),
+                    ),
+                    &adjudication,
+                    screened,
+                );
+                record.converted = converted;
+                let refusal = Refusal {
+                    message: message.clone(),
+                    why: why.clone(),
+                    converted,
+                    fail_closed: adjudication.fail_closed.map(FailClosed::as_str),
+                };
+                self.state
+                    .append(self.denial(cx, Tier::Guardian, Some(&rule), &refusal));
+                self.state.record_denied(DeniedCall {
+                    tool: call.tool.to_string(),
+                    agent: call.agent.to_string(),
+                    tool_use_id: cx.tool_use_id.clone(),
+                    args: cx.args.clone(),
+                    args_digest: cx.digest.clone(),
+                    summary: action_summary(call.tool, &cx.args),
+                    rule,
+                    explanation: adjudication.explanation,
+                    retried: retry.is_some(),
+                });
+                // The list a surface reads when it sees this event is complete before the event.
+                self.emit(record);
+                if counts_toward_breaker && self.state.guardian_denied() {
+                    let afk = self.state.afk_on();
+                    if afk {
+                        self.state.append(Record::AfkBlocked {});
+                    }
+                    self.approver.notice(if afk {
+                        "auto mode paused after repeated guardian denials: calls that need the guardian are denied while AFK is on; after leaving AFK mode the next such call asks you"
+                    } else {
+                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode"
+                    });
+                }
+                GateDecision::Deny { message }
+            }
+        }
+    }
+
+    /// The ledger's approval and action records for a call a human allowed.
+    fn approved(&self, cx: &CallCtx<'_>, tier: Tier, scope: &str) {
+        self.state.append(Record::Approval {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            scope: scope.to_string(),
+        });
+        self.state.append(self.action(cx, tier));
+        if self.state.auto_paused() {
+            self.state.resume_auto();
+        } else {
+            self.state.guardian_allowed();
+        }
+    }
+
+    /// `converted` names what an AFK toggle racing the prompt turns it into; `None` infers it
+    /// from the tier.
+    async fn ask_human(
+        &self,
+        cx: &CallCtx<'_>,
+        prompt: Prompt,
+        converted: Option<Converted>,
+    ) -> GateDecision {
+        let call = cx.call;
+        if let Some(why) = self.state.agents().exhausted_of(call.agent) {
+            let refusal = self.refuse(call.tool, &why.describe());
+            self.emit(self.record(
+                cx,
+                Tier::Human,
+                Decision::Deny,
+                None,
+                Some(refusal.message.clone()),
+            ));
+            self.state
+                .append(self.denial(cx, Tier::Human, None, &refusal));
+            return GateDecision::Deny {
+                message: refusal.message,
+            };
+        }
+        let args = cx.args.clone();
+        let scope = self.state.scope();
+        let proposed = if prompt.forced {
+            None
+        } else {
+            propose(&CallContext {
+                tool: call.tool,
+                args: &args,
+                scope: &scope,
+                home: self.state.home.as_deref(),
+            })
+        };
+        let offers = Offers {
+            session: proposed.is_some(),
+            always: proposed.is_some()
+                && self.user_config.is_some()
+                && self.human != HumanChannel::Delegate,
+        };
+        let preview = {
+            let (tool, args, scope) = (call.tool.to_string(), args.clone(), scope.clone());
+            let memory_root = self.state.memory_root.clone();
+            tokio::task::spawn_blocking(move || {
+                preview::preview(&tool, &args, &scope, memory_root.as_deref())
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        if let Some(preview) = &preview {
+            lock(&self.prompted, "prompted previews")
+                .insert(call.agent.to_string(), preview.clone());
+        }
+        let request = ApprovalRequest {
+            tool: call.tool.to_string(),
+            agent: call.agent.to_string(),
+            agent_name: if self.state.agents().is_child(call.agent) {
+                self.state.agents().name_of(call.agent)
+            } else {
+                String::new()
+            },
+            tool_use_id: cx.tool_use_id.clone(),
+            summary: summarize(call.tool, &args),
+            args: args.clone(),
+            tier: prompt.tier,
+            reason: prompt.reason.clone(),
+            offers,
+            proposed_rule: proposed.as_ref().map(ToString::to_string),
+            preview,
+        };
+        // AFK can be turned on while this decision was in flight, and nobody is there to answer.
+        if let Some(no_human) = self.no_human() {
+            let refusal = Refusal {
+                converted: Some(converted.unwrap_or_else(|| converted_of(prompt.tier))),
+                ..self.refuse(
+                    call.tool,
+                    &format!("{}, and {}", prompt.reason, no_human.clause()),
+                )
+            };
+            return self
+                .deny(cx, prompt.tier, prompt.rule.clone(), refusal)
+                .await;
+        }
+        let _waiting = self.state.wait_on_human(call.agent);
+        let answer = self
+            .approver
+            .approve(request)
+            .instrument(tracing::info_span!(
+                target: TARGET,
+                "fontaine.tool.blocked_on_user",
+                tool_name = self.state.telemetry_tool_name(call.tool),
+            ))
+            .await;
+
+        match answer {
+            Answer::AllowOnce => {
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
+                self.approved(cx, Tier::Human, "once");
+                GateDecision::Allow { args }
+            }
+            Answer::AllowSession if offers.session => {
+                let rule = proposed.expect("offered with a proposal");
+                self.emit(self.record(
+                    cx,
+                    Tier::Human,
+                    Decision::Allow,
+                    Some(format!("{rule} [session]")),
+                    None,
+                ));
+                self.state.append(Record::Grant {
+                    rule: rule.to_string(),
+                });
+                self.state.grant(rule, RuleSource::Session);
+                self.approved(cx, Tier::Human, "session");
+                GateDecision::Allow { args }
+            }
+            Answer::AllowAlways if offers.always => {
+                let rule = proposed.expect("offered with a proposal");
+                let written = match &self.user_config {
+                    Some(path) => {
+                        user_config::append_allow_rule(path, &rule.to_string()).map_err(|e| {
+                            RuntimeError::caused(format!("could not write {}", path.display()), e)
+                        })
+                    }
+                    None => Err(RuntimeError::new("no user settings file")),
+                };
+                let saved = written.is_ok();
+                let source = match written {
+                    Ok(()) => SessionState::ALWAYS,
+                    Err(e) => {
+                        self.approver.notice(&format!(
+                            "could not save `{rule}` to the settings file ({}); it holds for this session only",
+                            chain(&e)
+                        ));
+                        RuleSource::Session
+                    }
+                };
+                self.emit(self.record(
+                    cx,
+                    Tier::Human,
+                    Decision::Allow,
+                    Some(format!("{rule} [{}]", source.label())),
+                    None,
+                ));
+                self.state.append(Record::Grant {
+                    rule: rule.to_string(),
+                });
+                self.state.grant(rule, source);
+                self.approved(cx, Tier::Human, if saved { "always" } else { "session" });
+                GateDecision::Allow { args }
+            }
+            Answer::AllowUpdated { grants, .. } if !offers.session && !grants.is_empty() => {
+                self.deny_answer(cx, "no session allow was offered for this prompt")
+                    .await
+            }
+            Answer::AllowUpdated {
+                args: None,
+                grants,
+                mode,
+            } => {
+                if let Err(why) = self.apply_updates(mode, grants.clone()) {
+                    return self.deny_answer(cx, &why).await;
+                }
+                let rule = (!grants.is_empty()).then(|| {
+                    format!(
+                        "{} [session]",
+                        grants
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                });
+                let label = if grants.is_empty() { "once" } else { "session" };
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, rule, None));
+                self.approved(cx, Tier::Human, label);
+                GateDecision::Allow { args }
+            }
+            Answer::AllowUpdated { args: Some(_), .. } if cx.redone => {
+                self.deny_answer(cx, "the host changed the input a second time")
+                    .await
+            }
+            Answer::AllowUpdated {
+                args: Some(new),
+                grants,
+                mode,
+            } => {
+                // Refused before the re-run, so a mode no host may enter never rides on it.
+                if mode == Some(PermissionMode::Afk) {
+                    return self.deny_answer(cx, "a host cannot turn AFK mode on").await;
+                }
+                *lock(&cx.again, "host re-judgement") = Some(Again {
+                    args: new,
+                    grants,
+                    mode,
+                });
+                GateDecision::Deny {
+                    message: self.denied(call.tool, "the host changed the input"),
+                }
+            }
+            // A grant the prompt did not offer is only the one call.
+            Answer::AllowSession | Answer::AllowAlways => {
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
+                self.approved(cx, Tier::Human, "once");
+                GateDecision::Allow { args }
+            }
+            Answer::Deny { feedback } => {
+                let refusal = match feedback.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                    Some(feedback) => Refusal {
+                        message: format!(
+                            "The user denied this `{}` call: {feedback}. Do not retry it as it was.",
+                            call.tool
+                        ),
+                        why: format!("the user declined it: {feedback}"),
+                        converted: None,
+                        fail_closed: None,
+                    },
+                    None => self.refuse(call.tool, "the user declined it"),
+                };
+                self.emit(self.record(
+                    cx,
+                    Tier::Human,
+                    Decision::Deny,
+                    None,
+                    Some(refusal.message.clone()),
+                ));
+                self.state
+                    .append(self.denial(cx, Tier::Human, None, &refusal));
+                GateDecision::Deny {
+                    message: refusal.message,
+                }
+            }
+        }
+    }
+
+    /// The host's answer could not be carried out: the call is denied and the record says why.
+    async fn deny_answer(&self, cx: &CallCtx<'_>, why: &str) -> GateDecision {
+        let refusal = self.refuse(cx.call.tool, why);
+        self.emit(self.record(
+            cx,
+            Tier::Human,
+            Decision::Deny,
+            None,
+            Some(refusal.message.clone()),
+        ));
+        self.state
+            .append(self.denial(cx, Tier::Human, None, &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
+        }
+    }
+
+    /// Shows the human the diff of an allowed `edit`, `write` or `memory` after the fact,
+    /// whether or not they were asked. Display only: it feeds no decision, and failing to
+    /// compute it just leaves the call without a diff.
+    async fn publish_preview(&self, tool: &str, agent: &str, decision: &GateDecision) {
+        let prompted = lock(&self.prompted, "prompted previews").remove(agent);
+        let GateDecision::Allow { args } = decision else {
+            return;
+        };
+        if !matches!(tool, "edit" | "write" | "notebook_edit" | "memory") {
+            return;
+        }
+        let Some(id) = self.state.current_call(agent) else {
+            return;
+        };
+        let preview = match prompted {
+            Some(preview) => Some(preview),
+            None => {
+                let (tool, args, scope) = (tool.to_string(), args.clone(), self.state.scope());
+                let memory_root = self.state.memory_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    preview::preview(&tool, &args, &scope, memory_root.as_deref())
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+        };
+        if let Some(preview) = preview {
+            self.state.publish_preview(agent, id, preview);
+        }
+    }
+
+    /// Audit log first, then the telemetry event, then whoever follows the decision feed.
+    fn emit(&self, record: DecisionRecord) {
+        record_decision(&self.state, &record);
+        self.state.publish(record);
+    }
+}
+
+/// The audit append and the `tool_decision` event for one decision, without the decision feed.
+pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
+    if let Err(e) = state.audit.append(record) {
+        state.sink_failed(crate::core::gate::Sink::Audit, &e);
+    }
+    tracing::info!(
+        target: TARGET,
+        tool_name = state.telemetry_tool_name(&record.tool),
+        agent.id = record.agent_id.as_str(),
+        agent.type = state.agents().type_of(&record.agent_id).as_deref().unwrap_or("main"),
+        tool_use_id = record.tool_use_id.as_deref().unwrap_or(""),
+        tier = record.tier.as_str(),
+        decision = record.decision.as_str(),
+        permission_mode = record.permission_mode.as_str(),
+        headless = record.headless,
+        human_channel = record.human_channel.as_str(),
+        latency_ms = record.latency_ms,
+        guardian.model = record.guardian_model.as_deref(),
+        guardian.profile = record.guardian_profile.as_deref(),
+        guardian.verdict = record.guardian_verdict.as_deref(),
+        guardian.confidence = record.confidence,
+        guardian.cache_hit = record.guardian_cache_hit,
+        guardian.latency_ms = record.guardian_latency_ms,
+        fail_closed_reason = record.fail_closed_reason.as_deref(),
+        screen.outcome = record.screen_outcome.as_deref(),
+        screen.risk = record.screen_risk,
+        screen.allow_risk = record.screen_allow_risk,
+        screen.steering = record.screen_steering,
+        screen.model = record.screen_model.as_deref(),
+        screen.latency_ms = record.screen_latency_ms,
+        guardian.dropped_input_tokens = record.guardian_dropped_input_tokens,
+        guardian.dropped_provider = record.guardian_dropped_provider.as_deref(),
+        guardian.dropped_model = record.guardian_dropped_model.as_deref(),
+        guardian.dropped_priced = record.guardian_dropped_priced,
+        "tool_decision"
+    );
+}
+
+/// Read-only tools that take no path, so there is nothing for containment to check: the skill
+/// loader, the question dialog and the task list.
+fn names_no_path(tool: &str) -> bool {
+    crate::tools::descriptor::find(tool).is_some_and(|d| d.path_free)
+}
+
+fn text_number(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
+/// `command` with the directory it starts in. A call that names none starts in the primary
+/// root, and a tracked directory is written into the arguments before the call is judged, so
+/// the directory is shown exactly when it is not the default.
+fn with_cwd(args: &Value, command: &str) -> String {
+    match args.get("cwd").and_then(Value::as_str) {
+        Some(cwd) => format!("in {cwd}: {command}"),
+        None => command.to_string(),
+    }
+}
+
+/// The call as the human is shown it: the whole command, path or URL, never cut short.
+pub fn summarize(tool: &str, args: &Value) -> String {
+    let text = |key: &str| args.get(key).and_then(Value::as_str);
+    let line = match tool {
+        tool if is_shell_class(tool) => text("command").map(|command| with_cwd(args, command)),
+        "powershell" => text("command").map(|command| with_cwd(args, command)),
+        "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
+        "lsp" => text("path").map(|path| {
+            let position = match (text_number(args, "line"), text_number(args, "character")) {
+                (Some(line), Some(character)) => format!(":{line}:{character}"),
+                _ => String::new(),
+            };
+            format!("{} {path}{position}", text("operation").unwrap_or("lsp"))
+        }),
+        "webfetch" => text("url").map(str::to_string),
+        "websearch" => text("query").map(str::to_string),
+        "memory" => text("topic").map(|topic| format!("memory note: {topic}")),
+        "glob" => text("pattern").map(|pattern| match text("path") {
+            Some(path) => format!("{pattern} in {path}"),
+            None => pattern.to_string(),
+        }),
+        "grep" => text("pattern").map(|pattern| match text("path") {
+            Some(path) => format!("{pattern} in {path}"),
+            None => pattern.to_string(),
+        }),
+        "ls" => Some(text("path").unwrap_or(".").to_string()),
+        "advisor" => text("question").map(str::to_string),
+        "ask_user_question" => {
+            let headers: Vec<&str> = args
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(|questions| {
+                    questions
+                        .iter()
+                        .filter_map(|q| q.get("header").and_then(Value::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (!headers.is_empty()).then(|| headers.join(", "))
+        }
+        _ => None,
+    };
+    line.unwrap_or_else(|| args.to_string())
+}
+
+impl ToolGate for PermissionPipeline {
+    fn check<'a>(&'a self, call: CallView<'a>) -> BoxFuture<'a, GateDecision> {
+        let span = tracing::info_span!(
+            target: TARGET,
+            "fontaine.permission",
+            tool_name = self.state.telemetry_tool_name(call.tool),
+            permission_mode = self
+                .posture_of(call.agent)
+                .unwrap_or(PermissionMode::DontAsk)
+                .as_str(),
+            tier = tracing::field::Empty,
+            decision = tracing::field::Empty,
+        );
+        let (tool, agent) = (call.tool, call.agent);
+        Box::pin(async move {
+            // A prompt cut short by an interrupt drops this future before `publish_preview`
+            // clears the entry, and it must not outlive its call.
+            lock(&self.prompted, "prompted previews").remove(agent);
+            let decision = self.adjudicate(call).instrument(span).await;
+            self.publish_preview(tool, agent, &decision).await;
+            decision
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::registry::AgentTypes;
+    use crate::agents::tree::{AgentTree, Limits};
+    use crate::core::audit::AuditLog;
+    use crate::core::config::PermissionMode;
+    use crate::core::gate::{StateParams, no_guardian};
+    use crate::core::ledger::Ledger;
+    use crate::tools::live::Live;
+    use crate::tools::scope::Scope;
+    use std::sync::Mutex as StdMutex;
+
+    /// Records the URL elicitations it is shown and accepts them.
+    struct Recording {
+        asked: StdMutex<usize>,
+    }
+
+    impl Approver for Recording {
+        fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+            Box::pin(async { Answer::Deny { feedback: None } })
+        }
+
+        fn elicit_url<'a>(&'a self, _request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+            *self.asked.lock().unwrap() += 1;
+            Box::pin(async { ElicitReply::Accept(serde_json::Map::default()) })
+        }
+    }
+
+    fn state_in(dir: &std::path::Path, mode: PermissionMode) -> Arc<SessionState> {
+        let agents = Arc::new(AgentTree::new(Limits::default(), 1));
+        agents.set_root_tools(|| {
+            crate::tools::descriptor::names()
+                .map(String::from)
+                .collect()
+        });
+        Arc::new(SessionState::new(StateParams {
+            session_id: "test".into(),
+            mode,
+            scope: Arc::new(Scope::new(dir.to_path_buf(), [])),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allow: Vec::new(),
+            ledger: Arc::new(Ledger::create(dir).unwrap()),
+            audit: Arc::new(AuditLog::create(dir, "test").unwrap()),
+            approver: Arc::new(DenyAll),
+            home: None,
+            protected_dirs: Vec::new(),
+            scratch: None,
+            memory_root: None,
+            guardian: no_guardian(),
+            auto: crate::core::gate::AutoContext::default(),
+            agents: agents.clone(),
+            agent_types: Arc::new(Live::new(AgentTypes::builtin())),
+            reveal_mcp_names: true,
+            auto_edits: Default::default(),
+            effort: None,
+            retry: crate::core::retry::RetryPolicy::default(),
+        }))
+    }
+
+    fn url_request() -> ElicitUrl {
+        ElicitUrl {
+            server: "srv".into(),
+            id: String::new(),
+            message: "Sign in".into(),
+            url: "https://example.com".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_elicit_url_cancels() {
+        let reply = DenyAll.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Cancel);
+    }
+
+    #[tokio::test]
+    async fn afk_cancels_a_url_elicitation_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), PermissionMode::Afk);
+        let recording = Arc::new(Recording {
+            asked: StdMutex::new(0),
+        });
+        let afk = AfkApprover::new(recording.clone(), state);
+        let reply = afk.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Cancel);
+        assert_eq!(*recording.asked.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_attended_session_forwards_a_url_elicitation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), PermissionMode::Manual);
+        let recording = Arc::new(Recording {
+            asked: StdMutex::new(0),
+        });
+        let afk = AfkApprover::new(recording.clone(), state);
+        let reply = afk.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Accept(serde_json::Map::default()));
+        assert_eq!(*recording.asked.lock().unwrap(), 1);
+    }
+}

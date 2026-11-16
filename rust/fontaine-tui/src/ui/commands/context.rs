@@ -2,9 +2,9 @@ use crate::commands;
 use crate::reports;
 use crate::ui::turn::{Serve, TurnEnd};
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::session::{CompactReason, CompactResult};
-use fontaine_tools::display::compact_count;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::session::{CompactReason, CompactResult};
+use fontaine_sdk::tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/clear`: empties the model's context and the transcript, and keeps the session.
@@ -52,7 +52,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app
                     .transcript
-                    .error(fontaine_tools::error_chain::chain(&e));
+                    .error(fontaine_sdk::tools::error_chain::chain(&e));
                 false
             }
         }
@@ -72,7 +72,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => self
                 .app
                 .transcript
-                .error(fontaine_tools::error_chain::chain(&e)),
+                .error(fontaine_sdk::tools::error_chain::chain(&e)),
         }
     }
 
@@ -89,13 +89,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // for its counts; resolve the journal first, and skip the compaction rather than
         // fold the turn twice.
         if let Err(e) = runtime
-            .resolve_unsettled_turn(fontaine_core::turn_recovery::Unsettled::SessionEnded, None)
+            .resolve_unsettled_turn(
+                fontaine_sdk::core::turn_recovery::Unsettled::SessionEnded,
+                None,
+            )
             .await
         {
             self.app.transcript.error(format!(
                 "the unfinished turn could not be kept, so the conversation was not compacted: \
                  {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ));
             return Continue(());
         }
@@ -144,7 +147,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .notice(format!("btw: {question}\n{}", answer.text)),
             Some(Err(e)) => self.app.transcript.error(format!(
                 "the side question was not answered: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
             None => self.app.transcript.notice("interrupted"),
         }

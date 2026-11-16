@@ -7,8 +7,8 @@ use std::path::Path;
 
 use common::routed::{Route, Turn, start};
 use common::{World, text_turn, tool_turn};
-use fontaine_core::ledger::Record;
-use fontaine_core::session::Session;
+use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::session::Session;
 use fontaine_tui::{DriveOutcome, SessionTarget};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;

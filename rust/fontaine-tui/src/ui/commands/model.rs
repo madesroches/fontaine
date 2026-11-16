@@ -2,12 +2,12 @@ use crate::model_picker::{Group, ModelPicker, PickerPurpose};
 use crate::ui::commands::config::overriding_scope;
 use crate::usage_prompt::UsagePauseAnswer;
 use crate::{App, Ui, UnavailableAnswer};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::config::Slot;
-use fontaine_core::effort::Effort;
-use fontaine_core::models::{GuardianModel, ModelError, ModelRef};
-use fontaine_core::permissions::{PauseChoice, UnavailableChoice};
-use fontaine_core::quota::UsageRole;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::config::Slot;
+use fontaine_sdk::core::effort::Effort;
+use fontaine_sdk::core::models::{GuardianModel, ModelError, ModelRef};
+use fontaine_sdk::core::permissions::{PauseChoice, UnavailableChoice};
+use fontaine_sdk::core::quota::UsageRole;
 
 /// The account `reference` names, when `error` is that account's external program having
 /// nobody signed in.
@@ -58,7 +58,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Err(e) => {
-                let mut text = fontaine_tools::error_chain::chain(&e);
+                let mut text = fontaine_sdk::tools::error_chain::chain(&e);
                 if let Some(account) = signed_out_account(&e, reference) {
                     text.push_str(&format!("; sign in with `/login {account}`"));
                 }
@@ -117,7 +117,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => self
                 .app
                 .transcript
-                .warning(fontaine_tools::error_chain::chain(&e), None),
+                .warning(fontaine_sdk::tools::error_chain::chain(&e), None),
         }
     }
 
@@ -179,7 +179,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Err(e) => self.app.transcript.error(format!(
                 "/guardian-model: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
         }
     }
@@ -197,7 +197,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app.transcript.error(format!(
                     "{command}: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ));
                 None
             }
@@ -217,7 +217,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             header.push_str(&format!(" (unavailable: {reason})"));
         }
         // The runtime's own record of the guardian goes stale after a session-only change.
-        let current = fontaine_core::models::ModelRef::parse(guardian.label());
+        let current = fontaine_sdk::core::models::ModelRef::parse(guardian.label());
         self.app.models = Some(ModelPicker::new(
             PickerPurpose::Guardian,
             header,
@@ -246,7 +246,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Adds a model the human switched to into the picker's Recent group; a file that cannot be
     /// written is reported once.
     fn remember_model(&mut self, purpose: PickerPurpose, reference: &str) {
-        let Some(model) = fontaine_core::models::ModelRef::parse(reference) else {
+        let Some(model) = fontaine_sdk::core::models::ModelRef::parse(reference) else {
             return;
         };
         if let Some(error) = self.recent.record(purpose, &model) {
@@ -334,7 +334,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Err(e) => {
                         self.app
                             .transcript
-                            .error(fontaine_tools::error_chain::chain(&e));
+                            .error(fontaine_sdk::tools::error_chain::chain(&e));
                         return;
                     }
                 },
@@ -366,7 +366,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app
                     .transcript
-                    .error(fontaine_tools::error_chain::chain(&e));
+                    .error(fontaine_sdk::tools::error_chain::chain(&e));
                 false
             }
         }
@@ -396,7 +396,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Err(e) => {
                     self.app
                         .transcript
-                        .error(fontaine_tools::error_chain::chain(&e));
+                        .error(fontaine_sdk::tools::error_chain::chain(&e));
                     UnavailableChoice::Deny
                 }
             },
@@ -422,7 +422,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Err(e) => {
                     self.app
                         .transcript
-                        .error(fontaine_tools::error_chain::chain(&e));
+                        .error(fontaine_sdk::tools::error_chain::chain(&e));
                     UnavailableChoice::Deny
                 }
             },
@@ -441,7 +441,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
 /// Whether moving from `previous` to `new` changes what the model is sent: a level it refuses
 /// sends nothing, the same as unset.
 fn effort_changes_request(
-    model: &fontaine_core::models::ModelHandle,
+    model: &fontaine_sdk::core::models::ModelHandle,
     previous: Option<Effort>,
     new: Option<Effort>,
 ) -> bool {
@@ -480,8 +480,8 @@ mod tests {
 
     #[test]
     fn refused_levels_send_the_same_nothing() {
-        use fontaine_core::config::AccountKind;
-        use fontaine_core::models::{ModelHandle, ModelRef};
+        use fontaine_sdk::core::config::AccountKind;
+        use fontaine_sdk::core::models::{ModelHandle, ModelRef};
         use rig_core::catalog::Catalog;
         use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
 

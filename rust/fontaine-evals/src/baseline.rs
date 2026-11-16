@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use fontaine_core::config::PermissionMode;
-use fontaine_core::permission_rules::parse_rule;
-use fontaine_tools::names::is_mcp;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::permission_rules::parse_rule;
+use fontaine_sdk::tools::names::is_mcp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

@@ -167,7 +167,7 @@ async fn a_repository_server_is_not_started_in_an_untrusted_workspace() {
 #[tokio::test]
 async fn a_memory_index_pointing_at_a_missing_file_fails() {
     let s = sandbox();
-    let dir = fontaine_core::memory::dir(&s.data, &s.work);
+    let dir = fontaine_sdk::core::memory::dir(&s.data, &s.work);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("MEMORY.md"), "- [gone](gone.md)\n").unwrap();
     std::fs::write(dir.join("loose.md"), "x").unwrap();

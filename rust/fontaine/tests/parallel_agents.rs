@@ -7,8 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{Endpoint, Route, Sandbox, Turn, Wire, ledger};
+use fontaine_sdk::tools::kills::KILL_GRACE;
 use fontaine_testkit::example_bin;
-use fontaine_tools::kills::KILL_GRACE;
 use serde_json::{Value, json};
 
 fn config(url: &str, extra: &str) -> String {

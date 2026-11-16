@@ -1,0 +1,970 @@
+//! The per-key scope policy: one row per settings key, and a walker that applies it to the raw
+//! TOML of a file. A key with no row is refused from project scopes, so a new settings field
+//! fails closed until someone decides where it may be set.
+
+use crate::core::config::Column;
+
+type ScopeFailure = (String, String);
+
+/// What one non-user column may do with a key. The user file may set everything.
+#[derive(Clone, Copy)]
+pub(crate) enum Cell {
+    No,
+    Yes,
+    /// Allowed only for values the predicate accepts.
+    If(fn(&toml::Value) -> bool),
+}
+
+/// A row matching a node stops the descent, so it covers the whole subtree (`env` covers every
+/// environment variable). Map keys add a segment, so a row cannot name a node below a map; array
+/// elements add none.
+pub(crate) struct Rule {
+    pub path: &'static str,
+    pub project: Cell,
+    pub local: Cell,
+    pub cli: Cell,
+    pub reason: &'static str,
+}
+
+impl Rule {
+    const fn any(path: &'static str) -> Rule {
+        Rule {
+            path,
+            project: Cell::Yes,
+            local: Cell::Yes,
+            cli: Cell::Yes,
+            reason: "",
+        }
+    }
+
+    /// User file, project-local and CLI; shared project settings may not.
+    const fn user_trust(path: &'static str, reason: &'static str) -> Rule {
+        Rule {
+            path,
+            project: Cell::No,
+            local: Cell::Yes,
+            cli: Cell::Yes,
+            reason,
+        }
+    }
+
+    /// User file and CLI only.
+    const fn user_or_cli(path: &'static str, reason: &'static str) -> Rule {
+        Rule {
+            path,
+            project: Cell::No,
+            local: Cell::No,
+            cli: Cell::Yes,
+            reason,
+        }
+    }
+
+    const fn user_only(path: &'static str, reason: &'static str) -> Rule {
+        Rule {
+            path,
+            project: Cell::No,
+            local: Cell::No,
+            cli: Cell::No,
+            reason,
+        }
+    }
+
+    const fn shadow_true(path: &'static str, reason: &'static str) -> Rule {
+        Rule {
+            path,
+            project: Cell::If(is_shadow_true),
+            local: Cell::If(is_shadow_true),
+            cli: Cell::If(is_shadow_true),
+            reason,
+        }
+    }
+
+    /// Value-gated in the project scopes, unrestricted from the CLI.
+    const fn if_project_local(
+        path: &'static str,
+        pred: fn(&toml::Value) -> bool,
+        reason: &'static str,
+    ) -> Rule {
+        Rule {
+            path,
+            project: Cell::If(pred),
+            local: Cell::If(pred),
+            cli: Cell::Yes,
+            reason,
+        }
+    }
+
+    fn cell(&self, column: Column) -> Cell {
+        match column {
+            Column::Project => self.project,
+            Column::ProjectLocal => self.local,
+            Column::Cli => self.cli,
+            Column::User => Cell::Yes,
+        }
+    }
+}
+
+const TIGHTEN: &str = "shared project settings may only tighten";
+const USER_FILE: &str =
+    "endpoint and credential configuration comes only from the user file or --settings";
+const NETWORK: &str =
+    "proxy and trust-root configuration comes only from the user file or --settings";
+const WEBSEARCH: &str = "the search backend, its key and the command that starts it come only from the user file or --settings";
+const LSP: &str = "a language server is a program Fontaine starts on every edit, so only the user file or --settings defines one";
+const TUI: &str = "terminal preferences come only from the user file or --settings";
+const KEYBINDINGS: &str =
+    "keybindings steer what the human's keys do, so only the user file or --settings sets them";
+const ENV: &str = "environment overrides come only from user-trust scopes";
+const SCANNER: &str = "scanner settings come only from the user file";
+const COMPOSITION: &str = "the guardian composition is configured only in the user file; other scopes may only set `shadow = true`";
+const DEFAULT_MODE: &str = "only `manual` and `dontAsk` are accepted here";
+const SCHEDULE: &str = "scheduled prompts run without the user typing them, so only the user file or --settings turns them on or off";
+const MEMORY: &str = "auto memory persists text into later sessions, so only the user file or --settings turns it on";
+const CHECKPOINTS: &str =
+    "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
+const PLUGINS: &str =
+    "plugin auto-update changes code the user approved at install, so only the user file sets it";
+const UPDATES: &str =
+    "automatic self-update replaces the executable, so only the user file sets it";
+const GOAL: &str =
+    "goal turns run unattended, so only the user file or --settings sets how long they may run";
+const RETRY: &str = "retrying a failed model call is spend, so only the user file or --settings sets how far it goes";
+const AFK_CEILING: &str =
+    "a repository can only lower the AFK temperature ceiling, and only to a positive, finite value";
+const HEADLESS_WAIT: &str = "how long an unattended run waits for a usage window is set only in the user file or --settings";
+const HEADLESS_TRUST: &str = "whether an unattended run loads project executables in an untrusted workspace is set only in the user file or --settings";
+const HEADLESS_EXIT: &str = "only `exit` may be set here: a repository can end a run at a spent usage window but not make it wait longer";
+const SHELL: &str =
+    "how long a model's shell command may block or run is set only in the user file or --settings";
+const STATUSLINE: &str =
+    "the status line command runs arbitrary code, so only the user file may set it";
+const REMOTE: &str =
+    "which network paths the remote inbox may use is set only in the user file or --settings";
+const FEEDBACK: &str =
+    "whether the model may queue bug-report drafts is set only in the user file or --settings";
+const AUTO_EDITS: &str = "only `false` may be set here: a repository cannot widen what `auto` lets through without a guardian verdict";
+const TELEMETRY: &str = "only `enabled = false` may be set here";
+
+fn is_tightening_mode(v: &toml::Value) -> bool {
+    matches!(v.as_str(), Some("manual" | "dontAsk"))
+}
+
+fn is_exit(v: &toml::Value) -> bool {
+    v.as_str() == Some("exit")
+}
+
+fn is_positive_finite(v: &toml::Value) -> bool {
+    match v {
+        toml::Value::Float(f) => f.is_finite() && *f > 0.0,
+        toml::Value::Integer(i) => *i > 0,
+        _ => false,
+    }
+}
+
+fn is_false(v: &toml::Value) -> bool {
+    v.as_bool() == Some(false)
+}
+
+fn is_shadow_true(v: &toml::Value) -> bool {
+    v.as_bool() == Some(true)
+}
+
+pub(crate) const RULES: &[Rule] = &[
+    Rule::user_or_cli("tui", TUI),
+    Rule::user_or_cli("keybindings", KEYBINDINGS),
+    Rule::user_or_cli("schedule.enabled", SCHEDULE),
+    Rule::user_or_cli("memory", MEMORY),
+    Rule::user_or_cli("goal", GOAL),
+    Rule::user_or_cli("retry", RETRY),
+    Rule::if_project_local("afk.temperature_ceiling", is_positive_finite, AFK_CEILING),
+    Rule::user_or_cli("headless.max_usage_wait_secs", HEADLESS_WAIT),
+    Rule::if_project_local("headless.on_usage_limit", is_exit, HEADLESS_EXIT),
+    Rule::user_or_cli("headless.require_trust", HEADLESS_TRUST),
+    Rule::user_or_cli("shell", SHELL),
+    Rule::user_only("checkpoints", CHECKPOINTS),
+    Rule::user_only("plugins.auto_update", PLUGINS),
+    Rule::user_only("updates.auto_update", UPDATES),
+    Rule::user_or_cli("accounts", USER_FILE),
+    Rule::user_or_cli("models", USER_FILE),
+    Rule::user_or_cli("network", NETWORK),
+    Rule::user_or_cli("websearch", WEBSEARCH),
+    Rule::user_or_cli("lsp", LSP),
+    Rule::user_trust("model", TIGHTEN),
+    Rule::user_trust("guardian.model", TIGHTEN),
+    Rule::user_trust("guardian.profile", TIGHTEN),
+    Rule::user_trust("guardian.timeout_secs", TIGHTEN),
+    Rule::user_trust("guardian.confidence_threshold", TIGHTEN),
+    Rule::user_trust("guardian.cache", TIGHTEN),
+    Rule::user_only("guardian.scanner", SCANNER),
+    Rule::user_only("guardian.scanner_command", SCANNER),
+    Rule::user_only("guardian.scanner_model_path", SCANNER),
+    Rule::user_only("guardian.scanner_hf_token_env", SCANNER),
+    Rule::user_only("guardian.composition.preset", COMPOSITION),
+    Rule::user_only("guardian.composition.script", COMPOSITION),
+    Rule::user_only("guardian.composition.model", COMPOSITION),
+    Rule::user_only("guardian.composition.timeout_ms", COMPOSITION),
+    Rule::user_only("guardian.composition.params", COMPOSITION),
+    Rule::user_only("guardian.composition.reads", COMPOSITION),
+    Rule::shadow_true("guardian.composition.shadow", COMPOSITION),
+    Rule::if_project_local("permissions.default_mode", is_tightening_mode, DEFAULT_MODE),
+    Rule::any("permissions.deny"),
+    Rule::any("permissions.ask"),
+    Rule::user_trust("permissions.allow", TIGHTEN),
+    Rule::user_trust("permissions.additional_directories", TIGHTEN),
+    Rule::if_project_local("permissions.auto_tracked_edits", is_false, AUTO_EDITS),
+    Rule::if_project_local("permissions.auto_scratch_writes", is_false, AUTO_EDITS),
+    Rule::any("hooks.pre_tool_use"),
+    Rule::any("hooks.post_tool_use"),
+    Rule::any("hooks.post_tool_use_failure"),
+    Rule::any("hooks.permission_denied"),
+    Rule::any("hooks.task_completed"),
+    Rule::any("hooks.task_created"),
+    Rule::any("hooks.teammate_idle"),
+    Rule::any("hooks.session_start"),
+    Rule::any("hooks.session_end"),
+    Rule::any("hooks.user_prompt_submit"),
+    Rule::any("hooks.stop"),
+    Rule::any("hooks.stop_failure"),
+    Rule::any("hooks.subagent_start"),
+    Rule::any("hooks.subagent_stop"),
+    Rule::any("hooks.pre_compact"),
+    Rule::any("hooks.post_compact"),
+    Rule::any("hooks.notification"),
+    Rule::any("hooks.elicitation"),
+    Rule::any("mcp.servers"),
+    Rule::any("mcp.tool_search"),
+    Rule::user_trust("auto_mode.environment", TIGHTEN),
+    Rule::user_trust("auto_mode.allow", TIGHTEN),
+    Rule::any("auto_mode.soft_deny"),
+    Rule::any("auto_mode.hard_deny"),
+    Rule::user_trust("auto_mode.setup_reminder", TIGHTEN),
+    Rule::user_trust("agents", TIGHTEN),
+    Rule::user_trust("context", TIGHTEN),
+    Rule::user_trust("shell_preclassifier", TIGHTEN),
+    Rule::user_only("statusline", STATUSLINE),
+    Rule::user_or_cli("feedback", FEEDBACK),
+    Rule::user_or_cli("remote", REMOTE),
+    Rule::if_project_local("telemetry.enabled", is_false, TELEMETRY),
+    Rule::user_or_cli("telemetry.backend", TELEMETRY),
+    Rule::user_or_cli("telemetry.endpoint", TELEMETRY),
+    Rule::user_or_cli("telemetry.api_key_env", TELEMETRY),
+    Rule::user_or_cli("telemetry.traces", TELEMETRY),
+    Rule::user_or_cli("telemetry.log_user_prompts", TELEMETRY),
+    Rule::user_or_cli("telemetry.log_assistant_responses", TELEMETRY),
+    Rule::user_or_cli("telemetry.log_tool_details", TELEMETRY),
+    Rule::user_or_cli("telemetry.log_tool_content", TELEMETRY),
+    Rule::user_or_cli("telemetry.content_max_bytes", TELEMETRY),
+    Rule::user_or_cli("telemetry.resource_attributes", TELEMETRY),
+    Rule::user_trust("env", ENV),
+];
+
+pub(crate) fn check_scope(table: &toml::Table, column: Column) -> Result<(), ScopeFailure> {
+    check_rules(RULES, table, column)
+}
+
+fn check_rules(rules: &[Rule], table: &toml::Table, column: Column) -> Result<(), ScopeFailure> {
+    if column == Column::User {
+        return Ok(());
+    }
+    walk(rules, table, "", column)
+}
+
+fn walk(
+    rules: &[Rule],
+    table: &toml::Table,
+    prefix: &str,
+    column: Column,
+) -> Result<(), ScopeFailure> {
+    for (key, value) in table {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        visit(rules, value, &path, column)?;
+    }
+    Ok(())
+}
+
+fn visit(
+    rules: &[Rule],
+    value: &toml::Value,
+    path: &str,
+    column: Column,
+) -> Result<(), ScopeFailure> {
+    if let Some(rule) = rules.iter().find(|r| r.path == path) {
+        let allowed = match rule.cell(column) {
+            Cell::Yes => true,
+            Cell::No => false,
+            Cell::If(pred) => pred(value),
+        };
+        return if allowed {
+            Ok(())
+        } else {
+            Err((rule.path.to_string(), rule.reason.to_string()))
+        };
+    }
+    match value {
+        toml::Value::Table(t) => walk(rules, t, path, column),
+        toml::Value::Array(items) if !items.is_empty() => items
+            .iter()
+            .try_for_each(|item| visit(rules, item, path, column)),
+        _ if column == Column::Cli => Ok(()),
+        _ => Err((
+            path.to_string(),
+            "no scope policy is declared for this key, so only the user file or --settings may set it"
+                .to_string(),
+        )),
+    }
+}
+
+/// The `Settings` schema as dotted paths, shared by the tests that pin a table to the settings
+/// keys.
+#[cfg(test)]
+pub(crate) mod schema {
+    use serde_json::Value;
+
+    use crate::core::config::Settings;
+
+    pub(crate) fn is_prefix(prefix: &str, path: &str) -> bool {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|r| r.starts_with('.'))
+    }
+
+    /// Every node of the `Settings` schema as a dotted path, with whether it is a leaf. Map keys
+    /// are `*` and array elements add no segment.
+    pub(crate) fn schema_nodes() -> Vec<(String, bool)> {
+        let schema = schemars::schema_for!(Settings);
+        let root = schema.as_value().clone();
+        let mut out = Vec::new();
+        collect(&root, &root, "", &mut out);
+        out
+    }
+
+    fn resolve<'a>(root: &'a Value, node: &'a Value) -> &'a Value {
+        if let Some(r) = node.get("$ref").and_then(Value::as_str) {
+            let name = r.strip_prefix("#/$defs/").expect("local $defs reference");
+            return resolve(root, &root["$defs"][name]);
+        }
+        if let Some(any) = node.get("anyOf").and_then(Value::as_array) {
+            let live: Vec<_> = any
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) != Some("null"))
+                .collect();
+            if let [only] = live.as_slice() {
+                return resolve(root, only);
+            }
+        }
+        node
+    }
+
+    fn collect(root: &Value, node: &Value, path: &str, out: &mut Vec<(String, bool)>) {
+        let node = resolve(root, node);
+        let mut children: Vec<(String, &Value)> = Vec::new();
+        if let Some(props) = node.get("properties").and_then(Value::as_object) {
+            for (k, v) in props {
+                let child = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                children.push((child, v));
+            }
+        }
+        if let Some(extra) = node.get("additionalProperties").filter(|v| v.is_object()) {
+            children.push((format!("{path}.*"), extra));
+        }
+        if let Some(items) = node.get("items").filter(|v| v.is_object()) {
+            children.push((path.to_string(), items));
+        }
+        let is_leaf = children.is_empty();
+        if !path.is_empty() && !out.iter().any(|(p, _)| p == path) {
+            out.push((path.to_string(), is_leaf));
+        }
+        for (child, v) in children {
+            collect(root, v, &child, out);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::schema::{is_prefix, schema_nodes};
+    use super::*;
+    use crate::core::config::{ConfigError, parse_settings};
+
+    const PROJECT_COLUMNS: [Column; 3] = [Column::Project, Column::ProjectLocal, Column::Cli];
+
+    #[test]
+    fn every_settings_leaf_has_a_row() {
+        let missing: Vec<_> = schema_nodes()
+            .into_iter()
+            .filter(|(_, leaf)| *leaf)
+            .map(|(p, _)| p)
+            .filter(|p| !RULES.iter().any(|r| is_prefix(r.path, p)))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "settings keys with no scope policy row: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_row_matches_a_settings_node() {
+        let nodes = schema_nodes();
+        let dead: Vec<_> = RULES
+            .iter()
+            .map(|r| r.path)
+            .filter(|p| !nodes.iter().any(|(n, _)| n == p))
+            .collect();
+        assert!(dead.is_empty(), "rows matching no settings key: {dead:?}");
+    }
+
+    #[test]
+    fn no_two_rows_overlap() {
+        for a in RULES {
+            for b in RULES {
+                assert!(
+                    std::ptr::eq(a, b) || !is_prefix(a.path, b.path),
+                    "`{}` covers `{}`",
+                    a.path,
+                    b.path
+                );
+            }
+        }
+    }
+
+    /// One valid snippet per row, and for value-gated rows a second one the gate refuses.
+    const SNIPPETS: &[(&str, &str, Option<&str>)] = &[
+        ("tui", "[tui]\ntheme = \"dark\"\n", None),
+        (
+            "keybindings",
+            "[keybindings]\n\"ctrl+t\" = \"todos\"\n",
+            None,
+        ),
+        ("accounts", "[accounts.x]\nkind = \"ollama\"\n", None),
+        ("models", "[models.roles]\ncoding = [\"x/y\"]\n", None),
+        ("network", "[network]\nhttps_proxy = \"http://p:1\"\n", None),
+        ("websearch", "[websearch]\nnative = \"off\"\n", None),
+        (
+            "lsp",
+            "[lsp.servers.x]\ncommand = \"x\"\nextension_to_language = { \".x\" = \"x\" }\n",
+            None,
+        ),
+        ("model", "[model]\nmodel = \"a/b\"\n", None),
+        ("guardian.model", "[guardian]\nmodel = \"a/b\"\n", None),
+        (
+            "guardian.profile",
+            "[guardian]\nprofile = \"minimal\"\n",
+            None,
+        ),
+        (
+            "guardian.timeout_secs",
+            "[guardian]\ntimeout_secs = 5\n",
+            None,
+        ),
+        (
+            "guardian.confidence_threshold",
+            "[guardian]\nconfidence_threshold = 0.1\n",
+            None,
+        ),
+        ("guardian.cache", "[guardian]\ncache = false\n", None),
+        ("guardian.scanner", "[guardian]\nscanner = \"llm\"\n", None),
+        (
+            "guardian.scanner_command",
+            "[guardian]\nscanner_command = \"/bin/scan\"\n",
+            None,
+        ),
+        (
+            "guardian.scanner_model_path",
+            "[guardian]\nscanner_model_path = \"/m\"\n",
+            None,
+        ),
+        (
+            "guardian.scanner_hf_token_env",
+            "[guardian]\nscanner_hf_token_env = \"HF\"\n",
+            None,
+        ),
+        (
+            "guardian.composition.preset",
+            "[guardian.composition]\npreset = \"screen\"\n",
+            None,
+        ),
+        (
+            "guardian.composition.script",
+            "[guardian.composition]\nscript = \"guardian.rn\"\n",
+            None,
+        ),
+        (
+            "guardian.composition.model",
+            "[guardian.composition]\nmodel = \"a/b\"\n",
+            None,
+        ),
+        (
+            "guardian.composition.timeout_ms",
+            "[guardian.composition]\ntimeout_ms = 500\n",
+            None,
+        ),
+        (
+            "guardian.composition.params",
+            "[guardian.composition.params]\nallow_threshold = 0.1\n",
+            None,
+        ),
+        (
+            "guardian.composition.reads",
+            "[guardian.composition.reads.extra]\nmodel = \"a/b\"\n",
+            None,
+        ),
+        (
+            "guardian.composition.shadow",
+            "[guardian.composition]\nshadow = true\n",
+            Some("[guardian.composition]\nshadow = false\n"),
+        ),
+        (
+            "permissions.default_mode",
+            "[permissions]\ndefault_mode = \"dontAsk\"\n",
+            Some("[permissions]\ndefault_mode = \"acceptEdits\"\n"),
+        ),
+        (
+            "permissions.deny",
+            "[permissions]\ndeny = [\"shell(rm)\"]\n",
+            None,
+        ),
+        (
+            "permissions.ask",
+            "[permissions]\nask = [\"webfetch\"]\n",
+            None,
+        ),
+        (
+            "permissions.allow",
+            "[permissions]\nallow = [\"shell(ls)\"]\n",
+            None,
+        ),
+        (
+            "permissions.additional_directories",
+            "[permissions]\nadditional_directories = [\"/tmp\"]\n",
+            None,
+        ),
+        (
+            "permissions.auto_tracked_edits",
+            "[permissions]\nauto_tracked_edits = false\n",
+            Some("[permissions]\nauto_tracked_edits = true\n"),
+        ),
+        (
+            "permissions.auto_scratch_writes",
+            "[permissions]\nauto_scratch_writes = false\n",
+            Some("[permissions]\nauto_scratch_writes = true\n"),
+        ),
+        (
+            "hooks.pre_tool_use",
+            "[[hooks.pre_tool_use]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.post_tool_use",
+            "[[hooks.post_tool_use]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.post_tool_use_failure",
+            "[[hooks.post_tool_use_failure]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.permission_denied",
+            "[[hooks.permission_denied]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.task_completed",
+            "[[hooks.task_completed]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.task_created",
+            "[[hooks.task_created]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.teammate_idle",
+            "[[hooks.teammate_idle]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.session_start",
+            "[[hooks.session_start]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.session_end",
+            "[[hooks.session_end]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.user_prompt_submit",
+            "[[hooks.user_prompt_submit]]\ncommand = \"true\"\n",
+            None,
+        ),
+        ("hooks.stop", "[[hooks.stop]]\ncommand = \"true\"\n", None),
+        (
+            "hooks.stop_failure",
+            "[[hooks.stop_failure]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.subagent_start",
+            "[[hooks.subagent_start]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.subagent_stop",
+            "[[hooks.subagent_stop]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.pre_compact",
+            "[[hooks.pre_compact]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.post_compact",
+            "[[hooks.post_compact]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.notification",
+            "[[hooks.notification]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.elicitation",
+            "[[hooks.elicitation]]\ncommand = \"true\"\n",
+            None,
+        ),
+        ("mcp.servers", "[mcp.servers.s]\ncommand = \"srv\"\n", None),
+        ("mcp.tool_search", "[mcp]\ntool_search = \"on\"\n", None),
+        (
+            "auto_mode.environment",
+            "[auto_mode]\nenvironment = [\"x\"]\n",
+            None,
+        ),
+        ("auto_mode.allow", "[auto_mode]\nallow = [\"x\"]\n", None),
+        (
+            "auto_mode.soft_deny",
+            "[auto_mode]\nsoft_deny = [\"x\"]\n",
+            None,
+        ),
+        (
+            "auto_mode.hard_deny",
+            "[auto_mode]\nhard_deny = [\"x\"]\n",
+            None,
+        ),
+        (
+            "auto_mode.setup_reminder",
+            "[auto_mode]\nsetup_reminder = false\n",
+            None,
+        ),
+        ("agents", "[agents]\nmax_parallel = 2\n", None),
+        ("schedule.enabled", "[schedule]\nenabled = false\n", None),
+        ("memory", "[memory]\nauto = true\n", None),
+        ("goal", "[goal]\nmax_turns = 10\n", None),
+        ("retry", "[retry]\nmax_retries = 6\n", None),
+        (
+            "afk.temperature_ceiling",
+            "[afk]\ntemperature_ceiling = 5.0\n",
+            Some("[afk]\ntemperature_ceiling = -1.0\n"),
+        ),
+        (
+            "headless.max_usage_wait_secs",
+            "[headless]\nmax_usage_wait_secs = 3600\n",
+            None,
+        ),
+        (
+            "headless.on_usage_limit",
+            "[headless]\non_usage_limit = \"exit\"\n",
+            Some("[headless]\non_usage_limit = \"wait\"\n"),
+        ),
+        (
+            "headless.require_trust",
+            "[headless]\nrequire_trust = true\n",
+            None,
+        ),
+        ("shell", "[shell]\nmax_timeout_secs = 900\n", None),
+        (
+            "checkpoints",
+            "[checkpoints]\nmax_file_bytes = 1000\n",
+            None,
+        ),
+        (
+            "plugins.auto_update",
+            "[plugins]\nauto_update = false\n",
+            None,
+        ),
+        (
+            "updates.auto_update",
+            "[updates]\nauto_update = false\n",
+            None,
+        ),
+        ("context", "[context]\nautocompact_window = 150000\n", None),
+        (
+            "shell_preclassifier",
+            "[shell_preclassifier]\nallow_extra = [\"tree\"]\n",
+            None,
+        ),
+        ("statusline", "[statusline]\ncommand = \"echo hi\"\n", None),
+        ("feedback", "[feedback]\ndrafts = \"off\"\n", None),
+        ("remote", "[remote]\nrelay = \"disabled\"\n", None),
+        (
+            "telemetry.enabled",
+            "[telemetry]\nenabled = false\n",
+            Some("[telemetry]\nenabled = true\n"),
+        ),
+        (
+            "telemetry.backend",
+            "[telemetry]\nbackend = \"otlp\"\n",
+            None,
+        ),
+        (
+            "telemetry.endpoint",
+            "[telemetry]\nendpoint = \"https://t.example.com\"\n",
+            None,
+        ),
+        (
+            "telemetry.api_key_env",
+            "[telemetry]\napi_key_env = \"K\"\n",
+            None,
+        ),
+        ("telemetry.traces", "[telemetry]\ntraces = true\n", None),
+        (
+            "telemetry.log_user_prompts",
+            "[telemetry]\nlog_user_prompts = true\n",
+            None,
+        ),
+        (
+            "telemetry.log_assistant_responses",
+            "[telemetry]\nlog_assistant_responses = true\n",
+            None,
+        ),
+        (
+            "telemetry.log_tool_details",
+            "[telemetry]\nlog_tool_details = true\n",
+            None,
+        ),
+        (
+            "telemetry.log_tool_content",
+            "[telemetry]\nlog_tool_content = true\n",
+            None,
+        ),
+        (
+            "telemetry.content_max_bytes",
+            "[telemetry]\ncontent_max_bytes = 100\n",
+            None,
+        ),
+        (
+            "telemetry.resource_attributes",
+            "[telemetry]\nresource_attributes = { a = \"b\" }\n",
+            None,
+        ),
+        ("env", "[env]\nHTTPS_PROXY = \"http://p\"\n", None),
+    ];
+
+    #[test]
+    fn every_row_has_a_snippet_and_no_snippet_lacks_a_row() {
+        for rule in RULES {
+            assert!(
+                SNIPPETS.iter().any(|(p, ..)| *p == rule.path),
+                "no snippet for row `{}`",
+                rule.path
+            );
+        }
+        for (path, ..) in SNIPPETS {
+            assert!(
+                RULES.iter().any(|r| r.path == *path),
+                "snippet for unknown row `{path}`"
+            );
+        }
+    }
+
+    fn outcome(text: &str, column: Column) -> Result<(), ConfigError> {
+        parse_settings(text, Path::new("settings.toml"), column).map(|_| ())
+    }
+
+    fn assert_scope(text: &str, column: Column, what: &str) {
+        match outcome(text, column) {
+            Err(ConfigError::Scope { .. }) => {}
+            other => panic!("{what}: expected a scope error, got {other:?}"),
+        }
+    }
+
+    fn assert_not_scope(text: &str, column: Column, what: &str) {
+        let result = outcome(text, column);
+        assert!(
+            !matches!(
+                result,
+                Err(ConfigError::Scope { .. } | ConfigError::Parse { .. })
+            ),
+            "{what}: unexpected {result:?}"
+        );
+    }
+
+    #[test]
+    fn the_user_column_accepts_every_snippet() {
+        for (path, accept, reject) in SNIPPETS {
+            for text in std::iter::once(accept).chain(reject) {
+                assert_not_scope(text, Column::User, &format!("user: {path}"));
+            }
+        }
+    }
+
+    #[test]
+    fn each_column_follows_its_cells() {
+        for rule in RULES {
+            let (_, accept, reject) = SNIPPETS
+                .iter()
+                .find(|(p, ..)| *p == rule.path)
+                .expect("checked by the snippet coverage test");
+            for column in PROJECT_COLUMNS {
+                let what = format!("{}: {}", column.label(), rule.path);
+                match rule.cell(column) {
+                    Cell::No => assert_scope(accept, column, &what),
+                    Cell::Yes => {
+                        for text in std::iter::once(accept).chain(reject) {
+                            assert_not_scope(text, column, &what);
+                        }
+                    }
+                    Cell::If(_) => {
+                        assert_not_scope(accept, column, &what);
+                        assert_scope(
+                            reject.expect("a gated row has a refused snippet"),
+                            column,
+                            &what,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn keybindings_are_user_or_cli_only_and_each_entry_validates() {
+        let good = "[keybindings]\n\"ctrl+t\" = \"todos\"\n";
+        assert_not_scope(good, Column::User, "user keybindings");
+        assert_scope(good, Column::Project, "project keybindings");
+        assert_scope(good, Column::ProjectLocal, "project-local keybindings");
+        assert_not_scope(good, Column::Cli, "cli keybindings");
+
+        // The empty string unbinds, and is accepted.
+        let unbind = "[keybindings]\n\"ctrl+t\" = \"\"\n";
+        assert_not_scope(unbind, Column::User, "unbind");
+
+        for (text, why) in [
+            ("[keybindings]\n\"ctrl+t\" = \"nope\"\n", "unknown action"),
+            ("[keybindings]\n\"ctrl+c\" = \"quit\"\n", "reserved rebind"),
+            ("[keybindings]\n\"ctrl+d\" = \"\"\n", "reserved unbind"),
+            ("[keybindings]\n\"fn+t\" = \"todos\"\n", "unknown key"),
+            ("[keybindings]\n\"ctrl+k ctrl+c\" = \"quit\"\n", "chord"),
+        ] {
+            match outcome(text, Column::User) {
+                Err(ConfigError::Invalid { key, .. }) => {
+                    assert!(key.starts_with("keybindings."), "{why}: {key}")
+                }
+                other => panic!("{why}: expected an invalid-value error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tui_editor_mode_accepts_emacs_and_vim_only() {
+        for mode in ["emacs", "vim"] {
+            let text = format!("[tui]\neditor_mode = \"{mode}\"\n");
+            assert_not_scope(&text, Column::User, mode);
+        }
+        match outcome("[tui]\neditor_mode = \"vi\"\n", Column::User) {
+            Err(ConfigError::Parse { .. }) => {}
+            other => panic!("unknown variant: expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tui_notify_accepts_its_four_values_and_names_them_on_error() {
+        for method in ["bell", "osc9", "osc777", "off"] {
+            let text = format!("[tui]\nnotify = \"{method}\"\n");
+            assert_not_scope(&text, Column::User, method);
+        }
+        let text = "[tui]\nnotify = \"flash\"\n";
+        match outcome(text, Column::User) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("2:10"), "{message}");
+                for method in ["bell", "osc9", "osc777", "off"] {
+                    assert!(message.contains(method), "{message}");
+                }
+            }
+            other => panic!("unknown variant: expected a parse error, got {other:?}"),
+        }
+        assert_scope(
+            "[tui]\nnotify = \"osc9\"\n",
+            Column::Project,
+            "project scope",
+        );
+        assert_eq!(
+            crate::core::config::Config::defaults(std::path::PathBuf::from("/w"))
+                .tui
+                .notify,
+            crate::core::config::NotifyMethod::Bell
+        );
+    }
+
+    #[test]
+    fn effort_keys_refuse_the_shared_project_file() {
+        for text in [
+            "[model]\neffort = \"high\"\n",
+            "[model]\nmax_output_tokens = 4096\n",
+            "[agents.types.x]\neffort = \"max\"\n",
+        ] {
+            assert_scope(text, Column::Project, text);
+            for column in [Column::User, Column::ProjectLocal, Column::Cli] {
+                assert_not_scope(text, column, &format!("{}: {text}", column.label()));
+            }
+        }
+    }
+
+    #[test]
+    fn predicates_accept_and_refuse_their_values() {
+        let s = |v: &str| toml::Value::String(v.to_string());
+        let b = toml::Value::Boolean;
+        assert!(is_tightening_mode(&s("manual")));
+        assert!(is_tightening_mode(&s("dontAsk")));
+        assert!(!is_tightening_mode(&s("auto")));
+        assert!(!is_tightening_mode(&s("afk")));
+        assert!(is_false(&b(false)));
+        assert!(!is_false(&b(true)));
+        assert!(is_shadow_true(&b(true)));
+        assert!(!is_shadow_true(&b(false)));
+    }
+
+    #[test]
+    fn a_key_with_no_row_is_refused_from_project_scopes_only() {
+        let rules = [Rule::any("a.known")];
+        let table: toml::Table = toml::from_str("[a]\nknown = 1\nunlisted = 2\n").unwrap();
+        for column in [Column::Project, Column::ProjectLocal] {
+            let (key, _) = check_rules(&rules, &table, column).unwrap_err();
+            assert_eq!(key, "a.unlisted");
+        }
+        check_rules(&rules, &table, Column::Cli).unwrap();
+        check_rules(&rules, &table, Column::User).unwrap();
+    }
+
+    #[test]
+    fn empty_interior_tables_are_accepted() {
+        let table: toml::Table =
+            toml::from_str("[guardian]\n[permissions]\n[telemetry]\n[auto_mode]\n[hooks]\n")
+                .unwrap();
+        for column in PROJECT_COLUMNS {
+            check_scope(&table, column).unwrap();
+        }
+    }
+}

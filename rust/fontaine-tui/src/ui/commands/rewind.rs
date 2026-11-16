@@ -1,8 +1,8 @@
 use crate::rewind::RewindPicker;
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::checkpoint::{RewindPlan, RewindWhat};
+use fontaine_sdk::tools::error_chain::chain;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/rewind` and Esc Esc: opens the picker over the prompts of this conversation.

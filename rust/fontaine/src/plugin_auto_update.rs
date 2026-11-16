@@ -10,12 +10,12 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fontaine_core::agent::EnvLookup;
-use fontaine_core::dirs::Dirs;
-use fontaine_core::file_lock;
-use fontaine_core::notice::Notice;
-use fontaine_core::plugin_ops::{self, cleanup_leftovers};
-use fontaine_core::plugins::{
+use fontaine_sdk::core::agent::EnvLookup;
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::file_lock;
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::plugin_ops::{self, cleanup_leftovers};
+use fontaine_sdk::core::plugins::{
     self, InstalledPlugin, MarketplaceEntry, Registry, checkout_dir, marketplace_dir,
     registry_path, staged_dir,
 };
@@ -26,7 +26,7 @@ use crate::plugin::{
     fetch_marketplace, fetch_plugin, read_catalog, remove_dir,
 };
 use crate::stamp::{stamp_due, write_stamp};
-use fontaine_core::plugin_ops::{EnvRef, Fetch, PluginSource};
+use fontaine_sdk::core::plugin_ops::{EnvRef, Fetch, PluginSource};
 
 pub(crate) const STAMP_FILE: &str = "plugin-update.stamp";
 pub(crate) const LOG_FILE: &str = "plugin-updates.jsonl";
@@ -139,7 +139,7 @@ pub(crate) fn append_log(
         text.push('\n');
     }
     use std::io::Write;
-    let mut file = fontaine_core::owner_only::open(&data_dir.join(LOG_FILE), true)?;
+    let mut file = fontaine_sdk::core::owner_only::open(&data_dir.join(LOG_FILE), true)?;
     file.write_all(text.as_bytes())
 }
 
@@ -155,7 +155,7 @@ pub(crate) fn spawn(dirs: Dirs, env: EnvLookup, notices: UnboundedSender<Notice>
         let _ = sender.send(Notice::warning(
             format!(
                 "plugin auto-update did not start: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ),
             None,
         ));
@@ -172,7 +172,7 @@ fn run_background(dirs: &Dirs, env: EnvRef<'_>, notices: &UnboundedSender<Notice
         let _ = notices.send(Notice::warning(
             format!(
                 "the plugin update log was not written: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ),
             None,
         ));
@@ -185,7 +185,7 @@ fn run_background(dirs: &Dirs, env: EnvRef<'_>, notices: &UnboundedSender<Notice
         let _ = notices.send(Notice::warning(
             format!(
                 "the plugin update stamp was not written, so the next start checks again: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ),
             None,
         ));
@@ -258,7 +258,7 @@ impl Pass<'_> {
             format!(
                 "cannot lock {}: {}",
                 lock.display(),
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )
         })?;
         let Some(_guard) = guard else {
@@ -446,7 +446,7 @@ fn put_staged(temp: &Path, checkout: &Path) -> Result<(), String> {
         format!(
             "cannot stage {}: {}",
             staged.display(),
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         )
     })
 }

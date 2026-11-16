@@ -2,8 +2,8 @@ use crate::commands;
 use crate::reports;
 use crate::reports::McpState;
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_tools::display::compact_count;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) fn status(&mut self, runtime: &AgentRuntime) {
@@ -103,7 +103,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     pub(crate) fn plugins(&mut self, runtime: &AgentRuntime) {
-        let text = match fontaine_core::plugins::read_registry(runtime.config_dir()) {
+        let text = match fontaine_sdk::core::plugins::read_registry(runtime.config_dir()) {
             Ok(registry) => reports::plugins(
                 &registry,
                 &runtime.extensions(),
@@ -138,7 +138,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             )),
             Err(e) => self.app.shown_mut().error(format!(
                 "could not copy to the clipboard: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
         }
     }

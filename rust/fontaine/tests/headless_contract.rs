@@ -37,7 +37,7 @@ fn the_schema_tier_enum_is_exactly_the_tier_names() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    let names: Vec<&str> = fontaine_core::tier::Tier::ALL
+    let names: Vec<&str> = fontaine_sdk::core::tier::Tier::ALL
         .iter()
         .map(|t| t.as_str())
         .collect();
@@ -953,7 +953,7 @@ async fn startup_sweeps_the_scratch_directories_of_dead_sessions() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
     let s = Sandbox::compatible(&endpoint.url());
     let parent = s.scratch_parent();
-    fontaine_core::owner_only::create_dir(&parent).unwrap();
+    fontaine_sdk::core::owner_only::create_dir(&parent).unwrap();
     std::fs::create_dir(parent.join("dead-session")).unwrap();
     std::fs::write(parent.join("dead-session").join("helper.sh"), "x").unwrap();
     std::fs::write(parent.join("dead-session.lock"), "").unwrap();

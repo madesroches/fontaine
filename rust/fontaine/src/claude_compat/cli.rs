@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 
-use fontaine_core::config::{McpServer, PermissionMode};
+use fontaine_sdk::core::config::{McpServer, PermissionMode};
 
 /// The Claude Code version whose protocol the conformance suite was captured against. `init`
 /// reports it so the SDKs' feature gates read the protocol level served.
@@ -541,7 +541,7 @@ fn map_rules(text: &str, name: &str) -> Result<Vec<String>, Refusal> {
     split_list(text)
         .iter()
         .map(|entry| {
-            fontaine_core::extensions::map_tool_entry(entry)
+            fontaine_sdk::core::extensions::map_tool_entry(entry)
                 .map_err(|why| refuse(format!("`{name}`: {why}")))
         })
         .collect()
@@ -559,7 +559,7 @@ fn root_tools(text: &str) -> Result<Option<Vec<String>>, Refusal> {
                         "`--tools` entry `{entry}` has a specifier: it names tools, not calls; use `--allowedTools` for rules"
                     )));
                 }
-                let mapped = fontaine_core::extensions::map_tool_entry(&entry)
+                let mapped = fontaine_sdk::core::extensions::map_tool_entry(&entry)
                     .map_err(|why| refuse(format!("`--tools`: {why}")))?;
                 if !tools.contains(&mapped) {
                     tools.push(mapped);
@@ -578,7 +578,7 @@ fn mcp_config(value: &str, options: &mut Options) -> Result<(), Refusal> {
         std::fs::read_to_string(value).map_err(|e| {
             refuse(format!(
                 "`--mcp-config` {value}: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             ))
         })?
     };
@@ -718,7 +718,7 @@ pub fn parse(args: &[OsString]) -> Result<Options, Refusal> {
                 system_file = Some(std::fs::read_to_string(text).map_err(|e| {
                     refuse(format!(
                         "`--system-prompt-file` {text}: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     ))
                 })?);
             }

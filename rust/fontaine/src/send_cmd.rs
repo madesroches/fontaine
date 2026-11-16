@@ -5,7 +5,7 @@ use std::io::Read;
 use std::process::ExitCode;
 
 use fontaine_remote::{Reason, SendError, SendOptions, Ticket, send};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::cli::SendArgs;
 use crate::{Host, usage};

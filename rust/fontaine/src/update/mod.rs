@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use fontaine_core::config::Config;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::config::Config;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::release_signature::{Channel, TrustedKeys, Verified};
 use receipt::{InstallInfo, ReceiptError};
@@ -151,11 +151,11 @@ impl Outcome {
 /// An HTTP client that identifies itself and follows a bounded number of redirects, never to a
 /// plain-http location from an https one.
 pub fn build_client(
-    network: &fontaine_tools::tls::LoadedNetwork,
+    network: &fontaine_sdk::tools::tls::LoadedNetwork,
 ) -> reqwest::Result<reqwest::Client> {
-    fontaine_tools::tls::build_client(network, || {
+    fontaine_sdk::tools::tls::build_client(network, || {
         reqwest::Client::builder()
-            .user_agent(fontaine_tools::FONTAINE_USER_AGENT)
+            .user_agent(fontaine_sdk::tools::FONTAINE_USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -458,7 +458,7 @@ pub fn install(prepared: Prepared) -> Result<Outcome, UpdateError> {
         verified,
         work,
     } = prepared;
-    let _lock = fontaine_core::file_lock::lock(&first.receipt_path)
+    let _lock = fontaine_sdk::core::file_lock::lock(&first.receipt_path)
         .map_err(|e| UpdateError::Install(Box::new(e)))?;
     let info: InstallInfo =
         receipt::locate(&first.receipt_path, &first.binary_path).map_err(not_self_updatable)?;
@@ -557,7 +557,7 @@ pub fn rollback(
     data_dir: &Path,
 ) -> Result<Rollback, UpdateError> {
     let first = receipt::locate(receipt_path, current_exe).map_err(not_self_updatable)?;
-    let _lock = fontaine_core::file_lock::lock(receipt_path)
+    let _lock = fontaine_sdk::core::file_lock::lock(receipt_path)
         .map_err(|e| UpdateError::Install(Box::new(e)))?;
     let info = receipt::locate(receipt_path, &first.binary_path).map_err(not_self_updatable)?;
     let prev = install::prev_path(&info.binary_path);
@@ -614,7 +614,7 @@ fn print_error(e: &UpdateError) {
 pub fn run(
     args: &crate::cli::UpdateArgs,
     config: &Config,
-    dirs: &fontaine_core::dirs::Dirs,
+    dirs: &fontaine_sdk::core::dirs::Dirs,
     host: &crate::Host,
 ) -> ExitCode {
     if args.rollback {
@@ -665,7 +665,7 @@ pub fn run(
     exit_for(runtime.block_on(update(&client, &params)))
 }
 
-fn run_rollback(dirs: &fontaine_core::dirs::Dirs, host: &crate::Host) -> ExitCode {
+fn run_rollback(dirs: &fontaine_sdk::core::dirs::Dirs, host: &crate::Host) -> ExitCode {
     if cfg!(windows) {
         eprintln!(
             "fontaine: `update --rollback` is not supported on Windows: an update renames the \

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::effort::Effort;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::effort::Effort;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fontaine", version = crate::VERSION, about = "A terminal AI coding agent")]
@@ -235,7 +235,7 @@ pub enum UsageLimitAction {
     Exit,
 }
 
-impl From<UsageLimitAction> for fontaine_core::config::OnUsageLimit {
+impl From<UsageLimitAction> for fontaine_sdk::core::config::OnUsageLimit {
     fn from(action: UsageLimitAction) -> Self {
         match action {
             UsageLimitAction::Wait => Self::Wait,
@@ -552,4 +552,23 @@ pub enum OutputFormat {
 pub enum InputFormat {
     Text,
     StreamJson,
+}
+
+impl From<InputFormat> for fontaine_sdk::run::InputFormat {
+    fn from(format: InputFormat) -> Self {
+        match format {
+            InputFormat::Text => Self::Text,
+            InputFormat::StreamJson => Self::StreamJson,
+        }
+    }
+}
+
+impl From<OutputFormat> for fontaine_sdk::run::OutputFormat {
+    fn from(format: OutputFormat) -> Self {
+        match format {
+            OutputFormat::Text => Self::Text,
+            OutputFormat::Json => Self::Json,
+            OutputFormat::StreamJson => Self::StreamJson,
+        }
+    }
 }

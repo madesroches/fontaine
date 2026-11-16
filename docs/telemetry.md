@@ -95,7 +95,7 @@ dependency logs stays in the local debug file.
 Both backends export the same tree: `fontaine.session` contains one `fontaine.interaction` per
 user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
 tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
-`workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
+`workspace_write` or `arbitrary`), `tool_source` (`builtin`, `mcp` or `host`, a tool an [embedding](embedding.md) program registered) and `success`.
 `fontaine.interaction` carries `prompt.id`, `prompt.length` and `model.priced`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. With a [`[guardian.composition]`](guardian.md#composing-the-guardian), each call it scores adds a `fontaine.guardian.screen` span (`risk`, `allow_risk`, `steering`, `outcome`, `latency_ms`) below `fontaine.permission`. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
 `tool_name`, `guardian_model`, `guardian_profile`, `model.priced`, the `decision`, whether it was a `cache_hit` and
 the `fail_closed_reason` when it failed closed; the guardian's own model call sits under it.

@@ -5,13 +5,13 @@ use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::Path;
 use std::time::Duration;
 
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::ledger::{MessageOrigin, Record};
-use fontaine_core::schedule::{
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::ledger::{MessageOrigin, Record};
+use fontaine_sdk::core::schedule::{
     FALLBACK_SECONDS, Job, JobSpec, Kind, LoopStep, Origin, SELF_PACED_NOTE, ScheduleError,
     Scheduler, local_time,
 };
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::commands::{Interval, LoopRequest, parse_loop};
 use crate::ui::turn::Submission;

@@ -4,7 +4,7 @@ use fontaine_evals::report::{
     Rates, Scorecard, dataset_version, escape_classes, inclusion, merge, rates, render,
 };
 use fontaine_evals::{Case, CaseResult};
-use fontaine_guardian::models::{ModelEntry, ModelsFile};
+use fontaine_sdk::guardian::models::{ModelEntry, ModelsFile};
 use serde_json::{Value, json};
 
 fn case(id: &str, kind: &str, category: &str, extra: Value) -> Case {

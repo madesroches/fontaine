@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use fontaine_core::config::{Config, Slot};
-use fontaine_core::config_catalog::{
+use fontaine_sdk::core::config::{Config, Slot};
+use fontaine_sdk::core::config_catalog::{
     Applies, Edit, KEYS, KeyRow, ModelSlot, Running, winning_slot,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -495,7 +495,7 @@ mod tests {
     use ratatui::crossterm::event::KeyModifiers;
     use std::path::PathBuf;
 
-    use fontaine_core::config::{LoadParams, load};
+    use fontaine_sdk::core::config::{LoadParams, load};
 
     use super::*;
 

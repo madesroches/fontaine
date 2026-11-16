@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use fontaine_core::file_lock;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::file_lock;
+use fontaine_sdk::tools::error_chain::chain;
 
 use super::auto::{self, Failure, Marker, Subject};
 use super::receipt::{self, InstallInfo};

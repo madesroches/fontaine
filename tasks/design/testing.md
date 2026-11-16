@@ -16,7 +16,7 @@ Unit tests use `rig_core::test_utils` deterministic completion models — no liv
 - **workspace roots**: containment across roots; roots grant file access, not configuration — [Phase 2](../completed/phases/phase2_runtime_tools.md), [Phase 3](../completed/phases/phase3_pipeline_tui.md).
 - **user hooks**: rewritten input judged everywhere; a hook never loosens on failure — [Phase 3](../completed/phases/phase3_pipeline_tui.md) slot, [Phase 5](../completed/phases/phase5_extensibility.md) handlers.
 - **platforms**: Windows cases `#[cfg(windows)]` — [Phase 2](../completed/phases/phase2_runtime_tools.md), [Phase 3](../completed/phases/phase3_pipeline_tui.md); directory overrides [Phase 0](../completed/phases/phase0_scaffold.md).
-- **docs**: `rust/fontaine-core/tests/docs.rs` (created in Phase 0, run by `cargo test`) parses and schema-validates every ```toml block in `docs/*.md` (as user-scope settings, except a block whose fence info string names `trust.toml` or `credentials.toml`, validated against that file's schema; no phase-gated value rules, no model resolution or discovery, no env/credential checks, no build-feature checks such as `scanner = "pg2"` without the `pg2` feature), checks that every relative link in `docs/`, `README.md` and `evals/README.md` resolves, and fails on `TODO` / `TBD`; each phase's docs DoD cites it.
+- **docs**: `rust/fontaine-sdk/tests/docs.rs` (created in Phase 0, run by `cargo test`) parses and schema-validates every ```toml block in `docs/*.md` (as user-scope settings, except a block whose fence info string names `trust.toml` or `credentials.toml`, validated against that file's schema; no phase-gated value rules, no model resolution or discovery, no env/credential checks, no build-feature checks such as `scanner = "pg2"` without the `pg2` feature), checks that every relative link in `docs/`, `README.md` and `evals/README.md` resolves, and fails on `TODO` / `TBD`; each phase's docs DoD cites it.
 - **session ledger**: guardian inputs come from the ledger, never the model context (the ledger now also records the root turn's final answer, shown to the guardian as untrusted data) — [Phase 2](../completed/phases/phase2_runtime_tools.md), [Phase 4](../completed/phases/phase4_guardian.md); resume/fork [Phase 5](../completed/phases/phase5_extensibility.md).
 - **headless contract**: `json` / `stream-json` output validates against the checked-in JSON Schema `docs/schemas/headless-v1.schema.json` — [Phase 1](../completed/phases/phase1_model_headless.md).
 - **extensions**: frontmatter, project-narrowing, `skill` risk class — [Phase 5](../completed/phases/phase5_extensibility.md).
@@ -91,7 +91,7 @@ Runner CLI (the one contract; every runner path is relative to the invocation di
 | `--profile full\|minimal` | guardian profile under test (default `full`); scores every case with `profile = P`, plus all `full`-profile `guardian` cases when P = `minimal`; the inclusion-bar catch / false-deny rates are computed on `--profile full` runs only |
 | `--filter <kind\|category glob>` | restrict to a `kind` or a `category` glob (`attack:*`, `tier05-adversarial`) |
 | `--out <path>` | write per-case JSON (incl. latency) plus the summary; default is the stdout summary only |
-| `--models-file <path>` | where the inclusion-bar writer puts qualifying entries; default `fontaine-guardian/data/guardian_models.toml` |
+| `--models-file <path>` | where the inclusion-bar writer puts qualifying entries; default `fontaine-sdk/data/guardian_models.toml` |
 | `baseline capture --filter … --out ../evals/baselines/<name>.jsonl` | record `claude -p` outcomes |
 | `baseline diff <baseline> <fontaine-run>` | compare a baseline with a Fontaine run's `--out` file |
 
@@ -103,9 +103,9 @@ Config and credentials resolve like the binary's, through `FONTAINE_CONFIG_DIR` 
 `tunnel-reverse-shell`, `unguarded-agent-loop`, `safety-bypass`, `remote-redirect`, `unreviewed-merge`
 (`allow` is not a class; `container-escape` cases use the `minimal-escape` category).
 
-The `claude-subscription` tests (`fontaine-core/tests/claude_subscription.rs`,
+The `claude-subscription` tests (`fontaine-sdk/tests/claude_subscription.rs`,
 `fontaine/tests/claude_subscription.rs`) launch one portable fake CLI: `claude_cli_double`, an
-example of `fontaine-core` (`fontaine_claude_cli_double` is the same source built as an example of
+example of `fontaine-sdk` (`fontaine_claude_cli_double` is the same source built as an example of
 `fontaine`, through a thin `#[path]` wrapper). It reads its scenario from `double.json` in the
 account's `claude_config_dir` and logs each launch (argv, environment, files, stdin frames) to
 `log.jsonl` there. Two environment knobs make hangs testable in milliseconds and change nothing about

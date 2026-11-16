@@ -6,10 +6,10 @@
 use std::collections::HashSet;
 use std::io::{self, Write};
 
-use fontaine_core::config::PermissionMode;
-use fontaine_core::notice::Severity;
-use fontaine_core::preview::DiffKind;
-use fontaine_tools::todo::TodoItem;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::notice::Severity;
+use fontaine_sdk::core::preview::DiffKind;
+use fontaine_sdk::tools::todo::TodoItem;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 
@@ -558,9 +558,9 @@ mod tests {
     use crate::app::Input;
     use crate::commands::ExpandTarget;
     use crate::model_picker::{Group, ModelPicker, PickerPurpose};
-    use fontaine_core::models::ModelRef;
-    use fontaine_core::permissions::{ApprovalRequest, Offers};
-    use fontaine_core::turn::SessionEvent;
+    use fontaine_sdk::core::models::ModelRef;
+    use fontaine_sdk::core::permissions::{ApprovalRequest, Offers};
+    use fontaine_sdk::core::turn::SessionEvent;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Style;
     use std::cell::RefCell;
@@ -623,7 +623,7 @@ mod tests {
             tool_use_id: None,
             args: serde_json::json!({ "command": command }),
             summary: command.into(),
-            tier: fontaine_core::tier::Tier::AskRule,
+            tier: fontaine_sdk::core::tier::Tier::AskRule,
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,
@@ -758,7 +758,7 @@ mod tests {
         let group = |account: &str| {
             Group::new(
                 account.into(),
-                fontaine_core::config::AccountKind::named("ollama"),
+                fontaine_sdk::core::config::AccountKind::named("ollama"),
                 Ok(vec!["llama3".to_string()]),
                 vec![],
             )
@@ -878,7 +878,7 @@ mod tests {
             Vec::<ModelRef>::new(),
             vec![crate::model_picker::Group::new(
                 "local".into(),
-                fontaine_core::config::AccountKind::named("ollama"),
+                fontaine_sdk::core::config::AccountKind::named("ollama"),
                 Ok(vec!["llama3".to_string()]),
                 vec![],
             )],
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn a_url_elicitation_prints_and_rings_the_bell() {
-        use fontaine_tools::mcp::{ElicitRequest, ElicitUrl};
+        use fontaine_sdk::tools::mcp::{ElicitRequest, ElicitUrl};
 
         let mut rig = Rig::new();
         rig.app.running = true;
@@ -1309,7 +1309,7 @@ mod tests {
         rig.app.running = true;
         rig.render();
         let (tx, _rx) = oneshot::channel();
-        let info = fontaine_core::permissions::GuardianUnavailable {
+        let info = fontaine_sdk::core::permissions::GuardianUnavailable {
             model: "a/b".into(),
             reason: "no key".into(),
             tool: "shell".into(),
@@ -1336,7 +1336,7 @@ mod tests {
         let mut rig = Rig::new();
         rig.app.running = true;
         rig.render();
-        let skill = fontaine_core::extensions::Skill {
+        let skill = fontaine_sdk::core::extensions::Skill {
             name: "p:pr".into(),
             description: "d".into(),
             body: String::new(),
@@ -1346,7 +1346,7 @@ mod tests {
             allowed_tools: Vec::new(),
             declared_tools: Vec::new(),
             digest: "sha256:new".into(),
-            scope: fontaine_core::extensions::Scope::Plugin,
+            scope: fontaine_sdk::core::extensions::Scope::Plugin,
             path: "/c/pr/SKILL.md".into(),
         };
         rig.app.begin_skill_trust(crate::skill_trust_prompt::new(
@@ -1363,15 +1363,15 @@ mod tests {
         let (tx, _rx) = oneshot::channel();
         rig.app.begin_question(
             "root".into(),
-            vec![fontaine_tools::ask_user::Question {
+            vec![fontaine_sdk::tools::ask_user::Question {
                 question: "Which?".into(),
                 header: "Pick".into(),
                 options: vec![
-                    fontaine_tools::ask_user::QuestionOption {
+                    fontaine_sdk::tools::ask_user::QuestionOption {
                         label: "a".into(),
                         description: "d".into(),
                     },
-                    fontaine_tools::ask_user::QuestionOption {
+                    fontaine_sdk::tools::ask_user::QuestionOption {
                         label: "b".into(),
                         description: "d".into(),
                     },
@@ -1461,10 +1461,10 @@ mod tests {
 
     #[test]
     fn typing_in_a_provider_field_echoes_only_the_new_characters() {
-        use fontaine_core::accounts::{AccountRow, SignInState};
+        use fontaine_sdk::core::accounts::{AccountRow, SignInState};
         let rows = vec![AccountRow {
             name: "work".into(),
-            kind: fontaine_core::config::AccountKind::named("anthropic"),
+            kind: fontaine_sdk::core::config::AccountKind::named("anthropic"),
             endpoint: "default".into(),
             state: SignInState::NotSignedIn,
         }];

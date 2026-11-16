@@ -8,16 +8,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fontaine_core::line_reader::{LineReader, ReadFail};
-use fontaine_core::steering::{Queued, Steering};
-use fontaine_tools::lock::lock;
+use fontaine_sdk::core::line_reader::{LineReader, ReadFail};
+use fontaine_sdk::core::steering::{Queued, Steering};
+use fontaine_sdk::tools::lock::lock;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::wire::{self, Inbound};
-use crate::headless::Cancel;
+use fontaine_sdk::run::Cancel;
 
 /// Why a request to the host got no answer. Every one is a denial for the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]

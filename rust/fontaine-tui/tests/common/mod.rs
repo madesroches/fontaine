@@ -12,14 +12,14 @@ pub mod routed;
 /// A model name the catalog lists, so a routed world has a window to compact against.
 pub const KNOWN_MODEL: &str = "gpt-4o-mini";
 
-use fontaine_core::agent::AgentSetup;
-use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
-use fontaine_core::models::{
+use fontaine_sdk::core::agent::AgentSetup;
+use fontaine_sdk::core::config::{self, AccountKind, LoadParams, PermissionMode};
+use fontaine_sdk::core::models::{
     GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
 };
-use fontaine_core::permissions::DenyAll;
-use fontaine_core::schedule::ManualClock;
-use fontaine_core::session::Session;
+use fontaine_sdk::core::permissions::DenyAll;
+use fontaine_sdk::core::schedule::ManualClock;
+use fontaine_sdk::core::session::Session;
 use fontaine_testkit::example_bin;
 use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
@@ -81,9 +81,9 @@ pub struct World {
     /// The session has no user settings file to save choices to.
     pub without_user_config: bool,
     /// Warnings gathered before the session started, as the binary hands them over.
-    pub startup_warnings: Vec<fontaine_core::Notice>,
+    pub startup_warnings: Vec<fontaine_sdk::core::Notice>,
     /// Warnings the caller of `run` shows first (the ignored screen-reader setting).
-    pub startup: Vec<fontaine_core::Notice>,
+    pub startup: Vec<fontaine_sdk::core::Notice>,
     /// Notices produced outside the session, such as the plugin auto-update pass's.
     pub feed: Option<fontaine_tui::NoticeFeed>,
     /// A `--settings` file, as the command line would name one.
@@ -320,14 +320,14 @@ impl World {
             .iter()
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
-        let lookup_env: fontaine_core::agent::EnvLookup = {
+        let lookup_env: fontaine_sdk::core::agent::EnvLookup = {
             let lookup = lookup.clone();
             Arc::new(move |name: &str| lookup.get(name).cloned())
         };
         let resolved = if self.routed {
             Some(
-                futures::executor::block_on(fontaine_core::models::resolve(
-                    &fontaine_core::models::ResolveParams {
+                futures::executor::block_on(fontaine_sdk::core::models::resolve(
+                    &fontaine_sdk::core::models::ResolveParams {
                         config: &config,
                         data_dir: &self.data,
                         env: lookup_env.clone(),
@@ -363,12 +363,12 @@ impl World {
             .iter()
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
-        let env: fontaine_core::agent::EnvLookup =
+        let env: fontaine_sdk::core::agent::EnvLookup =
             Arc::new(move |name: &str| env.get(name).cloned());
         let switcher = Switcher::new(config.clone(), self.data.clone(), env.clone(), None);
         let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
         let extensions =
-            fontaine_core::extensions::load(&mut fontaine_core::extensions::LoadParams {
+            fontaine_sdk::core::extensions::load(&mut fontaine_sdk::core::extensions::LoadParams {
                 config_dir: &self.config_dir,
                 project_root: &self.work,
                 servers: &servers,
@@ -386,9 +386,11 @@ impl World {
             config_dir: self.config_dir.clone(),
             data_dir: self.data.clone(),
             models: resolved.unwrap_or(Models {
-                main_chain: fontaine_core::model_roles::ModelChain::single(model.reference.clone()),
+                main_chain: fontaine_sdk::core::model_roles::ModelChain::single(
+                    model.reference.clone(),
+                ),
                 main: model,
-                main_listing: fontaine_core::models::Listing::default(),
+                main_listing: fontaine_sdk::core::models::Listing::default(),
                 guardian,
                 guardian_choice: if self.guardian_on_main {
                     GuardianChoice::MainFallback
@@ -413,17 +415,18 @@ impl World {
             append_system_prompt: None,
             json_schema: None,
             headless: false,
-            human_channel: fontaine_core::permissions::HumanChannel::Present,
+            human_channel: fontaine_sdk::core::permissions::HumanChannel::Present,
             callback_hooks: Vec::new(),
             session_agents: Vec::new(),
             host_mcp: None,
+            host_tools: Vec::new(),
             root_tools: None,
             afk: false,
             scheduling: true,
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),
             user_config: (!self.without_user_config).then(|| self.user_config.clone()),
-            guardian_profile: fontaine_guardian::Profile::Full,
+            guardian_profile: fontaine_sdk::guardian::Profile::Full,
             notices: Vec::new(),
             startup_warnings: self.startup_warnings.clone(),
             scanner: Default::default(),
@@ -432,7 +435,7 @@ impl World {
             plugins: Default::default(),
             project_executables: self.project_executables,
             confirm_project_servers: self.confirm_servers,
-            origin: fontaine_core::agent::SessionOrigin::Fresh,
+            origin: fontaine_sdk::core::agent::SessionOrigin::Fresh,
             env,
             warn_no_search: true,
             explicit_budget_cap: false,
@@ -737,17 +740,17 @@ pub async fn verdict_endpoint(verdict: Value) -> wiremock::MockServer {
 
 /// Git Bash, which hooks run through on Windows; nothing elsewhere.
 #[cfg(windows)]
-fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
-    let probe = fontaine_tools::git_bash::Probe {
+fn git_bash() -> Option<fontaine_sdk::tools::git_bash::GitBash> {
+    let probe = fontaine_sdk::tools::git_bash::Probe {
         env: &|name| std::env::var_os(name),
         is_file: &|path| path.is_file(),
         read_file: &|path| std::fs::read_to_string(path).ok(),
     };
-    fontaine_tools::git_bash::discover(&probe).ok()
+    fontaine_sdk::tools::git_bash::discover(&probe).ok()
 }
 
 #[cfg(not(windows))]
-fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
+fn git_bash() -> Option<fontaine_sdk::tools::git_bash::GitBash> {
     None
 }
 

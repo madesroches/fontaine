@@ -1,8 +1,8 @@
 use crate::theme::Theme;
 use crate::{App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::config::ThemeName;
-use fontaine_core::user_config;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::config::ThemeName;
+use fontaine_sdk::core::user_config;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// The preset the screen is drawn in, when it is one.
@@ -55,7 +55,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 format!(
                     "could not save it to {}: {}",
                     path.display(),
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 )
             }),
             None => Some("there is no user settings file to save it to".to_string()),
@@ -95,7 +95,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .notice(format!("output style is now {}", choice.unwrap_or("none"))),
             Err(e) => self.app.transcript.error(format!(
                 "/output-style: {}",
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
         }
     }

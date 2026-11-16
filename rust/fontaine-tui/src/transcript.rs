@@ -1,10 +1,10 @@
 //! The conversation as shown: user messages, streaming assistant text, a card per tool call
 //! with its outcome, and notices.
 
-use fontaine_core::audit::Decision;
-use fontaine_core::notice::{Notice, Severity};
-use fontaine_core::preview::{DiffPreview, display_text};
-use fontaine_core::turn::SessionEvent;
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::notice::{Notice, Severity};
+use fontaine_sdk::core::preview::{DiffPreview, display_text};
+use fontaine_sdk::core::turn::SessionEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -218,7 +218,7 @@ impl Transcript {
     }
 
     /// A message that arrived through the remote inbox, marked with its authenticated sender.
-    pub fn remote_user(&mut self, text: String, from: &fontaine_core::ledger::RemoteSender) {
+    pub fn remote_user(&mut self, text: String, from: &fontaine_sdk::core::ledger::RemoteSender) {
         self.user(format!("[remote {}] {text}", from.short_node()));
     }
 
@@ -228,7 +228,7 @@ impl Transcript {
         self.finish_streaming();
         self.entries.push(Entry::Attachment(format!(
             "[{kind} attached: {label} · {}]",
-            fontaine_tools::notebook::human_size(size)
+            fontaine_sdk::tools::notebook::human_size(size)
         )));
     }
 
@@ -1919,7 +1919,7 @@ mod tests {
 
     #[test]
     fn another_theme_changes_the_colours() {
-        use fontaine_core::config::ThemeName;
+        use fontaine_sdk::core::config::ThemeName;
         let mut t = Transcript::default();
         call(&mut t, "a", "shell");
         result(&mut t, "a", "shell");
@@ -1987,7 +1987,7 @@ mod tests {
 
     #[test]
     fn the_warning_follows_the_theme() {
-        use fontaine_core::config::ThemeName;
+        use fontaine_sdk::core::config::ThemeName;
         let theme = Theme::preset(ThemeName::LightAnsi);
         assert_ne!(theme.warning, Theme::default().warning);
         let lines = warned(80, Glyphs::UNICODE, &theme);
@@ -2126,7 +2126,7 @@ mod tests {
         assert!(live.contains("interrupted"), "{live}");
     }
 
-    fn deny_record(id: &str, explanation: &str) -> fontaine_core::audit::DecisionRecord {
+    fn deny_record(id: &str, explanation: &str) -> fontaine_sdk::core::audit::DecisionRecord {
         serde_json::from_value(serde_json::json!({
             "ts": "2026-01-01T00:00:00Z",
             "session_id": "s",
@@ -2292,7 +2292,7 @@ mod tests {
     }
 
     fn preview(path: &str, lines: usize, hidden: usize) -> Box<DiffPreview> {
-        use fontaine_core::preview::{DiffKind, DiffLine};
+        use fontaine_sdk::core::preview::{DiffKind, DiffLine};
         Box::new(DiffPreview {
             path: path.into(),
             added: lines,

@@ -6,15 +6,15 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fontaine_core::agent::SUGGESTION_BACKOFF;
-use fontaine_core::audit::DecisionRecord;
-use fontaine_core::config::PermissionMode;
-use fontaine_core::permissions::{Answer, ApprovalRequest, PauseChoice, UnavailableChoice};
-use fontaine_core::statusline::{RecentVerdict, StatuslineState};
-use fontaine_core::steering::Queued;
-use fontaine_core::turn::SessionEvent;
-use fontaine_tools::ask_user::{Question, QuestionReply};
-use fontaine_tools::mcp::{ElicitReply, ElicitRequest};
+use fontaine_sdk::core::agent::SUGGESTION_BACKOFF;
+use fontaine_sdk::core::audit::DecisionRecord;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, PauseChoice, UnavailableChoice};
+use fontaine_sdk::core::statusline::{RecentVerdict, StatuslineState};
+use fontaine_sdk::core::steering::Queued;
+use fontaine_sdk::core::turn::SessionEvent;
+use fontaine_sdk::tools::ask_user::{Question, QuestionReply};
+use fontaine_sdk::tools::mcp::{ElicitReply, ElicitRequest};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
@@ -45,9 +45,9 @@ use crate::transcript::Transcript;
 use crate::transcript_view::{TranscriptKey, TranscriptView};
 use crate::url_elicitation::{ElicitKey, UrlElicitationPanel, WarnSink};
 use crate::usage_prompt::{UsagePauseAnswer, UsagePausePrompt};
-use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
-use fontaine_core::config_catalog::ModelSlot;
-use fontaine_core::keybindings::TuiAction;
+use fontaine_sdk::core::checkpoint::{RewindPlan, RewindWhat};
+use fontaine_sdk::core::config_catalog::ModelSlot;
+use fontaine_sdk::core::keybindings::TuiAction;
 
 pub use crate::commands::Command;
 
@@ -140,7 +140,7 @@ pub enum Action {
     SetupReview(bool),
     /// The human answered the `/auto-mode-setup` offer of the guardian composition; `None`
     /// declined.
-    SetupComposition(Option<fontaine_core::composition_offer::Offer>),
+    SetupComposition(Option<fontaine_sdk::core::composition_offer::Offer>),
 }
 
 /// The dialogs a remote line may answer.
@@ -259,7 +259,7 @@ pub struct App {
     pub mode: PermissionMode,
     pub model: String,
     /// The session's reasoning effort; `None` is the model's own default.
-    pub effort: Option<fontaine_core::effort::Effort>,
+    pub effort: Option<fontaine_sdk::core::effort::Effort>,
     pub running: bool,
     /// When the main conversation's current model turn began; see [`App::set_running`].
     pub turn_started: Option<std::time::Instant>,
@@ -314,7 +314,7 @@ pub struct App {
     pub setup_composition: Option<CompositionPrompt>,
     /// The subscription quota of each account that has a source, from the pollers' last
     /// snapshots.
-    pub usage: Vec<fontaine_core::quota::AccountUsage>,
+    pub usage: Vec<fontaine_sdk::core::quota::AccountUsage>,
     /// When `usage` was taken: a draw reads no clock and does no I/O.
     pub usage_as_of: std::time::SystemTime,
     /// The escape hatch is on; the status bar says so for as long as it stays on.
@@ -412,7 +412,7 @@ pub struct App {
     /// The workspace files `@` completes, as paths under the roots.
     files: Arc<Vec<String>>,
     /// The MCP resources `@` completes, copied from the runtime each draw.
-    mcp_mentions: Arc<Vec<fontaine_core::agent::McpResourceSummary>>,
+    mcp_mentions: Arc<Vec<fontaine_sdk::core::agent::McpResourceSummary>>,
     /// The MCP prompt rows the menu was last built with, which a divergence rebuilds it.
     pub menu_prompts: Vec<(String, Option<String>, String)>,
     /// Prompt shadowing notices already shown, so a rebuild does not repeat them.
@@ -804,7 +804,10 @@ impl App {
             .as_ref()
             .is_some_and(|(dir, head)| dir == cwd && head.is_some());
         if !known {
-            self.head_cache = Some((cwd.to_path_buf(), fontaine_core::git_head::discover(cwd)));
+            self.head_cache = Some((
+                cwd.to_path_buf(),
+                fontaine_sdk::core::git_head::discover(cwd),
+            ));
         }
         if self.cwd != cwd {
             self.cwd = cwd.to_path_buf();
@@ -813,7 +816,7 @@ impl App {
             .head_cache
             .as_ref()
             .and_then(|(_, head)| head.as_deref())
-            .and_then(fontaine_core::git_head::parse);
+            .and_then(fontaine_sdk::core::git_head::parse);
         self.branch = head.map(|head| head.label().to_string());
     }
 
@@ -832,7 +835,10 @@ impl App {
 
     /// Copies the runtime's resource mention list, re-ranking an open `@` list when it
     /// changed. The completion index is advisory: a stale list only misses a suggestion.
-    pub fn set_mentions(&mut self, mentions: Arc<Vec<fontaine_core::agent::McpResourceSummary>>) {
+    pub fn set_mentions(
+        &mut self,
+        mentions: Arc<Vec<fontaine_sdk::core::agent::McpResourceSummary>>,
+    ) {
         if !Arc::ptr_eq(&self.mcp_mentions, &mentions) {
             self.mcp_mentions = mentions;
             self.refresh_completion();
@@ -1223,7 +1229,7 @@ impl App {
     pub fn deny_pending(&mut self) {
         let root = |approval: &Approval| {
             approval.request.agent.is_empty()
-                || approval.request.agent == fontaine_tools::gate::ROOT_AGENT
+                || approval.request.agent == fontaine_sdk::tools::gate::ROOT_AGENT
         };
         let mut kept: VecDeque<Approval> = VecDeque::new();
         for mut approval in self
@@ -1245,7 +1251,7 @@ impl App {
         }
         let (root, background): (VecDeque<_>, VecDeque<_>) =
             self.questions.drain(..).partition(|panel| {
-                panel.agent.is_empty() || panel.agent == fontaine_tools::gate::ROOT_AGENT
+                panel.agent.is_empty() || panel.agent == fontaine_sdk::tools::gate::ROOT_AGENT
             });
         for mut panel in root {
             panel.reply(QuestionReply::Declined);
@@ -1339,8 +1345,8 @@ impl App {
                             self.attach_notice = Some(format!(
                                 "{} is {} and was not attached: attachments are capped at {}",
                                 pending.label,
-                                fontaine_tools::notebook::human_size(pending.size),
-                                fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+                                fontaine_sdk::tools::notebook::human_size(pending.size),
+                                fontaine_sdk::tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
                             ));
                         } else {
                             self.input.attach(pending);
@@ -2095,7 +2101,7 @@ impl App {
             )
         };
         let is_root = approval.request.agent.is_empty()
-            || approval.request.agent == fontaine_tools::gate::ROOT_AGENT;
+            || approval.request.agent == fontaine_sdk::tools::gate::ROOT_AGENT;
         approval.reply(answer);
         self.approval = self.queued_approvals.pop_front();
         if is_root {
@@ -2463,8 +2469,8 @@ mod tests {
     fn decision(
         tool: &str,
         guardian_verdict: Option<&str>,
-    ) -> fontaine_core::audit::DecisionRecord {
-        fontaine_core::audit::DecisionRecord {
+    ) -> fontaine_sdk::core::audit::DecisionRecord {
+        fontaine_sdk::core::audit::DecisionRecord {
             ts: "t".into(),
             session_id: "s".into(),
             agent_id: "a".into(),
@@ -2473,8 +2479,8 @@ mod tests {
             tool: tool.into(),
             args_digest: "d".into(),
             original_args_digest: None,
-            tier: fontaine_core::tier::Tier::Guardian,
-            decision: fontaine_core::audit::Decision::Allow,
+            tier: fontaine_sdk::core::tier::Tier::Guardian,
+            decision: fontaine_sdk::core::audit::Decision::Allow,
             rule: Some("rule".into()),
             confidence: None,
             guardian_model: None,
@@ -2536,10 +2542,10 @@ mod tests {
     }
 
     fn dialog_on_key_screen() -> ProviderDialog {
-        use fontaine_core::accounts::{AccountRow, SignInState};
+        use fontaine_sdk::core::accounts::{AccountRow, SignInState};
         let rows = vec![AccountRow {
             name: "work".into(),
-            kind: fontaine_core::config::AccountKind::named("anthropic"),
+            kind: fontaine_sdk::core::config::AccountKind::named("anthropic"),
             endpoint: "default".into(),
             state: SignInState::NotSignedIn,
         }];
@@ -2615,7 +2621,7 @@ mod tests {
 
     #[test]
     fn a_rebound_cycle_key_cycles_and_an_unbound_key_does_nothing() {
-        use fontaine_core::config::EditorMode;
+        use fontaine_sdk::core::config::EditorMode;
 
         let mut rebound = app();
         rebound.keymap = Keymap::resolve(
@@ -2650,7 +2656,7 @@ mod tests {
 
     #[test]
     fn vim_mode_treats_esc_as_a_mode_switch_and_enter_submits() {
-        use fontaine_core::config::EditorMode;
+        use fontaine_sdk::core::config::EditorMode;
 
         let mut app = app();
         app.input.mode = EditorMode::Vim;
@@ -2681,7 +2687,7 @@ mod tests {
             agent_type: "worker".into(),
             model: String::new(),
             effort: None,
-            status: Some(fontaine_agents::runner::ChildStatus::Running),
+            status: Some(fontaine_sdk::agents::runner::ChildStatus::Running),
             elapsed: std::time::Duration::from_secs(3),
             spend: "10 tok".into(),
             unpriced: false,
@@ -2919,7 +2925,7 @@ mod tests {
             name: "worker-1".into(),
             agent_type: "worker".into(),
             model: "m".into(),
-            status: fontaine_agents::runner::ChildStatus::Done,
+            status: fontaine_sdk::agents::runner::ChildStatus::Done,
             tokens: 1,
             token_budget: None,
             cost_usd: None,
@@ -2996,9 +3002,9 @@ mod tests {
             tool_use_id: None,
             args: serde_json::json!({}),
             summary: "ls".into(),
-            tier: fontaine_core::tier::Tier::AllowRule,
+            tier: fontaine_sdk::core::tier::Tier::AllowRule,
             reason: "r".into(),
-            offers: fontaine_core::permissions::Offers::default(),
+            offers: fontaine_sdk::core::permissions::Offers::default(),
             proposed_rule: None,
             preview: None,
         };
@@ -3006,7 +3012,7 @@ mod tests {
     }
 
     fn ask(multi: bool) -> Question {
-        use fontaine_tools::ask_user::QuestionOption;
+        use fontaine_sdk::tools::ask_user::QuestionOption;
         let option = |label: &str| QuestionOption {
             label: label.into(),
             description: "d".into(),
@@ -3148,12 +3154,12 @@ mod tests {
         assert!(app.questions.is_empty());
     }
 
-    fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
-        fontaine_tools::mcp::ElicitForm {
+    fn elicit_form() -> fontaine_sdk::tools::mcp::ElicitForm {
+        fontaine_sdk::tools::mcp::ElicitForm {
             server: "srv".into(),
             id: String::new(),
             message: "Who?".into(),
-            schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
+            schema: fontaine_sdk::tools::mcp::elicitation::ElicitationSchema::builder()
                 .required_string("name")
                 .build()
                 .unwrap(),
@@ -3172,7 +3178,7 @@ mod tests {
     fn open_url_elicitation(app: &mut App) -> oneshot::Receiver<ElicitReply> {
         let (tx, rx) = oneshot::channel();
         app.begin_elicitation(
-            ElicitRequest::Url(fontaine_tools::mcp::ElicitUrl {
+            ElicitRequest::Url(fontaine_sdk::tools::mcp::ElicitUrl {
                 server: "srv".into(),
                 id: String::new(),
                 message: "Sign in".into(),
@@ -3740,12 +3746,14 @@ mod tests {
     #[test]
     fn a_resource_completes_like_a_file_and_inserts_the_uri() {
         let mut app = app_with_files();
-        app.set_mentions(Arc::new(vec![fontaine_core::agent::McpResourceSummary {
-            server: "repo".to_string(),
-            uri: "repo://info".to_string(),
-            name: "repo_info".to_string(),
-            description: Some("Repository information".to_string()),
-        }]));
+        app.set_mentions(Arc::new(vec![
+            fontaine_sdk::core::agent::McpResourceSummary {
+                server: "repo".to_string(),
+                uri: "repo://info".to_string(),
+                name: "repo_info".to_string(),
+                description: Some("Repository information".to_string()),
+            },
+        ]));
         type_text(&mut app, "read @repo");
         let list = app.completion.as_ref().expect("a list");
         assert_eq!(
@@ -3763,12 +3771,14 @@ mod tests {
 
         // A refresh that changes the resources re-ranks the open list.
         app.input.take();
-        app.set_mentions(Arc::new(vec![fontaine_core::agent::McpResourceSummary {
-            server: "repo".to_string(),
-            uri: "repo://new".to_string(),
-            name: String::new(),
-            description: None,
-        }]));
+        app.set_mentions(Arc::new(vec![
+            fontaine_sdk::core::agent::McpResourceSummary {
+                server: "repo".to_string(),
+                uri: "repo://new".to_string(),
+                name: String::new(),
+                description: None,
+            },
+        ]));
         type_text(&mut app, "@new");
         let list = app.completion.as_ref().expect("the refreshed list");
         assert_eq!(list.matches.len(), 1, "{list:?}");
@@ -3778,7 +3788,7 @@ mod tests {
     #[test]
     fn a_resource_mention_two_servers_share_carries_the_selected_server() {
         let mut app = app_with_files();
-        let mention = |server: &str, uri: &str| fontaine_core::agent::McpResourceSummary {
+        let mention = |server: &str, uri: &str| fontaine_sdk::core::agent::McpResourceSummary {
             server: server.to_string(),
             uri: uri.to_string(),
             name: String::new(),
@@ -3987,7 +3997,7 @@ mod tests {
 
     fn unavailable() -> UnavailablePrompt {
         let (reply, _choice) = oneshot::channel();
-        let info = fontaine_core::permissions::GuardianUnavailable {
+        let info = fontaine_sdk::core::permissions::GuardianUnavailable {
             model: "a/b".into(),
             reason: "no key".into(),
             tool: "shell".into(),
@@ -4025,8 +4035,8 @@ mod tests {
 
     fn usage_pause_prompt() -> (UsagePausePrompt, oneshot::Receiver<PauseChoice>) {
         let (reply, choice) = oneshot::channel();
-        let info = fontaine_core::usage_pause::PauseInfo::new(
-            fontaine_core::quota::UsageRole::Main,
+        let info = fontaine_sdk::core::usage_pause::PauseInfo::new(
+            fontaine_sdk::core::quota::UsageRole::Main,
             "work",
             None,
         );
@@ -4440,10 +4450,10 @@ mod tests {
         assert_ne!(selected_name(&app), moved);
     }
 
-    fn some_todos() -> Vec<fontaine_tools::todo::TodoItem> {
-        vec![fontaine_tools::todo::TodoItem {
+    fn some_todos() -> Vec<fontaine_sdk::tools::todo::TodoItem> {
+        vec![fontaine_sdk::tools::todo::TodoItem {
             content: "write".into(),
-            status: fontaine_tools::todo::TodoStatus::Pending,
+            status: fontaine_sdk::tools::todo::TodoStatus::Pending,
         }]
     }
 
@@ -4757,7 +4767,7 @@ mod tests {
 
     #[test]
     fn the_rewind_picker_takes_the_keyboard_and_a_confirmed_rewind_closes_it() {
-        use fontaine_core::checkpoint::{RewindPlan, TurnSummary};
+        use fontaine_sdk::core::checkpoint::{RewindPlan, TurnSummary};
         let mut app = app();
         app.rewind = Some(RewindPicker::new(vec![TurnSummary {
             turn: 1,
@@ -4840,7 +4850,7 @@ mod tests {
     mod ghost {
         use super::*;
         use crate::input::{PendingAttachment, PendingMedia};
-        use fontaine_core::config::EditorMode;
+        use fontaine_sdk::core::config::EditorMode;
 
         fn with_history(entries: &[&str]) -> App {
             let mut app = app();

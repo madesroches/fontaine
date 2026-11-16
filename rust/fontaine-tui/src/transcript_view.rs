@@ -4,7 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use fontaine_core::keybindings::TuiAction;
+use fontaine_sdk::core::keybindings::TuiAction;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -150,7 +150,7 @@ impl TranscriptView {
 
 #[cfg(test)]
 mod tests {
-    use fontaine_core::turn::SessionEvent;
+    use fontaine_sdk::core::turn::SessionEvent;
 
     use super::*;
 

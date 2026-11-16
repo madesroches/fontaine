@@ -26,32 +26,26 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use fontaine_core::agent::SessionOrigin;
-use fontaine_core::agent::{AgentRuntime, AgentSetup};
-use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
-use fontaine_core::containment;
-use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::extensions::{self, Extensions};
-use fontaine_core::memory;
-use fontaine_core::models::{self, Models, ResolveParams, Switcher};
-use fontaine_core::notice::Notice;
-use fontaine_core::permissions::{DenyAll, HumanChannel};
-use fontaine_core::plugins;
-use fontaine_core::scanner_stage::{self, ScannerStart};
-use fontaine_core::scratch::{self, Scratch};
-use fontaine_core::session::{self, Session, SessionError};
-use fontaine_core::tools;
-use fontaine_core::trust;
-use fontaine_core::workspace::{self, RootSource};
-use fontaine_tools::git_bash::GitBash;
-use fontaine_tools::powershell::PowerShellSettings;
+use fontaine_sdk::assemble::{
+    self, ConfigInputs, Environment, HeadlessStart, PrepareParams, SessionParams, SetupParams,
+};
+use fontaine_sdk::core::agent::AgentSetup;
+use fontaine_sdk::core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
+use fontaine_sdk::core::dirs::{self, Dirs};
+use fontaine_sdk::core::extensions;
+use fontaine_sdk::core::models::{self, ResolveParams};
+use fontaine_sdk::core::notice::Notice;
+use fontaine_sdk::core::scratch::Scratch;
+use fontaine_sdk::core::session;
+use fontaine_sdk::core::trust;
+use fontaine_sdk::core::workspace;
+use fontaine_sdk::error::EmbedError;
 use fontaine_tui::accessibility;
 use fontaine_tui::theme::Theme;
 use rig_core::schemars::Schema;
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use uuid::Uuid;
 
 use cli::{Cli, InputFormat, OutputFormat};
 use telemetry::{DebugSink, InstallParams};
@@ -82,7 +76,7 @@ impl Host {
     }
 }
 
-pub const EXIT_CONFIG: u8 = fontaine_core::config::CONFIG_EXIT_CODE;
+pub const EXIT_CONFIG: u8 = fontaine_sdk::core::config::CONFIG_EXIT_CODE;
 
 fn usage_code(message: impl std::fmt::Display) -> u8 {
     eprintln!("fontaine: {message}");
@@ -116,6 +110,15 @@ fn load_params<'a>(cli: &'a Cli, host: &'a Host, dirs: &'a Dirs) -> LoadParams<'
     }
 }
 
+/// The process the session runs in, as the SDK's assembly takes it.
+fn environment(host: &Host) -> Environment {
+    Environment {
+        cwd: host.cwd.clone(),
+        env: host.env.clone(),
+        env_names: (host.env_names)(),
+    }
+}
+
 /// Loads the settings, and the directories they come from.
 fn load_config(
     cli: &Cli,
@@ -124,36 +127,28 @@ fn load_config(
 ) -> Result<(Config, Dirs), ConfigError> {
     telemetry::with_debug_only(sink, || {
         let dirs = resolve_dirs(host)?;
-        let config = config::load(&load_params(cli, host, &dirs))?;
-        let stack: Vec<String> = config.scopes.iter().map(ToString::to_string).collect();
-        tracing::debug!(scope_stack = ?stack, workspace = %config.workspace.display(), "config loaded");
+        let config = assemble::load_config(
+            &environment(host),
+            &dirs,
+            &ConfigInputs {
+                settings_file: cli.settings.as_deref(),
+                allow: &cli.allowed_tools,
+                deny: &cli.disallowed_tools,
+                afk_temperature_ceiling: cli.afk_temperature_ceiling,
+            },
+        )?;
         Ok::<_, ConfigError>((config, dirs))
     })
 }
 
 /// The workspace roots: the project directory and the directories added by flag and settings.
 fn resolve_roots(cli: &Cli, config: &Config, host: &Host) -> workspace::Roots {
-    let added = cli
-        .add_dir
-        .iter()
-        .map(|dir| (RootSource::Flag, dir.clone()))
-        .chain(
-            config
-                .permissions
-                .additional_directories
-                .iter()
-                .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
-        );
-    workspace::resolve(&config.workspace, &host.cwd, added)
+    assemble::resolve_roots(config, &host.cwd, &cli.add_dir)
 }
 
 /// The user's home directory, canonical when it can be.
 fn home_dir(host: &Host) -> Option<PathBuf> {
-    (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(::dirs::home_dir)
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+    assemble::home_dir(&*host.env)
 }
 
 /// Cuts a call off after `limit`; a stalled endpoint must not hang a command that has no
@@ -180,6 +175,11 @@ fn session_name(cli: &Cli) -> Result<Option<String>, u8> {
 /// What the session flags ask for.
 fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
     session_name(cli).map_err(ExitCode::from)?;
+    if let Some(text) = cli.session_id.as_deref()
+        && let Err(e) = uuid::Uuid::parse_str(text)
+    {
+        return Err(usage(format!("--session-id must be a UUID: {e}")));
+    }
     let continuing = cli.continue_session || cli.resume.is_some();
     if cli.fork_session && !continuing {
         return Err(usage("--fork-session needs --continue or --resume"));
@@ -217,7 +217,7 @@ fn apply_cd(cli: &Cli, host: &mut Host) -> Result<(), u8> {
         Err(e) => Err(usage_code(format!(
             "--cd {}: {}",
             dir.display(),
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         ))),
     }
 }
@@ -227,15 +227,17 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     let hooks = config
         .hooks
         .iter()
-        .filter(|(event, _)| event.project_scope() == fontaine_core::config::ProjectScope::Loads)
+        .filter(|(event, _)| {
+            event.project_scope() == fontaine_sdk::core::config::ProjectScope::Loads
+        })
         .flat_map(|(_, hooks)| hooks)
         .filter(|hook| hook.origin.is_project())
         // `build()` drops http and prompt hooks from the shared project file. Those in
         // `settings.local.toml` are counted, though a demoted (tracked, no-git or outside-work-tree)
         // one stays untrusted and still has them dropped.
         .filter(|hook| {
-            hook.kind == fontaine_core::config::HandlerKind::Command
-                || hook.origin.slot != fontaine_core::config::Slot::Project
+            hook.kind == fontaine_sdk::core::config::HandlerKind::Command
+                || hook.origin.slot != fontaine_sdk::core::config::Slot::Project
         })
         .count();
     let servers = config
@@ -307,14 +309,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     // The Claude CLI adapter starts this executable as its inert tool inventory; the mode is
     // hidden and takes no part in the command line.
     if let Some(manifest) =
-        fontaine_core::providers::claude_subscription::inventory::from_args(args.clone())
+        fontaine_sdk::core::providers::claude_subscription::inventory::from_args(args.clone())
     {
-        return match fontaine_core::providers::claude_subscription::inventory::serve(&manifest) {
+        return match fontaine_sdk::core::providers::claude_subscription::inventory::serve(&manifest)
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!(
                     "fontaine: the tool inventory failed: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 );
                 ExitCode::from(1)
             }
@@ -429,14 +432,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     // loads it without asking, as Claude Code's `-p` does, unless `[headless] require_trust` is
     // set and the workspace is untrusted.
     let mut project_executables = true;
-    if cli.print
-        && config.headless.require_trust
-        && !trust::is_trusted(&dirs.data, &config.workspace)
-    {
-        project_executables = false;
-        eprintln!(
-            "fontaine: workspace is not trusted; project hooks, MCP servers and project skill commands are skipped ([headless] require_trust = true)"
-        );
+    if cli.print {
+        let (allowed, line) = assemble::headless_project_executables(&config, &dirs.data);
+        project_executables = allowed;
+        if let Some(line) = line {
+            eprintln!("fontaine: {line}");
+        }
     }
     if !cli.print && !trust::is_trusted(&dirs.data, &config.workspace) {
         match fontaine_tui::trust_prompt::ask(
@@ -632,29 +633,19 @@ enum Outcome {
 }
 
 /// The mode the session is asked to start in: `--afk` or `--permission-mode`, then
-/// `default_mode`, then what the surface starts in. The interactive UI starts in `auto`; a
-/// headless run starts in `manual`, as Claude Code's `-p` starts in `default`.
+/// `default_mode`, then what the surface starts in.
 fn requested_mode(cli: &Cli, config: &Config) -> PermissionMode {
-    if cli.afk {
-        return PermissionMode::Afk;
-    }
-    cli.permission_mode
-        .map(PermissionMode::from)
-        .or(config.permissions.default_mode)
-        .unwrap_or(if cli.print {
-            PermissionMode::Manual
-        } else {
-            PermissionMode::Auto
-        })
+    let explicit = if cli.afk {
+        Some(PermissionMode::Afk)
+    } else {
+        cli.permission_mode.map(PermissionMode::from)
+    };
+    assemble::requested_mode(explicit, config, cli.print)
 }
 
-/// The mode the session state is built in. AFK is entered once the state exists, so that its
-/// refusal checks and ledger record run; a refusal leaves the session in `auto`.
+/// The mode the session state is built in.
 fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
-    match requested_mode(cli, config) {
-        PermissionMode::Afk => PermissionMode::Auto,
-        mode => mode,
-    }
+    assemble::session_mode(requested_mode(cli, config))
 }
 
 /// `--afk` is shorthand for `--permission-mode afk`, so any other mode beside it is two answers
@@ -693,10 +684,10 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     }
     let max_usage_wait = match &cli.max_usage_wait {
         None => None,
-        Some(text) => match fontaine_core::duration::parse_duration(text) {
+        Some(text) => match fontaine_sdk::core::duration::parse_duration(text) {
             Some(wait)
                 if !wait.is_zero()
-                    && wait.as_secs() <= fontaine_core::config::MAX_USAGE_WAIT_SECS =>
+                    && wait.as_secs() <= fontaine_sdk::core::config::MAX_USAGE_WAIT_SECS =>
             {
                 Some(wait)
             }
@@ -722,8 +713,8 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     };
     Ok(headless::Options {
         prompt: cli.prompt.clone(),
-        input_format: cli.input_format,
-        output_format: cli.output_format,
+        input_format: cli.input_format.into(),
+        output_format: cli.output_format.into(),
         include_partial_messages: cli.include_partial_messages,
         max_turns: cli.max_turns,
         max_budget_usd: cli.max_budget_usd,
@@ -733,116 +724,22 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     })
 }
 
-/// What both surfaces need before the first model call: the session, its roots and the
-/// environment the shell tool runs in.
-pub struct SessionPrep {
-    pub session: Session,
-    /// The workspace roots, primary first, canonical.
-    pub roots: Vec<PathBuf>,
-    /// The session's scratch root, which is also the last of `roots`.
-    pub scratch: Option<PathBuf>,
-    /// The auto-memory store, also one of `roots`, when `[memory] auto` is on and it could be
-    /// created.
-    pub memory_root: Option<PathBuf>,
-    pub mode: PermissionMode,
-    pub scrub_env: Vec<OsString>,
-    pub git_bash: Option<GitBash>,
-    pub powershell: Option<PowerShellSettings>,
-    pub home: Option<PathBuf>,
-    pub extensions: Extensions,
-    pub plugins: plugins::PluginContributions,
-    pub origin: SessionOrigin,
-    /// Whether repository-defined executables may start.
-    pub project_executables: bool,
-    /// Claude Code's `start_type`: `fresh`, `resume` or `continue`.
-    pub start_type: &'static str,
-    /// Non-fatal warnings from reading the configuration. Headless prints them to stderr; the
-    /// interactive surface shows them in the conversation.
-    pub warnings: Vec<Notice>,
+pub use fontaine_sdk::assemble::{SessionPrep, Started};
+
+/// Which session the flags ask for.
+fn session_params(cli: &Cli) -> SessionParams {
+    SessionParams {
+        name: cli.name.clone(),
+        id: cli.session_id.clone(),
+        resume: cli.resume.clone(),
+        continue_session: cli.continue_session,
+        fork: cli.fork_session,
+    }
 }
 
-/// Opens, copies or creates the session the flags ask for. `record_resume` is whether starting
-/// it appends the `Resumed` record; a copy made by `/branch` has its own already.
-fn open_session(
-    cli: &Cli,
-    config: &Config,
-    dirs: &Dirs,
-    record_resume: bool,
-    warnings: &mut Vec<Notice>,
-) -> Result<(Session, SessionOrigin, &'static str), u8> {
-    let fail = |e: SessionError| {
-        eprintln!("fontaine: {e}");
-        e.exit_code()
-    };
-    let name = session_name(cli)?;
-    let mut name_it = |session: &Session| {
-        if let Some(name) = &name
-            && let Err(e) = session.rename(name)
-        {
-            warnings.push(Notice::warning(
-                format!(
-                    "the session was not named: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                ),
-                None,
-            ));
-        }
-    };
-    let requested = match cli.session_id.as_deref() {
-        None => Uuid::new_v4(),
-        Some(text) => Uuid::parse_str(text)
-            .map_err(|e| usage_code(format!("--session-id must be a UUID: {e}")))?,
-    }
-    .hyphenated()
-    .to_string();
-    let (source, start_type) = match (&cli.resume, cli.continue_session) {
-        (Some(text), _) => {
-            let id = session::resolve(&dirs.data, &config.workspace, text).map_err(|e| {
-                eprintln!("fontaine: {e}");
-                e.exit_code()
-            })?;
-            (Some(id), "resume")
-        }
-        (None, true) => (
-            session::latest_for_root(&dirs.data, &config.workspace),
-            "continue",
-        ),
-        (None, false) => (None, "fresh"),
-    };
-    let Some(source) = source else {
-        // `--continue` with nothing to continue is a fresh start.
-        let session = Session::create(&dirs.data, &requested).map_err(fail)?;
-        name_it(&session);
-        return Ok((session, SessionOrigin::Fresh, "fresh"));
-    };
-    if cli.fork_session {
-        let session =
-            Session::fork_named(&dirs.data, &source, &requested, name.as_deref()).map_err(fail)?;
-        let how = format!("fork ({start_type})");
-        return Ok((
-            session,
-            SessionOrigin::Continued {
-                source,
-                how,
-                record_resume,
-            },
-            start_type,
-        ));
-    }
-    let session = Session::open(&dirs.data, &source).map_err(fail)?;
-    name_it(&session);
-    let how = if record_resume { start_type } else { "branch" }.to_string();
-    Ok((
-        session,
-        SessionOrigin::Continued {
-            source,
-            how,
-            record_resume,
-        },
-        start_type,
-    ))
-}
-
+/// Opens or creates the session the flags ask for and gathers what the first model call needs.
+/// `record_resume` is whether starting it appends the `Resumed` record; a copy made by `/branch`
+/// has its own already.
 fn prepare_session(
     cli: &Cli,
     config: &mut Config,
@@ -852,67 +749,7 @@ fn prepare_session(
     project_executables: bool,
     record_resume: bool,
 ) -> Result<(SessionPrep, Option<Scratch>), u8> {
-    let Shells {
-        git_bash,
-        powershell,
-    } = shells(host)?;
-
-    let mut roots = resolve_roots(cli, config, host);
-    let mut warnings: Vec<Notice> = roots
-        .warnings
-        .iter()
-        .map(|warning| Notice::warning(warning.clone(), None))
-        .collect();
-
-    // The caller only gets the warnings back on success, so a failure prints them here.
-    let (session, origin, start_type) =
-        open_session(cli, config, dirs, record_resume, &mut warnings).inspect_err(|_| {
-            print_warnings(&warnings);
-        })?;
-    // The guard goes back to the caller, which drops it when the run ends; the root list only
-    // carries the path. Failing to make one leaves the confinement as it was.
-    warnings.extend(
-        scratch::sweep_stale(&*host.env)
-            .into_iter()
-            .map(|warning| Notice::warning(warning, None)),
-    );
-    let protected = [dirs.config.clone(), dirs.data.clone()];
-    let scratch = match Scratch::create(&*host.env, &protected, &session.id) {
-        Ok(scratch) => Some(scratch),
-        Err(e) => {
-            warnings.push(Notice::warning(
-                format!(
-                    "no scratch directory for this session: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                ),
-                None,
-            ));
-            None
-        }
-    };
-    let scratch_path = scratch.as_ref().map(|s| s.path().to_path_buf());
-    let memory_root = if config.memory.auto {
-        match memory::ensure_dir(&memory::dir(&dirs.data, &roots.roots[0])) {
-            Ok(dir) => {
-                roots.roots.push(dir.clone());
-                Some(dir)
-            }
-            Err(e) => {
-                warnings.push(Notice::warning(
-                    format!(
-                        "auto memory is off for this session: {}",
-                        fontaine_tools::error_chain::chain(&e)
-                    ),
-                    None,
-                ));
-                None
-            }
-        }
-    } else {
-        None
-    };
-    // Last, so the scratch root stays the final root.
-    roots.roots.extend(scratch_path.clone());
+    let mut warnings = Vec::new();
     // Revisions an earlier run staged replace the live checkouts before anything loads them; a
     // headless run neither stages nor swaps, so scripted runs see a fixed set of plugins.
     if !cli.print && config.plugins.auto_update {
@@ -922,197 +759,34 @@ fn prepare_session(
                 .map(|warning| Notice::warning(warning, None)),
         );
     }
-    // Enabled plugins are third-party but user-installed: they load in the TUI and headless
-    // alike, and install is the approval that lets their hooks, servers and skill commands run
-    // without the workspace-trust gate.
-    let contributions = plugins::load_installed(
-        &dirs.config,
-        &plugins::PluginContext {
-            project_root: &config.workspace,
-            env: &*host.env,
+    assemble::prepare_session(
+        &PrepareParams {
+            env: &environment(host),
+            dirs,
+            add_dirs: &cli.add_dir,
+            session: &session_params(cli),
+            mode,
+            project_executables,
+            record_resume,
         },
+        config,
+        &mut warnings,
     )
     .map_err(|e| {
+        // The caller only gets the warnings back on success, so a failure prints them here.
         print_warnings(&warnings);
-        eprintln!("fontaine: {e}");
-        e.exit_code()
-    })?;
-    config.apply_plugins(&contributions).map_err(|e| {
-        print_warnings(&warnings);
-        eprintln!("fontaine: {e}");
-        e.exit_code()
-    })?;
-    warnings.extend(
-        config
-            .warnings
-            .iter()
-            .map(|warning| Notice::warning(warning.clone(), None)),
-    );
-    warnings.extend(
-        contributions
-            .warnings
-            .iter()
-            .map(|warning| Notice::warning(warning.clone(), None)),
-    );
-    warnings.extend(
-        config
-            .lsp_table()
-            .warnings
-            .into_iter()
-            .map(|warning| Notice::warning(warning, None)),
-    );
-    // Declined trust keeps a repository's servers from starting, but its agent files may still
-    // name their tools: toolset cutting drops them.
-    let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
-    let mut extension_warnings = Vec::new();
-    let extensions = extensions::load(&mut extensions::LoadParams {
-        config_dir: &dirs.config,
-        project_root: &config.workspace,
-        servers: &servers,
-        plugins: &contributions.dirs,
-        warnings: &mut extension_warnings,
+        usage_failure(&e)
     })
-    .map_err(|e| {
-        print_warnings(&warnings);
-        eprintln!("fontaine: {e}");
-        e.exit_code()
-    })?;
-    warnings.extend(
-        extension_warnings
-            .iter()
-            .map(|warning| Notice::warning(warning.clone(), None)),
-    );
-    let home = home_dir(host);
-    let prep = SessionPrep {
-        session,
-        roots: roots.roots,
-        scratch: scratch_path,
-        memory_root,
-        mode,
-        scrub_env: tools::scrubbed_env(config, (host.env_names)()),
-        git_bash,
-        powershell,
-        home,
-        extensions,
-        plugins: contributions,
-        origin,
-        project_executables,
-        start_type,
-        warnings,
-    };
-    Ok((prep, scratch))
 }
 
-/// The shells found at startup.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Shells {
-    git_bash: Option<GitBash>,
-    powershell: Option<PowerShellSettings>,
-}
-
-/// Windows runs commands in Git Bash when it is found and in PowerShell when it is not. A
-/// `FONTAINE_GIT_BASH_PATH` that names something else is an error rather than a reason to switch
-/// shells: the user asked for a specific bash. `powershell_override` is the non-empty
-/// `FONTAINE_POWERSHELL_PATH`, which is why discovery found no PowerShell when one is set.
-#[cfg(any(windows, test))]
-fn choose_shells(
-    git_bash: Result<GitBash, fontaine_tools::git_bash::GitBashError>,
-    powershell: Option<PowerShellSettings>,
-    powershell_override: Option<OsString>,
-) -> Result<Shells, String> {
-    use fontaine_tools::git_bash::{GitBashError, OVERRIDE_VAR as GIT_BASH_VAR};
-    use fontaine_tools::powershell::OVERRIDE_VAR as POWERSHELL_VAR;
-    match (git_bash, powershell) {
-        (Ok(git_bash), powershell) => Ok(Shells {
-            git_bash: Some(git_bash),
-            powershell,
-        }),
-        (Err(e @ GitBashError::BadOverride(_)), _) => Err(e.to_string()),
-        (Err(GitBashError::NotFound), Some(powershell)) => Ok(Shells {
-            git_bash: None,
-            powershell: Some(powershell),
-        }),
-        (Err(GitBashError::NotFound), None) => Err(match powershell_override {
-            Some(value) => format!(
-                "no shell found: install Git for Windows, or set {GIT_BASH_VAR}; {POWERSHELL_VAR}={} is not a file",
-                value.to_string_lossy()
-            ),
-            None => format!(
-                "no shell found: install Git for Windows, or set {GIT_BASH_VAR} or {POWERSHELL_VAR}"
-            ),
-        }),
+/// Prints a failed assembly and returns the exit code it ends the process with.
+fn usage_failure(e: &EmbedError) -> u8 {
+    // The sign-in line is the whole message; the model error under it only repeats it.
+    match e {
+        EmbedError::Credentials(d) => eprintln!("fontaine: {}", d.message()),
+        _ => eprintln!("fontaine: {}", fontaine_sdk::tools::error_chain::chain(e)),
     }
-}
-
-/// Git Bash and PowerShell on Windows; elsewhere neither, since `sh` is native.
-#[cfg(windows)]
-fn shells(host: &Host) -> Result<Shells, u8> {
-    let git_bash = fontaine_tools::git_bash::discover(&fontaine_tools::git_bash::Probe {
-        env: &*host.env,
-        is_file: &|path| path.is_file(),
-        read_file: &|path| std::fs::read_to_string(path).ok(),
-    });
-    let powershell = fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
-        env: &*host.env,
-        is_file: &|path| path.is_file(),
-    });
-    let powershell_override =
-        (host.env)(fontaine_tools::powershell::OVERRIDE_VAR).filter(|value| !value.is_empty());
-    choose_shells(git_bash, powershell, powershell_override).map_err(usage_code)
-}
-
-#[cfg(not(windows))]
-fn shells(_host: &Host) -> Result<Shells, u8> {
-    Ok(Shells::default())
-}
-
-async fn resolve_models(
-    cli: &Cli,
-    config: &Config,
-    dirs: &Dirs,
-    host: &Host,
-    session_id: &str,
-) -> Result<Models, u8> {
-    models::resolve(&ResolveParams {
-        config,
-        data_dir: &dirs.data,
-        env: shared_env(host),
-        model_override: cli.model.as_deref(),
-        session_id: Some(session_id.to_string()),
-    })
-    .await
-    .map_err(|e| {
-        match signed_out_login(config, &e, cli.model.as_deref(), host) {
-            Some((account, login)) => eprintln!(
-                "fontaine: account `{account}` is not signed in; run `{}`, then retry",
-                login.display
-            ),
-            None => eprintln!("fontaine: {e}"),
-        }
-        e.exit_code()
-    })
-}
-
-/// What the session was started from.
-struct Launch<'a> {
-    cli: &'a Cli,
-    config: &'a Config,
-    dirs: &'a Dirs,
-    host: &'a Host,
-}
-
-/// Loads the tool-result scanner, which for `pg2` may download its model, before the session
-/// starts.
-async fn start_scanner(launch: &Launch<'_>, prep: &SessionPrep, models: &Models) -> ScannerStart {
-    scanner_stage::start(&scanner_stage::StartParams {
-        config: launch.config,
-        data_dir: &launch.dirs.data,
-        scrub_env: &prep.scrub_env,
-        env: &*launch.host.env,
-        guardian: models.guardian.as_ref(),
-        model_base_url: None,
-    })
-    .await
+    e.exit_code()
 }
 
 /// Tells the user how the last background update went, then starts this run's pass. Both stay
@@ -1154,7 +828,7 @@ fn start_self_update(
             let _ = notices.send(Notice::warning(
                 format!(
                     "automatic update did not start: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ),
                 None,
             ));
@@ -1164,102 +838,31 @@ fn start_self_update(
 
 /// The environment, looked up live on every call: the Claude CLI adapter checks for conflicting
 /// variables before each request, so a variable set after startup must be seen.
-fn shared_env(host: &Host) -> fontaine_core::agent::EnvLookup {
+fn shared_env(host: &Host) -> fontaine_sdk::core::agent::EnvLookup {
     host.env.clone()
 }
 
-fn agent_setup(
-    launch: &Launch<'_>,
-    prep: SessionPrep,
-    models: Models,
-    scanner: ScannerStart,
+fn setup_params(
+    cli: &Cli,
+    config: &Config,
     headless: bool,
     json_schema: Option<Schema>,
-) -> AgentSetup {
-    let Launch {
-        cli,
-        config,
-        dirs,
-        host,
-    } = *launch;
-    let resolved = containment::resolve(
-        config.guardian.profile,
-        cli.in_container,
-        containment::detect(),
-    );
-    let mut notices = models.notices.clone();
-    notices.extend(resolved.notice);
-    let lookup = shared_env(host);
-    let switcher = Switcher::new(
-        config.clone(),
-        dirs.data.clone(),
-        lookup.clone(),
-        Some(prep.session.id.clone()),
-    );
-    let afk = requested_mode(cli, config) == PermissionMode::Afk;
-    let mut config = config.clone();
-    config.effort = cli.effort.or(config.effort);
-    if let Some(wait) = cli
-        .max_usage_wait
-        .as_deref()
-        .and_then(fontaine_core::duration::parse_duration)
-    {
-        config.headless.max_usage_wait_secs = wait.as_secs();
-    }
-    if let Some(action) = cli.on_usage_limit {
-        config.headless.on_usage_limit = action.into();
-    }
-    let explicit_budget_cap = headless && cli.max_budget_usd.is_some();
-    if headless && let Some(cap) = cli.max_budget_usd {
-        // The tree's session ceiling counts root, guardian and child spend alike, so a running
-        // child is stopped at the headless cap instead of finishing its own budget first.
-        let ceiling = &mut config.agents.session_cost_budget_usd;
-        *ceiling = Some(ceiling.map_or(cap, |c| c.min(cap)));
-    }
-    AgentSetup {
-        config,
-        config_dir: dirs.config.clone(),
-        data_dir: dirs.data.clone(),
-        models,
-        session: prep.session,
-        roots: prep.roots,
-        scratch: prep.scratch,
-        memory_root: prep.memory_root,
-        mode: prep.mode,
-        scrub_env: prep.scrub_env,
-        git_bash: prep.git_bash,
-        powershell: prep.powershell,
+) -> SetupParams {
+    SetupParams {
+        in_container: cli.in_container,
+        effort: cli.effort,
+        max_usage_wait: cli
+            .max_usage_wait
+            .as_deref()
+            .and_then(fontaine_sdk::core::duration::parse_duration),
+        on_usage_limit: cli.on_usage_limit.map(Into::into),
+        max_budget_usd: cli.max_budget_usd,
         system_prompt: cli.system_prompt.clone(),
         append_system_prompt: cli.append_system_prompt.clone(),
         json_schema,
         headless,
-        human_channel: if headless {
-            HumanChannel::Absent
-        } else {
-            HumanChannel::Present
-        },
-        callback_hooks: Vec::new(),
-        session_agents: Vec::new(),
-        host_mcp: None,
-        root_tools: None,
-        afk,
-        approver: Arc::new(DenyAll),
-        home: prep.home,
-        user_config: Some(dirs.config.join(config::USER_FILE)),
-        guardian_profile: resolved.profile,
-        notices,
-        startup_warnings: prep.warnings,
-        scanner,
-        switcher: Some(switcher),
-        extensions: prep.extensions,
-        plugins: prep.plugins,
-        project_executables: prep.project_executables,
-        confirm_project_servers: !headless,
-        scheduling: !headless,
-        origin: prep.origin,
-        env: lookup,
+        afk: requested_mode(cli, config) == PermissionMode::Afk,
         warn_no_search: !NO_SEARCH_WARNED.swap(true, Ordering::Relaxed),
-        explicit_budget_cap,
     }
 }
 
@@ -1281,20 +884,11 @@ async fn run_headless(
         Ok(started) => started,
         Err(code) => return code,
     };
-    let mut runtime = started.runtime;
-    // Servers that fail to start are reported on stderr and skipped.
-    runtime.connect_mcp(&[]).await;
-    headless::run(options, runtime, &dirs.data, started.guardian_login).await
+    headless::run(options, started.runtime, &dirs.data, started.guardian_login).await
 }
 
-/// A headless session built and ready to run.
-struct Started {
-    runtime: AgentRuntime,
-    guardian_login: Option<(String, fontaine_core::providers::ExternalLogin)>,
-}
-
-/// Resolves the models, starts the scanner and builds the runtime of a headless session. `tweak`
-/// adjusts the setup before the runtime is built.
+/// Resolves the models, starts the scanner, builds the runtime of a headless session and connects
+/// its MCP servers. `tweak` adjusts the setup before the runtime is built.
 async fn start_headless(
     cli: &Cli,
     options: &headless::Options,
@@ -1304,53 +898,22 @@ async fn start_headless(
     host: &Host,
     tweak: impl FnOnce(&mut AgentSetup),
 ) -> Result<Started, u8> {
-    let models = resolve_models(cli, config, dirs, host, &prep.session.id).await?;
-    if options.max_budget_usd.is_some() && !models.main.priced() {
-        eprintln!(
-            "fontaine: --max-budget-usd needs a known price, and rig's catalog has none for `{}`",
-            models.main.reference
-        );
-        return Err(EXIT_CONFIG);
-    }
-    let guardian_login = match &models.guardian {
-        Some(models::GuardianModel::Unavailable {
-            reference,
-            not_signed_in: true,
-            ..
-        }) => config
-            .accounts
-            .get(&reference.account)
-            .and_then(|a| a.kind.provider().external_login(a, &shared_env(host)))
-            .map(|login| (reference.account.clone(), login)),
-        _ => None,
-    };
-    let launch = Launch {
-        cli,
-        config,
-        dirs,
-        host,
-    };
-    let scanner = start_scanner(&launch, &prep, &models).await;
-    let mut setup = agent_setup(
-        &launch,
+    let env = shared_env(host);
+    assemble::start_headless(
+        HeadlessStart {
+            config,
+            dirs,
+            env: &env,
+            model_override: cli.model.as_deref(),
+            setup: setup_params(cli, config, true, options.json_schema.clone()),
+            scanner_notice: None,
+            budget_name: "--max-budget-usd",
+        },
         prep,
-        models,
-        scanner,
-        true,
-        options.json_schema.clone(),
-    );
-    tweak(&mut setup);
-    let runtime = match AgentRuntime::new(setup) {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
-            return Err(1);
-        }
-    };
-    Ok(Started {
-        runtime,
-        guardian_login,
-    })
+        tweak,
+    )
+    .await
+    .map_err(|e| usage_failure(&e))
 }
 
 /// Whether adding an account, signing in or picking a model could fix the failure.
@@ -1368,16 +931,8 @@ fn signed_out_login(
     error: &models::ModelError,
     model_override: Option<&str>,
     host: &Host,
-) -> Option<(String, fontaine_core::providers::ExternalLogin)> {
-    if !error.is_not_signed_in() {
-        return None;
-    }
-    let account = models::main_reference(config, model_override)?.account;
-    let login = config
-        .accounts
-        .get(&account)
-        .and_then(|a| a.kind.provider().external_login(a, &shared_env(host)))?;
-    Some((account, login))
+) -> Option<(String, fontaine_sdk::core::providers::ExternalLogin)> {
+    assemble::signed_out_login(config, error, model_override, &shared_env(host))
 }
 
 #[allow(clippy::too_many_arguments)] // the watchdog slot belongs to the caller, past this session
@@ -1434,7 +989,7 @@ async fn run_interactive(
                     bail(&prep);
                     eprintln!(
                         "fontaine: cannot show the setup screen: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     );
                     eprintln!("fontaine: {error}");
                     return Outcome::Done(error.exit_code());
@@ -1448,15 +1003,19 @@ async fn run_interactive(
         }
     };
     let effective = added.as_ref().unwrap_or(config);
-    let launch = Launch {
-        cli,
-        config: effective,
-        dirs,
-        host,
-    };
-    let scanner = start_scanner(&launch, &prep, &models).await;
+    let env = shared_env(host);
+    let scanner =
+        assemble::start_scanner(effective, &dirs.data, &prep.scrub_env, &env, &models, None).await;
     let pending = (ax_warnings.clone(), prep.warnings.clone());
-    let setup = agent_setup(&launch, prep, models, scanner, false, None);
+    let setup = assemble::agent_setup(
+        effective,
+        dirs,
+        &env,
+        prep,
+        models,
+        scanner,
+        setup_params(cli, effective, false, None),
+    );
     match fontaine_tui::run(
         setup,
         host.cwd.clone(),
@@ -1521,80 +1080,7 @@ mod trust_tests {
 
 #[cfg(test)]
 mod tests {
-    use fontaine_tools::git_bash::GitBashError;
-    use std::path::PathBuf;
-
     use super::*;
-
-    fn git() -> GitBash {
-        GitBash {
-            bin: PathBuf::from("/g/bin"),
-            usr_bin: PathBuf::from("/g/usr/bin"),
-        }
-    }
-
-    fn pwsh() -> PowerShellSettings {
-        PowerShellSettings {
-            path: PathBuf::from("pwsh.exe"),
-        }
-    }
-
-    #[test]
-    fn git_bash_found_starts_as_before() {
-        for powershell in [None, Some(pwsh())] {
-            let chosen = choose_shells(Ok(git()), powershell.clone(), None).unwrap();
-            assert_eq!(
-                chosen,
-                Shells {
-                    git_bash: Some(git()),
-                    powershell
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn without_git_bash_powershell_starts() {
-        let chosen = choose_shells(Err(GitBashError::NotFound), Some(pwsh()), None).unwrap();
-        assert_eq!(
-            chosen,
-            Shells {
-                git_bash: None,
-                powershell: Some(pwsh())
-            }
-        );
-    }
-
-    #[test]
-    fn a_bad_git_bash_override_is_an_error_even_with_powershell() {
-        let bad = GitBashError::BadOverride(PathBuf::from("/x/bash.exe"));
-        let message = choose_shells(Err(bad), Some(pwsh()), None).unwrap_err();
-        assert!(message.contains("FONTAINE_GIT_BASH_PATH"), "{message}");
-        assert!(message.contains("/x/bash.exe"), "{message}");
-    }
-
-    #[test]
-    fn no_shell_at_all_says_what_to_install_or_set() {
-        let message = choose_shells(Err(GitBashError::NotFound), None, None).unwrap_err();
-        assert_eq!(
-            message,
-            "no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH or FONTAINE_POWERSHELL_PATH"
-        );
-    }
-
-    #[test]
-    fn a_bad_powershell_override_is_named_instead_of_suggested() {
-        let message = choose_shells(
-            Err(GitBashError::NotFound),
-            None,
-            Some(OsString::from("C:/nope/pwsh.exe")),
-        )
-        .unwrap_err();
-        assert_eq!(
-            message,
-            "no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH; FONTAINE_POWERSHELL_PATH=C:/nope/pwsh.exe is not a file"
-        );
-    }
 
     #[tokio::test]
     async fn a_stalled_call_is_cut_off() {

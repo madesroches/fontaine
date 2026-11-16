@@ -23,7 +23,10 @@ pub(crate) fn stamp_due(data_dir: &Path, file: &str, now: SystemTime) -> bool {
 pub(crate) fn write_stamp(data_dir: &Path, file: &str, now: SystemTime) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir)?;
     let seconds = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    fontaine_core::owner_only::write_atomic(&data_dir.join(file), format!("{seconds}\n").as_bytes())
+    fontaine_sdk::core::owner_only::write_atomic(
+        &data_dir.join(file),
+        format!("{seconds}\n").as_bytes(),
+    )
 }
 
 #[cfg(test)]

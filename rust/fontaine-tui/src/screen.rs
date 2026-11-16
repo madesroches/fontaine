@@ -24,7 +24,7 @@ use crate::app::App;
 use crate::notify::Notifier;
 use crate::transcript::link_style;
 use crate::view;
-use fontaine_core::config::NotifyMethod;
+use fontaine_sdk::core::config::NotifyMethod;
 
 /// Rows handed to `insert_before` at a time, so the count always fits a `u16`.
 const INSERT_CHUNK: usize = 512;
@@ -635,9 +635,9 @@ fn rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::config::PermissionMode;
-    use fontaine_core::permissions::{ApprovalRequest, Offers};
-    use fontaine_core::turn::SessionEvent;
+    use fontaine_sdk::core::config::PermissionMode;
+    use fontaine_sdk::core::permissions::{ApprovalRequest, Offers};
+    use fontaine_sdk::core::turn::SessionEvent;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
 
@@ -691,7 +691,7 @@ mod tests {
             tool_use_id: None,
             args: serde_json::json!({ "command": command }),
             summary: command.into(),
-            tier: fontaine_core::tier::Tier::AskRule,
+            tier: fontaine_sdk::core::tier::Tier::AskRule,
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,
@@ -973,7 +973,7 @@ mod tests {
     }
 
     fn diff_request(rows: usize) -> ApprovalRequest {
-        use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};
+        use fontaine_sdk::core::preview::{DiffKind, DiffLine, DiffPreview};
         let mut lines = vec![DiffLine {
             kind: DiffKind::Removed,
             old_no: Some(1),
@@ -1871,9 +1871,9 @@ mod tests {
         if todos {
             app.todos.set_items(
                 (0..7)
-                    .map(|n| fontaine_tools::todo::TodoItem {
+                    .map(|n| fontaine_sdk::tools::todo::TodoItem {
                         content: format!("task {n}"),
-                        status: fontaine_tools::todo::TodoStatus::Completed,
+                        status: fontaine_sdk::tools::todo::TodoStatus::Completed,
                     })
                     .collect(),
             );
@@ -2082,7 +2082,7 @@ mod tests {
             name: format!("worker-{n}"),
             agent_type: "worker".into(),
             model: "m/x".into(),
-            status: fontaine_agents::runner::ChildStatus::Done,
+            status: fontaine_sdk::agents::runner::ChildStatus::Done,
             tokens: 10,
             token_budget: None,
             cost_usd: None,

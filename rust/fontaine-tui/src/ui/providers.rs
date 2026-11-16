@@ -6,8 +6,8 @@ use crate::provider_dialog::{
     stored_key_summary,
 };
 use crate::{Action, App, Command, Ui};
-use fontaine_core::accounts::{self, AccountsError, ExternalCheckError, NewAccount};
-use fontaine_core::agent::AgentRuntime;
+use fontaine_sdk::core::accounts::{self, AccountsError, ExternalCheckError, NewAccount};
+use fontaine_sdk::core::agent::AgentRuntime;
 use tokio::sync::mpsc::unbounded_channel;
 
 /// Queues a dialog request for the idle loop. A cancel takes the sign-in it cancels out of the
@@ -42,7 +42,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app.transcript.error(format!(
                     "cannot list the accounts: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ));
                 None
             }
@@ -104,7 +104,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     fn failed(&mut self, error: &(dyn std::error::Error + 'static)) -> DialogKey {
-        self.tell_dialog(Outcome::Failed(fontaine_tools::error_chain::chain(error)))
+        self.tell_dialog(Outcome::Failed(fontaine_sdk::tools::error_chain::chain(
+            error,
+        )))
     }
 
     fn add_account(&mut self, runtime: &mut AgentRuntime, new: &NewAccount) -> DialogKey {
@@ -207,7 +209,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(account) = runtime.config.accounts.get(name).cloned() else {
             return self.tell_dialog(Outcome::Failed(format!("unknown account `{name}`")));
         };
-        let network = match fontaine_core::models::account_network(&runtime.config, name) {
+        let network = match fontaine_sdk::core::models::account_network(&runtime.config, name) {
             Ok(network) => network,
             Err(reason) => return self.tell_dialog(Outcome::Failed(reason)),
         };
@@ -322,7 +324,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(account) = runtime.config.accounts.get(name).cloned() else {
             return self.tell_dialog(Outcome::Failed(format!("unknown account `{name}`")));
         };
-        let network = match fontaine_core::models::account_network(&runtime.config, name) {
+        let network = match fontaine_sdk::core::models::account_network(&runtime.config, name) {
             Ok(network) => network,
             Err(reason) => return self.tell_dialog(Outcome::Failed(reason)),
         };
@@ -383,7 +385,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Err(e)) => self.app.transcript.error(format!(
                 "could not run `{}`: {}",
                 login.display,
-                fontaine_tools::error_chain::chain(&e)
+                fontaine_sdk::tools::error_chain::chain(&e)
             )),
             None => {}
         }
@@ -400,7 +402,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     async fn log_out(&mut self, runtime: &mut AgentRuntime, account: &str) -> DialogKey {
         if runtime.config.accounts.get(account).is_some_and(|a| {
             a.kind.provider().credential()
-                == fontaine_core::providers::CredentialPolicy::ExternalCli
+                == fontaine_sdk::core::providers::CredentialPolicy::ExternalCli
         }) {
             let summary = accounts::external_log_out_summary(account);
             self.app.transcript.notice(summary.clone());

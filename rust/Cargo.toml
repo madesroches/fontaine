@@ -20,10 +20,7 @@ inherits = "release"
 lto = "thin"
 
 [workspace.dependencies]
-fontaine-core = { path = "fontaine-core" }
-fontaine-tools = { path = "fontaine-tools" }
-fontaine-guardian = { path = "fontaine-guardian" }
-fontaine-agents = { path = "fontaine-agents" }
+fontaine-sdk = { path = "fontaine-sdk" }
 fontaine-tui = { path = "fontaine-tui" }
 fontaine-remote = { path = "fontaine-remote" }
 fontaine-testkit = { path = "fontaine-testkit" }

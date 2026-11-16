@@ -5,22 +5,24 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fontaine_core::config::{self, Config, LayerDiagnosis, Slot};
-use fontaine_core::config_catalog::Running;
-use fontaine_core::containment;
-use fontaine_core::dirs::Dirs;
-use fontaine_core::doctor_report::{
+use fontaine_sdk::core::config::{self, Config, LayerDiagnosis, Slot};
+use fontaine_sdk::core::config_catalog::Running;
+use fontaine_sdk::core::containment;
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::doctor_report::{
     self as report, DoctorReport, ExtensionFacts, Finding, GuardianFact, HookCount, McpRow,
     ModelFacts, ProjectExecutables, Section, SkillCounts, TrustFacts,
 };
-use fontaine_core::extensions::{self, Scope};
-use fontaine_core::instructions::{self, Sources};
-use fontaine_core::memory;
-use fontaine_core::models::{self, GuardianChoice, GuardianModel, LISTING_TIMEOUT, ResolveParams};
-use fontaine_core::plugins::PluginContributions;
-use fontaine_core::trust;
-use fontaine_guardian::Profile;
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::extensions::{self, Scope};
+use fontaine_sdk::core::instructions::{self, Sources};
+use fontaine_sdk::core::memory;
+use fontaine_sdk::core::models::{
+    self, GuardianChoice, GuardianModel, LISTING_TIMEOUT, ResolveParams,
+};
+use fontaine_sdk::core::plugins::PluginContributions;
+use fontaine_sdk::core::trust;
+use fontaine_sdk::guardian::Profile;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::cli::{Cli, DoctorArgs, ReportFormat, Toggle};
 use crate::mcp_probe::{apply_installed_plugins, probe_servers};

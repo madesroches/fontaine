@@ -1,0 +1,3038 @@
+#[path = "core_common/mod.rs"]
+mod common;
+
+use std::ffi::OsString;
+use std::path::Path;
+
+use common::{World, write};
+use fontaine_sdk::core::config::{
+    self, AccountKind, Column, Config, ConfigError, GuardianProfile, HookEvent, MainSource,
+    OneOrMany, PermissionMode, ThemeName, parse_settings,
+};
+use fontaine_sdk::core::model_roles::Roles;
+use fontaine_sdk::core::permission_rules::SourcedRule;
+
+fn user_ok(text: &str) {
+    parse_settings(text, Path::new("user.toml"), Column::User)
+        .unwrap_or_else(|e| panic!("user scope should accept:\n{text}\n{e}"));
+}
+
+#[test]
+fn defaults_with_no_files() {
+    let w = World::new();
+    let c = w.load().unwrap();
+    assert_eq!(c.permissions.default_mode, None);
+    assert_eq!(c.guardian.profile, GuardianProfile::Full);
+    assert_eq!(c.guardian.timeout_secs, 30);
+    assert_eq!(c.agents.max_parallel, 4);
+    assert_eq!(c.agents.subagent_token_budget, None);
+    assert_eq!(c.agents.subagent_cost_budget_usd, None);
+    assert!(!c.telemetry.enabled);
+    assert!(c.accounts.is_empty());
+}
+
+#[test]
+fn a_set_subagent_token_budget_resolves_and_an_inner_scope_without_it_keeps_it() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[agents]\nsubagent_token_budget = 200000\nsubagent_cost_budget_usd = 2.0\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.agents.subagent_token_budget, Some(200_000));
+    assert_eq!(c.agents.subagent_cost_budget_usd, Some(2.0));
+
+    w.local_file("[agents]\nmax_parallel = 2\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.agents.subagent_token_budget, Some(200_000));
+    assert_eq!(c.agents.subagent_cost_budget_usd, Some(2.0));
+    assert_eq!(c.agents.max_parallel, 2);
+}
+
+#[test]
+fn workspace_is_the_canonicalized_launch_dir() {
+    let w = World::new();
+    let c = w
+        .load_from(&w.work.join("."), None, &common::no_env)
+        .unwrap();
+    assert_eq!(c.workspace, w.work);
+    assert!(c.workspace.is_absolute());
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_resolves_symlinks() {
+    let w = World::new();
+    let link = w.root.join("link");
+    std::os::unix::fs::symlink(&w.work, &link).unwrap();
+    let c = w.load_from(&link, None, &common::no_env).unwrap();
+    assert_eq!(c.workspace, w.work);
+}
+
+#[test]
+fn project_config_is_read_only_from_the_primary_root() {
+    let w = World::new();
+    // Would be rejected from project scope if it were read.
+    write(
+        &w.root.join(".fontaine/settings.toml"),
+        "[permissions]\nallow = [\"shell\"]\n",
+    );
+    write(
+        &w.work.join(".fontaine/settings.toml"),
+        "[permissions]\ndeny = [\"shell(rm)\"]\n",
+    );
+    let sub = w.work.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let c = w.load_from(&sub, None, &common::no_env).unwrap();
+    assert!(c.permissions.deny.is_empty(), "no parent-directory walk");
+
+    let c = w.load().unwrap();
+    assert_eq!(c.permissions.deny.len(), 1);
+    assert!(c.permissions.allow.is_empty());
+}
+
+#[test]
+fn scalar_precedence_is_cli_then_project_local_then_project_then_user() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[permissions]\ndefault_mode = \"acceptEdits\"\n");
+    w.project_file("[permissions]\ndefault_mode = \"dontAsk\"\n");
+    w.local_file("[permissions]\ndefault_mode = \"manual\"\n");
+    let cli = w.cli_file("[permissions]\ndefault_mode = \"auto\"\n");
+
+    assert_eq!(
+        w.load_with_settings(&cli).unwrap().permissions.default_mode,
+        Some(PermissionMode::Auto)
+    );
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Manual)
+    );
+    std::fs::remove_file(w.work.join(".fontaine/settings.local.toml")).unwrap();
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::DontAsk)
+    );
+    std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::AcceptEdits)
+    );
+}
+
+#[test]
+fn tui_defaults_parse_and_merge_cli_over_user() {
+    let w = World::new();
+    let c = w.load().unwrap();
+    assert_eq!(c.tui.theme, ThemeName::DarkAnsi);
+    assert_eq!(c.tui.screen_reader, None);
+    assert!(c.tui.show_reasoning);
+    assert!(!c.tui.prompt_suggestions);
+    assert!(c.tui.history_completion);
+
+    w.user_file(
+        "[tui]\ntheme = \"light-daltonized\"\nscreen_reader = false\nshow_reasoning = false\nprompt_suggestions = true\nhistory_completion = false\n",
+    );
+    let c = w.load().unwrap();
+    assert!(!c.tui.show_reasoning);
+    assert!(c.tui.prompt_suggestions);
+    assert!(!c.tui.history_completion);
+    assert_eq!(c.tui.theme, ThemeName::LightDaltonized);
+    assert_eq!(c.tui.screen_reader, Some(false));
+
+    let cli = w.cli_file("[tui]\ntheme = \"dark\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.tui.theme, ThemeName::Dark);
+    assert_eq!(c.tui.screen_reader, Some(false));
+}
+
+#[test]
+fn an_unknown_theme_name_is_rejected() {
+    assert!(
+        parse_settings(
+            "[tui]\ntheme = \"solarized\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+    assert_eq!(ThemeName::parse("dark-ansi"), Some(ThemeName::DarkAnsi));
+    assert_eq!(ThemeName::parse("nope"), None);
+    for name in ThemeName::ALL {
+        assert_eq!(ThemeName::parse(name.as_str()), Some(name));
+    }
+}
+
+#[test]
+fn model_scalar_comes_from_the_highest_scope_that_may_set_it() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[model]\nmodel = \"a/user\"\n");
+    assert_eq!(
+        w.load().unwrap().model.as_ref().and_then(OneOrMany::single),
+        Some("a/user")
+    );
+    w.local_file("[model]\nmodel = \"a/local\"\n");
+    assert_eq!(
+        w.load().unwrap().model.as_ref().and_then(OneOrMany::single),
+        Some("a/local")
+    );
+    let cli = w.cli_file("[model]\nmodel = \"a/cli\"\n");
+    assert_eq!(
+        w.load_with_settings(&cli)
+            .unwrap()
+            .model
+            .as_ref()
+            .and_then(OneOrMany::single),
+        Some("a/cli")
+    );
+}
+
+const TWO_ACCOUNTS: &str = "[accounts.a]\nkind = \"ollama\"\n\n[accounts.b]\nkind = \"ollama\"\n\n";
+
+fn roles_of(config: &Config) -> Roles {
+    Roles::from_config(config).unwrap()
+}
+
+#[test]
+fn model_takes_a_string_or_a_list_and_both_are_the_main_role() {
+    let w = World::new();
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\nmodel = \"a/one\"\n"));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyString);
+    assert_eq!(roles_of(&c).get("main").unwrap().len(), 1);
+
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = [\"a/one\", \"b/two\"]\n"
+    ));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyList);
+    let roles = roles_of(&c);
+    let main: Vec<String> = roles
+        .get("main")
+        .unwrap()
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+    assert_eq!(main, ["a/one", "b/two"]);
+
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/one\"]\ncoding = [\"main\", \"b/two\"]\n"
+    ));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::Role);
+    assert_eq!(roles_of(&c).get("coding").unwrap().len(), 2);
+
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\neffort = \"low\"\n"));
+    assert_eq!(w.load().unwrap().main_source, MainSource::Unset);
+}
+
+#[test]
+fn model_and_the_main_role_in_one_layer_are_refused_naming_the_file() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = \"a/one\"\n\n[models.roles]\nmain = [\"b/two\"]\n"
+    ));
+    let e = w.load().unwrap_err().to_string();
+    assert!(
+        e.contains("config.toml") && e.contains("model.model") && e.contains("models.roles.main"),
+        "{e}"
+    );
+}
+
+#[test]
+fn across_layers_the_higher_precedence_main_key_wins() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/user\"]\n"
+    ));
+    w.local_file("[model]\nmodel = \"b/local\"\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyString);
+    let roles = roles_of(&c);
+    assert_eq!(roles.get("main").unwrap()[0].to_string(), "b/local");
+
+    let w = World::new();
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\nmodel = \"a/user\"\n"));
+    let cli = w.cli_file("[models.roles]\nmain = [\"b/cli\", \"a/user\"]\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.main_source, MainSource::Role);
+    assert_eq!(roles_of(&c).get("main").unwrap().len(), 2);
+}
+
+#[test]
+fn roles_are_validated_when_the_config_loads() {
+    let bad = |roles: &str| {
+        let w = World::new();
+        w.user_file(&format!("{TWO_ACCOUNTS}[models.roles]\n{roles}"));
+        w.load().unwrap_err().to_string()
+    };
+    let e = bad("coding = [\"ghost/x\"]\n");
+    assert!(e.contains("unknown account `ghost`"), "{e}");
+    let e = bad("coding = [\"nobody\"]\n");
+    assert!(e.contains("`nobody`") && e.contains("defined role"), "{e}");
+    let e = bad("a = [\"b\"]\nb = [\"a\"]\n");
+    assert!(e.contains("a -> b -> a"), "{e}");
+    let e = bad("coding = []\n");
+    assert!(e.contains("at least one"), "{e}");
+    let e = bad("inherit = [\"a/x\"]\n");
+    assert!(e.contains("inherit"), "{e}");
+    let e = bad("\"a/b\" = [\"a/x\"]\n");
+    assert!(e.contains("not a role name"), "{e}");
+    let e = bad("coding = [\"$guardian_default\"]\n");
+    assert!(e.contains("$guardian_default"), "{e}");
+    let e = bad("coding = [\"a/x\", \"$other\"]\n");
+    assert!(e.contains("$other"), "{e}");
+    // `$main` is a synonym for `main`.
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/x\"]\nthinking = [\"$main\", \"b/y\"]\n"
+    ));
+    assert_eq!(
+        roles_of(&w.load().unwrap()).get("thinking").unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn an_agent_type_model_takes_a_string_a_role_or_a_list_but_not_a_list_with_guardian_default() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = \"a/x\"\n\n[models.roles]\ncoding = [\"a/x\"]\n\n[agents.types.one]\nmodel = \"coding\"\n\n[agents.types.two]\nmodel = [\"coding\", \"$main\", \"b/y\"]\n\n[agents.types.three]\nmodel = \"$guardian_default\"\n"
+    ));
+    assert!(w.load().is_ok());
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[agents.types.bad]\nmodel = [\"$guardian_default\", \"a/x\"]\n"
+    ));
+    let e = w.load().unwrap_err().to_string();
+    assert!(
+        e.contains("agents.types.bad.model") && e.contains("$guardian_default"),
+        "{e}"
+    );
+}
+
+#[test]
+fn models_roles_come_only_from_the_user_file_or_settings() {
+    let w = World::new();
+    w.trusted_repo();
+    w.project_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    let e = w.load().unwrap_err().to_string();
+    assert!(e.contains("models") && e.contains("project"), "{e}");
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    assert!(w.load().is_err());
+
+    let w = World::new();
+    w.user_file(TWO_ACCOUNTS);
+    let cli = w.cli_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(roles_of(&c).get("coding").unwrap().len(), 1);
+}
+
+#[test]
+fn lists_merge_as_a_union_across_scopes() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[permissions]\ndeny = [\"read(.env)\"]\nask = [\"agent\"]\n");
+    w.project_file("[permissions]\ndeny = [\"shell(rm)\", \"read(.env)\"]\n");
+    w.local_file("[permissions]\nallow = [\"shell(ls)\"]\n[auto_mode]\nhard_deny = [\"a\"]\n");
+    let cli = w.cli_file(
+        "[permissions]\ndeny = [\"webfetch\"]\nallow = [\"shell(ls)\"]\n[auto_mode]\nhard_deny = [\"b\", \"a\"]\n",
+    );
+    let c = w.load_with_settings(&cli).unwrap();
+    // A rule listed in two scopes is kept once per scope, so each source stays attributable.
+    let deny: Vec<_> = c.permissions.deny.iter().map(SourcedRule::label).collect();
+    assert_eq!(deny.len(), 4, "{deny:?}");
+    for rule in [
+        "read(.env) [user]",
+        "read(.env) [project]",
+        "shell(rm) [project]",
+        "webfetch [cli]",
+    ] {
+        assert!(deny.contains(&rule.to_string()), "{rule} in {deny:?}");
+    }
+    assert_eq!(c.permissions.ask.len(), 1);
+    let allow: Vec<_> = c.permissions.allow.iter().map(SourcedRule::label).collect();
+    assert_eq!(allow, ["shell(ls) [project-local]", "shell(ls) [cli]"]);
+    assert_eq!(c.auto_mode.hard_deny.len(), 2);
+}
+
+#[test]
+fn a_named_table_entry_is_replaced_whole_by_the_higher_scope() {
+    let w = World::new();
+    w.user_file(
+        r#"
+[accounts.work]
+kind = "anthropic"
+api_key_env = "KEY"
+models = ["m1"]
+
+[mcp.servers.gh]
+command = "gh-mcp"
+args = ["stdio"]
+
+[agents.types.explore]
+model = "$main"
+tools = ["read"]
+mode = "manual"
+"#,
+    );
+    let cli = w.cli_file(
+        r#"
+[accounts.work]
+kind = "ollama"
+
+[mcp.servers.gh]
+url = "https://mcp.example.com"
+
+[agents.types.explore]
+tools = ["grep"]
+"#,
+    );
+    let c = w.load_with_settings(&cli).unwrap();
+    let account = &c.accounts["work"];
+    assert_eq!(account.kind, AccountKind::named("ollama"));
+    assert_eq!(account.api_key_env, None);
+    assert_eq!(account.models, None);
+    let server = &c.mcp_servers["gh"];
+    assert_eq!(server.command, None);
+    assert_eq!(server.args, None);
+    assert_eq!(server.url.as_deref(), Some("https://mcp.example.com"));
+    let ty = &c.agents.types["explore"];
+    assert_eq!(ty.model, None);
+    assert_eq!(ty.mode, None);
+    assert_eq!(ty.tools.as_deref(), Some(&["grep".to_string()][..]));
+}
+
+#[test]
+fn hooks_arrays_union() {
+    let w = World::new();
+    w.user_file("[[hooks.pre_tool_use]]\nmatcher = \"shell(git *)\"\ncommand = \"a.sh\"\n");
+    let cli = w.cli_file(
+        "[[hooks.pre_tool_use]]\nmatcher = \"shell\"\ncommand = \"b.sh\"\n[[hooks.post_tool_use]]\nmatcher = \"read\"\ncommand = \"c.sh\"\n",
+    );
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 2);
+    assert_eq!(c.hooks.get(HookEvent::PostToolUse).len(), 1);
+}
+
+#[test]
+fn resource_attributes_merge_per_key_higher_scope_winning() {
+    let w = World::new();
+    w.user_file("[telemetry]\nresource_attributes = { a = \"1\", b = \"2\" }\n");
+    let cli = w.cli_file("[telemetry]\nresource_attributes = { b = \"9\", c = \"3\" }\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    let attrs = &c.telemetry.resource_attributes;
+    assert_eq!(attrs.len(), 3);
+    assert_eq!(attrs["a"], "1");
+    assert_eq!(attrs["b"], "9");
+    assert_eq!(attrs["c"], "3");
+}
+
+#[test]
+fn project_telemetry_enabled_false_overrides_a_user_enable() {
+    let w = World::new();
+    w.user_file(
+        "[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\napi_key_env = \"K\"\n",
+    );
+    w.project_file("[telemetry]\nenabled = false\n");
+    assert!(!w.load().unwrap().telemetry.enabled);
+}
+
+#[test]
+fn scope_stack_lists_every_slot_highest_precedence_first() {
+    let w = World::new();
+    let cli = w.cli_file("");
+    let c = w.load_with_settings(&cli).unwrap();
+    let slots: Vec<_> = c.scopes.iter().map(|s| s.slot.label()).collect();
+    assert_eq!(
+        slots,
+        ["managed", "cli", "project-local", "project", "user"]
+    );
+    assert!(c.scopes[0].path.is_none() && !c.scopes[0].loaded);
+    assert!(c.scopes[1].loaded);
+}
+
+#[test]
+fn config_errors_map_to_exit_code_2() {
+    let w = World::new();
+    w.user_file("bogus = 1\n");
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+    assert_eq!(err.exit_code(), 2);
+}
+
+// --- rejection ---
+
+#[test]
+fn unknown_keys_and_sections_are_rejected_in_every_scope() {
+    for bad in [
+        "[permisions]\ndeny = [\"shell\"]\n",
+        "[permissions]\ndney = []\n",
+        "[guardian]\nprofil = \"full\"\n",
+        "[telemetry]\nenable = true\n",
+        "[accounts.x]\nkind = \"ollama\"\nbase_ur = \"x\"\n",
+        "[accounts.x]\nkind = \"ollama\"\napi_key = \"sk-raw\"\n",
+    ] {
+        for column in [
+            Column::User,
+            Column::Cli,
+            Column::ProjectLocal,
+            Column::Project,
+        ] {
+            let err = parse_settings(bad, Path::new("s.toml"), column).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Parse { .. }),
+                "{column:?} {bad}: {err:?}"
+            );
+        }
+    }
+
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[permisions]\n");
+    assert!(matches!(w.load().unwrap_err(), ConfigError::Parse { .. }));
+    std::fs::remove_file(w.config.join("config.toml")).unwrap();
+    w.project_file("[permisions]\n");
+    assert!(matches!(w.load().unwrap_err(), ConfigError::Parse { .. }));
+    std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+    w.local_file("[permisions]\n");
+    assert!(matches!(w.load().unwrap_err(), ConfigError::Parse { .. }));
+    std::fs::remove_file(w.work.join(".fontaine/settings.local.toml")).unwrap();
+    let cli = w.cli_file("[permisions]\n");
+    assert!(matches!(
+        w.load_with_settings(&cli).unwrap_err(),
+        ConfigError::Parse { .. }
+    ));
+}
+
+#[test]
+fn rule_strings_must_parse_and_name_a_known_tool() {
+    for bad in [
+        "shell(",
+        "shell()",
+        "Shell",
+        "bash",
+        "nope(x)",
+        "webfetch(example.com)",
+        "mcp__",
+    ] {
+        for key in ["deny", "ask", "allow"] {
+            let text = format!("[permissions]\n{key} = [\"{bad}\"]\n");
+            let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid { .. }),
+                "{key} {bad}: {err:?}"
+            );
+        }
+    }
+    user_ok(
+        "[permissions]\ndeny = [\"shell(git push *)\", \"mcp__gh__*\", \"webfetch(domain:*.evil.com)\", \"read(//etc/hosts)\"]\n",
+    );
+}
+
+#[test]
+fn guardian_profile_only_validates_as_full_or_minimal() {
+    user_ok("[guardian]\nprofile = \"full\"\n");
+    user_ok("[guardian]\nprofile = \"minimal\"\n");
+    for bad in ["off", "none", "disabled", "Full", ""] {
+        let text = format!("[guardian]\nprofile = \"{bad}\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    for bad in ["false", "0"] {
+        let text = format!("[guardian]\nprofile = {bad}\n");
+        assert!(parse_settings(&text, Path::new("u.toml"), Column::User).is_err());
+    }
+}
+
+#[test]
+fn agent_cost_budgets_must_be_finite_and_non_negative() {
+    for bad in [
+        "subagent_cost_budget_usd = -1.0",
+        "subagent_cost_budget_usd = nan",
+        "session_cost_budget_usd = inf",
+        "session_cost_budget_usd = -0.5",
+    ] {
+        let text = format!("[agents]\n{bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    let ok = "[agents]\nsubagent_cost_budget_usd = 0.0\nsession_cost_budget_usd = 5.0\n";
+    assert!(parse_settings(ok, Path::new("u.toml"), Column::User).is_ok());
+}
+
+#[test]
+fn guardian_values_are_range_checked() {
+    for bad in [
+        "timeout_secs = 0",
+        "confidence_threshold = 1.5",
+        "confidence_threshold = -0.1",
+        "model = \"no-slash\"",
+        "model = \"/m\"",
+    ] {
+        let text = format!("[guardian]\n{bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn default_mode_auto_loads_from_user_and_cli_scope_and_is_unset_by_default() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().permissions.default_mode, None);
+
+    w.user_file("[permissions]\ndefault_mode = \"auto\"\n");
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Auto)
+    );
+    std::fs::remove_file(w.config.join("config.toml")).unwrap();
+
+    let cli = w.cli_file("[permissions]\ndefault_mode = \"auto\"\n");
+    assert_eq!(
+        w.load_with_settings(&cli).unwrap().permissions.default_mode,
+        Some(PermissionMode::Auto)
+    );
+}
+
+#[test]
+fn default_mode_auto_and_afk_are_refused_from_every_project_scope() {
+    for mode in ["auto", "afk"] {
+        let w = World::new();
+        w.project_file(&format!("[permissions]\ndefault_mode = \"{mode}\"\n"));
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+        std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+
+        w.local_file(&format!("[permissions]\ndefault_mode = \"{mode}\"\n"));
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+    }
+}
+
+#[test]
+fn default_mode_afk_loads_from_user_scope() {
+    let w = World::new();
+    w.user_file("[permissions]\ndefault_mode = \"afk\"\n");
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Afk)
+    );
+}
+
+#[test]
+fn default_mode_plan_is_a_parse_error_naming_the_valid_modes() {
+    match parse_settings(
+        "[permissions]\ndefault_mode = \"plan\"\n",
+        Path::new("user.toml"),
+        Column::User,
+    ) {
+        Err(ConfigError::Parse { message, .. }) => {
+            assert!(message.contains("plan"), "{message}");
+            assert!(message.contains("2:16"), "{message}");
+            for mode in ["manual", "acceptEdits", "dontAsk", "auto", "afk"] {
+                assert!(message.contains(mode), "{message}");
+            }
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn agent_type_mode_accepts_only_inherit_manual_dont_ask() {
+    for ok in ["inherit", "manual", "dontAsk"] {
+        user_ok(&format!("[agents.types.t]\nmode = \"{ok}\"\n"));
+    }
+    for bad in [
+        "plan",
+        "acceptEdits",
+        "auto",
+        "bypassPermissions",
+        "default",
+    ] {
+        let text = format!("[agents.types.t]\nmode = \"{bad}\"\n");
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{bad}: {err:?}");
+    }
+}
+
+#[test]
+fn effort_is_read_from_the_model_section_and_agent_types() {
+    use fontaine_sdk::core::effort::Effort;
+    let w = World::new();
+    assert_eq!(w.load().unwrap().effort, None);
+    w.user_file("[model]\neffort = \"low\"\n[agents.types.t]\neffort = \"max\"\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.effort, Some(Effort::Low));
+    assert_eq!(c.agents.types["t"].effort, Some(Effort::Max));
+}
+
+#[test]
+fn an_unknown_effort_is_a_config_error_naming_the_valid_set() {
+    for text in [
+        "[model]\neffort = \"xhigh\"\n",
+        "[agents.types.t]\neffort = \"minimal\"\n",
+        "[model]\neffort = 3\n",
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{text}: {err:?}");
+    }
+    let err = parse_settings(
+        "[model]\neffort = \"xhigh\"\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("off") && err.contains("max"), "{err}");
+}
+
+#[test]
+fn agent_type_tools_must_be_known() {
+    user_ok("[agents.types.t]\ntools = [\"read\", \"mcp__gh__issue\"]\n");
+    assert!(
+        parse_settings(
+            "[agents.types.t]\ntools = [\"bash\"]\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+    for bad in ["mcp__", "mcp__x__", "mcp__git hub", "mcp__a.b"] {
+        let text = format!("[agents.types.t]\ntools = [\"{bad}\"]\n");
+        assert!(parse_settings(&text, Path::new("u.toml"), Column::User).is_err());
+    }
+}
+
+#[test]
+fn server_names_use_the_rule_grammar_character_set() {
+    for bad in ["my.server", "a__b", "a b", "a_", "_a"] {
+        let text = format!("[mcp.servers.\"{bad}\"]\ncommand = \"a\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    user_ok("[mcp.servers.my-server_1]\ncommand = \"a\"\n");
+}
+
+#[test]
+fn account_and_server_shapes() {
+    assert!(
+        parse_settings(
+            "[accounts.x]\nkind = \"openai-compatible\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err(),
+        "openai-compatible needs a base_url"
+    );
+    user_ok(
+        "[accounts.x]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1234/v1\"\n",
+    );
+    assert!(
+        parse_settings(
+            "[accounts.x]\nkind = \"mystery\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+    assert!(
+        parse_settings(
+            "[mcp.servers.s]\ncommand = \"a\"\nurl = \"https://b\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+    assert!(
+        parse_settings(
+            "[mcp.servers.s]\nurl = \"https://b\"\nenv = { X = \"1\" }\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err(),
+        "`env` applies to stdio servers only"
+    );
+    assert!(parse_settings("[mcp.servers.s]\n", Path::new("u.toml"), Column::User).is_err());
+    for empty in ["command", "url"] {
+        let text = format!("[mcp.servers.s]\n{empty} = \"\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{empty}"
+        );
+    }
+}
+
+#[test]
+fn tool_search_defaults_to_auto_and_either_scope_may_set_it() {
+    use fontaine_sdk::core::config::ToolSearch;
+    let w = World::new();
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::Auto);
+    w.user_file("[mcp]\ntool_search = \"off\"\n");
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::Off);
+    // The project scope can set it: deferral hides schemas and changes no gate. It wins over the
+    // user's value like any other scalar.
+    w.project_file("[mcp]\ntool_search = \"on\"\n");
+    assert_eq!(w.load().unwrap().mcp.tool_search, ToolSearch::On);
+    for bad in ["maybe", "true"] {
+        let text = format!("[mcp]\ntool_search = \"{bad}\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn allow_extra_entries_are_flag_free_command_pairs() {
+    user_ok("[shell_preclassifier]\nallow_extra = [\"tree\", \"cargo metadata\"]\n");
+    for bad in ["ls -la", "a b c", "-x", ""] {
+        let text = format!("[shell_preclassifier]\nallow_extra = [\"{bad}\"]\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_settings_path_is_a_config_error_naming_the_path() {
+    let w = World::new();
+    let missing = w.root.join("nope.toml");
+    let err = w.load_with_settings(&missing).unwrap_err();
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
+    assert!(err.to_string().contains("nope.toml"));
+    assert_eq!(err.exit_code(), 2);
+}
+
+#[test]
+fn a_directory_in_place_of_a_settings_file_is_a_config_error_naming_the_path() {
+    let w = World::new();
+    std::fs::create_dir_all(w.work.join(".fontaine/settings.toml")).unwrap();
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
+    assert!(err.to_string().contains("settings.toml"));
+    std::fs::remove_dir(w.work.join(".fontaine/settings.toml")).unwrap();
+
+    std::fs::create_dir_all(w.work.join(".fontaine/settings.local.toml")).unwrap();
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
+    assert!(err.to_string().contains("settings.local.toml"));
+    std::fs::remove_dir(w.work.join(".fontaine/settings.local.toml")).unwrap();
+
+    std::fs::create_dir_all(w.config.join("config.toml")).unwrap();
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
+    assert!(err.to_string().contains("config.toml"));
+}
+
+#[test]
+fn absent_files_load_as_empty() {
+    let w = World::new();
+    let c = w.load().unwrap();
+    assert!(c.scopes.iter().skip(1).all(|s| !s.loaded));
+}
+
+// --- the per-key scope table ---
+
+fn assert_scope_error(r: Result<impl std::fmt::Debug, ConfigError>, what: &str) {
+    match r {
+        Err(ConfigError::Scope { .. }) => {}
+        other => panic!("{what}: expected a scope error, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_scope_rejects_user_file_only_keys() {
+    let w = World::new();
+    let cli = w.cli_file("[guardian]\nscanner = \"llm\"\n");
+    assert_scope_error(w.load_with_settings(&cli), "cli: guardian.scanner");
+}
+
+#[test]
+fn project_local_scope_rejects_user_file_or_cli_keys() {
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file("[tui]\ntheme = \"dark\"\n");
+    assert_scope_error(w.load(), "project-local: tui.theme");
+}
+
+#[test]
+fn project_scope_accepts_the_tightening_cells() {
+    let w = World::new();
+    w.project_file(
+        r#"
+[permissions]
+default_mode = "dontAsk"
+deny = ["shell(rm)"]
+ask = ["webfetch"]
+
+[auto_mode]
+soft_deny = ["x"]
+hard_deny = ["y"]
+
+[telemetry]
+enabled = false
+
+[[hooks.pre_tool_use]]
+matcher = "shell"
+command = "guard.sh"
+
+[mcp.servers.s]
+command = "srv"
+"#,
+    );
+    let c = w.load().unwrap();
+    assert_eq!(c.permissions.default_mode, Some(PermissionMode::DontAsk));
+    assert_eq!(c.permissions.deny.len(), 1);
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 1);
+    assert!(c.mcp_servers.contains_key("s"));
+
+    w.project_file("[permissions]\ndefault_mode = \"manual\"\n");
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Manual)
+    );
+}
+
+#[test]
+fn project_local_scope_accepts_the_cells_project_scope_rejects() {
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file(
+        r#"
+[model]
+model = "a/m"
+
+[guardian]
+model = "a/g"
+profile = "minimal"
+timeout_secs = 12
+confidence_threshold = 0.8
+cache = false
+
+[permissions]
+default_mode = "dontAsk"
+allow = ["shell(ls)"]
+additional_directories = ["/tmp/extra"]
+
+[auto_mode]
+environment = ["e"]
+allow = ["a"]
+
+[agents]
+max_parallel = 2
+
+[agents.types.t]
+tools = ["read"]
+
+[shell_preclassifier]
+allow_extra = ["tree"]
+
+[telemetry]
+enabled = false
+
+[[hooks.pre_tool_use]]
+matcher = "shell"
+command = "guard.sh"
+
+[mcp.servers.s]
+command = "srv"
+"#,
+    );
+    let c = w.load().unwrap();
+    assert_eq!(c.model.as_ref().and_then(OneOrMany::single), Some("a/m"));
+    assert_eq!(c.guardian.profile, GuardianProfile::Minimal);
+    assert_eq!(c.permissions.allow.len(), 1);
+    assert_eq!(c.permissions.additional_directories, ["/tmp/extra"]);
+    assert_eq!(c.agents.max_parallel, 2);
+    assert_eq!(c.shell_preclassifier_allow_extra, ["tree"]);
+}
+
+#[test]
+fn cli_scope_accepts_everything_but_the_user_file_only_keys() {
+    let w = World::new();
+    let cli = w.cli_file(
+        r#"
+[accounts.a]
+kind = "ollama"
+
+[model]
+model = "a/m"
+
+[guardian]
+profile = "minimal"
+model = "a/g"
+
+[permissions]
+default_mode = "acceptEdits"
+allow = ["shell(ls)"]
+additional_directories = ["/x"]
+
+[auto_mode]
+environment = ["e"]
+
+[agents]
+max_parallel = 3
+
+[shell_preclassifier]
+allow_extra = ["tree"]
+
+[tui]
+theme = "light"
+screen_reader = true
+"#,
+    );
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.tui.theme, ThemeName::Light);
+    assert_eq!(
+        c.permissions.default_mode,
+        Some(PermissionMode::AcceptEdits)
+    );
+    assert_eq!(c.guardian.model.as_deref(), Some("a/g"));
+}
+
+#[test]
+fn no_value_disables_the_guardian() {
+    // There is no key that turns it off: every spelling of "off" is a parse error.
+    for text in [
+        "[guardian]\nenabled = false\n",
+        "[guardian]\nprofile = \"off\"\n",
+        "[guardian]\nprofile = \"none\"\n",
+        "[guardian]\ndisabled = true\n",
+        "[guardian]\ntimeout_secs = 0\n",
+    ] {
+        assert!(
+            parse_settings(text, Path::new("u.toml"), Column::User).is_err(),
+            "{text}"
+        );
+    }
+}
+
+// --- telemetry required inputs ---
+
+fn env_with(var: &'static str, value: &'static str) -> impl Fn(&str) -> Option<OsString> {
+    move |k| (k == var).then(|| OsString::from(value))
+}
+
+#[test]
+fn telemetry_enabled_requires_an_endpoint() {
+    let w = World::new();
+    w.user_file("[telemetry]\nenabled = true\napi_key_env = \"K\"\n");
+    let env = env_with("K", "secret");
+    let err = w.load_from(&w.work, None, &env).unwrap_err();
+    assert!(matches!(err, ConfigError::Telemetry { .. }), "{err:?}");
+    assert_eq!(err.exit_code(), 2);
+    assert!(err.to_string().contains("endpoint"));
+}
+
+#[test]
+fn telemetry_enabled_requires_a_resolvable_ingestion_key() {
+    let w = World::new();
+    let base = "[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\n";
+
+    // No api_key_env and no stored credential.
+    w.user_file(base);
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Telemetry { .. }), "{err:?}");
+
+    // The named env var is unset.
+    w.user_file(&format!("{base}api_key_env = \"INGEST\"\n"));
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Telemetry { .. }), "{err:?}");
+    assert!(err.to_string().contains("INGEST"));
+
+    // The named env var is empty.
+    let empty = env_with("INGEST", "");
+    assert!(matches!(
+        w.load_from(&w.work, None, &empty).unwrap_err(),
+        ConfigError::Telemetry { .. }
+    ));
+
+    // A stored credential does not stand in for a named-but-missing env var.
+    write(
+        &w.data.join("credentials.toml"),
+        "[telemetry]\napi_key = \"k\"\n",
+    );
+    assert!(matches!(
+        w.load().unwrap_err(),
+        ConfigError::Telemetry { .. }
+    ));
+}
+
+#[test]
+fn telemetry_enabled_with_endpoint_and_a_key_loads() {
+    let w = World::new();
+    w.user_file(
+        "[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\napi_key_env = \"INGEST\"\n",
+    );
+    let env = env_with("INGEST", "secret");
+    let c = w.load_from(&w.work, None, &env).unwrap();
+    assert!(c.telemetry.enabled);
+
+    w.user_file("[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\n");
+    write(
+        &w.data.join("credentials.toml"),
+        "[telemetry]\napi_key = \"stored\"\n",
+    );
+    assert!(w.load().unwrap().telemetry.enabled);
+}
+
+#[test]
+fn telemetry_disabled_needs_nothing() {
+    let w = World::new();
+    w.user_file("[telemetry]\nenabled = false\n");
+    assert!(!w.load().unwrap().telemetry.enabled);
+}
+
+#[test]
+fn an_unparseable_credentials_file_fails_telemetry_resolution() {
+    let w = World::new();
+    w.user_file("[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\n");
+    write(&w.data.join("credentials.toml"), "not toml [");
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
+}
+
+mod scanner_selection {
+    use fontaine_sdk::core::config::{ConfigError, Scanner};
+
+    use super::World;
+
+    fn load(text: &str) -> Result<fontaine_sdk::core::config::Config, ConfigError> {
+        let w = World::new();
+        w.user_file(text);
+        w.load()
+    }
+
+    #[test]
+    fn the_scanner_is_off_by_default_and_the_token_variable_is_always_resolved() {
+        let config = World::new().load().unwrap();
+        assert_eq!(config.guardian.scanner, Scanner::Off);
+        assert_eq!(config.guardian.scanner_hf_token_env, "HF_TOKEN");
+        let named = load("[guardian]\nscanner_hf_token_env = \"MY_HF\"\n").unwrap();
+        assert_eq!(named.guardian.scanner, Scanner::Off);
+        assert_eq!(named.guardian.scanner_hf_token_env, "MY_HF");
+    }
+
+    #[test]
+    fn exactly_off_llm_command_and_pg2_are_accepted_values() {
+        assert_eq!(
+            load("[guardian]\nscanner = \"off\"\n")
+                .unwrap()
+                .guardian
+                .scanner,
+            Scanner::Off
+        );
+        assert_eq!(
+            load("[guardian]\nscanner = \"llm\"\n")
+                .unwrap()
+                .guardian
+                .scanner,
+            Scanner::Llm
+        );
+        let command =
+            load("[guardian]\nscanner = \"command\"\nscanner_command = \"/bin/scan\"\n").unwrap();
+        assert_eq!(command.guardian.scanner, Scanner::Command);
+        for bad in ["on", "true", "LLM", "regex", ""] {
+            let err = load(&format!("[guardian]\nscanner = \"{bad}\"\n")).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{bad}");
+        }
+        let err = load("[guardian]\nscanner = true\n").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn the_command_scanner_needs_its_program() {
+        for text in [
+            "[guardian]\nscanner = \"command\"\n",
+            "[guardian]\nscanner = \"command\"\nscanner_command = \"\"\n",
+        ] {
+            let err = load(text).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+            assert_eq!(err.exit_code(), 2);
+            assert!(err.to_string().contains("scanner_command"), "{err}");
+        }
+    }
+
+    #[cfg(not(feature = "pg2"))]
+    #[test]
+    fn pg2_in_a_build_without_the_feature_is_a_config_error() {
+        let err = load("[guardian]\nscanner = \"pg2\"\n").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("pg2"), "{err}");
+    }
+
+    #[cfg(feature = "pg2")]
+    #[test]
+    fn pg2_in_a_build_with_the_feature_is_accepted() {
+        let config = load("[guardian]\nscanner = \"pg2\"\n").unwrap();
+        assert_eq!(config.guardian.scanner, Scanner::Pg2);
+    }
+}
+
+// --- [guardian.composition] ---
+
+const COMPOSITION_ACCOUNT: &str = "[accounts.local]\nkind = \"ollama\"\n";
+
+fn composition_world(composition: &str) -> World {
+    let w = World::new();
+    w.user_file(&format!(
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\n{composition}"
+    ));
+    w
+}
+
+#[test]
+fn the_composition_is_off_unless_configured() {
+    let w = World::new();
+    assert!(w.load().unwrap().guardian.composition.is_none());
+}
+
+#[test]
+fn a_screen_composition_defaults_to_shadow_with_no_threshold() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\n");
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(composition.shadow);
+    assert!(composition.params.is_empty());
+    assert_eq!(composition.timeout_ms, 2_000);
+    assert_eq!(composition.preset.as_deref(), Some("screen"));
+}
+
+#[test]
+fn deciding_requires_a_threshold() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\nshadow = false\n");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.params.allow_threshold"),
+        "{err}"
+    );
+    assert_eq!(err.exit_code(), 2);
+
+    let w = composition_world(
+        "preset = \"screen\"\nmodel = \"local/qwen3:4b\"\nshadow = false\n\n[guardian.composition.params]\nstop_threshold = 0.95\n",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(!composition.shadow);
+    assert_eq!(
+        composition.params["stop_threshold"],
+        serde_json::json!(0.95)
+    );
+}
+
+#[test]
+fn exactly_one_of_preset_and_script() {
+    for text in [
+        "model = \"local/m\"\n",
+        "preset = \"screen\"\nscript = \"g.rn\"\nmodel = \"local/m\"\n",
+    ] {
+        let err = composition_world(text).load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{text}");
+        assert!(err.to_string().contains("guardian.composition."), "{err}");
+        assert!(err.to_string().contains("preset"), "{err}");
+    }
+}
+
+#[test]
+fn a_composition_needs_models_on_ollama_accounts() {
+    for text in [
+        "[guardian.composition]\npreset = \"screen\"\n".to_string(),
+        format!("{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"other/m\"\n"),
+        "[accounts.o]\nkind = \"openai\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"o/m\"\n".to_string(),
+    ] {
+        let w = World::new();
+        w.user_file(&text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{text}");
+        assert!(err.to_string().contains("guardian.composition.model"), "{err}");
+    }
+}
+
+const HOSTED_ACCOUNT: &str = "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\n";
+
+fn hosted_world(extra: &str) -> World {
+    let w = World::new();
+    w.user_file(&format!(
+        "{HOSTED_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n{extra}"
+    ));
+    w
+}
+
+fn or_key(name: &str) -> Option<std::ffi::OsString> {
+    (name == "OR_KEY").then(|| "sk-or-test".into())
+}
+
+#[test]
+fn a_composition_may_read_on_an_openrouter_account_with_a_key() {
+    let w = hosted_world("");
+    let config = w.load_from(&w.work, None, &or_key).unwrap();
+    let composition = config.guardian.composition.unwrap();
+    assert!(composition.shadow, "a hand-written section stays in shadow");
+    assert_eq!(composition.model.as_deref(), Some("or/typesafe/jev-1.14"));
+    let spec = composition.spec(&config.accounts).unwrap();
+    let reads = spec.declared_reads().unwrap();
+    assert_eq!(
+        reads.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["allow", "stop"]
+    );
+    assert!(
+        reads
+            .values()
+            .all(|r| r.backend == fontaine_sdk::guardian::BackendKind::SystemOne)
+    );
+}
+
+#[test]
+fn a_hosted_screen_without_a_key_stops_startup_naming_the_model_and_the_account() {
+    let w = hosted_world("");
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    let text = err.to_string();
+    assert!(text.contains("guardian.composition.model"), "{text}");
+    assert!(text.contains("OR_KEY") || text.contains("`or`"), "{text}");
+
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    let text = err.to_string();
+    assert!(text.contains("guardian.composition.model"), "{text}");
+    assert!(text.contains("no OpenRouter key"), "{text}");
+    assert!(text.contains("`or`"), "{text}");
+    assert!(!text.contains("/login"), "{text}");
+}
+
+#[test]
+fn a_hosted_read_without_a_key_names_the_reads_model_key() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\nscript = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"or/typesafe/jev-1.14\"\nprompt = \"plain\"\nquestion = \"level5_employee\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let text = w.load().unwrap_err().to_string();
+    assert!(
+        text.contains("guardian.composition.reads.extra.model"),
+        "{text}"
+    );
+    assert!(text.contains("no OpenRouter key"), "{text}");
+}
+
+#[test]
+fn a_stored_login_key_satisfies_a_hosted_screen() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    write(
+        &w.data.join("credentials.toml"),
+        "[accounts.or]\napi_key = \"sk-stored\"\n",
+    );
+    w.load().unwrap();
+}
+
+#[test]
+fn a_hosted_screen_needs_an_account_and_a_base_url_a_key_may_travel_to() {
+    let w = World::new();
+    w.user_file("[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n");
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(err.to_string().contains("not configured"), "{err}");
+
+    for url in ["not a url", "ftp://host/", "http://example.com/api/v1"] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\nbase_url = \"{url}\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n"
+        ));
+        let err = w.load_from(&w.work, None, &or_key).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{url}");
+        assert!(
+            err.to_string().contains("accounts.or.base_url"),
+            "{url}: {err}"
+        );
+    }
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\nbase_url = \"http://127.0.0.1:9/api/v1\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    w.load_from(&w.work, None, &or_key).unwrap();
+}
+
+#[test]
+fn the_hosted_preset_takes_allow_and_refuses_question_and_a_steering_veto() {
+    let w = hosted_world("\n[guardian.composition.params]\nallow = false\n");
+    w.load_from(&w.work, None, &or_key).unwrap();
+    for bad in ["question = \"outside_request\"", "steering_veto = 0.01"] {
+        let w = hosted_world(&format!("\n[guardian.composition.params]\n{bad}\n"));
+        let err = w.load_from(&w.work, None, &or_key).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{bad}");
+        assert!(
+            err.to_string().contains("guardian.composition.params."),
+            "{bad}: {err}"
+        );
+    }
+    let w = World::new();
+    w.user_file(&format!(
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nallow = false\n"
+    ));
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.params.allow"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_hosted_screen_enforces_with_defaults_and_no_threshold() {
+    let w = hosted_world("shadow = false\n");
+    let composition = w
+        .load_from(&w.work, None, &or_key)
+        .unwrap()
+        .guardian
+        .composition
+        .unwrap();
+    assert!(!composition.shadow);
+    assert!(composition.params.is_empty());
+}
+
+#[test]
+fn project_scope_cannot_set_the_hosted_allow_path_but_may_force_shadow() {
+    for text in [
+        "[guardian.composition.params]\nallow = true\n",
+        "[guardian.composition.params]\nallow_threshold = 0.5\n",
+        "[guardian.composition]\nshadow = false\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+    let w = hosted_world("shadow = false\n");
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    let composition = w
+        .load_from(&w.work, None, &or_key)
+        .unwrap()
+        .guardian
+        .composition
+        .unwrap();
+    assert!(composition.shadow);
+}
+
+#[test]
+fn a_composition_account_needs_a_usable_base_url() {
+    for url in ["not a url", "ftp://host/", "http://"] {
+        let text = format!(
+            "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{url}\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n"
+        );
+        let w = World::new();
+        w.user_file(&text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{url}");
+        assert!(err.to_string().contains("accounts.local.base_url"), "{err}");
+    }
+    let w = World::new();
+    w.user_file(
+        "[accounts.local]\nkind = \"ollama\"\nbase_url = \"http://box:11434\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n",
+    );
+    w.load().unwrap();
+}
+
+#[test]
+fn composition_values_are_validated() {
+    for bad in [
+        "stop_threshold = 0.0",
+        "stop_threshold = 1.5",
+        "allow_threshold = 0.0",
+        "allow_threshold = 1.0",
+        "steering_veto = 0.0",
+        "steering_veto = 1.5",
+        "question = \"anything_goes\"",
+        "concurrent = \"yes\"",
+        "unknown = 1",
+    ] {
+        let text = format!(
+            "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\n{bad}\n"
+        );
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(
+            err.to_string().contains("guardian.composition.params."),
+            "{bad}: {err}"
+        );
+    }
+    for bad in ["timeout_ms = 0", "model = \"no-slash\""] {
+        let text = format!("[guardian.composition]\npreset = \"screen\"\n{bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    user_ok(
+        "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nstop_threshold = 1.0\n",
+    );
+    user_ok(
+        "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nallow_threshold = 0.00000156\nsteering_veto = 1.0\nconcurrent = true\n",
+    );
+}
+
+#[test]
+fn an_unknown_preset_is_a_config_error_naming_the_key() {
+    let err = composition_world("preset = \"nope\"\nmodel = \"local/m\"\n")
+        .load()
+        .unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(
+        err.to_string().contains("guardian.composition.preset"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_preset_with_reads_names_the_reads_key() {
+    let err = composition_world(
+        "preset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.reads.r]\nmodel = \"local/m\"\nprompt = \"hardened\"\nquestion = \"outside_request\"\n",
+    )
+    .load()
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.reads"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_script_is_read_from_the_config_dir_and_must_compile() {
+    let w = composition_world("script = \"g.rn\"\nmodel = \"local/m\"\n");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { not_a_function(call) }",
+    );
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("does not compile"), "{err}");
+
+    w.config_file("g.rn", "pub async fn other(call, params) { abstain() }");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("guardian"), "{err}");
+
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert_eq!(composition.script.as_deref(), Some("g.rn"));
+    assert!(composition.script_source.is_some());
+}
+
+#[test]
+fn a_scripts_reads_name_their_models() {
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nprompt = \"plain\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.reads.extra.model"),
+        "{err}"
+    );
+
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"local/other\"\nprompt = \"hardened\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("hardened"), "{err}");
+
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"local/other\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert_eq!(composition.models(), vec!["local/other".to_string()]);
+}
+
+#[test]
+fn only_user_scope_may_set_the_composition() {
+    for text in [
+        "[guardian.composition]\npreset = \"screen\"\n",
+        "[guardian.composition]\nscript = \"g.rn\"\n",
+        "[guardian.composition]\nmodel = \"local/m\"\n",
+        "[guardian.composition.params]\nallow_threshold = 0.1\n",
+        "[guardian.composition.reads.x]\nmodel = \"local/m\"\n",
+        "[guardian.composition]\ntimeout_ms = 10\n",
+        "[guardian.composition]\nshadow = false\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+}
+
+#[test]
+fn the_composition_builds_one_reader_per_model() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\n");
+    let config = w.load().unwrap();
+    let stage = fontaine_sdk::core::agent::build_composition(
+        &config,
+        fontaine_sdk::guardian::Profile::Full,
+        &common::no_env,
+        &w.data,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(stage.shadow);
+    assert_eq!(stage.label, "local/qwen3:4b");
+    assert_eq!(
+        stage.composition.models(),
+        vec!["local/qwen3:4b".to_string()]
+    );
+    assert_eq!(stage.composition.readers().count(), 1);
+}
+
+#[test]
+fn project_scope_cannot_enable_the_composition_but_may_ask_for_shadow() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\nshadow = false\n\n[guardian.composition.params]\nstop_threshold = 0.9\n"
+    ));
+    for text in [
+        "[guardian.composition]\nmodel = \"local/m\"\n",
+        "[guardian.composition.params]\nstop_threshold = 0.5\n",
+        "[guardian.composition]\nshadow = false\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+    parse_settings(
+        "[guardian.composition]\nshadow = true\n",
+        Path::new("p.toml"),
+        Column::Project,
+    )
+    .unwrap();
+
+    // Shadow asked for by the repository holds over the user's `shadow = false`.
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(composition.shadow);
+    assert_eq!(composition.params["stop_threshold"], serde_json::json!(0.9));
+}
+
+#[test]
+fn a_project_file_alone_cannot_create_a_composition() {
+    let w = World::new();
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    assert!(w.load().unwrap().guardian.composition.is_none());
+}
+
+#[test]
+fn the_autocompact_window_is_read_and_a_higher_scope_wins() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().context.autocompact_window, None);
+    w.user_file("[context]\nautocompact_window = 150000\n");
+    assert_eq!(w.load().unwrap().context.autocompact_window, Some(150_000));
+    w.trusted_repo();
+    w.local_file("[context]\nautocompact_window = 90000\n");
+    assert_eq!(w.load().unwrap().context.autocompact_window, Some(90_000));
+    let cli = w.cli_file("[context]\nautocompact_window = 8000\n");
+    assert_eq!(
+        w.load_with_settings(&cli)
+            .unwrap()
+            .context
+            .autocompact_window,
+        Some(8_000)
+    );
+}
+
+#[test]
+fn the_autocompact_window_must_be_positive_and_the_section_is_closed() {
+    let err = parse_settings(
+        "[context]\nautocompact_window = 0\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("context.autocompact_window"),
+        "{err}"
+    );
+    let err = parse_settings(
+        "[context]\nautocompact_pct = 80\n",
+        Path::new("u.toml"),
+        Column::User,
+    );
+    assert!(err.is_err());
+}
+
+#[test]
+fn the_autocompact_window_is_refused_from_shared_project_scope_only() {
+    let w = World::new();
+    w.project_file("[context]\nautocompact_window = 150000\n");
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("context"), "{err}");
+    let ok = "[context]\nautocompact_window = 150000\n";
+    parse_settings(ok, Path::new("p.toml"), Column::ProjectLocal).unwrap();
+    user_ok(ok);
+}
+
+// --- [env] ---
+
+const SECRET: &str = "s3cr3t-pa55w0rd";
+
+#[test]
+fn env_merges_per_key_with_the_higher_scope_winning() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[env]\nA = \"user\"\nB = \"user\"\n");
+    w.local_file("[env]\nB = \"local\"\nC = \"local\"\n");
+    let cli = w.cli_file("[env]\nC = \"cli\"\nD = \"cli\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    let got: Vec<(&str, &str)> = c
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [("A", "user"), ("B", "local"), ("C", "cli"), ("D", "cli")]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn env_names_merge_case_insensitively_on_windows() {
+    let w = World::new();
+    w.user_file("[env]\nPATH = \"user\"\n");
+    let cli = w.cli_file("[env]\nPath = \"cli\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.env.len(), 1);
+    assert_eq!(c.env["Path"].as_str(), "cli");
+}
+
+#[cfg(windows)]
+#[test]
+fn env_names_differing_only_by_case_in_one_file_are_rejected_on_windows() {
+    let text = format!("[env]\nPATH = \"{SECRET}\"\nPath = \"{SECRET}\"\n");
+    let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    let shown = err.to_string();
+    assert!(shown.contains("env.Path"), "{shown}");
+    assert!(!shown.contains(SECRET), "{shown}");
+}
+
+#[test]
+fn env_is_accepted_from_user_cli_and_trusted_local_scopes() {
+    let text = "[env]\nX = \"1\"\n";
+    for column in [Column::User, Column::Cli, Column::ProjectLocal] {
+        parse_settings(text, Path::new("s.toml"), column)
+            .unwrap_or_else(|e| panic!("{column:?}: {e}"));
+    }
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file(text);
+    assert_eq!(w.load().unwrap().env["X"].as_str(), "1");
+}
+
+#[test]
+fn env_from_the_project_column_is_a_scope_error_naming_the_key() {
+    let w = World::new();
+    w.project_file(&format!("[env]\nTOKEN = \"{SECRET}\"\n"));
+    let err = w.load().unwrap_err();
+    assert!(
+        matches!(&err, ConfigError::Scope { key, .. } if key == "env"),
+        "{err:?}"
+    );
+    assert_eq!(err.exit_code(), 2);
+    assert!(!err.to_string().contains(SECRET));
+}
+
+#[test]
+fn env_in_an_untrusted_local_file_is_rejected_because_it_loads_as_project() {
+    let w = World::new();
+    common::git_init(&w.work);
+    w.local_file("[env]\nX = \"1\"\n");
+    assert_scope_error(w.load(), "untrusted local");
+}
+
+#[test]
+fn env_rejects_bad_names_and_values_without_echoing_the_value() {
+    for (text, key) in [
+        (format!("[env]\n\"\" = \"{SECRET}\"\n"), "env."),
+        (format!("[env]\n\"A=B\" = \"{SECRET}\"\n"), "env.A=B"),
+        (format!("[env]\n\"A\\u0000B\" = \"{SECRET}\"\n"), "env.A"),
+        (format!("[env]\nA = \"{SECRET}\\u0000\"\n"), "env.A"),
+        (
+            format!("[env]\nFONTAINE_SH_COMMAND = \"{SECRET}\"\n"),
+            "env.FONTAINE_SH_COMMAND",
+        ),
+        (
+            format!("[env]\nfontaine_x = \"{SECRET}\"\n"),
+            "env.fontaine_x",
+        ),
+    ] {
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid { .. }),
+            "{text}: {err:?}"
+        );
+        assert_eq!(err.exit_code(), 2);
+        let shown = err.to_string();
+        assert!(shown.contains(key), "{key} in {shown}");
+        assert!(!shown.contains(SECRET), "{shown}");
+    }
+}
+
+#[test]
+fn env_debug_output_redacts_values() {
+    let w = World::new();
+    w.user_file(&format!("[env]\nTOKEN = \"{SECRET}\"\n"));
+    let c = w.load().unwrap();
+    let shown = format!("{c:?}");
+    assert!(shown.contains("TOKEN"));
+    assert!(!shown.contains(SECRET), "{shown}");
+    let settings = parse_settings(
+        &format!("[env]\nTOKEN = \"{SECRET}\"\n"),
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap();
+    assert!(!format!("{settings:?}").contains(SECRET));
+}
+
+#[test]
+fn a_malformed_env_entry_is_a_parse_error_that_does_not_quote_the_value() {
+    for text in [
+        format!("[env]\nTOKEN = \"{SECRET}\n"),
+        "[env]\nPIN = 12345\n".to_string(),
+        "[env]\nFLAG = true\n".to_string(),
+        "[env]\nPIN = 1.5\n".to_string(),
+        "[env]\nLIST = [\"a\"]\n".to_string(),
+        "[env]\nSUB = { a = \"b\" }\n".to_string(),
+    ] {
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{text}: {err:?}");
+        let shown = err.to_string();
+        for leaked in [SECRET, "12345", "1.5", "true"] {
+            assert!(!shown.contains(leaked), "{shown}");
+        }
+        assert!(shown.contains("u.toml"), "{shown}");
+        if text.contains("12345") {
+            assert!(
+                shown.contains("environment values must be strings"),
+                "{shown}"
+            );
+            assert!(shown.contains("2:"), "{shown}");
+        }
+    }
+}
+
+#[test]
+fn network_is_accepted_in_user_and_settings_scope_and_validates_without_reading_files() {
+    let text = "[network]\nhttps_proxy = \"http://proxy.corp:8080\"\nno_proxy = \"localhost\"\nca_bundle = \"/nonexistent/ca.pem\"\nclient_cert = \"/nonexistent/c.pem\"\nclient_key = \"/nonexistent/k.pem\"\n";
+    user_ok(text);
+    parse_settings(text, Path::new("cli.toml"), Column::Cli).unwrap();
+    user_ok(
+        "[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://p:1\"\nca_bundle = \"/nonexistent/ca.pem\"\n",
+    );
+}
+
+#[test]
+fn network_keys_merge_per_key_with_settings_over_user_and_accounts_over_both() {
+    let w = World::new();
+    w.user_file(
+        "[network]\nhttps_proxy = \"http://user:1\"\nno_proxy = \"a\"\n\n[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://acct:2\"\n",
+    );
+    let cli = w.cli_file("[network]\nhttps_proxy = \"http://cli:3\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.network.https_proxy.as_deref(), Some("http://cli:3"));
+    assert_eq!(c.network.no_proxy.as_deref(), Some("a"));
+    let acct = c.network_for(Some("w"));
+    assert_eq!(acct.https_proxy.as_deref(), Some("http://acct:2"));
+    assert_eq!(acct.no_proxy.as_deref(), Some("a"));
+    assert_eq!(c.network_for(Some("absent")), c.network);
+}
+
+#[test]
+fn empty_network_values_are_rejected() {
+    for text in [
+        "[network]\nhttps_proxy = \"\"\n",
+        "[network]\nca_bundle = \"\"\n",
+        "[accounts.x]\nkind = \"ollama\"\nno_proxy = \" \"\n",
+    ] {
+        assert!(
+            parse_settings(text, Path::new("u.toml"), Column::User).is_err(),
+            "{text}"
+        );
+    }
+}
+
+fn network_error(w: &World) -> String {
+    match w.load() {
+        Err(e @ ConfigError::Network { .. }) => {
+            assert_eq!(e.exit_code(), 2);
+            e.to_string()
+        }
+        other => panic!("expected a network error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_network_setting_that_cannot_load_stops_the_config_load() {
+    let w = World::new();
+    w.user_file("[network]\nca_bundle = \"/nonexistent/ca.pem\"\n");
+    let text = network_error(&w);
+    assert!(
+        text.contains("ca_bundle") && text.contains("/nonexistent/ca.pem"),
+        "{text}"
+    );
+
+    let w = World::new();
+    w.user_file("[network]\nno_proxy = \"x\"\n");
+    assert!(network_error(&w).contains("no_proxy"));
+
+    let w = World::new();
+    w.user_file("[network]\nclient_cert = \"/c.pem\"\n");
+    assert!(network_error(&w).contains("client_cert and client_key"));
+}
+
+#[test]
+fn an_account_that_breaks_the_network_rules_names_itself() {
+    let w = World::new();
+    w.user_file("[accounts.w]\nkind = \"ollama\"\nno_proxy = \"x\"\n");
+    assert!(network_error(&w).contains("accounts.w"));
+
+    // A proxy on the account does not rescue a `no_proxy` in `[network]`, which stays unmatched
+    // for every other account.
+    let w = World::new();
+    w.user_file(
+        "[network]\nno_proxy = \"x\"\n\n[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://p:1\"\n",
+    );
+    assert!(network_error(&w).contains("`network`"));
+}
+
+mod provenance {
+    use super::common::World;
+    use fontaine_sdk::core::config::{CliRules, LoadParams, Slot, load};
+
+    fn load_with_rules(
+        w: &World,
+        settings: Option<&std::path::Path>,
+        deny: &[String],
+    ) -> Vec<Slot> {
+        let config = load(&LoadParams {
+            launch_dir: &w.work,
+            config_dir: &w.config,
+            data_dir: &w.data,
+            settings_file: settings,
+            cli_rules: CliRules {
+                allow: &[],
+                deny,
+                afk_temperature_ceiling: None,
+            },
+            env: &super::common::no_env,
+        })
+        .unwrap();
+        config.sources["permissions.deny"].clone()
+    }
+
+    #[test]
+    fn a_key_set_in_one_layer_names_that_layer() {
+        let w = World::new();
+        w.user_file("[tui]\ntheme = \"dark\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["tui.theme"], [Slot::User]);
+    }
+
+    #[test]
+    fn layers_are_listed_highest_precedence_first() {
+        let w = World::new();
+        w.trusted_repo();
+        w.user_file("[context]\nautocompact_window = 100\n");
+        w.local_file("[context]\nautocompact_window = 200\n");
+        let c = w.load().unwrap();
+        assert_eq!(
+            c.sources["context.autocompact_window"],
+            [Slot::ProjectLocal, Slot::User]
+        );
+    }
+
+    #[test]
+    fn a_list_names_every_contributing_layer() {
+        let w = World::new();
+        w.user_file("[permissions]\ndeny = [\"shell(rm)\"]\n");
+        w.project_file("[permissions]\ndeny = [\"shell(dd)\"]\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["permissions.deny"], [Slot::Project, Slot::User]);
+    }
+
+    #[test]
+    fn an_unset_key_has_no_entry() {
+        let w = World::new();
+        w.user_file("[tui]\ntheme = \"dark\"\n");
+        let c = w.load().unwrap();
+        assert!(!c.sources.contains_key("tui.screen_reader"));
+        assert!(!c.sources.contains_key("context.autocompact_window"));
+    }
+
+    #[test]
+    fn env_and_account_entries_are_leaves_by_name() {
+        let w = World::new();
+        w.user_file("[env]\nHTTPS_PROXY = \"http://p\"\n\n[accounts.work]\nkind = \"anthropic\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["env.HTTPS_PROXY"], [Slot::User]);
+        assert_eq!(c.sources["accounts.work.kind"], [Slot::User]);
+    }
+
+    #[test]
+    fn flag_rules_are_cli_provenance() {
+        let w = World::new();
+        assert_eq!(
+            load_with_rules(&w, None, &["shell(rm)".to_string()]),
+            [Slot::Cli]
+        );
+    }
+
+    #[test]
+    fn flag_rules_join_a_settings_file_under_cli() {
+        let w = World::new();
+        w.user_file("[permissions]\ndeny = [\"shell(dd)\"]\n");
+        let cli = w.cli_file("[tui]\ntheme = \"dark\"\n");
+        let slots = load_with_rules(&w, Some(&cli), &["shell(rm)".to_string()]);
+        assert_eq!(slots, [Slot::Cli, Slot::User]);
+    }
+}
+
+#[test]
+fn the_goal_limits_default_and_only_the_user_scopes_set_them() {
+    let w = World::new();
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (50, None));
+    assert_eq!(goal.checkin_minutes, 30);
+
+    w.user_file("[goal]\nmax_turns = 10\nmax_cost_usd = 2.5\ncheckin_minutes = 5\n");
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (10, Some(2.5)));
+    assert_eq!(goal.checkin_minutes, 5);
+    let cli = w.cli_file("[goal]\nmax_turns = 3\n");
+    let goal = w.load_with_settings(&cli).unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (3, Some(2.5)));
+
+    for text in [
+        "[goal]\nmax_turns = 1000\n",
+        "[goal]\nmax_cost_usd = 0\n",
+        "[goal]\nmax_cost_usd = 5.0\n",
+        "[goal]\nmax_tokens = 1\n",
+        "[goal]\nmax_duration_secs = 2592000\n",
+        "[goal]\ncheckin_minutes = 0\n",
+        "[goal]\ncheckin_minutes = 1440\n",
+    ] {
+        user_ok(text);
+    }
+}
+
+#[test]
+fn the_goal_token_and_duration_caps_default_unset_and_merge() {
+    let w = World::new();
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_tokens, goal.max_duration_secs), (None, None));
+
+    w.user_file("[goal]\nmax_tokens = 500000\nmax_duration_secs = 7200\n");
+    let goal = w.load().unwrap().goal;
+    assert_eq!(
+        (goal.max_tokens, goal.max_duration_secs),
+        (Some(500_000), Some(7_200))
+    );
+    let cli = w.cli_file("[goal]\nmax_turns = 3\n");
+    let goal = w.load_with_settings(&cli).unwrap().goal;
+    assert_eq!(
+        (goal.max_tokens, goal.max_duration_secs),
+        (Some(500_000), Some(7_200))
+    );
+}
+
+#[test]
+fn a_repository_cannot_lengthen_an_unattended_goal_run() {
+    for column in [Column::Project, Column::ProjectLocal] {
+        for text in [
+            "[goal]\nmax_turns = 1000\n",
+            "[goal]\nmax_cost_usd = 1000.0\n",
+            "[goal]\nmax_tokens = 1000000000\n",
+            "[goal]\nmax_duration_secs = 86400\n",
+            "[goal]\ncheckin_minutes = 1440\n",
+        ] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+        }
+    }
+    let w = World::new();
+    w.project_file("[goal]\nmax_turns = 1000\n");
+    assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+}
+
+#[test]
+fn the_goal_limits_are_validated() {
+    for (text, key) in [
+        ("[goal]\nmax_turns = 0\n", "goal.max_turns"),
+        ("[goal]\nmax_turns = 1001\n", "goal.max_turns"),
+        ("[goal]\nmax_cost_usd = -1.0\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_cost_usd = nan\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_cost_usd = inf\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_tokens = 0\n", "goal.max_tokens"),
+        ("[goal]\nmax_duration_secs = 0\n", "goal.max_duration_secs"),
+        (
+            "[goal]\nmax_duration_secs = 2592001\n",
+            "goal.max_duration_secs",
+        ),
+        ("[goal]\ncheckin_minutes = 1441\n", "goal.checkin_minutes"),
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(err.to_string().contains(key), "{text}: {err}");
+    }
+    for text in [
+        "[goal]\nmax_tokens = -1\n",
+        "[goal]\nmax_tokens = 1.5\n",
+        "[goal]\nmax_duration_secs = -5\n",
+        "[goal]\nmax_duration_secs = \"1h\"\n",
+    ] {
+        assert!(
+            parse_settings(text, Path::new("u.toml"), Column::User).is_err(),
+            "{text}"
+        );
+    }
+    assert!(
+        parse_settings(
+            "[goal]\nmodel = \"a/b\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+}
+
+mod websearch {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use fontaine_sdk::core::config::{
+        Column, ConfigError, NativeSearch, WebsearchBackend, parse_settings,
+    };
+    use fontaine_sdk::core::credentials::{self, Credentials};
+    use fontaine_sdk::tools::websearch::{BackendConfig, DEFAULT_STARTUP_TIMEOUT};
+
+    use super::{World, env_with, write};
+
+    const SEARXNG: &str =
+        "[websearch]\nbackend = \"searxng\"\nbase_url = \"http://localhost:8080\"\n";
+
+    #[test]
+    fn nothing_is_configured_by_default() {
+        let w = World::new();
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, None);
+        assert_eq!(c.websearch.native, NativeSearch::Auto);
+        assert_eq!(c.websearch.max_results, 10);
+        assert_eq!(c.websearch.timeout_secs, 30);
+        assert!(
+            c.websearch_config(&super::common::no_env, &w.data)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn off_parses_and_builds_no_tool_even_with_a_runtime_installed() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Off));
+        let env = |name: &str| (name == "PATH").then(|| std::ffi::OsString::from("/usr/bin"));
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        assert!(c.default_search_runtime(&env).is_none());
+    }
+
+    #[test]
+    fn off_refuses_the_keys_of_a_real_backend() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\nbase_url = \"http://localhost:8080\"\n");
+        assert!(w.load().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_is_a_managed_backend_only_when_a_runtime_is_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = World::new();
+        let c = w.load().unwrap();
+        let bin = w.root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = std::ffi::OsString::from(bin.as_os_str());
+        let env = move |name: &str| (name == "PATH").then(|| path.clone());
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        std::fs::write(bin.join("podman"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("podman"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let built = c.websearch_config(&env, &w.data).unwrap().unwrap();
+        assert!(matches!(built.backend, BackendConfig::Managed(_)));
+        // Building the config starts nothing and writes nothing.
+        assert!(!w.data.join("searxng").exists());
+    }
+
+    #[test]
+    fn a_searxng_section_parses_and_builds_a_launching_backend() {
+        let w = World::new();
+        w.user_file(
+            "[websearch]\nbackend = \"searxng\"\nbase_url = \"http://localhost:8080\"\n\
+             command = [\"docker\", \"run\", \"--rm\", \"searxng/searxng\"]\n\
+             native = \"off\"\nmax_results = 5\ntimeout_secs = 12\n",
+        );
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Searxng));
+        assert_eq!(c.websearch.native, NativeSearch::Off);
+        let built = c
+            .websearch_config(&super::common::no_env, &w.data)
+            .unwrap()
+            .unwrap();
+        assert_eq!(built.max_results, 5);
+        assert_eq!(built.timeout.as_secs(), 12);
+        let BackendConfig::Searxng { base_url, launch } = built.backend else {
+            panic!("expected a searxng backend");
+        };
+        assert_eq!(base_url.as_str(), "http://localhost:8080/");
+        let launch = launch.unwrap();
+        assert_eq!(launch.argv[0], "docker");
+        assert_eq!(launch.startup_timeout, DEFAULT_STARTUP_TIMEOUT);
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        let err = parse_settings(
+            "[websearch]\nbackend = \"tavily\"\napi_key = \"k\"\n",
+            Path::new("user.toml"),
+            Column::User,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn project_and_project_local_scopes_cannot_set_it_but_the_cli_can() {
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file(SEARXNG);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+        w.local_file(SEARXNG);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        std::fs::remove_file(w.work.join(".fontaine/settings.local.toml")).unwrap();
+        let cli = w.cli_file(SEARXNG);
+        let c = w.load_with_settings(&cli).unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Searxng));
+    }
+
+    fn invalid(text: &str, mention: &str) {
+        let w = World::new();
+        w.user_file(text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains(mention), "{err}");
+    }
+
+    #[test]
+    fn inconsistent_sections_are_config_errors() {
+        invalid("[websearch]\nbackend = \"searxng\"\n", "base_url");
+        invalid(
+            "[websearch]\nbackend = \"tavily\"\nbase_url = \"http://x.test\"\napi_key_env = \"K\"\n",
+            "base_url",
+        );
+        invalid(
+            "[websearch]\nbackend = \"tavily\"\ncommand = [\"x\"]\napi_key_env = \"K\"\n",
+            "command",
+        );
+        invalid(&format!("{SEARXNG}startup_timeout_secs = 5\n"), "command");
+        invalid(&format!("{SEARXNG}command = []\n"), "command");
+        invalid(&format!("{SEARXNG}max_results = 21\n"), "max_results");
+        invalid(&format!("{SEARXNG}max_results = 0\n"), "max_results");
+        invalid("[websearch]\nbase_url = \"http://x.test\"\n", "backend");
+        invalid(
+            "[websearch]\nbackend = \"searxng\"\nbase_url = \"ftp://x.test\"\n",
+            "base_url",
+        );
+    }
+
+    #[test]
+    fn tavily_without_a_key_is_a_websearch_error_with_exit_code_two() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"tavily\"\n");
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Websearch { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+
+        w.user_file("[websearch]\nbackend = \"tavily\"\napi_key_env = \"TAVILY\"\n");
+        let err = w.load().unwrap_err();
+        assert!(err.to_string().contains("TAVILY"), "{err}");
+        // A stored key does not stand in for a named-but-missing variable.
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"stored\"\n",
+        );
+        assert!(matches!(
+            w.load().unwrap_err(),
+            ConfigError::Websearch { .. }
+        ));
+    }
+
+    #[test]
+    fn the_key_comes_from_the_named_variable_or_the_stored_credential() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"tavily\"\napi_key_env = \"TAVILY\"\n");
+        let env = env_with("TAVILY", "tvly-from-env");
+        let c = w.load_from(&w.work, None, &env).unwrap();
+        let built = c.websearch_config(&env, &w.data).unwrap().unwrap();
+        let BackendConfig::Tavily { api_key, .. } = &built.backend else {
+            panic!("expected a tavily backend");
+        };
+        assert_eq!(
+            api_key,
+            &fontaine_sdk::tools::websearch::ApiKey::new("tvly-from-env")
+        );
+        assert!(!format!("{built:?}").contains("tvly-from-env"));
+
+        w.user_file("[websearch]\nbackend = \"tavily\"\n");
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"tvly-stored\"\n",
+        );
+        let c = w.load().unwrap();
+        let no_env = |_: &str| -> Option<OsString> { None };
+        let built = c.websearch_config(&no_env, &w.data).unwrap().unwrap();
+        let BackendConfig::Tavily { api_key, .. } = built.backend else {
+            panic!("expected a tavily backend");
+        };
+        assert_eq!(
+            api_key,
+            fontaine_sdk::tools::websearch::ApiKey::new("tvly-stored")
+        );
+    }
+
+    #[test]
+    fn the_credentials_entry_round_trips_beside_accounts_and_takes_no_oauth() {
+        let w = World::new();
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"tvly-stored\"\n",
+        );
+        credentials::store(&w.data, "work", "sk-account").unwrap();
+        let stored = Credentials::load(&w.data).unwrap();
+        assert_eq!(stored.websearch(), Some("tvly-stored"));
+        assert!(stored.account("work").is_some());
+
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch.oauth]\naccess = \"a\"\nrefresh = \"r\"\nexpires_at = 1\n",
+        );
+        assert!(matches!(
+            Credentials::load(&w.data),
+            Err(ConfigError::Credentials { .. })
+        ));
+    }
+}
+
+#[test]
+fn auto_memory_defaults_on_and_only_the_user_file_and_cli_can_set_it() {
+    let w = World::new();
+    assert!(w.load().unwrap().memory.auto);
+
+    w.user_file("[memory]\nauto = false\n");
+    assert!(!w.load().unwrap().memory.auto);
+
+    w.user_file("");
+    let cli = w.cli_file("[memory]\nauto = false\n");
+    assert!(!w.load_with_settings(&cli).unwrap().memory.auto);
+
+    for column in [Column::Project, Column::ProjectLocal] {
+        let err = parse_settings("[memory]\nauto = true\n", Path::new("p.toml"), column)
+            .expect_err("a repository cannot set memory");
+        assert!(err.to_string().contains("memory"), "{err}");
+    }
+}
+
+#[test]
+fn the_checkpoint_caps_default_and_only_the_user_file_sets_them() {
+    let w = World::new();
+    let defaults = w.load().unwrap().checkpoints;
+    assert!(defaults.enabled);
+    assert_eq!(defaults.max_file_bytes, 10 * 1024 * 1024);
+    assert_eq!(defaults.max_session_bytes, 256 * 1024 * 1024);
+
+    w.user_file("[checkpoints]\nenabled = false\nmax_file_bytes = 100\nmax_session_bytes = 1000\n");
+    let set = w.load().unwrap().checkpoints;
+    assert_eq!(
+        (set.enabled, set.max_file_bytes, set.max_session_bytes),
+        (false, 100, 1000)
+    );
+
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[checkpoints]\nenabled = true\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let err = parse_settings(
+        "[checkpoints]\nmax_file_bytes = 0\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("checkpoints.max_file_bytes"),
+        "{err}"
+    );
+}
+
+#[test]
+fn plugin_auto_update_defaults_on_and_only_the_user_file_turns_it_off() {
+    let w = World::new();
+    assert!(w.load().unwrap().plugins.auto_update);
+
+    w.user_file("[plugins]\nauto_update = false\n");
+    assert!(!w.load().unwrap().plugins.auto_update);
+
+    // Project, project-local and the `--settings` layer all refuse it: updating changes code the
+    // user approved at install.
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[plugins]\nauto_update = false\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let settings = w.cli_file("[plugins]\nauto_update = false\n");
+    let err = w.load_with_settings(&settings).unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+}
+
+#[test]
+fn the_shell_timeout_cap_defaults_and_only_the_user_scopes_set_it() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().shell.max_timeout_secs, 600);
+
+    w.user_file("[shell]\nmax_timeout_secs = 1800\n");
+    assert_eq!(w.load().unwrap().shell.max_timeout_secs, 1800);
+    let cli = w.cli_file("[shell]\nmax_timeout_secs = 900\n");
+    assert_eq!(
+        w.load_with_settings(&cli).unwrap().shell.max_timeout_secs,
+        900
+    );
+
+    for column in [Column::Project, Column::ProjectLocal] {
+        let err = parse_settings(
+            "[shell]\nmax_timeout_secs = 900\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+}
+
+#[test]
+fn the_shell_timeout_cap_is_validated() {
+    for text in [
+        "[shell]\nmax_timeout_secs = 0\n",
+        "[shell]\nmax_timeout_secs = 86401\n",
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(err.to_string().contains("shell.max_timeout_secs"), "{err}");
+    }
+    parse_settings(
+        "[shell]\nmax_timeout_secs = 86400\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap();
+    assert!(parse_settings("[shell]\ntimeout = 5\n", Path::new("u.toml"), Column::User).is_err());
+}
+
+#[test]
+fn teams_are_on_by_default_off_from_the_user_file_and_never_set_by_shared_project_settings() {
+    let w = World::new();
+    assert!(w.load().unwrap().agents.teams);
+    w.user_file("[agents]\nteams = false\n");
+    assert!(!w.load().unwrap().agents.teams);
+
+    let w = World::new();
+    w.project_file("[agents]\nteams = true\n");
+    assert_scope_error(w.load(), "project: agents.teams");
+
+    let w = World::new();
+    let cli = w.cli_file("[agents]\nteams = false\n");
+    assert!(!w.load_with_settings(&cli).unwrap().agents.teams);
+}
+
+#[test]
+fn a_matcher_on_a_team_hook_is_rejected_at_load() {
+    for event in ["task_completed", "teammate_idle"] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[[hooks.{event}]]\nmatcher = \"shell\"\ncommand = \"gate.sh\"\n"
+        ));
+        let err = w.load().unwrap_err();
+        assert!(err.to_string().contains("no `matcher`"), "{event}: {err}");
+    }
+}
+
+#[test]
+fn team_hooks_union_across_scopes_and_a_project_one_may_be_declared() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[[hooks.task_completed]]\ncommand = \"a.sh\"\n");
+    w.project_file(
+        "[[hooks.task_completed]]\ncommand = \"b.sh\"\n[[hooks.teammate_idle]]\ncommand = \"c.sh\"\n",
+    );
+    let c = w.load().unwrap();
+    assert_eq!(c.hooks.get(HookEvent::TaskCompleted).len(), 2);
+    assert_eq!(c.hooks.get(HookEvent::TeammateIdle).len(), 1);
+    assert!(c.hooks.get(HookEvent::TeammateIdle)[0].origin.is_project());
+}
+
+#[test]
+fn every_hook_event_has_a_distinct_key_and_wire_name_that_round_trip() {
+    use std::collections::BTreeSet;
+    let keys: BTreeSet<_> = HookEvent::ALL.iter().map(|e| e.config_key()).collect();
+    let names: BTreeSet<_> = HookEvent::ALL.iter().map(|e| e.wire_name()).collect();
+    assert_eq!(keys.len(), HookEvent::ALL.len());
+    assert_eq!(names.len(), HookEvent::ALL.len());
+    for event in HookEvent::ALL {
+        assert_eq!(HookEvent::from_wire_name(event.wire_name()), Some(event));
+        assert!(!event.handlers().is_empty());
+        // The config key is the event's serde name: a table of it loads.
+        let kind = event.handlers()[0].as_str();
+        let body = match kind {
+            "command" => "command = \"true\"",
+            "http" => "type = \"http\"\nurl = \"https://example.test\"",
+            _ => "type = \"prompt\"\nprompt = \"ok?\"",
+        };
+        user_ok(&format!("[[hooks.{}]]\n{body}\n", event.config_key()));
+    }
+    assert_eq!(HookEvent::from_wire_name("Bogus"), None);
+}
+
+mod hook_validation {
+    use super::*;
+
+    fn rejected(text: &str, mention: &str) {
+        let err = parse_settings(text, Path::new("user.toml"), Column::User)
+            .expect_err(&format!("should reject:\n{text}"));
+        assert!(err.to_string().contains(mention), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_event_key_is_a_load_error() {
+        rejected("[[hooks.on_tuesday]]\ncommand = \"true\"\n", "on_tuesday");
+    }
+
+    #[test]
+    fn a_matcher_must_fit_the_events_matcher_kind() {
+        rejected(
+            "[[hooks.session_start]]\nmatcher = \"bogus\"\ncommand = \"true\"\n",
+            "`bogus` is not a value this event matches",
+        );
+        rejected(
+            "[[hooks.stop]]\nmatcher = \"x\"\ncommand = \"true\"\n",
+            "takes no `matcher`",
+        );
+        rejected(
+            "[[hooks.task_created]]\nmatcher = \"x\"\ncommand = \"true\"\n",
+            "takes no `matcher`",
+        );
+        rejected(
+            "[[hooks.pre_tool_use]]\nmatcher = \"shell(\"\ncommand = \"true\"\n",
+            "hooks.pre_tool_use",
+        );
+        user_ok("[[hooks.session_start]]\nmatcher = \"startup|resume\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.session_start]]\nmatcher = \"*\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.subagent_stop]]\nmatcher = \"my-agent|worker\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.notification]]\nmatcher = \"permission_prompt\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.elicitation]]\nmatcher = \"github|my-server\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.elicitation]]\nmatcher = \"*\"\ncommand = \"true\"\n");
+        rejected(
+            "[[hooks.elicitation]]\nmatcher = \"a|*\"\ncommand = \"true\"\n",
+            "only work as the whole matcher",
+        );
+        rejected(
+            "[[hooks.elicitation]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
+            "not `prompt`",
+        );
+        user_ok(
+            "[[hooks.stop_failure]]\nmatcher = \"rate_limit|server_error\"\ncommand = \"true\"\n",
+        );
+    }
+
+    #[test]
+    fn an_event_takes_only_the_handler_types_it_accepts() {
+        rejected(
+            "[[hooks.session_start]]\ntype = \"http\"\nurl = \"https://example.test\"\n",
+            "takes `command` handlers, not `http`",
+        );
+        rejected(
+            "[[hooks.notification]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
+            "not `prompt`",
+        );
+        user_ok("[[hooks.stop]]\ntype = \"prompt\"\nprompt = \"ok?\"\n");
+        user_ok("[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\n");
+    }
+
+    #[test]
+    fn a_hook_has_exactly_the_fields_of_its_type() {
+        rejected("[[hooks.stop]]\n", "needs `command`");
+        rejected(
+            "[[hooks.stop]]\ncommand = \"true\"\nurl = \"https://example.test\"\n",
+            "`url` does not apply to a `command` hook",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"http\"\ncommand = \"true\"\nurl = \"https://example.test\"\n",
+            "`command` does not apply to a `http` hook",
+        );
+        rejected("[[hooks.stop]]\ntype = \"http\"\n", "needs `url`");
+        rejected(
+            "[[hooks.stop]]\ntype = \"http\"\nurl = \"ftp://example.test\"\n",
+            "http:// or https://",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"prompt\"\nprompt = \"ok?\"\nheaders = { a = \"b\" }\n",
+            "`headers` does not apply to a `prompt` hook",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"command\"\ncommand = \"true\"\nallowed_env_vars = [\"A\"]\n",
+            "`allowed_env_vars` does not apply",
+        );
+        rejected("[[hooks.stop]]\ncommand = \"\"\n", "must not be empty");
+        rejected(
+            "[[hooks.stop]]\ncommand = \"true\"\ntimeout_secs = 0\n",
+            "greater than zero",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"agent\"\nprompt = \"x\"\n",
+            "agent",
+        );
+    }
+
+    #[test]
+    fn the_defaults_and_scopes_of_each_event_are_stated_in_one_place() {
+        use fontaine_sdk::core::config::ProjectScope;
+        let ignored: Vec<_> = HookEvent::ALL
+            .into_iter()
+            .filter(|e| matches!(e.project_scope(), ProjectScope::IgnoredWithWarning(_)))
+            .map(|e| e.config_key())
+            .collect();
+        assert_eq!(ignored, ["teammate_idle", "stop", "subagent_stop"]);
+        assert_eq!(
+            HookEvent::SessionEnd.default_timeout(),
+            std::time::Duration::from_millis(1500)
+        );
+        assert_eq!(
+            HookEvent::Stop.default_timeout(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+}
+
+#[test]
+fn hooks_of_every_scope_merge_per_event_and_http_headers_dedupe() {
+    let w = World::new();
+    w.user_file("[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\nheaders = { a = \"b\" }\n");
+    w.project_file(
+        "[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\nheaders = { a = \"b\" }\n[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://other.test\"\n",
+    );
+    w.trusted_repo();
+    let c = w.load().unwrap();
+    let hooks = c.hooks.get(HookEvent::SessionEnd);
+    assert_eq!(
+        hooks.len(),
+        2,
+        "the same http hook in two scopes is kept once"
+    );
+    assert!(
+        hooks[0].origin.user_trust,
+        "under the scope with more trust"
+    );
+    assert!(!hooks[1].origin.user_trust);
+}
+
+// --- diagnose ---
+
+fn diagnose(w: &World, settings: Option<&Path>) -> Vec<config::LayerDiagnosis> {
+    config::diagnose(&config::LoadParams {
+        launch_dir: &w.work,
+        config_dir: &w.config,
+        data_dir: &w.data,
+        settings_file: settings,
+        cli_rules: Default::default(),
+        env: &common::no_env,
+    })
+}
+
+fn failure(layer: &config::LayerDiagnosis) -> &ConfigError {
+    match &layer.outcome {
+        config::LayerOutcome::Failed(e) => e,
+        other => panic!("{} should have failed: {other:?}", layer.slot.label()),
+    }
+}
+
+#[test]
+fn diagnose_reports_every_failing_layer_with_its_own_first_error() {
+    let w = World::new();
+    w.user_file("bogus = 1\n");
+    w.project_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let layers = diagnose(&w, None);
+    let labels: Vec<_> = layers.iter().map(|l| l.slot.label()).collect();
+    assert_eq!(labels, ["managed", "user", "project", "project-local"]);
+    assert!(matches!(failure(&layers[1]), ConfigError::Parse { .. }));
+    match failure(&layers[2]) {
+        ConfigError::Scope { key, reason, .. } => {
+            assert_eq!(key, "permissions.default_mode");
+            assert!(!reason.is_empty());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(layers[3].outcome, config::LayerOutcome::Absent));
+}
+
+#[test]
+fn diagnose_still_shows_a_good_file_after_a_bad_one() {
+    let w = World::new();
+    w.user_file("bogus = 1\n");
+    w.local_file("[permissions]\ndeny = [\"shell(rm)\"]\n");
+    let cli = w.cli_file("[agents]\nmax_parallel = 3\n");
+    let layers = diagnose(&w, Some(&cli));
+    assert!(matches!(failure(&layers[1]), ConfigError::Parse { .. }));
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
+    assert!(matches!(layers[3].outcome, config::LayerOutcome::Loaded));
+    assert!(matches!(layers[4].outcome, config::LayerOutcome::Loaded));
+    assert_eq!(layers[4].slot.label(), "cli");
+}
+
+#[test]
+fn diagnose_names_the_path_of_a_parse_error() {
+    let w = World::new();
+    w.project_file("this is not toml");
+    let layers = diagnose(&w, None);
+    match failure(&layers[2]) {
+        ConfigError::Parse { path, .. } => {
+            assert_eq!(path, &w.work.join(".fontaine/settings.toml"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn diagnose_reports_a_missing_settings_file_as_a_read_error() {
+    let w = World::new();
+    let missing = w.root.join("nope.toml");
+    let layers = diagnose(&w, Some(&missing));
+    assert!(matches!(
+        failure(layers.last().unwrap()),
+        ConfigError::Read { .. }
+    ));
+}
+
+#[test]
+fn diagnose_gives_a_demoted_local_file_its_reason() {
+    let w = World::new();
+    w.local_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let layers = diagnose(&w, None);
+    let local = &layers[3];
+    assert!(local.demotion.is_some());
+    assert!(matches!(
+        failure(local),
+        ConfigError::Scope {
+            column: Column::Project,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn layers_from_a_loaded_config_follow_the_diagnosis_order() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[agents]\nmax_parallel = 2\n");
+    let c = w.load().unwrap();
+    let layers = config::LayerDiagnosis::from_scopes(&c, &w.data);
+    let labels: Vec<_> = layers.iter().map(|l| l.slot.label()).collect();
+    assert_eq!(labels, ["managed", "user", "project", "project-local"]);
+    assert!(matches!(layers[1].outcome, config::LayerOutcome::Loaded));
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
+}
+
+mod afk_ceiling {
+    use super::common::World;
+    use fontaine_sdk::core::config::{CliRules, ConfigError, LoadParams, load};
+    use fontaine_sdk::guardian::temperature::DEFAULT_CEILING;
+
+    fn ceiling(w: &World, flag: Option<f64>) -> Result<f64, ConfigError> {
+        load(&LoadParams {
+            launch_dir: &w.work,
+            config_dir: &w.config,
+            data_dir: &w.data,
+            settings_file: None,
+            cli_rules: CliRules {
+                afk_temperature_ceiling: flag,
+                ..CliRules::default()
+            },
+            env: &super::common::no_env,
+        })
+        .map(|c| c.afk.ceiling())
+    }
+
+    #[test]
+    fn the_default_is_used_when_nothing_sets_it() {
+        let w = World::new();
+        assert_eq!(ceiling(&w, None).unwrap(), DEFAULT_CEILING);
+    }
+
+    #[test]
+    fn the_user_file_and_the_flag_set_it_and_the_flag_wins() {
+        let w = World::new();
+        w.user_file("[afk]\ntemperature_ceiling = 20.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 20.0);
+        assert_eq!(ceiling(&w, Some(5.0)).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn a_project_value_can_only_lower_the_ceiling() {
+        let w = World::new();
+        w.trusted_repo();
+        w.user_file("[afk]\ntemperature_ceiling = 8.0\n");
+        w.project_file("[afk]\ntemperature_ceiling = 100.0\n");
+        assert_eq!(
+            ceiling(&w, None).unwrap(),
+            8.0,
+            "above the user value is clamped"
+        );
+        w.project_file("[afk]\ntemperature_ceiling = 3.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 3.0);
+        // The lowest of the project files wins, whichever is read first.
+        w.local_file("[afk]\ntemperature_ceiling = 2.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 2.0);
+        w.project_file("[afk]\ntemperature_ceiling = 1.5\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 1.5);
+        // A cap also binds a higher value from the command line.
+        assert_eq!(ceiling(&w, Some(50.0)).unwrap(), 1.5);
+    }
+
+    #[test]
+    fn a_non_positive_or_non_finite_value_is_refused_in_every_scope() {
+        for value in ["0.0", "-1.0", "inf", "nan"] {
+            let text = format!("[afk]\ntemperature_ceiling = {value}\n");
+            let w = World::new();
+            w.user_file(&text);
+            assert!(ceiling(&w, None).is_err(), "user {value}");
+
+            let w = World::new();
+            w.trusted_repo();
+            w.project_file(&text);
+            assert!(ceiling(&w, None).is_err(), "project {value}");
+
+            let w = World::new();
+            w.trusted_repo();
+            w.local_file(&text);
+            assert!(ceiling(&w, None).is_err(), "project-local {value}");
+        }
+        let w = World::new();
+        for flag in [0.0, -2.0, f64::INFINITY, f64::NAN] {
+            assert!(ceiling(&w, Some(flag)).is_err(), "flag {flag}");
+        }
+    }
+}
+
+mod headless_usage_wait {
+    use super::common::World;
+    use fontaine_sdk::core::config::{ConfigError, DEFAULT_MAX_USAGE_WAIT_SECS, OnUsageLimit};
+
+    fn headless(w: &World) -> Result<(u64, OnUsageLimit), ConfigError> {
+        w.load()
+            .map(|c| (c.headless.max_usage_wait_secs, c.headless.on_usage_limit))
+    }
+
+    #[test]
+    fn the_default_waits_six_hours() {
+        let w = World::new();
+        assert_eq!(
+            headless(&w).unwrap(),
+            (DEFAULT_MAX_USAGE_WAIT_SECS, OnUsageLimit::Wait)
+        );
+        assert_eq!(DEFAULT_MAX_USAGE_WAIT_SECS, 6 * 3600);
+    }
+
+    #[test]
+    fn the_user_file_sets_both_keys() {
+        let w = World::new();
+        w.user_file("[headless]\nmax_usage_wait_secs = 7200\non_usage_limit = \"exit\"\n");
+        assert_eq!(headless(&w).unwrap(), (7200, OnUsageLimit::Exit));
+    }
+
+    #[test]
+    fn a_project_file_may_only_choose_exit() {
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file("[headless]\non_usage_limit = \"exit\"\n");
+        assert_eq!(headless(&w).unwrap().1, OnUsageLimit::Exit);
+        for text in [
+            "[headless]\non_usage_limit = \"wait\"\n",
+            "[headless]\nmax_usage_wait_secs = 60\n",
+        ] {
+            let w = World::new();
+            w.trusted_repo();
+            w.project_file(text);
+            assert!(
+                matches!(headless(&w), Err(ConfigError::Scope { .. })),
+                "project: {text}"
+            );
+            let w = World::new();
+            w.trusted_repo();
+            w.local_file(text);
+            assert!(
+                matches!(headless(&w), Err(ConfigError::Scope { .. })),
+                "project-local: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_wait_is_refused_so_exit_is_the_way_to_not_wait() {
+        let w = World::new();
+        w.user_file("[headless]\nmax_usage_wait_secs = 0\n");
+        let error = headless(&w).unwrap_err().to_string();
+        assert!(error.contains("on_usage_limit"), "{error}");
+    }
+}
+
+mod retry {
+    use super::common::World;
+    use fontaine_sdk::core::config::ConfigError;
+    use std::time::Duration;
+
+    #[test]
+    fn the_defaults_retry_four_times_within_two_minutes() {
+        let w = World::new();
+        let policy = w.load().unwrap().retry.policy();
+        assert_eq!(policy.max_retries, 4);
+        assert_eq!(policy.base_delay, Duration::from_millis(500));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.max_total_delay, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_user_file_overrides_every_key() {
+        let w = World::new();
+        w.user_file(
+            "[retry]\nmax_retries = 7\nbase_delay_ms = 100\nmax_delay_secs = 10\nmax_total_delay_secs = 60\n",
+        );
+        let policy = w.load().unwrap().retry.policy();
+        assert_eq!(policy.max_retries, 7);
+        assert_eq!(policy.base_delay, Duration::from_millis(100));
+        assert_eq!(policy.max_delay, Duration::from_secs(10));
+        assert_eq!(policy.max_total_delay, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn out_of_range_values_are_refused() {
+        for text in [
+            "[retry]\nmax_retries = 11\n",
+            "[retry]\nbase_delay_ms = 0\n",
+            "[retry]\nmax_delay_secs = 0\n",
+            "[retry]\nmax_total_delay_secs = 0\n",
+            "[retry]\nbase_delay_ms = 5000\nmax_delay_secs = 1\n",
+        ] {
+            let w = World::new();
+            w.user_file(text);
+            assert!(
+                matches!(w.load(), Err(ConfigError::Invalid { .. })),
+                "{text}: {:?}",
+                w.load().map(|_| ())
+            );
+        }
+    }
+
+    #[test]
+    fn project_scopes_may_not_set_it() {
+        let text = "[retry]\nmax_retries = 9\n";
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file(text);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        let w = World::new();
+        w.trusted_repo();
+        w.local_file(text);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+    }
+}
+
+#[test]
+fn self_update_defaults_on_and_only_the_user_file_turns_it_off() {
+    let w = World::new();
+    assert!(w.load().unwrap().updates.auto_update);
+
+    w.user_file("[updates]\nauto_update = false\n");
+    assert!(!w.load().unwrap().updates.auto_update);
+
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[updates]\nauto_update = false\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let settings = w.cli_file("[updates]\nauto_update = false\n");
+    let err = w.load_with_settings(&settings).unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+}

@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use fontaine_core::config::PermissionMode;
-use fontaine_core::permission_rules::{Rule, parse_rule};
-use fontaine_core::permissions::{Answer, ApprovalRequest, Approver};
-use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionReply};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::permission_rules::{Rule, parse_rule};
+use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, Approver};
+use fontaine_sdk::tools::ask_user::{Question, QuestionAnswer, QuestionReply};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
@@ -58,7 +58,7 @@ pub fn permission_request(request: &ApprovalRequest) -> Value {
     if let Some(id) = &request.tool_use_id {
         map.insert("tool_use_id".into(), json!(id));
     }
-    if !request.agent.is_empty() && request.agent != fontaine_tools::gate::ROOT_AGENT {
+    if !request.agent.is_empty() && request.agent != fontaine_sdk::tools::gate::ROOT_AGENT {
         map.insert("agent_id".into(), json!(request.agent));
     }
     body
@@ -74,7 +74,7 @@ fn rule_of(entry: &Value) -> Result<Rule, String> {
         Some(content) if !content.is_empty() => format!("{tool}({content})"),
         _ => tool.to_string(),
     };
-    let mapped = fontaine_core::extensions::map_tool_entry(&text)?;
+    let mapped = fontaine_sdk::core::extensions::map_tool_entry(&text)?;
     parse_rule(&mapped).map_err(|e| e.to_string())
 }
 
@@ -277,7 +277,7 @@ impl Approver for SdkApprover {
                 "tool_name": "AskUserQuestion",
                 "input": { "questions": listed },
             });
-            if !agent.is_empty() && agent != fontaine_tools::gate::ROOT_AGENT {
+            if !agent.is_empty() && agent != fontaine_sdk::tools::gate::ROOT_AGENT {
                 body["agent_id"] = json!(agent);
             }
             let reply = self.router.request(body).await;
@@ -334,7 +334,7 @@ pub fn decode_answers(questions: &[Question], reply: Result<Value, RequestError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_tools::ask_user::QuestionOption;
+    use fontaine_sdk::tools::ask_user::QuestionOption;
 
     fn sent() -> Value {
         json!({"command": "git status"})

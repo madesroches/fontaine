@@ -3,8 +3,8 @@ use std::ops::ControlFlow;
 use crate::commands::{AfkRequest, parse_afk};
 use crate::reports;
 use crate::{Action, App, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::goal::PauseReason;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::goal::PauseReason;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/afk report [all]` and `/afk review`. Interactive only: the model, a config key and a
@@ -85,7 +85,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => self
                 .app
                 .transcript
-                .error(fontaine_tools::error_chain::chain(&e)),
+                .error(fontaine_sdk::tools::error_chain::chain(&e)),
         }
     }
 
@@ -103,7 +103,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => {
                 self.app
                     .transcript
-                    .error(fontaine_tools::error_chain::chain(&e));
+                    .error(fontaine_sdk::tools::error_chain::chain(&e));
                 None
             }
         };

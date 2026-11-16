@@ -1,0 +1,484 @@
+//! Building the root agent: its prompt, its wrapped tools and the builder configuration it
+//! shares with subagents.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::agents::registry::AgentTypes;
+use crate::agents::spawn::{AgentTool, SendMessageTool};
+use crate::agents::tools::{BoardShowTool, BoardUpdateTool};
+use crate::tools::advisor_tool::AdvisorTool;
+use crate::tools::ask_user::AskUserTool;
+use crate::tools::bug_draft::DraftBugReportTool;
+use crate::tools::builtins::Seen;
+use crate::tools::gate::{AgentId, ROOT_AGENT};
+use crate::tools::kills::KillSwitches;
+use crate::tools::live::Live;
+use crate::tools::lsp::LspTool;
+use crate::tools::models_tool::ModelsTool;
+use crate::tools::result_pipeline::ResultPipeline;
+use crate::tools::schedule::{
+    CronCreateTool, CronDeleteTool, CronJobsTool, ScheduleStore, ScheduleWakeupTool,
+};
+use crate::tools::skill::SkillTool;
+use crate::tools::todo::TodoTool;
+use crate::tools::tool_search::ToolSearchTool;
+use rig_agent::agent::{
+    AgentHook, CompletionCallAction, CompletionCallEvent, DispatchAction, DispatchEvent,
+    HookContext,
+};
+use rig_agent::prelude::*;
+use rig_agent::tool::server::ToolServerHandle;
+use rig_core::{ErrorKind, ErrorReport};
+
+use super::deferred::DeferredAdvertiser;
+use super::mcp::output_limits;
+use super::{ReportedAdvisor, SessionModels, Setup};
+use crate::core::bug_drafts::FileDrafts;
+use crate::core::checkpoint::StoreCapture;
+use crate::core::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
+use crate::core::config::{Config, DraftsMode};
+use crate::core::fork_context::ParentContextHook;
+use crate::core::gate::{AFK_STOPPED_MESSAGE, SessionState};
+use crate::core::instructions::{self, InstructionStage, Loaded, Sources};
+use crate::core::memory;
+use crate::core::memory_tool::MemoryTool;
+use crate::core::model_roles::ADVISOR_ROLE;
+use crate::core::models::{ModelRef, Models};
+use crate::core::native_search;
+use crate::core::permissions::{Approver, PermissionPipeline};
+use crate::core::prompt::{self, PromptParts};
+use crate::core::questions::HumanQuestions;
+use crate::core::redact::Redactor;
+use crate::core::runtime_error::RuntimeError;
+use crate::core::schedule::ReportedSchedule;
+use crate::core::session::{CONVERSATION_LOG, Session};
+use crate::core::skills::{self, SkillRuntime};
+use crate::core::steering::{Steering, SteeringHook};
+use crate::core::todos::ReportedTodos;
+use crate::core::tools::{self, ExtensionTool, ExtensionTools, RegistryParams};
+use crate::core::turn_recovery::{InflightHook, RecoveryHook};
+
+/// Tells the permission state which model tool call a tool is serving.
+pub(crate) struct CurrentCall {
+    pub(crate) state: Arc<SessionState>,
+}
+
+impl AgentHook for CurrentCall {
+    async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        // A temperature stop ends every agent's run here, before the next model request or tool
+        // call leaves, rather than at the next await the surface happens to poll.
+        if self.state.afk().stopped.is_some() {
+            return DispatchAction::Deny(ErrorReport::new(
+                ErrorKind::Cancelled,
+                AFK_STOPPED_MESSAGE,
+            ));
+        }
+        if event.tool_name().is_some()
+            && let Some(call) = event.call_id
+        {
+            let agent = event
+                .tool_context()
+                .and_then(|context| context.get::<AgentId>().ok().flatten())
+                .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+            self.state.set_current_call(&agent, call.to_string());
+        }
+        DispatchAction::Proceed
+    }
+}
+
+/// Holds every model request of an agent while a usage pause is in force, outside any timeout:
+/// the gate is per request, so a request after a long tool call is held too, not only the first
+/// of a turn. A pause that ends in failure stops the run with its reason.
+pub(crate) struct UsageGate {
+    state: Arc<SessionState>,
+}
+
+impl AgentHook for UsageGate {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        _event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
+        match self.state.usage_gate().await {
+            Ok(()) => CompletionCallAction::Continue,
+            Err(ended) => CompletionCallAction::Stop(ended.to_string()),
+        }
+    }
+}
+
+/// What the root agent and every subagent are built with: the telemetry setting and the hook
+/// that tells the permission state which model tool call a tool is serving. Applied before any
+/// other hook so `CurrentCall` runs first.
+pub(crate) fn apply_common(
+    builder: AgentBuilder,
+    state: &Arc<SessionState>,
+    record_content: bool,
+) -> AgentBuilder {
+    builder
+        .record_content_telemetry(record_content)
+        .add_hook(CurrentCall {
+            state: state.clone(),
+        })
+        .add_hook(UsageGate {
+            state: state.clone(),
+        })
+}
+
+pub(super) struct Parts<'a> {
+    pub(super) setup: &'a Setup,
+    pub(super) roots: &'a [PathBuf],
+    pub(super) pipeline: &'a Arc<PermissionPipeline>,
+    pub(super) state: &'a Arc<SessionState>,
+    pub(super) seen: &'a Seen,
+    pub(super) models: &'a Models,
+    pub(super) config: &'a Config,
+    pub(super) session: &'a Session,
+    pub(super) tool_server: &'a ToolServerHandle,
+    pub(super) results: &'a Arc<ResultPipeline>,
+    pub(super) skills: &'a Arc<SkillRuntime>,
+    pub(super) approver: &'a Arc<dyn Approver>,
+    pub(super) types: &'a Arc<Live<AgentTypes>>,
+    pub(super) runner: &'a Arc<CoreChildRunner>,
+    pub(super) output_style: Option<(String, String)>,
+    pub(super) steering: &'a Steering,
+    pub(super) instructions: &'a Arc<InstructionStage>,
+    /// The session's kill switches, handed to every tool's guard.
+    pub(super) kills: &'a Arc<KillSwitches>,
+    /// The session's MCP servers: the resource tools' live view and the `@<uri>` prompt
+    /// section read it.
+    pub(super) mcp: &'a super::mcp_supervisor::McpServers,
+}
+
+/// The agent, with its wrapped tools registered in the session's tool server.
+pub(super) fn build_agent(
+    p: &Parts<'_>,
+) -> Result<(Agent, prompt::PromptPieces, Loaded, bool), RuntimeError> {
+    let (pieces, sources, loaded) = prompt_layers(p);
+    p.instructions.warn_once(&loaded.warnings);
+    if let Some(warning) = p.session.todos().take_warning() {
+        p.approver.warn(&warning);
+    }
+    if let Some(warning) = p.session.goal().take_warning() {
+        p.approver.warn(&warning);
+    }
+    if scheduling(p) {
+        p.session.scheduler().settle_expired();
+        if let Some(warning) = p.session.scheduler().take_warning() {
+            p.approver.warn(&warning);
+        }
+    }
+    register_tools(p)?;
+    p.instructions.reseed(sources, &loaded);
+    let (agent, native_search) = finish_builder(p, pieces.join());
+    Ok((agent, pieces, loaded, native_search))
+}
+
+/// Whether the model may queue bug-report drafts: never headless, and not when the user turned
+/// them off.
+fn drafts_offered(p: &Parts<'_>) -> bool {
+    offers_drafts(p.setup.headless, p.config.feedback.drafts)
+}
+
+fn offers_drafts(headless: bool, mode: DraftsMode) -> bool {
+    !headless && mode != DraftsMode::Off
+}
+
+fn draft_tool(p: &Parts<'_>) -> ExtensionTool {
+    let secrets =
+        crate::core::redact::session_secrets(p.config, &p.setup.data_dir, &*p.setup.env, &|m| {
+            p.approver.warn(m)
+        });
+    ExtensionTool::new(DraftBugReportTool {
+        sink: Arc::new(FileDrafts::new(
+            p.setup.data_dir.clone(),
+            &p.session.id,
+            Redactor::new(secrets),
+        )),
+    })
+}
+
+/// The `advisor` tool, which exists only when the user defined the `advisor` role.
+fn advisor_tool(p: &Parts<'_>) -> Option<ExtensionTool> {
+    let chain = p
+        .setup
+        .role_chains
+        .chain_of_role(&p.setup.roles, ADVISOR_ROLE)?;
+    Some(ExtensionTool::new(AdvisorTool {
+        source: Arc::new(ReportedAdvisor {
+            switcher: p.setup.switcher.clone(),
+            chain,
+            explicit_budget_cap: p.setup.explicit_budget_cap,
+            state: p.state.clone(),
+            approver: p.approver.clone(),
+            context: p.runner.context.parent_context.clone(),
+        }),
+    }))
+}
+
+/// Whether the scheduling tools exist in this session.
+fn scheduling(p: &Parts<'_>) -> bool {
+    p.setup.scheduling && p.config.schedule.enabled
+}
+
+fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
+    let sources = Sources::for_state(p.state, &p.setup.config_dir, p.setup.home.as_deref());
+    let loaded = instructions::load(&sources);
+    let skill_index = skills::index(&p.skills.extensions());
+    let memory = p.state.memory_root.as_deref().map(|dir| {
+        let notes = memory::load(dir);
+        p.instructions.warn_once(&notes.warnings);
+        memory::layer(dir, notes.index.as_deref())
+    });
+    let mut pieces = prompt::layers(&PromptParts {
+        roots: p.roots,
+        scratch: p.state.scratch.as_deref(),
+        memory_root: p.state.memory_root.as_deref(),
+        system_prompt: p.setup.system_prompt.as_deref(),
+        instructions: &loaded.files,
+        memory: memory.as_deref(),
+        skill_index: skill_index.as_deref(),
+        scheduling: scheduling(p).then_some(prompt::SCHEDULING_PROMPT),
+        mcp: None,
+        output_style: p
+            .output_style
+            .as_ref()
+            .map(|(name, text)| (name.as_str(), text.as_str())),
+        append: p.setup.append_system_prompt.as_deref(),
+        afk: p.state.afk_on(),
+        posix_shell: super::posix_shell(&p.setup.git_bash),
+    });
+    // Assembled from the listings the connected servers hold now, so it appears with the
+    // first build after a resources-capable server connects and goes when the last unloads.
+    p.mcp.sync_deferral(p.config, p.models);
+    pieces.mcp = p.mcp.prompt_section();
+    (pieces, sources, loaded)
+}
+
+fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
+    let ledger_window: Arc<dyn crate::agents::root_ledger::RootLedger> =
+        Arc::new(LedgerWindow(p.state.clone()));
+    let websearch = p
+        .config
+        .websearch_config_with_notice(
+            &*p.setup.env,
+            &p.setup.data_dir,
+            {
+                let approver = p.approver.clone();
+                Arc::new(move |message: &str| approver.warn(message))
+            },
+            {
+                let approver = p.approver.clone();
+                Arc::new(move |message: &str| approver.warn(message))
+            },
+        )
+        .map_err(|e| RuntimeError::caused("cannot set up the websearch tool", e))?;
+    p.session.checkpoints().configure(
+        p.config.checkpoints.clone(),
+        p.state.memory_root.clone(),
+        p.approver.clone(),
+    );
+    let registered = tools::registry(RegistryParams {
+        gate: p.pipeline.clone(),
+        scope: p.state.scope(),
+        mcp_resources: p.mcp.resource_queries(),
+        mcp_limits: Arc::new(output_limits(
+            &|name| (p.setup.env)(name),
+            p.state.scratch.as_deref(),
+            &|message| p.approver.warn(message),
+        )),
+        mcp_warn: Arc::new({
+            let approver = p.approver.clone();
+            move |message: &str| approver.warn(message)
+        }),
+        seen: p.seen.clone(),
+        scrub_env: p.setup.scrub_env.clone(),
+        set_env: tools::subprocess_env(p.config),
+        shell_max_timeout_secs: p.config.shell.max_timeout_secs,
+        git_bash: p.setup.git_bash.clone(),
+        powershell: p.setup.powershell.clone(),
+        results: p.results.clone(),
+        hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
+        network: p.setup.network.clone(),
+        websearch,
+        searxng: p.setup.searxng.clone(),
+        jobs: p.setup.jobs.clone(),
+        shell_cwd: p.setup.shell_cwd.clone(),
+        scratch: p.state.scratch.clone(),
+        agent_waits: Some(p.state.agents().clone()),
+        agent_kills: Some(Arc::new(crate::agents::spawn::TreeKills {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window.clone(),
+        })),
+        wait_wake: Some(Arc::new(CoreWake {
+            tree: p.state.agents().clone(),
+            steering: p.steering.clone(),
+        })),
+        extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
+        host_tools: p.setup.host_tools.clone(),
+        pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
+        kills: p.kills.clone(),
+    })
+    .map_err(RuntimeError::new)?;
+    for tool in registered {
+        // `tool_search` serves the MCP tools, which this does not restrict.
+        if let Some(only) = &p.setup.root_tools
+            && tool.name != crate::tools::mcp::TOOL_SEARCH
+            && !only.iter().any(|name| name == tool.name)
+        {
+            continue;
+        }
+        if tool.name == "shell" {
+            p.skills.set_shell(tool.tool.clone());
+        }
+        p.tool_server.add_dynamic_tool(tool.tool);
+    }
+    Ok(())
+}
+
+fn extension_tools(
+    p: &Parts<'_>,
+    ledger_window: Arc<dyn crate::agents::root_ledger::RootLedger>,
+) -> Vec<ExtensionTool> {
+    let mut tools = vec![
+        ExtensionTool::new(AgentTool {
+            tree: p.state.agents().clone(),
+            types: p.types.clone(),
+            runner: p.runner.clone(),
+            ledger: ledger_window.clone(),
+            roles: p.setup.roles.describe(),
+        }),
+        ExtensionTool::new(SkillTool {
+            source: p.skills.clone(),
+        }),
+        ExtensionTool::new(SendMessageTool {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window.clone(),
+        }),
+        ExtensionTool::new(AskUserTool {
+            source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
+        }),
+        ExtensionTool::new(TodoTool {
+            store: Arc::new(ReportedTodos {
+                todos: p.session.todos().clone(),
+                approver: p.approver.clone(),
+            }),
+        }),
+        ExtensionTool::new(ToolSearchTool {
+            deferral: p.mcp.deferral.clone(),
+            loaded: p.mcp.loaded.clone(),
+            reveal_names: p.config.telemetry.enabled && p.config.telemetry.log_tool_details,
+        }),
+        ExtensionTool::new(ModelsTool {
+            source: Arc::new(SessionModels {
+                roles: p.setup.roles.describe(),
+                switcher: p.setup.switcher.clone(),
+                main: p.runner.context.main.clone(),
+                guardian: {
+                    let state = p.state.clone();
+                    Arc::new(move || ModelRef::parse(state.guardian().label()))
+                },
+            }),
+        }),
+    ];
+    if let Some(root) = p.state.memory_root.clone() {
+        tools.push(ExtensionTool::new(MemoryTool { root }));
+    }
+    if drafts_offered(p) {
+        tools.push(draft_tool(p));
+    }
+    tools.extend(advisor_tool(p));
+    if p.config.agents.teams {
+        tools.push(ExtensionTool::new(BoardShowTool {
+            tree: p.state.agents().clone(),
+        }));
+        tools.push(ExtensionTool::new(BoardUpdateTool {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window,
+        }));
+    }
+    if p.setup.lsp.is_active() {
+        tools.push(ExtensionTool::new(LspTool {
+            servers: p.setup.lsp.clone(),
+            workspace: super::lsp::workspace(p.state),
+        }));
+    }
+    if scheduling(p) {
+        tools.extend(schedule_tools(p));
+    }
+    tools
+}
+
+fn schedule_tools(p: &Parts<'_>) -> [ExtensionTool; 4] {
+    let store: Arc<dyn ScheduleStore> = Arc::new(ReportedSchedule {
+        scheduler: p.session.scheduler().clone(),
+        approver: p.approver.clone(),
+    });
+    [
+        ExtensionTool::new(CronCreateTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(CronJobsTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(CronDeleteTool {
+            store: store.clone(),
+        }),
+        ExtensionTool::new(ScheduleWakeupTool { store }),
+    ]
+}
+
+/// The agent, and whether it carries the provider's search tool.
+fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
+    let builder = AgentBuilder::new(p.models.main.completion.clone())
+        .preamble(preamble)
+        .memory(p.session.store())
+        .conversation(CONVERSATION_LOG);
+    let mut builder = apply_common(builder, p.state, p.config.telemetry.records_content())
+        .add_hook(SteeringHook::new(p.steering.clone(), p.state.clone()))
+        .add_hook(ParentContextHook::new(
+            p.runner.context.parent_context.clone(),
+        ))
+        .add_hook(RecoveryHook::new(
+            p.session.store(),
+            CONVERSATION_LOG.to_owned(),
+            p.approver.clone(),
+        ))
+        .add_hook(DeferredAdvertiser {
+            agent: ROOT_AGENT.to_string(),
+            tools: p.tool_server.clone(),
+            deferral: p.mcp.deferral.clone(),
+            loaded: p.mcp.loaded.clone(),
+        })
+        .add_hook(InflightHook::root(
+            p.session.store(),
+            CONVERSATION_LOG.to_owned(),
+            p.approver.clone(),
+        ))
+        .tool_server_handle(p.tool_server.clone());
+    if let Some(schema) = &p.setup.json_schema {
+        builder = builder.output_schema_raw(schema.clone());
+    }
+    if let Some(options) = p.models.main.provider_options() {
+        builder = builder.provider_options(options);
+    }
+    let native = native_search::offered(p.config, p.models, p.state);
+    if let Some(entry) = &native {
+        builder = builder.additional_params(serde_json::json!({ "tools": [entry] }));
+    }
+    (builder.build(), native.is_some())
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    #[test]
+    fn drafts_are_offered_only_interactively_and_not_when_off() {
+        assert!(offers_drafts(false, DraftsMode::On));
+        assert!(offers_drafts(false, DraftsMode::Quiet));
+        assert!(!offers_drafts(false, DraftsMode::Off));
+        assert!(!offers_drafts(true, DraftsMode::On));
+        assert!(!offers_drafts(true, DraftsMode::Quiet));
+    }
+}

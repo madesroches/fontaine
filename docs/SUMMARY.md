@@ -24,6 +24,7 @@
 - [Checkpoints and /rewind](checkpoints.md)
 - [Terminal setup](terminal.md)
 - [Headless runs](headless.md)
+- [Embedding in a Rust program](embedding.md)
 - [Claude Agent SDK compatibility](agent-sdk.md)
 - [Claude subscription](claude-subscription.md)
 - [Telemetry](telemetry.md)

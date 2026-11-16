@@ -5,7 +5,7 @@
 //! per-thread streams, which the sink builder's CPU-tracing switch creates. Metrics come from the
 //! span bridge.
 
-use fontaine_tools::lock::lock_recovering;
+use fontaine_sdk::tools::lock::lock_recovering;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

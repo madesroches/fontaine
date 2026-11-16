@@ -5,23 +5,23 @@ use crate::config_panel::ConfigKey;
 use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment};
 use crate::transcript::Transcript;
 use crate::{Action, App, Command, Ui, parse_command};
-use fontaine_core::RuntimeError;
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::Decision;
-use fontaine_core::config::HookEvent;
-use fontaine_core::gate::AgentViewEvent;
-use fontaine_core::ledger::{MessageOrigin, Record, RemoteSender};
-use fontaine_core::model_roles::Tried;
-use fontaine_core::quota::UsageRole;
-use fontaine_core::schedule::{Fired, Kind};
-use fontaine_core::steering::{Queued, Retracted};
-use fontaine_core::tier::Tier;
-use fontaine_core::turn::{
+use fontaine_sdk::core::RuntimeError;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::config::HookEvent;
+use fontaine_sdk::core::gate::AgentViewEvent;
+use fontaine_sdk::core::ledger::{MessageOrigin, Record, RemoteSender};
+use fontaine_sdk::core::model_roles::Tried;
+use fontaine_sdk::core::quota::UsageRole;
+use fontaine_sdk::core::schedule::{Fired, Kind};
+use fontaine_sdk::core::steering::{Queued, Retracted};
+use fontaine_sdk::core::tier::Tier;
+use fontaine_sdk::core::turn::{
     Attachment, AttachmentMedia, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome,
     TurnParams, run_turn, user_message, wait_out_usage_limit,
 };
-use fontaine_core::turn_recovery::{Fallback, Unsettled};
-use fontaine_core::user_hooks::PromptGate;
+use fontaine_sdk::core::turn_recovery::{Fallback, Unsettled};
+use fontaine_sdk::core::user_hooks::PromptGate;
 use tokio::sync::mpsc::unbounded_channel;
 
 /// How a turn ended from the interface's side.
@@ -191,8 +191,8 @@ fn into_attachment(pending: PendingAttachment) -> Result<Attachment, String> {
         return Err(format!(
             "{} is {} and was not sent: attachments are capped at {}",
             pending.label,
-            fontaine_tools::notebook::human_size(metadata.len()),
-            fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+            fontaine_sdk::tools::notebook::human_size(metadata.len()),
+            fontaine_sdk::tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
         ));
     }
     let bytes = std::fs::read(&pending.path).map_err(|e| {
@@ -348,7 +348,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let e = runtime.refresh_before_turn().err()?;
         let message = format!(
             "the provider's web search could not be turned off, so the turn did not run: {}",
-            fontaine_tools::error_chain::chain(&e)
+            fontaine_sdk::tools::error_chain::chain(&e)
         );
         self.app.transcript.error(message.clone());
         Some(TurnEnd::Finished(TurnOutcome::Failed(message.into())))
@@ -376,7 +376,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let reminders = !kinds.is_empty()
             && kinds
                 .iter()
-                .all(|kind| *kind == fontaine_agents::tree::NotificationKind::Reminder);
+                .all(|kind| *kind == fontaine_sdk::agents::tree::NotificationKind::Reminder);
         let Some(prompt) = runtime.notification_prompt().await else {
             return std::ops::ControlFlow::Continue(());
         };
@@ -386,7 +386,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         Self::keep_leftover_turn(runtime).await;
         // The job label wins a mixed inbox, as the prompt's own note says jobs first.
         self.app.transcript.notice(
-            if kinds.contains(&fontaine_agents::tree::NotificationKind::Job) {
+            if kinds.contains(&fontaine_sdk::agents::tree::NotificationKind::Job) {
                 "a background job reported back"
             } else if reminders {
                 "tasks on your board are waiting for agents"
@@ -640,7 +640,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.drain_prompts();
                 self.app.transcript.error(format!(
                     "/{name}: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ));
                 runtime.clear_prompt_context();
                 Continue(SkillRun::Spent)
@@ -697,7 +697,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.drain_prompts();
                 self.app.transcript.error(format!(
                     "/{name}: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 ));
                 runtime.clear_prompt_context();
                 Continue(CommandOutcome::Done)
@@ -1331,7 +1331,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     return TurnOutcome::Failed(
                         format!(
                             "the conversation's length could not be read, so the turn did not run: {}",
-                            fontaine_tools::error_chain::chain(&e)
+                            fontaine_sdk::tools::error_chain::chain(&e)
                         )
                         .into(),
                     );
@@ -1345,7 +1345,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 return TurnOutcome::Failed(
                     format!(
                         "the turn could not be journaled: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     )
                     .into(),
                 );
@@ -1361,7 +1361,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Err(e) => {
                     let message = format!(
                         "the conversation's length could not be read after compaction, so the turn did not run: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     );
                     runtime.approver().warn(&message);
                     // The turn never runs, and the record its start wrote must not be
@@ -1377,7 +1377,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // stale one errs on folding the turn again, never on dropping it.
                 let message = format!(
                     "the run's pending record could not be rewritten after compaction: {}",
-                    fontaine_tools::error_chain::chain(&e)
+                    fontaine_sdk::tools::error_chain::chain(&e)
                 );
                 runtime.approver().warn(&message);
             }
@@ -1391,7 +1391,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if let Err(e) = runtime.record_run_start(record_prompt, len).await {
                     runtime.approver().warn(&format!(
                         "the run's pending record could not be rewritten after hook context was added: {}",
-                        fontaine_tools::error_chain::chain(&e)
+                        fontaine_sdk::tools::error_chain::chain(&e)
                     ));
                 }
                 prompt

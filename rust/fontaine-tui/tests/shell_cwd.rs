@@ -4,7 +4,7 @@
 mod common;
 
 use common::{World, text_turn, tool_turn, verdict};
-use fontaine_core::config::PermissionMode;
+use fontaine_sdk::core::config::PermissionMode;
 use serde_json::json;
 
 fn world(turns: Vec<Vec<rig_core::test_utils::MockStreamEvent>>) -> World {

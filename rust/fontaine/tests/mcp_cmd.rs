@@ -12,7 +12,7 @@ fn sandbox() -> Sandbox {
 }
 
 fn trust_workspace(s: &Sandbox) {
-    fontaine_core::trust::record(&s.data, &s.work).unwrap();
+    fontaine_sdk::core::trust::record(&s.data, &s.work).unwrap();
 }
 
 #[tokio::test]

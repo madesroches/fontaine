@@ -4,13 +4,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use fontaine_agents::registry::AgentType;
-use fontaine_core::afk_report::AfkSource;
-use fontaine_core::agent::{McpServerState, McpStatesReader};
-use fontaine_core::config::PermissionMode;
-use fontaine_core::gate::SessionState;
-use fontaine_core::user_hooks::{CallbackHook, HookTransport};
-use fontaine_tools::lock::lock;
+use fontaine_sdk::agents::registry::AgentType;
+use fontaine_sdk::core::afk_report::AfkSource;
+use fontaine_sdk::core::agent::{McpServerState, McpStatesReader};
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::gate::SessionState;
+use fontaine_sdk::core::user_hooks::{CallbackHook, HookTransport};
+use fontaine_sdk::tools::lock::lock;
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -18,7 +18,7 @@ use tokio::sync::{oneshot, watch};
 use super::cli::{CLAUDE_CODE_PROTOCOL_VERSION, State, control_row, parse_mode};
 use super::hooks::{RouterHooks, build as build_hooks};
 use super::router::{Command, ControlHandler, Router};
-use fontaine_core::extensions::agent_from_definition;
+use fontaine_sdk::core::extensions::agent_from_definition;
 
 /// What is known before the runtime exists: the command line and the configuration.
 pub struct Facts {
@@ -434,7 +434,7 @@ impl ControlHandler for Control {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::permissions::HookError;
+    use fontaine_sdk::core::permissions::HookError;
 
     struct Never;
     impl HookTransport for Never {

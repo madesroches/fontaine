@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::{World, text_turn};
-use fontaine_core::plugins::{MarketplaceEntry, Registry, marketplace_dir, write_registry};
+use fontaine_sdk::core::plugins::{MarketplaceEntry, Registry, marketplace_dir, write_registry};
 use ratatui::crossterm::event::KeyCode;
 
 const OLD: &str = "---\ndescription: The old description\n---\nBody.\n";
@@ -107,7 +107,7 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
         ui.wait_for("demo (local)").await;
     })
     .await;
-    let registry = fontaine_core::plugins::read_registry(&w.config_dir).unwrap();
+    let registry = fontaine_sdk::core::plugins::read_registry(&w.config_dir).unwrap();
     assert_eq!(registry.plugin.len(), 1);
     assert!(registry.plugin[0].approved.is_some());
     assert!(!w.config_dir.join("skill-trust.toml").exists());
@@ -116,7 +116,7 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
 }
 
 fn registered_plugins(config: &Path) -> usize {
-    fontaine_core::plugins::read_registry(config)
+    fontaine_sdk::core::plugins::read_registry(config)
         .unwrap()
         .plugin
         .len()
@@ -206,7 +206,7 @@ async fn declining_an_install_records_nothing() {
     })
     .await;
     assert!(
-        fontaine_core::plugins::read_registry(&w.config_dir)
+        fontaine_sdk::core::plugins::read_registry(&w.config_dir)
             .unwrap()
             .plugin
             .is_empty()
@@ -236,7 +236,7 @@ async fn disable_unloads_enable_loads_and_uninstall_removes_the_plugin() {
 
         ui.send("/plugin uninstall demo");
         ui.wait_for("uninstalled plugin `demo`").await;
-        assert!(!fontaine_core::plugins::checkout_dir(&config, "local", "demo").exists());
+        assert!(!fontaine_sdk::core::plugins::checkout_dir(&config, "local", "demo").exists());
     })
     .await;
 }

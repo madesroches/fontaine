@@ -5,7 +5,7 @@
 mod common;
 
 use common::{Ui, World, text_turn, tool_turn, verdict};
-use fontaine_core::config::PermissionMode;
+use fontaine_sdk::core::config::PermissionMode;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 

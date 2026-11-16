@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use fontaine_core::dirs::Dirs;
-use fontaine_core::file_lock;
-use fontaine_core::plugins::{
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::file_lock;
+use fontaine_sdk::core::plugins::{
     self, CatalogPlugin, CatalogSource, MarketplaceEntry, Registry, checkout_dir,
 };
 use tempfile::TempDir;
@@ -13,7 +13,7 @@ use super::*;
 use crate::Host;
 use crate::cli::MarketplaceAddArgs;
 use crate::plugin::{self, INTERACTIVE_GIT};
-use fontaine_core::plugin_ops::Fetch;
+use fontaine_sdk::core::plugin_ops::Fetch;
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -116,8 +116,8 @@ impl Fixture {
     fn leftovers(&self) -> Vec<String> {
         let mut found = Vec::new();
         for parent in [
-            fontaine_core::plugin_ops::marketplaces_parent(&self.dirs.config),
-            fontaine_core::plugin_ops::installed_parent(&self.dirs.config, "team"),
+            fontaine_sdk::core::plugin_ops::marketplaces_parent(&self.dirs.config),
+            fontaine_sdk::core::plugin_ops::installed_parent(&self.dirs.config, "team"),
         ] {
             for entry in std::fs::read_dir(parent).unwrap().flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -355,7 +355,7 @@ fn stale_leftovers_are_removed_and_young_or_recorded_ones_are_kept() {
     let f = Fixture::new();
     f.source_file("skills/review/SKILL.md", &skill("New body."));
     f.pass();
-    let installed = fontaine_core::plugin_ops::installed_parent(&f.dirs.config, "team");
+    let installed = fontaine_sdk::core::plugin_ops::installed_parent(&f.dirs.config, "team");
     for name in [".review.bak-1", ".auto-2", ".staged-orphan"] {
         std::fs::create_dir_all(installed.join(name)).unwrap();
     }
@@ -381,7 +381,7 @@ fn stale_leftovers_are_removed_and_young_or_recorded_ones_are_kept() {
     assert!(!installed.join(".auto-2").exists());
     assert!(installed.join(".staged-review").exists());
     assert!(
-        fontaine_core::plugin_ops::marketplaces_parent(&f.dirs.config)
+        fontaine_sdk::core::plugin_ops::marketplaces_parent(&f.dirs.config)
             .join(".staged-team")
             .exists()
     );

@@ -1,0 +1,163 @@
+//! The `/guardian-disable` escape hatch: a root call runs before the floor and the guardian,
+//! the toggle is recorded, and children are never loosened by it.
+
+#[path = "core_common/mod.rs"]
+mod common;
+
+use common::pipeline::{Rig, allowed};
+use fontaine_sdk::agents::mode::Ladder;
+use fontaine_sdk::core::audit::Decision;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::tier::Tier;
+use fontaine_sdk::tools::gate::ROOT_AGENT;
+use serde_json::json;
+
+fn write_outside() -> serde_json::Value {
+    json!({"path": "../outside.txt", "content": "x"})
+}
+
+fn child(rig: &Rig, own: Ladder) -> String {
+    rig.agents
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), own)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn guardian_off_runs_a_denied_call_and_is_recorded() {
+    let rig = Rig::new(PermissionMode::Manual);
+
+    // Unapproved, the external write is put to the human, who declines it.
+    let before = rig.audit().len();
+    assert!(!allowed(&rig.check("write", write_outside()).await));
+    assert!(
+        rig.audit()[before..]
+            .iter()
+            .any(|r| r.decision == Decision::Deny)
+    );
+
+    rig.state.set_guardian_off(true).unwrap();
+    assert!(rig.state.guardian_off());
+
+    let before = rig.audit().len();
+    let decision = rig.check("write", write_outside()).await;
+    assert!(allowed(&decision));
+    let record = rig.last_first(before);
+    assert_eq!(record.decision, Decision::Allow);
+    assert_eq!(record.tier, Tier::GuardianOff);
+
+    let ledger = rig.session.ledger.read().unwrap();
+    assert!(ledger.iter().any(|entry| matches!(
+        entry.record,
+        Record::GuardianOff {
+            off: true,
+            remote: None
+        }
+    )));
+    assert!(
+        rig.audit()
+            .iter()
+            .any(|record| record.rule.as_deref() == Some("guardian_off"))
+    );
+
+    rig.state.set_guardian_off(false).unwrap();
+    assert!(!rig.state.guardian_off());
+    assert!(!allowed(&rig.check("write", write_outside()).await));
+}
+
+#[tokio::test]
+async fn the_toggle_is_audited_as_a_root_decision_with_its_explanation() {
+    let rig = Rig::new(PermissionMode::Manual);
+    rig.state.set_guardian_off(true).unwrap();
+    let records = rig.audit();
+    let record = records
+        .iter()
+        .find(|r| r.rule.as_deref() == Some("guardian_off"))
+        .expect("the toggle is audited");
+    assert_eq!(record.tool, "guardian");
+    assert_eq!(record.tier, Tier::GuardianOff);
+    assert_eq!(record.decision, Decision::Allow);
+    assert_eq!(record.agent_id, "root");
+    assert_eq!(record.explanation.as_deref(), Some("guardian disabled"));
+}
+
+#[tokio::test]
+async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
+    let rig = Rig::new(PermissionMode::Manual);
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("x.txt"), "x").unwrap();
+
+    rig.state.set_guardian_off(true).unwrap();
+    // The escape hatch applies the same execution normalization as every other allow, with
+    // no hooks and no floor.
+    match rig.check("read", json!({"path": "../outside/x.txt"})).await {
+        fontaine_sdk::tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": outside.join("x.txt").to_str().unwrap()})
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let record = rig.audit().last().cloned().expect("a record");
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::GuardianOff)
+    );
+
+    // A malformed external read falls back to the raw arguments: the tool refuses them.
+    match rig.check("read", json!({"path": 3})).await {
+        fontaine_sdk::tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(args, json!({"path": 3}));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn guardian_off_normalizes_an_external_write_and_runs_no_floor_or_hooks() {
+    let rig = Rig::new(PermissionMode::Manual);
+
+    rig.state.set_guardian_off(true).unwrap();
+    // The escape hatch applies the same execution normalization as every other allow, with
+    // no hooks and no floor.
+    let resolved = rig.world.root.join("outside.txt");
+    match rig.check("write", write_outside()).await {
+        fontaine_sdk::tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": resolved.to_str().unwrap(), "content": "x"})
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let record = rig.audit().last().cloned().expect("a record");
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::GuardianOff)
+    );
+
+    // A malformed external write falls back to the raw arguments: the tool refuses them.
+    match rig.check("write", json!({"path": 3, "content": "x"})).await {
+        fontaine_sdk::tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(args, json!({"path": 3, "content": "x"}));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn guardian_off_never_loosens_a_child() {
+    let rig = Rig::new(PermissionMode::Auto);
+    let id = child(&rig, Ladder::Manual);
+
+    rig.state.set_guardian_off(true).unwrap();
+    // The root runs anything, but the child keeps its own manual posture and still asks.
+    assert!(allowed(&rig.check("write", write_outside()).await));
+    assert!(!allowed(
+        &rig.check_as(&id, "shell", json!({"command": "python x.py"}))
+            .await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+}

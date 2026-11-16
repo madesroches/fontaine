@@ -3,13 +3,13 @@
 
 use std::process::ExitCode;
 
-use fontaine_core::config::Config;
-use fontaine_core::dirs::Dirs;
-use fontaine_core::model_report::ModelReport;
-use fontaine_core::models::{
+use fontaine_sdk::core::config::Config;
+use fontaine_sdk::core::dirs::Dirs;
+use fontaine_sdk::core::model_report::ModelReport;
+use fontaine_sdk::core::models::{
     self, LISTING_TIMEOUT, ModelRef, ResolveParams, Switcher, known_accounts, validated_models,
 };
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::tools::error_chain::chain;
 
 use crate::cli::{Cli, ModelsArgs, ReportFormat};
 use crate::{Host, print_warnings, shared_env, timeout, usage};

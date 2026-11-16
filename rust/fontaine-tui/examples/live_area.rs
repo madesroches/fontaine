@@ -6,9 +6,9 @@
 //! indicator through one long tool call, so a resize can be tried while it animates. `live_area user`
 //! commits user messages at the top of the screen and then reprints, as an agent switch does.
 
-use fontaine_core::config::PermissionMode;
-use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};
-use fontaine_core::turn::SessionEvent;
+use fontaine_sdk::core::config::PermissionMode;
+use fontaine_sdk::core::preview::{DiffKind, DiffLine, DiffPreview};
+use fontaine_sdk::core::turn::SessionEvent;
 use fontaine_tui::app::App;
 use fontaine_tui::screen::{Anchored, FrameWriter, Screen, Tty};
 use ratatui::backend::CrosstermBackend;
@@ -149,9 +149,9 @@ where
     app.running = true;
     app.todos.set_items(
         (0..7)
-            .map(|n| fontaine_tools::todo::TodoItem {
+            .map(|n| fontaine_sdk::tools::todo::TodoItem {
                 content: format!("task {n}"),
-                status: fontaine_tools::todo::TodoStatus::Completed,
+                status: fontaine_sdk::tools::todo::TodoStatus::Completed,
             })
             .collect(),
     );

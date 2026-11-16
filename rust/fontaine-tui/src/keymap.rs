@@ -1,11 +1,11 @@
 //! The effective keystroke→action table the App dispatches on, built from the defaults plus
-//! the user's `[keybindings]` overrides. Parsing and validation live in `fontaine-core`; this
+//! the user's `[keybindings]` overrides. Parsing and validation live in `fontaine_sdk::core`; this
 //! module only resolves and answers lookups.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use fontaine_core::keybindings::{Keystroke, TuiAction, matches, parse_binding};
+use fontaine_sdk::core::keybindings::{Keystroke, TuiAction, matches, parse_binding};
 use ratatui::crossterm::event::KeyEvent;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub struct Keymap {
 
 /// The built-in table: one entry per default keystroke. `newline` answers to three keys.
 fn defaults() -> Vec<(Keystroke, TuiAction)> {
-    use fontaine_core::keybindings::parse_keystroke as k;
+    use fontaine_sdk::core::keybindings::parse_keystroke as k;
     [
         ("shift+tab", TuiAction::CycleMode),
         ("ctrl+c", TuiAction::Interrupt),
@@ -139,7 +139,7 @@ impl Default for Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::keybindings::parse_keystroke;
+    use fontaine_sdk::core::keybindings::parse_keystroke;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn map(entries: &[(&str, &str)]) -> Keymap {

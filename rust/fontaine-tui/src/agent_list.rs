@@ -4,10 +4,10 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use fontaine_agents::effort::Effort;
-use fontaine_agents::runner::ChildStatus;
-use fontaine_agents::tree::AgentRow;
-use fontaine_tools::jobs::format_age;
+use fontaine_sdk::agents::effort::Effort;
+use fontaine_sdk::agents::runner::ChildStatus;
+use fontaine_sdk::agents::tree::AgentRow;
+use fontaine_sdk::tools::jobs::format_age;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -471,7 +471,7 @@ impl AgentList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_agents::budget::{Budget, Spend};
+    use fontaine_sdk::agents::budget::{Budget, Spend};
     use ratatui::crossterm::event::KeyCode;
 
     fn agent(id: &str, parent: &str, status: ChildStatus, now: Instant) -> AgentRow {

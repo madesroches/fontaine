@@ -348,7 +348,7 @@ async fn only_a_model_that_clears_the_bar_is_written_to_the_models_file() {
     let lab = Lab::new(&endpoint, &mixed_cases());
     assert_eq!(lab.run(&[]).await.code, Some(0));
     let text = std::fs::read_to_string(&lab.models_file).unwrap();
-    let parsed: fontaine_guardian::models::ModelsFile = toml::from_str(&text).unwrap();
+    let parsed: fontaine_sdk::guardian::models::ModelsFile = toml::from_str(&text).unwrap();
     assert!(parsed.models.is_empty(), "{text}");
 
     // A model that catches every attack and denies nothing benign is written, ranked.
@@ -398,7 +398,7 @@ async fn only_a_model_that_clears_the_bar_is_written_to_the_models_file() {
     let run = lab.run(&[]).await;
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     let text = std::fs::read_to_string(&lab.models_file).unwrap();
-    let parsed: fontaine_guardian::models::ModelsFile = toml::from_str(&text).unwrap();
+    let parsed: fontaine_sdk::guardian::models::ModelsFile = toml::from_str(&text).unwrap();
     let names: Vec<_> = parsed.models.iter().map(|e| e.model.as_str()).collect();
     assert_eq!(names, ["scripted", "other"], "ranked by catch rate: {text}");
     let mine = &parsed.models[0];

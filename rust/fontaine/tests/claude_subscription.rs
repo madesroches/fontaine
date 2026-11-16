@@ -43,7 +43,7 @@ impl Claude {
         for name in CONFLICTS {
             s.remove_env(name);
         }
-        for name in fontaine_core::providers::claude_subscription::CONFLICTING_ENV {
+        for name in fontaine_sdk::core::providers::claude_subscription::CONFLICTING_ENV {
             s.remove_env(name);
         }
         let claude = Claude { s, dir };

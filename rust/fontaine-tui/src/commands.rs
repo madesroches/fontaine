@@ -1,7 +1,7 @@
 //! The built-in slash commands: one table that both the parser and the `/` menu read, so a
 //! command cannot be runnable without being listed, or listed without being runnable.
 
-use fontaine_core::duration::{compact_interval, unit_seconds};
+use fontaine_sdk::core::duration::{compact_interval, unit_seconds};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -845,7 +845,7 @@ pub fn expand_target(argument: &str) -> Result<ExpandTarget, String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpRequest {
     List,
-    Reconnect(fontaine_core::agent::ReconnectTarget),
+    Reconnect(fontaine_sdk::core::agent::ReconnectTarget),
 }
 
 pub fn parse_mcp(argument: &str) -> Result<McpRequest, String> {
@@ -858,10 +858,10 @@ pub fn parse_mcp(argument: &str) -> Result<McpRequest, String> {
     match (words.next(), words.next(), words.next()) {
         (None, ..) => Ok(McpRequest::List),
         (Some("reconnect"), Some("all"), None) => Ok(McpRequest::Reconnect(
-            fontaine_core::agent::ReconnectTarget::AllFailed,
+            fontaine_sdk::core::agent::ReconnectTarget::AllFailed,
         )),
         (Some("reconnect"), Some(name), None) => Ok(McpRequest::Reconnect(
-            fontaine_core::agent::ReconnectTarget::One(name.to_string()),
+            fontaine_sdk::core::agent::ReconnectTarget::One(name.to_string()),
         )),
         _ => Err(usage()),
     }
@@ -1227,7 +1227,7 @@ mod tests {
 
     #[test]
     fn mcp_takes_nothing_or_reconnect_with_a_name_or_all() {
-        use fontaine_core::agent::ReconnectTarget::{AllFailed, One};
+        use fontaine_sdk::core::agent::ReconnectTarget::{AllFailed, One};
         assert_eq!(parse_mcp(""), Ok(McpRequest::List));
         assert_eq!(
             parse_mcp("reconnect all"),

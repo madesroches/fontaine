@@ -1,7 +1,7 @@
 //! Tells the terminal that a prompt is waiting for the human, so a user who switched windows
 //! finds out.
 
-use fontaine_core::config::NotifyMethod;
+use fontaine_sdk::core::config::NotifyMethod;
 
 /// The prompts that wait for an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::denials::UnavailablePrompt;
-    use fontaine_core::permissions::{ApprovalRequest, Offers, UnavailableChoice};
+    use fontaine_sdk::core::permissions::{ApprovalRequest, Offers, UnavailableChoice};
     use tokio::sync::oneshot;
 
     const APPROVAL: Option<(PromptKind, u64)> = Some((PromptKind::Approval, 1));
@@ -147,7 +147,10 @@ mod tests {
     }
 
     fn app() -> App {
-        App::new(fontaine_core::config::PermissionMode::Manual, "m".into())
+        App::new(
+            fontaine_sdk::core::config::PermissionMode::Manual,
+            "m".into(),
+        )
     }
 
     fn request() -> ApprovalRequest {
@@ -158,7 +161,7 @@ mod tests {
             tool_use_id: None,
             args: serde_json::json!({ "command": "ls" }),
             summary: "ls".into(),
-            tier: fontaine_core::tier::Tier::AskRule,
+            tier: fontaine_sdk::core::tier::Tier::AskRule,
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,
@@ -167,7 +170,7 @@ mod tests {
     }
 
     fn unavailable(reply: oneshot::Sender<UnavailableChoice>) -> UnavailablePrompt {
-        let info = fontaine_core::permissions::GuardianUnavailable {
+        let info = fontaine_sdk::core::permissions::GuardianUnavailable {
             model: "a/b".into(),
             reason: "no key".into(),
             tool: "shell".into(),

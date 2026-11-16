@@ -18,10 +18,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use fontaine_core::agent::HostMcp;
-use fontaine_core::config::{Config, Origin, Slot};
-use fontaine_core::model_roles::Roles;
-use fontaine_core::permissions::HumanChannel;
+use fontaine_sdk::core::agent::HostMcp;
+use fontaine_sdk::core::config::{Config, Origin, Slot};
+use fontaine_sdk::core::model_roles::Roles;
+use fontaine_sdk::core::permissions::HumanChannel;
 use rig_core::schemars::Schema;
 use serde_json::json;
 use tokio::io::{AsyncRead, ReadBuf};
@@ -32,8 +32,9 @@ use self::control::{Attached, Control, Facts, Shared};
 use self::mcp::SdkServers;
 use self::router::{Command, Next, Router};
 use self::translate::ClaudeSink;
-use crate::headless::{self, Cancel, InputSource};
+use crate::headless;
 use crate::{Cli, Dirs, Host, SessionPrep, start_headless};
+use fontaine_sdk::run::{Cancel, InputSource, run_session};
 
 /// Puts the servers `--mcp-config` declared into the configuration at the CLI scope, where they
 /// start without asking. With `--strict-mcp-config` nothing else starts.
@@ -148,7 +149,7 @@ impl InputSource for SdkInput {
 
     async fn next(
         &mut self,
-        runtime: &mut fontaine_core::agent::AgentRuntime,
+        runtime: &mut fontaine_sdk::core::agent::AgentRuntime,
     ) -> Result<Option<String>, String> {
         loop {
             match self.router.next().await {
@@ -158,7 +159,7 @@ impl InputSource for SdkInput {
                         .switch_main_model_for_session(model.as_deref())
                         .await
                         .map(|switched| switched.reference)
-                        .map_err(|e| fontaine_tools::error_chain::chain(&e));
+                        .map_err(|e| fontaine_sdk::tools::error_chain::chain(&e));
                     // The host may have stopped waiting.
                     let _ = reply.send(switched);
                 }
@@ -244,7 +245,7 @@ pub async fn run(
             config
                 .permissions
                 .default_mode
-                .unwrap_or(fontaine_core::config::PermissionMode::Manual),
+                .unwrap_or(fontaine_sdk::core::config::PermissionMode::Manual),
         ),
         roles,
         servers,
@@ -339,8 +340,6 @@ pub async fn run(
         Err(code) => return code,
     };
     let mut runtime = started.runtime;
-    // Servers that fail to start are reported on stderr and skipped.
-    runtime.connect_mcp(&[]).await;
     shared.attach(Attached {
         state: runtime.state.clone(),
         mcp: runtime.mcp_states_reader(),
@@ -348,7 +347,7 @@ pub async fn run(
     router.attach(runtime.steering.clone(), true);
 
     let mut sink = ClaudeSink::new(router.clone(), partial);
-    let code = headless::run_session(
+    let code = run_session(
         options,
         &mut runtime,
         &dirs.data,
@@ -369,7 +368,7 @@ pub async fn run(
 #[cfg(test)]
 mod strict_mcp_tests {
     use super::*;
-    use fontaine_core::config::McpServer;
+    use fontaine_sdk::core::config::McpServer;
 
     fn server(command: &str) -> McpServer {
         serde_json::from_value(json!({ "command": command })).unwrap()

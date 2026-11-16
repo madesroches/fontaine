@@ -85,7 +85,7 @@ impl Candidate {
     /// more than one connected server lists, which carries its server after a second `@`
     /// (`@<uri>@<server>`) so the reader can tell the duplicates apart; everything up to the
     /// final `@` is the uri.
-    pub fn accepted(&self, mentions: &[fontaine_core::agent::McpResourceSummary]) -> String {
+    pub fn accepted(&self, mentions: &[fontaine_sdk::core::agent::McpResourceSummary]) -> String {
         match self {
             Candidate::Resource { server, uri, .. }
                 if mentions
@@ -115,7 +115,7 @@ impl Candidate {
 pub fn rank(
     query: &str,
     files: &[String],
-    resources: &[fontaine_core::agent::McpResourceSummary],
+    resources: &[fontaine_sdk::core::agent::McpResourceSummary],
     root: &Path,
 ) -> Vec<Candidate> {
     let mut ranked: Vec<Candidate> = rank_files(query, files, root)
@@ -234,14 +234,16 @@ mod tests {
             .collect()
     }
 
-    fn resources(uris: &[(&str, &str)]) -> Vec<fontaine_core::agent::McpResourceSummary> {
+    fn resources(uris: &[(&str, &str)]) -> Vec<fontaine_sdk::core::agent::McpResourceSummary> {
         uris.iter()
-            .map(|(server, uri)| fontaine_core::agent::McpResourceSummary {
-                server: server.to_string(),
-                uri: uri.to_string(),
-                name: String::new(),
-                description: None,
-            })
+            .map(
+                |(server, uri)| fontaine_sdk::core::agent::McpResourceSummary {
+                    server: server.to_string(),
+                    uri: uri.to_string(),
+                    name: String::new(),
+                    description: None,
+                },
+            )
             .collect()
     }
 

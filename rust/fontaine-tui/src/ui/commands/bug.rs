@@ -2,18 +2,18 @@ use std::ops::ControlFlow;
 
 use crate::bug_prompt::{BugAnswer, BugPrompt};
 use crate::{Action, Ui};
-use fontaine_core::agent::AgentRuntime;
-use fontaine_core::bug_report::{BugReport, DEFAULT_TURNS, Facts, Level, Rendered};
-use fontaine_core::bug_submit::{self, Submit};
-use fontaine_core::config_catalog::Running;
-use fontaine_core::redact::{Redactor, session_secrets};
-use fontaine_tools::error_chain::chain;
+use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::bug_report::{BugReport, DEFAULT_TURNS, Facts, Level, Rendered};
+use fontaine_sdk::core::bug_submit::{self, Submit};
+use fontaine_sdk::core::config_catalog::Running;
+use fontaine_sdk::core::redact::{Redactor, session_secrets};
+use fontaine_sdk::tools::error_chain::chain;
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// `/bug [description | draft-id | discard draft-id]`: previews the redacted report, and on
     /// confirmation files it. Cancelling writes and sends nothing.
     pub(crate) async fn bug(&mut self, runtime: &AgentRuntime, argument: &str) -> ControlFlow<()> {
-        let drafts = fontaine_core::bug_drafts::list(&self.data_dir);
+        let drafts = fontaine_sdk::core::bug_drafts::list(&self.data_dir);
         if argument == "discard" {
             self.app
                 .transcript
@@ -82,7 +82,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 Action::Bug(BugAnswer::Level(next)) => {
                     level = next;
                     if level == Level::Full && facts.transcript.is_empty() {
-                        match fontaine_core::export::transcript_tail(
+                        match fontaine_sdk::core::export::transcript_tail(
                             &runtime.session,
                             DEFAULT_TURNS,
                         )
@@ -111,7 +111,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     let done = self.submit_bug(runtime, method, level, rendered).await;
                     if done
                         && let Some(id) = &draft_id
-                        && let Err(e) = fontaine_core::bug_drafts::remove(&self.data_dir, id)
+                        && let Err(e) = fontaine_sdk::core::bug_drafts::remove(&self.data_dir, id)
                     {
                         self.app
                             .transcript
@@ -125,14 +125,14 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         }
     }
 
-    fn discard_draft(&mut self, drafts: &[fontaine_core::bug_drafts::Draft], id: &str) {
+    fn discard_draft(&mut self, drafts: &[fontaine_sdk::core::bug_drafts::Draft], id: &str) {
         if !drafts.iter().any(|d| d.id == id) {
             self.app
                 .transcript
                 .error(format!("/bug: no queued draft {id}"));
             return;
         }
-        match fontaine_core::bug_drafts::remove(&self.data_dir, id) {
+        match fontaine_sdk::core::bug_drafts::remove(&self.data_dir, id) {
             Ok(()) => self.app.transcript.notice(format!("discarded draft {id}")),
             Err(e) => self
                 .app
@@ -217,7 +217,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             effort: runtime.state.effort(),
         };
         let section =
-            fontaine_core::doctor_report::settings_section(&runtime.config, &running, false);
+            fontaine_sdk::core::doctor_report::settings_section(&runtime.config, &running, false);
         let config_rows = section
             .findings
             .iter()

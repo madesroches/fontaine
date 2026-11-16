@@ -73,7 +73,7 @@ async fn the_registered_tools_are_advertised_to_the_model() {
     #[cfg(windows)]
     if let Some(bash) = git_bash_on_path() {
         s.set_env(
-            fontaine_tools::git_bash::OVERRIDE_VAR,
+            fontaine_sdk::tools::git_bash::OVERRIDE_VAR,
             bash.to_str().unwrap(),
         );
     }
