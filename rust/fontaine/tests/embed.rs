@@ -301,6 +301,29 @@ async fn an_afk_runs_report_comes_from_close() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_afk_session_keeps_its_report_for_close_after_a_failed_turn() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::Reply(400, r#"{"error":{"message":"bad request"}}"#.to_string()),
+            Turn::text("hello"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let mut session = builder(&s)
+        .mode(PermissionMode::Afk)
+        .build()
+        .await
+        .expect("builds");
+    let first = run_turn(&mut session, "hi").await;
+    assert_ne!(result_of(&first)["subtype"], "success");
+    run_turn(&mut session, "again").await;
+    let report = session.close().await.expect("closes");
+    assert!(report.is_some(), "the report waits for the session's end");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_send_after_the_run_ended_is_a_runtime_error_and_close_reports_the_exit() {
     let window = r#"{"error":{"message":"You've reached your 5-hour usage limit.","type":"exceeded_current_quota_error"}}"#;
     let endpoint = Endpoint::start(

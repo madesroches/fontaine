@@ -4,7 +4,8 @@
 //! ([`CallbackHook`]), answer approvals through an [`Approver`], and read the run as a stream of
 //! [`Event`]s, which serialize to the same `headless-v1` JSON that `fontaine -p` prints.
 //!
-//! The crate root and the [`permissions`] and [`config`] modules are the stable surface. The
+//! The crate root and the [`permissions`], [`config`], [`events`] and [`error`] modules are the
+//! stable surface. The
 //! [`core`], [`tools`], [`agents`], [`guardian`], [`assemble`] and [`run`] trees are public
 //! because the `fontaine` binary, its terminal UI and the evals are built on them; they carry no
 //! stability promise.
@@ -43,6 +44,7 @@ pub use crate::core::agent::EnvLookup;
 pub use error::EmbedError;
 pub use events::{Event, SCHEMA_VERSION};
 pub use session::{InterruptHandle, Session, SessionBuilder, SessionRef, Turn};
+pub use tools::error_chain::chain;
 pub use tools::host::HostTool;
 
 pub use futures::future::BoxFuture;
@@ -79,6 +81,25 @@ mod boundary {
         }
     }
 
+    fn group_names(group: &str, module: &str) -> bool {
+        let inner = group.trim_start().trim_start_matches("use crate::");
+        inner
+            .split(',')
+            .map(|member| member.trim_matches(|c: char| c.is_whitespace() || "{};".contains(c)))
+            .any(|member| {
+                member == module
+                    || member.starts_with(&format!("{module}::"))
+                    || member.starts_with(&format!("{module} as "))
+            })
+    }
+
+    #[test]
+    fn the_group_check_sees_every_member() {
+        assert!(group_names("use crate::{agents, core};", "core"));
+        assert!(group_names("use crate::{\n  a::B,\n  core::C,\n};", "core"));
+        assert!(!group_names("use crate::{score, tools};", "core"));
+    }
+
     fn uses(root: &str, module: &str) -> bool {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(root);
         let mut files = Vec::new();
@@ -86,15 +107,23 @@ mod boundary {
         let mut found = false;
         for file in files {
             let text = std::fs::read_to_string(&file).expect("a source file is readable");
+            let mut group = String::new();
             for (n, line) in text.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or(line);
-                if code.contains(&format!("crate::{module}"))
-                    || code.contains(&format!("crate::{{{module}"))
-                    || code.contains(&format!(", {module}::"))
-                        && code.trim_start().starts_with("use crate::{")
-                {
+                if code.contains(&format!("crate::{module}")) {
                     eprintln!("{}:{}: {line}", file.display(), n + 1);
                     found = true;
+                }
+                // A `use crate::{..}` group may span lines; join it before looking for the segment.
+                if !group.is_empty() || code.trim_start().starts_with("use crate::{") {
+                    group.push_str(code);
+                }
+                if !group.is_empty() && code.contains(';') {
+                    if group_names(&group, module) {
+                        eprintln!("{}:{}: {group}", file.display(), n + 1);
+                        found = true;
+                    }
+                    group.clear();
                 }
             }
         }

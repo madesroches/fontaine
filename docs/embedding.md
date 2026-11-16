@@ -17,7 +17,9 @@ languages use the stdio surfaces that already exist.
 
 `fontaine-sdk` is the one crate a Rust embedder names. Its crate root is the documented surface:
 `SessionBuilder`, `Session`, `Turn`, `InterruptHandle`, `Event`, `HostTool`, `EmbedError`, and
-re-exports of `Approver`, `PermissionMode`, `CallbackHook`, `HookTransport` and `HookEvent`. The
+`chain` (renders an error's cause chain), and re-exports of `Approver`, `PermissionMode`,
+`CallbackHook`, `HookTransport` and `HookEvent`. The `permissions`, `config`, `events` and `error`
+modules are stable too. The
 `core`, `tools`, `agents`, `guardian`, `assemble` and `run` modules are public because the
 `fontaine` binary, its terminal UI and the evals are built on them, and they carry no stability
 promise. The crate is `0.x` and not published; depend on it by path or git.
@@ -71,11 +73,12 @@ rest is optional.
 
 `build()` checks the arguments and fails with `EmbedError::Config` for `max_turns` of 0, a
 `max_budget_usd` that is negative or not finite, a `json_schema` that is not a JSON object, a `fork`
-without `resume`, or a host tool that breaks the rules below. It then loads the settings, opens or
+without `resume`, a `hook` matcher that names a host tool (a matcher cannot address one; match every
+call and filter in the callback), or a host tool that breaks the rules below. It then loads the settings, opens or
 creates the session, resolves the models, starts the tool-result scanner, connects configured MCP
 servers and starts the run. `EmbedError` has the variants `Config`, `Session`, `Credentials`,
 `Model` and `Runtime`; each keeps its cause as `source()`, so render a failure with
-`fontaine_sdk::tools::error_chain::chain`. `Credentials` also covers a pinned guardian whose account
+`fontaine_sdk::chain`. `Credentials` also covers a pinned guardian whose account
 has nobody signed in, which would deny every call in `auto` and `afk`.
 
 Warnings found while building, and the run loop's startup lines, go to the approver's `warn`. The

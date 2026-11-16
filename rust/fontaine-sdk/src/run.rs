@@ -1165,7 +1165,8 @@ pub async fn run_session<I: InputSource + Sync>(
         // A blocked or stopped AFK run did not finish what it was asked, whether or not a goal
         // ran and whatever its last turn answered.
         // The review is paid for once, with the message that ends the run.
-        if (input.is_exhausted() || failed || goal_failure.is_some())
+        // A long-lived input is reviewed once, after it ends: a failed turn there is not the end.
+        if (input.is_exhausted() || ((failed || goal_failure.is_some()) && !input.long_lived()))
             && !reviewed
             && let Some(report) = final_afk_report(runtime).await
         {

@@ -1,6 +1,7 @@
 //! An embedded session: the headless run loop on a task of its own, fed prompts through a
 //! channel and read back as the `headless-v1` event stream.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -37,6 +38,22 @@ use crate::tools::host::{self, HostTool};
 use crate::tools::lock::lock;
 
 static NO_SEARCH_WARNED: AtomicBool = AtomicBool::new(false);
+
+static HOST_TOOL_NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+
+/// Leaks a host tool name once per process, however many sessions are built with it.
+fn intern(name: &str) -> &'static str {
+    let mut names = lock(&HOST_TOOL_NAMES, "the host tool name table");
+    let names = names.get_or_insert_with(HashSet::new);
+    match names.get(name) {
+        Some(known) => known,
+        None => {
+            let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+            names.insert(leaked);
+            leaked
+        }
+    }
+}
 
 /// Which stored session an embedded session starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,15 +282,23 @@ impl SessionBuilder {
                 )));
             }
         }
+        for hook in &self.hooks {
+            let Some(matcher) = hook.matcher.as_deref() else {
+                continue;
+            };
+            let tool = matcher.split('(').next().unwrap_or(matcher).trim();
+            if names.contains(&tool) {
+                return Err(EmbedError::config(format!(
+                    "the hook matcher `{matcher}` names a host tool, which matchers cannot address; match every call and filter in the callback"
+                )));
+            }
+        }
         // Past every check, so a refused builder leaks nothing. The setup keeps these names for
         // plugin reloads, so a name is leaked once per tool and never again.
         let host_tools = self
             .tools
             .iter()
-            .map(|tool| {
-                let name: &'static str = Box::leak(tool.name().to_string().into_boxed_str());
-                (name, tool.clone())
-            })
+            .map(|tool| (intern(tool.name()), tool.clone()))
             .collect();
         Ok(Checked { schema, host_tools })
     }
@@ -518,12 +543,13 @@ impl InputSource for ChannelInput {
 
     async fn next(&mut self, _runtime: &mut AgentRuntime) -> Result<Option<String>, String> {
         let message = self.rx.recv().await;
-        if self.abandoned.load(Ordering::SeqCst) {
-            return Ok(None);
-        }
         // An interrupt is never cleared by the loop itself, so each new message starts clean.
+        // Reset first: a drop that lands after this still sets `abandoned` before it triggers.
         if message.is_some() {
             self.cancel.reset();
+        }
+        if self.abandoned.load(Ordering::SeqCst) {
+            return Ok(None);
         }
         Ok(message)
     }
@@ -732,6 +758,13 @@ impl Session {
     }
 
     fn ended_error(&mut self) -> EmbedError {
+        if self.exited.is_none()
+            && self.task.as_ref().is_some_and(JoinHandle::is_finished)
+            && let Some(task) = self.task.take()
+            && let Some(joined) = futures::FutureExt::now_or_never(task)
+        {
+            self.exited = Some(Exit::from(joined));
+        }
         match &mut self.exited {
             Some(Exit::Done(_, code)) => EmbedError::runtime_with_code(
                 format!("the session's run ended with exit code {code}"),
@@ -968,6 +1001,40 @@ mod tests {
             .tool(Named("mine"))
             .allowed_tools(vec!["read".to_string()]);
         assert!(fine.check().is_ok());
+    }
+
+    #[test]
+    fn a_hook_matcher_cannot_name_a_host_tool() {
+        use crate::core::config::HookEvent;
+        use crate::core::permissions::HookError;
+        use crate::core::user_hooks::HookTransport;
+        struct Quiet;
+        impl HookTransport for Quiet {
+            fn call<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a Value,
+            ) -> BoxFuture<'a, Result<Value, HookError>> {
+                Box::pin(async { Ok(Value::Null) })
+            }
+        }
+        let hook = |matcher: &str| CallbackHook {
+            event: HookEvent::PreToolUse,
+            matcher: Some(matcher.to_string()),
+            callback_id: "h".into(),
+            timeout: None,
+            fails_closed: true,
+            transport: Arc::new(Quiet),
+        };
+        let message = refusal(builder().tool(Named("mine")).hook(hook("mine(x)")));
+        assert!(message.contains("host tool"), "{message}");
+        assert!(
+            builder()
+                .tool(Named("mine"))
+                .hook(hook("read"))
+                .check()
+                .is_ok()
+        );
     }
 
     #[test]
