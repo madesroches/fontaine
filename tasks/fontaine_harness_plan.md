@@ -489,8 +489,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
 - 2026-11-15 (#175): The Windows helper's 24 h give-up is a constant, not configurable.
 - 2026-11-15 (#175, AFK): Rollback reads a sidecar `<exe>.prev.json` (pre-swap receipt version and channel), written by every swap that links `.prev` under the receipt lock; a missing sidecar is treated like a missing `.prev`, and `update-skip` records the newer build rolled back from. Reason: `.prev` is a bare hard link and `receipt::write_version` needs the signed version.
-- 2026-11-15 (#175, AFK): No api-base override ships in the production binary; gating is tested as a pure predicate and the pass is driven through `Params`; `update-e2e.yml` uses the default GitHub feed (pty on Unix, `fontaine update` on Windows) and there is no Windows hidden pass entry point. Reason: an override would move the trust root's feed.
+- 2026-11-15 (#175, AFK): No api-base override ships in the production binary; gating is tested as a pure predicate and the pass is driven through `Params`; `update-e2e.yml` uses the default GitHub feed (`fontaine update` on every OS) and there is no Windows hidden pass entry point. Reason: an override would move the trust root's feed.
 - 2026-11-15 (#175, AFK): The Windows helper (a separate process that waits, then swaps) is kept instead of an in-process rename-aside. Reason: an in-process swap leaves already-running sessions on a renamed `.old` file and lets the session replace itself, which the issue forbids.
+- 2026-11-15 (#175): update-e2e.yml runs the manual `fontaine update` on every OS and does not drive the TUI background pass; reason: the workspace trust prompt would have to be bypassed in CI.
 
 ### Config
 

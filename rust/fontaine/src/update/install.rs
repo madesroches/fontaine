@@ -18,6 +18,7 @@ pub enum InstallError {
     Xz(lzma_rs::error::Error),
     NoBinary(String),
     TooLarge,
+    Record(&'static str, Option<serde_json::Error>),
 }
 
 impl std::fmt::Display for InstallError {
@@ -31,6 +32,7 @@ impl std::fmt::Display for InstallError {
                 write!(f, "the archive holds no regular file named {name}")
             }
             InstallError::TooLarge => f.write_str("the archive unpacks to more than 1 GiB"),
+            InstallError::Record(what, _) => write!(f, "the previous-version record {what}"),
         }
     }
 }
@@ -41,6 +43,7 @@ impl std::error::Error for InstallError {
             InstallError::Io(_, e) => Some(e),
             InstallError::Zip(e) => Some(e),
             InstallError::Xz(e) => Some(e),
+            InstallError::Record(_, Some(e)) => Some(e),
             _ => None,
         }
     }
@@ -259,7 +262,7 @@ pub struct PrevRecord {
     pub channel: Channel,
 }
 
-fn sibling(target: &Path, suffix: &str) -> PathBuf {
+pub(super) fn sibling(target: &Path, suffix: &str) -> PathBuf {
     let mut name = target.as_os_str().to_os_string();
     name.push(suffix);
     PathBuf::from(name)
@@ -288,19 +291,14 @@ pub fn read_prev_record(target: &Path) -> Result<Option<PrevRecord>, InstallErro
         }
     };
     let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|_| InstallError::Archive("the previous-version record is not valid JSON"))?;
-    let version = value["version"].as_str().ok_or(InstallError::Archive(
-        "the previous-version record has no version",
-    ))?;
-    let channel = match value["channel"].as_str() {
-        Some("release") => Channel::Release,
-        Some("dev") => Channel::Dev,
-        _ => {
-            return Err(InstallError::Archive(
-                "the previous-version record has no channel",
-            ));
-        }
-    };
+        .map_err(|e| InstallError::Record("is not valid JSON", Some(e)))?;
+    let version = value["version"]
+        .as_str()
+        .ok_or(InstallError::Record("has no version", None))?;
+    let channel = value["channel"]
+        .as_str()
+        .and_then(Channel::parse)
+        .ok_or(InstallError::Record("has no channel", None))?;
     Ok(Some(PrevRecord {
         version: version.to_string(),
         channel,
@@ -326,6 +324,47 @@ fn keep_previous(target: &Path, prior: &Prior<'_>) {
     // A `.prev` without its record could not be rolled back to, so it is not kept.
     if fontaine_core::owner_only::write_atomic(&record, text.as_bytes()).is_err() {
         let _ = std::fs::remove_file(&prev);
+    }
+}
+
+/// Whether `target` already holds exactly the binary in `archive`, as after a swap whose receipt
+/// rewrite failed. Compared byte for byte, so a different build never reads as installed.
+pub fn holds_archive_binary(
+    archive: &Path,
+    target: &Path,
+    work: &Path,
+) -> Result<bool, InstallError> {
+    let mut staged = tempfile::Builder::new()
+        .prefix(".fontaine-cmp-")
+        .tempfile_in(work)
+        .map_err(io_err(
+            "a temporary file cannot be created beside the binary",
+        ))?;
+    extract_binary(archive, binary_name(), work, staged.as_file_mut())?;
+    let open = |path: &Path| {
+        File::open(path)
+            .map(BufReader::new)
+            .map_err(io_err("a binary cannot be opened for comparison"))
+    };
+    let read_err = |e| InstallError::Io("a binary cannot be read for comparison", e);
+    let Ok(current) = File::open(target) else {
+        return Ok(false);
+    };
+    let staged_len = staged.as_file().metadata().map_err(read_err)?.len();
+    if current.metadata().map_err(read_err)?.len() != staged_len {
+        return Ok(false);
+    }
+    let (mut a, mut b) = (BufReader::new(current), open(staged.path())?);
+    let (mut buf_a, mut buf_b) = (vec![0u8; 64 << 10], vec![0u8; 64 << 10]);
+    loop {
+        let n = a.read(&mut buf_a).map_err(read_err)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        b.read_exact(&mut buf_b[..n]).map_err(read_err)?;
+        if buf_a[..n] != buf_b[..n] {
+            return Ok(false);
+        }
     }
 }
 

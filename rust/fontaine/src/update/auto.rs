@@ -235,11 +235,7 @@ fn read_marker(data_dir: &Path) -> Option<Marker> {
     Some(Marker {
         from: value["from"].as_str()?.to_string(),
         to: value["to"].as_str()?.to_string(),
-        channel: match value["channel"].as_str()? {
-            "release" => Channel::Release,
-            "dev" => Channel::Dev,
-            _ => return None,
-        },
+        channel: Channel::parse(value["channel"].as_str()?)?,
     })
 }
 

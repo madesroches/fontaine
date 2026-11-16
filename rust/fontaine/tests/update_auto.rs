@@ -1,22 +1,35 @@
 //! The background update pass, rollback and the Windows helper's decisions, against a mock
 //! release index and a disposable signing key. The helper's lock probe, clock and sleep are
 //! injected so its logic runs on every OS.
-#![cfg(unix)]
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use fontaine::release_signature::{Channel, TrustedKeys};
+#[cfg(unix)]
+use fontaine::update;
+use fontaine::update::Params;
+#[cfg(unix)]
+use fontaine::update::Rollback;
 use fontaine::update::auto::{self, Mode, Pass};
 use fontaine::update::helper::{self, Done, HelperArgs};
-use fontaine::update::{self, Params, Rollback};
 use minisign::KeyPair;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[cfg(windows)]
+const TARGET: &str = "x86_64-pc-windows-msvc";
+#[cfg(windows)]
+const ASSET: &str = "fontaine-x86_64-pc-windows-msvc.zip";
+#[cfg(windows)]
+const BIN: &str = "fontaine.exe";
+#[cfg(not(windows))]
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+#[cfg(not(windows))]
 const ASSET: &str = "fontaine-x86_64-unknown-linux-gnu.tar.xz";
+#[cfg(not(windows))]
+const BIN: &str = "fontaine";
 const REPO: &str = "/repos/madesroches/fontaine";
 const OLD: &str = "0.1.0-dev.3+aaaaaaa";
 const NEW: &str = "0.1.0-dev.5+bbbbbbb";
@@ -44,6 +57,21 @@ impl Signer {
     }
 }
 
+#[cfg(windows)]
+fn archive(binary: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            format!("fontaine-{TARGET}/{BIN}"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    writer.write_all(binary).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+#[cfg(not(windows))]
 fn archive(binary: &[u8]) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     let mut header = tar::Header::new_gnu();
@@ -51,11 +79,7 @@ fn archive(binary: &[u8]) -> Vec<u8> {
     header.set_mode(0o755);
     header.set_cksum();
     builder
-        .append_data(
-            &mut header,
-            "fontaine-x86_64-unknown-linux-gnu/fontaine",
-            binary,
-        )
+        .append_data(&mut header, format!("fontaine-{TARGET}/{BIN}"), binary)
         .unwrap();
     let tar = builder.into_inner().unwrap();
     let mut xz = Vec::new();
@@ -76,14 +100,14 @@ impl Install {
         let root_path = root.path().canonicalize().unwrap();
         let prefix = root_path.join("install");
         std::fs::create_dir_all(&prefix).unwrap();
-        let binary = prefix.join("fontaine");
+        let binary = prefix.join(BIN);
         std::fs::write(&binary, b"OLD").unwrap();
         let receipt = root_path.join("config").join("fontaine-receipt.json");
         std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
         std::fs::write(
             &receipt,
             serde_json::json!({
-                "binaries": ["fontaine"],
+                "binaries": [BIN],
                 "install_prefix": prefix,
                 "install_layout": "flat",
                 "version": version,
@@ -130,12 +154,7 @@ impl Install {
         std::fs::read_dir(self.binary.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|n| {
-                !matches!(
-                    n.as_str(),
-                    "fontaine" | "fontaine.prev" | "fontaine.prev.json"
-                )
-            })
+            .filter(|n| !matches!(n.as_str(), BIN | "fontaine.prev" | "fontaine.prev.json"))
             .collect()
     }
 }
@@ -220,6 +239,7 @@ fn downloads(requests: &[wiremock::Request]) -> usize {
         .count()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_newer_signed_build_is_installed_and_announced_once() {
     let server = MockServer::start().await;
@@ -426,6 +446,7 @@ async fn a_pass_holding_the_lock_makes_a_second_one_stop() {
     assert_eq!(install.receipt_version(), NEW);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_pass_racing_a_manual_update_installs_once() {
     let server = MockServer::start().await;
@@ -500,6 +521,7 @@ fn the_pass_starts_only_for_an_interactive_receipt_install_that_opted_in() {
     assert!(!auto::should_start(false, true, receipt, exe), "no receipt");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn rollback_restores_the_previous_build_and_the_skip_stops_a_reinstall() {
     let server = MockServer::start().await;
@@ -543,6 +565,7 @@ async fn rollback_restores_the_previous_build_and_the_skip_stops_a_reinstall() {
     assert!(!install.data.join(auto::SKIP_FILE).exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn rollback_without_a_sidecar_or_previous_binary_has_nothing_to_restore() {
     let install = Install::new(OLD);
@@ -554,6 +577,7 @@ fn rollback_without_a_sidecar_or_previous_binary_has_nothing_to_restore() {
     assert_eq!(std::fs::read(&install.binary).unwrap(), b"OLD");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_failed_receipt_write_is_warned_once_and_leaves_no_marker() {
     use std::os::unix::fs::PermissionsExt;
@@ -586,8 +610,15 @@ async fn a_failed_receipt_write_is_warned_once_and_leaves_no_marker() {
     )
     .await;
     assert!(again.is_empty(), "{again:?}");
+    // No second swap: the kept previous binary is still the original, not the installed build.
+    assert_eq!(
+        std::fs::read(install.binary.with_extension("prev")).unwrap(),
+        b"OLD"
+    );
+    assert_eq!(std::fs::read(&install.binary).unwrap(), b"NEW");
 }
 
+#[cfg(unix)]
 #[test]
 fn the_subcommand_stays_silent_for_an_install_without_a_receipt() {
     let tmp = tempfile::tempdir().unwrap();

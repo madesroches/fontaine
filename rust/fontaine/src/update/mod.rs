@@ -337,9 +337,7 @@ impl Prepared {
 }
 
 fn signature_file(archive: &Path) -> PathBuf {
-    let mut name = archive.as_os_str().to_os_string();
-    name.push(".minisig");
-    PathBuf::from(name)
+    install::sibling(archive, ".minisig")
 }
 
 fn work_dir(info: &InstallInfo) -> Result<tempfile::TempDir, UpdateError> {
@@ -480,6 +478,22 @@ pub fn install(prepared: Prepared) -> Result<Outcome, UpdateError> {
         return Ok(Outcome::UpToDate {
             channel,
             version: info.version,
+        });
+    }
+
+    // A swap whose receipt rewrite failed left the new binary in place; swapping again would
+    // replace the real previous binary with this one.
+    let already_swapped = install::holds_archive_binary(&archive, &info.binary_path, work.path())
+        .map_err(|e| UpdateError::Install(Box::new(e)))?;
+    if already_swapped {
+        let receipt_warning = receipt::write_version(&info.receipt_path, &verified.version)
+            .err()
+            .map(|e| chain(&e));
+        return Ok(Outcome::Updated {
+            channel,
+            from: info.version,
+            to: verified.version,
+            receipt_warning,
         });
     }
 

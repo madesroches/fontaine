@@ -58,11 +58,10 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
         .map_err(|e| format!("the stage manifest cannot be read: {}", chain(&e)))?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| "the stage manifest is not valid JSON")?;
-    let channel = match value["channel"].as_str() {
-        Some("release") => Channel::Release,
-        Some("dev") => Channel::Dev,
-        _ => return Err("the stage manifest names no channel".into()),
-    };
+    let channel = value["channel"]
+        .as_str()
+        .and_then(Channel::parse)
+        .ok_or("the stage manifest names no channel")?;
     let version = value["version"]
         .as_str()
         .ok_or("the stage manifest names no version")?;
@@ -87,7 +86,10 @@ pub fn stage(data_dir: &Path, prepared: &Prepared) -> std::io::Result<()> {
         .file_name()
         .expect("an archive path has a file name");
     std::fs::copy(&prepared.archive, dir.join(name))?;
-    std::fs::copy(prepared.signature_path(), dir.join(sig_name(name)))?;
+    std::fs::copy(
+        prepared.signature_path(),
+        super::signature_file(&dir.join(name)),
+    )?;
     let text = serde_json::json!({
         "channel": prepared.verified.channel.as_str(),
         "version": prepared.verified.version,
@@ -102,12 +104,6 @@ pub fn stage(data_dir: &Path, prepared: &Prepared) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-fn sig_name(archive: &std::ffi::OsStr) -> std::ffi::OsString {
-    let mut name = archive.to_os_string();
-    name.push(".minisig");
-    name
 }
 
 /// Everything the helper's decisions depend on that is not the file system.
@@ -279,7 +275,7 @@ fn apply_stage(args: &HelperArgs, env: &Env<'_>, info: &InstallInfo, dir: &Path)
 
     let name = super::archive_name(env.target_triple);
     let archive = dir.join(&name);
-    let signature = std::fs::read_to_string(dir.join(sig_name(name.as_ref()))).ok();
+    let signature = std::fs::read_to_string(super::signature_file(&archive)).ok();
     let verified = match crate::release_signature::verify_file(
         env.keys,
         info.channel,
