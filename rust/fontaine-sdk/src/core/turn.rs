@@ -25,6 +25,7 @@ use crate::core::ledger::{AGENT_REPLY_CHARS, Record};
 use crate::core::preview::DiffPreview;
 use crate::core::usage_ledger::{CacheWrites, Served, UsageSource};
 use crate::core::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
+use crate::cost::CostBasis;
 
 /// A retry's prompt. The failed attempt's committed messages are already saved by the
 /// recovery hook, so the run only needs to be told to go on. Model context, never a ledger
@@ -173,8 +174,8 @@ pub struct TurnParams<'a> {
     pub modalities: Modalities,
     /// The most model calls the turn may make; `None` for no limit.
     pub max_turns: Option<usize>,
-    /// Whether the cost the model's calls report is counted; see `ModelHandle::catalog_billed`.
-    pub priced: bool,
+    /// How the cost the model's calls report is treated; see `ModelHandle::cost_basis`.
+    pub cost: CostBasis,
     /// The model's id and provider, for the `api_error` event.
     pub model: String,
     pub provider: String,
@@ -265,7 +266,8 @@ pub async fn run_turn(
         "fontaine.interaction",
         prompt.id = %Uuid::new_v4(),
         prompt.length = params.prompt.len() as u64,
-        model.priced = params.priced,
+        model.priced = params.cost.counted(),
+        model.estimated = params.cost.estimated(),
     );
     let mut feed = params.state.feed().await;
     // A guard, not a trailing call: an interrupted turn drops this future at an await point.
@@ -280,7 +282,7 @@ pub async fn run_turn(
             attachments: params.attachments,
             modalities: params.modalities,
             max_turns: params.max_turns,
-            priced: params.priced,
+            cost: params.cost,
             model: params.model,
             provider: params.provider,
             native_search: params.native_search,
@@ -400,9 +402,9 @@ pub struct Drive<'a> {
     pub modalities: Modalities,
     /// The most model calls the run may make; `None` for no limit.
     pub max_turns: Option<usize>,
-    /// Whether the cost the model's calls report is counted. An unpriced model's is dropped
-    /// here, where usage enters, because rig attaches it inside the wire.
-    pub priced: bool,
+    /// How the cost the model's calls report is treated. An unpriced model's is dropped here,
+    /// where usage enters, because rig attaches it inside the wire.
+    pub cost: CostBasis,
     /// The model's id and provider, for the `api_error` event.
     pub model: String,
     pub provider: String,
@@ -653,7 +655,7 @@ pub async fn drive(
                 attachments,
                 modalities: params.modalities,
                 max_turns: params.max_turns,
-                priced: params.priced,
+                cost: params.cost,
                 model: params.model.clone(),
                 provider: params.provider.clone(),
                 native_search: params.native_search,
@@ -852,7 +854,7 @@ async fn drive_once(
             MultiTurnStreamItem::CompletionCall(call) => {
                 step.end_request();
                 let mut usage = call.usage;
-                if !params.priced {
+                if !params.cost.counted() {
                     usage.cost = None;
                 }
                 let source = if params.agent_id == ROOT_AGENT {
@@ -880,6 +882,7 @@ async fn drive_once(
                     writes,
                     true,
                     &params.served,
+                    params.cost,
                 );
                 let flow = on_event(SessionEvent::Usage {
                     usage,

@@ -9,6 +9,7 @@ use common::pipeline::{Options, Rig};
 use common::runtime::{build, build_with_document};
 use fontaine_sdk::core::audit::DecisionRecord;
 use fontaine_sdk::core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::permissions::Answer;
 use fontaine_sdk::core::turn::{Drive, Flow, TurnOutcome, TurnParams, drive, run_turn};
 use rig_core::ProviderResponseError;
@@ -428,7 +429,7 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -472,7 +473,7 @@ async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -517,7 +518,7 @@ async fn reaching_the_turn_limit_is_not_an_api_error() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(1),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -590,7 +591,7 @@ async fn answer_with_document(capture: &TraceCapture, document: Value) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

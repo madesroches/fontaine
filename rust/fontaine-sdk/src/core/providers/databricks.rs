@@ -11,7 +11,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use http::header::{AUTHORIZATION, HeaderValue};
 use rig_core::DynModel;
-use rig_core::catalog::{ModelFacts, ModelSpec, ReasoningSupport};
+use rig_core::catalog::{ModelFacts, ModelSpec, Pricing, ReasoningSupport};
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::wire::Auth;
@@ -24,7 +24,7 @@ use rig_core::providers::openai::{OpenAIConfig, Route};
 use rig_core::providers::registry::ProviderId;
 use serde_json::Value;
 
-use super::derived_facts::{facts_as, no_facts_notice, notice};
+use super::derived_facts::{Price, exact_entry, facts_as, no_facts_notice, notice};
 use super::device_flow::REQUEST_TIMEOUT;
 use super::multi_wire::WireClients;
 use super::{
@@ -57,7 +57,8 @@ const CHAT_API_TYPES: &[&str] = &[
 /// gateway refuses more than the generic fallback. More families are added as they are found.
 const OUTPUT_CAPS: &[(&str, u32)] = &[("glm-", 25_000)];
 
-/// Never priced: the workspace bills in DBUs. The empty key and URL are placeholders.
+/// The workspace bills in DBUs, so a served model's catalog price is an estimate. The empty key
+/// and URL are placeholders.
 const DBX_DIALECT: Dialect = Dialect::gateway("databricks", "", "");
 
 /// The Messages models behind the gateway are not all Anthropic's, so the gateway quirks
@@ -81,7 +82,7 @@ impl Provider for Databricks {
     }
 
     fn billing(&self) -> Billing {
-        Billing::Unpriced
+        Billing::Estimated
     }
 
     fn accepts_wires(&self) -> bool {
@@ -258,7 +259,7 @@ fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
     if let Some(target) = mapped.get(model).map(|t| base_id(t))
         && let Some(vendor) = catalog_vendor_of(family(target))
         && let Some(served) = served
-        && let Some((facts, from, listed)) = facts_as(vendor, served, target, model)
+        && let Some((facts, from, listed)) = facts_as(vendor, served, target, model, Price::Keep)
     {
         return Some(Facts {
             facts,
@@ -269,7 +270,7 @@ fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
     let base = base_id(model);
     if let Some(vendor) = catalog_vendor_of(family(base))
         && let Some(served) = served
-        && let Some((facts, from, listed)) = facts_as(vendor, served, base, model)
+        && let Some((facts, from, listed)) = facts_as(vendor, served, base, model, Price::Keep)
     {
         return Some(Facts {
             facts,
@@ -289,6 +290,14 @@ fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
         derived_from: None,
         mapped_to: None,
     })
+}
+
+/// The list price of what `model` serves: the price of the catalog entry its facts come from.
+/// `None` for a model no entry lists, and for one only a shared shape reaches: its price would be
+/// a second guess on top of the guess its limits already are.
+pub fn listed_price(model: &str) -> Option<Pricing> {
+    let base = base_id(model);
+    exact_entry(catalog_vendor_of(family(base))?, base)?.pricing
 }
 
 /// The one-time notice for a model whose facts were derived from another listed model, or a
@@ -316,7 +325,7 @@ fn check_model_facts(account: &Account) -> Result<(), (&'static str, String)> {
         let target = base_id(target);
         let listed = catalog_vendor_of(family(base_id(key)))
             .zip(served)
-            .and_then(|(vendor, served)| facts_as(vendor, served, base_id(key), key))
+            .and_then(|(vendor, served)| facts_as(vendor, served, base_id(key), key, Price::Strip))
             .is_some_and(|(_, _, listed)| listed);
         if listed {
             return Err((
@@ -329,7 +338,7 @@ fn check_model_facts(account: &Account) -> Result<(), (&'static str, String)> {
         }
         let resolves = catalog_vendor_of(family(target))
             .zip(served)
-            .and_then(|(vendor, served)| facts_as(vendor, served, target, key))
+            .and_then(|(vendor, served)| facts_as(vendor, served, target, key, Price::Strip))
             .is_some();
         if !resolves {
             return Err((

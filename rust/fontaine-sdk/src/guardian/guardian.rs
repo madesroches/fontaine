@@ -11,6 +11,7 @@ use rig_core::completion::Usage;
 use rig_core::operation::Completion;
 use tracing::Instrument;
 
+use crate::cost::CostBasis;
 use crate::guardian::cache::{CacheKey, VerdictCache, digest};
 use crate::guardian::profile::Profile;
 use crate::guardian::prompt_builder::{Rendered, render, with_schema_answer};
@@ -48,8 +49,8 @@ pub struct Settings {
     /// `[guardian] cache`.
     pub cache: bool,
     pub profile: Profile,
-    /// Whether the cost a call reports is counted. An unpriced model's calls report none.
-    pub priced: bool,
+    /// How the cost a call reports is treated. An unpriced model's calls report none.
+    pub cost: CostBasis,
 }
 
 impl Default for Settings {
@@ -59,7 +60,7 @@ impl Default for Settings {
             confidence_threshold: 0.7,
             cache: true,
             profile: Profile::Full,
-            priced: true,
+            cost: CostBasis::Billed,
         }
     }
 }
@@ -239,7 +240,8 @@ impl Guardian {
             tool_name = request.tool_call.tool.as_str(),
             guardian_model = self.label.as_str(),
             guardian_profile = self.settings.profile.as_str(),
-            model.priced = self.settings.priced,
+            model.priced = self.settings.cost.counted(),
+            model.estimated = self.settings.cost.estimated(),
             decision = tracing::field::Empty,
             fail_closed_reason = tracing::field::Empty,
             cache_hit = tracing::field::Empty,
@@ -407,7 +409,7 @@ impl Guardian {
         let base =
             |decision, rule, explanation: String, confidence, fail_closed, cache_hit, usage| {
                 let mut usage: Usage = usage;
-                if !self.settings.priced {
+                if !self.settings.cost.counted() {
                     usage.cost = None;
                 }
                 Adjudication {

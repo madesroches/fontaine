@@ -8,6 +8,7 @@ use common::World;
 use common::runtime::{self, Built};
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::ledger::{AGENT_REPLY_CHARS, Record};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
 use rig_core::ProviderResponseError;
 use rig_core::completion::Usage;
@@ -34,7 +35,7 @@ async fn run(
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

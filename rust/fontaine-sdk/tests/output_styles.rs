@@ -9,6 +9,7 @@ use common::runtime::build;
 use fontaine_sdk::core::adjudication;
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
 use fontaine_sdk::guardian::Profile;
 use fontaine_sdk::guardian::prompt_builder::{system_prompt, user_message};
@@ -51,7 +52,7 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

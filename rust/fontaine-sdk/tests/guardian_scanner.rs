@@ -4,6 +4,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Endpoint, Reply, Stalling, Step, model_at, submit_turn, unread_turn};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::guardian::{LlmScanner, Scan, Scanner};
 use serde_json::{Value, json};
 
@@ -12,7 +13,7 @@ fn answer(verdict: &str, reason: &str) -> Value {
 }
 
 fn llm(endpoint: &Endpoint, timeout: Duration) -> LlmScanner {
-    LlmScanner::new(model_at(&endpoint.url()), timeout, true)
+    LlmScanner::new(model_at(&endpoint.url()), timeout, CostBasis::Billed)
 }
 
 fn failed(scan: &Scan) -> bool {
@@ -310,7 +311,11 @@ async fn a_scan_that_stalls_once_is_retried_and_answered() {
         vec![unread_turn(), submit_turn(answer("clean", "fine"))],
         vec![Step::Hang],
     );
-    let scanner = LlmScanner::new(model.model.clone(), Duration::from_secs(30), true);
+    let scanner = LlmScanner::new(
+        model.model.clone(),
+        Duration::from_secs(30),
+        CostBasis::Billed,
+    );
     assert_eq!(scanner.scan("shell", "build ok").await, Scan::Clean);
     assert_eq!(model.calls(), 2);
 }
@@ -321,7 +326,11 @@ async fn a_scan_that_always_stalls_fails() {
         vec![unread_turn(), unread_turn()],
         vec![Step::Hang, Step::Hang],
     );
-    let scanner = LlmScanner::new(model.model.clone(), Duration::from_secs(30), true);
+    let scanner = LlmScanner::new(
+        model.model.clone(),
+        Duration::from_secs(30),
+        CostBasis::Billed,
+    );
     let scan = scanner.scan("shell", "build ok").await;
     assert!(failed(&scan), "{scan:?}");
     assert_eq!(model.calls(), 2);

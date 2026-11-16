@@ -72,6 +72,7 @@ impl AgentRuntime {
                     &assessed.usage,
                     true,
                     &Served::direct(guardian.label()),
+                    guardian.settings().cost,
                 );
                 AssessmentResult::Completed {
                     suspected: assessed.suspected,
@@ -85,6 +86,7 @@ impl AgentRuntime {
                     &e.usage,
                     false,
                     &Served::direct(guardian.label()),
+                    guardian.settings().cost,
                 );
                 AssessmentResult::Unavailable { reason: chain(&e) }
             }

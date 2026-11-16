@@ -10,6 +10,9 @@ pub struct Spend {
     pub cost_usd: Option<f64>,
     /// Tokens of the calls that carried no price, which `cost_usd` therefore leaves out.
     pub unpriced_tokens: u64,
+    /// Whether `cost_usd` is an estimate of a list price rather than a bill. A sum holding one
+    /// estimate is marked.
+    pub estimated: bool,
 }
 
 impl Spend {
@@ -21,10 +24,16 @@ impl Spend {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.unpriced_tokens += other.unpriced_tokens;
+        self.estimated |= other.estimated;
         if let Some(cost) = other.cost_usd {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
     }
+}
+
+/// The ` est.` a dollar figure carries when it is an estimate of a list price.
+pub fn est_mark(estimated: bool) -> &'static str {
+    if estimated { " est." } else { "" }
 }
 
 /// A cap on one agent, or on the whole tree.
@@ -37,10 +46,26 @@ pub struct Budget {
 /// Why an agent was stopped.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Exhausted {
-    Tokens { spent: u64, cap: u64 },
-    Cost { spent: f64, cap: f64 },
-    SessionTokens { spent: u64, cap: u64 },
-    SessionCost { spent: f64, cap: f64 },
+    Tokens {
+        spent: u64,
+        cap: u64,
+    },
+    Cost {
+        spent: f64,
+        cap: f64,
+        /// The figure is a list-price estimate, never the bill.
+        estimated: bool,
+    },
+    SessionTokens {
+        spent: u64,
+        cap: u64,
+    },
+    SessionCost {
+        spent: f64,
+        cap: f64,
+        /// The figure is a list-price estimate, never the bill.
+        estimated: bool,
+    },
 }
 
 impl Exhausted {
@@ -58,8 +83,15 @@ impl Exhausted {
                     count(*cap)
                 )
             }
-            Exhausted::Cost { spent, cap } => {
-                format!("its cost budget is spent (${spent:.4} of ${cap:.2})")
+            Exhausted::Cost {
+                spent,
+                cap,
+                estimated,
+            } => {
+                format!(
+                    "its cost budget is spent (${spent:.4}{} of ${cap:.2})",
+                    est_mark(*estimated)
+                )
             }
             Exhausted::SessionTokens { spent, cap } => {
                 format!(
@@ -68,8 +100,15 @@ impl Exhausted {
                     count(*cap)
                 )
             }
-            Exhausted::SessionCost { spent, cap } => {
-                format!("the session's agent cost budget is spent (${spent:.4} of ${cap:.2})")
+            Exhausted::SessionCost {
+                spent,
+                cap,
+                estimated,
+            } => {
+                format!(
+                    "the session's agent cost budget is spent (${spent:.4}{} of ${cap:.2})",
+                    est_mark(*estimated)
+                )
             }
         }
     }
@@ -91,10 +130,19 @@ impl Budget {
         if let (Some(cap), Some(spent)) = (self.cost_usd, spend.cost_usd)
             && spent > cap
         {
+            let estimated = spend.estimated;
             return Some(if session {
-                Exhausted::SessionCost { spent, cap }
+                Exhausted::SessionCost {
+                    spent,
+                    cap,
+                    estimated,
+                }
             } else {
-                Exhausted::Cost { spent, cap }
+                Exhausted::Cost {
+                    spent,
+                    cap,
+                    estimated,
+                }
             });
         }
         None
@@ -111,6 +159,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_cost_budget_marks_an_estimated_figure() {
+        let estimated = Exhausted::Cost {
+            spent: 0.012,
+            cap: 2.0,
+            estimated: true,
+        };
+        assert_eq!(
+            estimated.describe(),
+            "its cost budget is spent ($0.0120 est. of $2.00)"
+        );
+        let session = Exhausted::SessionCost {
+            spent: 0.012,
+            cap: 2.0,
+            estimated: true,
+        };
+        assert_eq!(
+            session.describe(),
+            "the session's agent cost budget is spent ($0.0120 est. of $2.00)"
+        );
+        let exact = Exhausted::Cost {
+            spent: 0.012,
+            cap: 2.0,
+            estimated: false,
+        };
+        assert_eq!(
+            exact.describe(),
+            "its cost budget is spent ($0.0120 of $2.00)"
+        );
+    }
+
+    #[test]
+    fn a_mixed_spend_is_marked_an_estimate() {
+        let mut total = Spend::default();
+        total.add(&spend(1, 1, Some(0.5)));
+        assert!(!total.estimated);
+        total.add(&Spend {
+            estimated: true,
+            ..spend(1, 1, Some(0.25))
+        });
+        assert!(total.estimated);
+        assert_eq!(total.cost_usd, Some(0.75));
+    }
+
+    #[test]
     fn describe_with_formats_token_counts_only() {
         let why = Exhausted::Tokens {
             spent: 90_887,
@@ -124,6 +216,7 @@ mod tests {
         let cost = Exhausted::Cost {
             spent: 1.0,
             cap: 2.0,
+            estimated: false,
         };
         assert_eq!(cost.describe_with(|n| format!("<{n}>")), cost.describe());
     }

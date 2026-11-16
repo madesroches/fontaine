@@ -11,6 +11,7 @@ use fontaine_sdk::core::audit::Decision;
 use fontaine_sdk::core::config::PermissionMode::{self, Auto, Manual};
 use fontaine_sdk::core::gate::{AgentViewEvent, ChildRestrictions};
 use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::permission_rules::parse_rule;
 use fontaine_sdk::core::tier::Tier;
 use fontaine_sdk::core::turn::SessionEvent;
@@ -415,14 +416,19 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
     // The state's own tree is the default one; its bookkeeping per agent is the same call.
     let other = child(&rig, Ladder::Manual);
     rig.state
-        .add_guardian_usage(&other, &usage, true, &Default::default());
-    rig.state
-        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
+        .add_guardian_usage(&other, &usage, true, &Default::default(), CostBasis::Billed);
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &usage,
+        true,
+        &Default::default(),
+        CostBasis::Billed,
+    );
     assert_eq!(rig.state.guardian_usage().input_tokens, 16);
     assert_eq!(rig.agents.spend_of(&other).input_tokens, 8);
     assert_eq!(rig.agents.spend_of(&other).tokens(), 16);
     // Over a budget, the tree says so.
-    let spend = fontaine_sdk::core::gate::spend_of(&usage);
+    let spend = fontaine_sdk::core::gate::spend_of(&usage, CostBasis::Billed);
     assert!(tight.debit(&id, &spend).is_some());
 }
 
@@ -750,6 +756,7 @@ mod persistence {
     use fontaine_sdk::agents::mode::Ladder;
     use fontaine_sdk::agents::runner::ChildStatus;
     use fontaine_sdk::core::config::PermissionMode::Manual;
+    use fontaine_sdk::core::models::CostBasis;
     use fontaine_sdk::core::session::Session;
     use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
     use fontaine_sdk::tools::gate::ROOT_AGENT;
@@ -802,7 +809,7 @@ mod persistence {
                 attachments: Vec::new(),
                 modalities: rig_core::catalog::Modalities::default(),
                 max_turns: Some(5),
-                priced: true,
+                cost: CostBasis::Billed,
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,
@@ -1006,7 +1013,7 @@ mod killed {
     use fontaine_sdk::core::config::AccountKind;
     use fontaine_sdk::core::config::PermissionMode;
     use fontaine_sdk::core::models::{
-        GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
+        CostBasis, GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
     };
     use fontaine_sdk::core::permissions::{Approver, DenyAll};
     use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
@@ -1165,7 +1172,7 @@ mod killed {
                 attachments: Vec::new(),
                 modalities: rig_core::catalog::Modalities::default(),
                 max_turns: Some(5),
-                priced: true,
+                cost: CostBasis::Billed,
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,
@@ -1624,17 +1631,29 @@ async fn cache_tokens_reach_every_usage_bucket() {
     usage.input_tokens = Some(10);
     usage.cached_input_tokens = Some(7);
     usage.cache_creation_input_tokens = Some(3);
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &usage,
+        true,
+        &Default::default(),
+        CostBasis::Billed,
+    );
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &usage,
+        true,
+        &Default::default(),
+        CostBasis::Billed,
+    );
     rig.state
-        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
-    rig.state
-        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
-    rig.state.add_goal_usage(&usage, true, &Default::default());
+        .add_goal_usage(&usage, true, &Default::default(), CostBasis::Billed);
     rig.state.record_usage(
         UsageSource::Subagent,
         ROOT_AGENT,
         &usage,
         true,
         &Default::default(),
+        CostBasis::Billed,
     );
     let reads = |u: fontaine_sdk::core::usage_ledger::Bucket| {
         (u.cache_read_input_tokens, u.cache_creation_input_tokens)
@@ -1653,8 +1672,14 @@ async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
     usage.output_tokens = Some(2);
     let before = rig.agents.spend_of(ROOT_AGENT).tokens();
     for source in UsageSource::ALL {
-        rig.state
-            .record_usage(source, ROOT_AGENT, &usage, true, &Default::default());
+        rig.state.record_usage(
+            source,
+            ROOT_AGENT,
+            &usage,
+            true,
+            &Default::default(),
+            CostBasis::Billed,
+        );
     }
     for source in UsageSource::ALL {
         let bucket = rig.state.usage_ledger().bucket(source);
@@ -1668,6 +1693,7 @@ async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
         &usage,
         true,
         &Default::default(),
+        CostBasis::Billed,
     );
     assert_eq!(rig.agents.spend_of(&other).input_tokens, 5);
     assert_eq!(
@@ -1684,12 +1710,27 @@ async fn a_guardian_record_that_sent_no_request_adds_no_call() {
     let rig = Rig::new(Manual);
     let mut usage = rig_core::completion::Usage::new();
     usage.input_tokens = Some(3);
-    rig.state
-        .add_guardian_usage(ROOT_AGENT, &usage, false, &Default::default());
-    rig.state
-        .add_guardian_usage(ROOT_AGENT, &Default::default(), false, &Default::default());
-    rig.state
-        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &usage,
+        false,
+        &Default::default(),
+        CostBasis::Billed,
+    );
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &Default::default(),
+        false,
+        &Default::default(),
+        CostBasis::Billed,
+    );
+    rig.state.add_guardian_usage(
+        ROOT_AGENT,
+        &usage,
+        true,
+        &Default::default(),
+        CostBasis::Billed,
+    );
     let bucket = rig.state.guardian_usage();
     assert_eq!((bucket.calls, bucket.input_tokens), (1, 6));
 }
@@ -1712,6 +1753,7 @@ async fn a_guardian_request_that_failed_does_not_end_the_pause_it_probed() {
             true,
             answered,
             &fontaine_sdk::core::usage_ledger::Served::direct("work/mock"),
+            CostBasis::Billed,
         );
         assert_eq!(pause.is_paused(), paused, "answered = {answered}");
     }

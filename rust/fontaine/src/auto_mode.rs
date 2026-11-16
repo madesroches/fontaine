@@ -11,7 +11,7 @@ use fontaine_sdk::core::config::{Config, Slot};
 use fontaine_sdk::core::containment;
 use fontaine_sdk::core::dirs::Dirs;
 use fontaine_sdk::core::model_roles::{CRITIQUE_ROLE, ModelChain, SETUP_ROLE, fall_through_notice};
-use fontaine_sdk::core::models::{self, GuardianModel, ResolveParams, Switcher};
+use fontaine_sdk::core::models::{self, CostBasis, GuardianModel, ResolveParams, Switcher};
 use fontaine_sdk::core::project_env::discover::{self, SystemGh};
 use fontaine_sdk::core::project_env::sample;
 use fontaine_sdk::core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep};
@@ -197,13 +197,13 @@ pub fn critique_report(
     model: &str,
     text: &str,
     usage: &Usage,
-    billed: bool,
+    cost: CostBasis,
     format: ReportFormat,
 ) -> String {
     match format {
         ReportFormat::Text => format!(
             "{text}\n\nmodel: {model} ({})",
-            project_env::usage_line(usage, billed)
+            project_env::usage_line(usage, cost)
         ),
         ReportFormat::Json => json_text(&json!({
             "model": model,
@@ -211,7 +211,7 @@ pub fn critique_report(
             "usage": {
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
-                "cost_usd": usage.cost.filter(|_| billed).map(|c| c.total),
+                "cost_usd": usage.cost.filter(|_| cost.counted()).map(|c| c.total),
             },
         })),
     }
@@ -313,7 +313,7 @@ async fn critique_on_chain(
                     text,
                     usage,
                     handle.reference.to_string(),
-                    handle.catalog_billed(),
+                    handle.cost_basis(),
                 ))
             },
             |e: &CritiqueError| fontaine_sdk::core::turn::error_falls_through(e),
@@ -333,8 +333,8 @@ async fn critique_on_chain(
                     )
                 );
             }
-            let (text, usage, label, billed) = done.value;
-            emit(&critique_report(&label, &text, &usage, billed, format))
+            let (text, usage, label, cost) = done.value;
+            emit(&critique_report(&label, &text, &usage, cost, format))
         }
         Err(e @ CritiqueError::Timeout(_)) => fail(chain(&e), 1),
         Err(e) => fail(format!("the critique failed: {}", chain(&e)), 1),
@@ -390,7 +390,7 @@ async fn critique_models(
             &label,
             &text,
             &usage,
-            handle.catalog_billed(),
+            handle.cost_basis(),
             format,
         )),
         Err(e @ CritiqueError::Timeout(_)) => fail(chain(&e), 1),
@@ -592,7 +592,7 @@ async fn scan_step(
                 fall_through_notice("setup", from, &run.served, "quota")
             );
         }
-        return review_proposals(run.proposals, &run.served.to_string(), run.billed);
+        return review_proposals(run.proposals, &run.served.to_string(), run.cost);
     }
     let resolved = models::resolve(&ResolveParams {
         config,
@@ -620,12 +620,12 @@ async fn scan_step(
         Ok(proposals) => proposals,
         Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
     };
-    review_proposals(proposals, &label, handle.catalog_billed())
+    review_proposals(proposals, &label, handle.cost_basis())
 }
 
 /// Shows what a scan proposed and asks whether to keep it.
-fn review_proposals(proposals: project_env::Proposals, label: &str, billed: bool) -> ScanStep {
-    let (mut step, review) = ScanStep::proposed(proposals, label, billed);
+fn review_proposals(proposals: project_env::Proposals, label: &str, cost: CostBasis) -> ScanStep {
+    let (mut step, review) = ScanStep::proposed(proposals, label, cost);
     if let Some((scan, count)) = review {
         eprintln!("\n{}\n", sample::review_text(&scan));
         let accepted = confirm(&format!("Save these {count} proposals?"));
@@ -871,7 +871,13 @@ mod tests {
         let mut usage = Usage::new();
         usage.input_tokens = Some(10);
         usage.output_tokens = Some(5);
-        let text = critique_report("a/m", "Looks vague.", &usage, true, ReportFormat::Text);
+        let text = critique_report(
+            "a/m",
+            "Looks vague.",
+            &usage,
+            CostBasis::Billed,
+            ReportFormat::Text,
+        );
         assert_eq!(
             text,
             "Looks vague.\n\nmodel: a/m (10 input tokens, 5 output tokens)"
@@ -880,7 +886,7 @@ mod tests {
             "a/m",
             "Looks vague.",
             &usage,
-            false,
+            CostBasis::Unpriced,
             ReportFormat::Json,
         ))
         .unwrap();

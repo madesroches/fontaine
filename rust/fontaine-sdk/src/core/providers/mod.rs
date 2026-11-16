@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::guardian::OutputProbe;
 use futures::future::BoxFuture;
 use rig_core::DynModel;
+use rig_core::catalog::{Catalog, Pricing};
 use rig_core::completion::ProviderOptions;
 use rig_core::driver::Model;
 use rig_core::error::ProviderError;
@@ -77,8 +78,26 @@ pub enum BaseUrlPolicy {
 pub enum Billing {
     /// rig's catalog may know a price for the model.
     Catalog,
+    /// The account bills in its own units (DBUs), so the catalog price of a model whose vendor
+    /// lists one is an estimate of what the same tokens would cost on that vendor's API.
+    Estimated,
     /// Usage is billed outside per-token prices: any cost a response carries is dropped.
     Unpriced,
+}
+
+/// The catalog price of a `(provider, model)` span pair: for a gateway-prefixed id, the served
+/// vendor's list price; otherwise the catalog vendor's own entry. The provider name alone cannot
+/// decide, because a gateway's own wire may report a vendor's name for a model it serves.
+pub fn listed_price(provider: &str, model: &str) -> Option<Pricing> {
+    let prefixed = model.starts_with("system.ai.") || model.starts_with("databricks-");
+    if provider == databricks::Databricks.name() || prefixed {
+        return databricks::listed_price(model);
+    }
+    Catalog::builtin()
+        .resolve(&format!("{provider}/{model}"))
+        .ok()?
+        .spec
+        .pricing
 }
 
 pub trait Provider: Send + Sync + 'static {

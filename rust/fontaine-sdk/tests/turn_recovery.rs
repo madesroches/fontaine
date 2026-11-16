@@ -13,7 +13,9 @@ use common::runtime::{self, Built, build};
 use fontaine_sdk::core::checkpoint::RewindWhat;
 use fontaine_sdk::core::config::{AccountKind, PermissionMode::Manual};
 use fontaine_sdk::core::ledger::Record;
-use fontaine_sdk::core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
+use fontaine_sdk::core::models::{
+    CostBasis, GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
+};
 use fontaine_sdk::core::session::{CONVERSATION_LOG, Session};
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn, user_message};
 use fontaine_sdk::core::turn_recovery::{Fallback, Unsettled};
@@ -53,7 +55,7 @@ async fn run(built: &Built, prompt: &str) -> TurnOutcome {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -155,7 +157,7 @@ fn params<'a>(
         attachments: Vec::new(),
         modalities: rig_core::catalog::Modalities::default(),
         max_turns: Some(5),
-        priced: true,
+        cost: CostBasis::Billed,
         model: "scripted".to_string(),
         provider: "mock".to_string(),
         native_search: false,

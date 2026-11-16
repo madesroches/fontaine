@@ -3,6 +3,7 @@ mod common;
 
 use common::World;
 use fontaine_sdk::core::ledger::{FILE_INDEX_CAP, FileIndex, Ledger, Record};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::permissions::DenyAll;
 use fontaine_sdk::core::session::{CONVERSATION_LOG, CompactResult, Session, SessionError};
 use rig_core::DynModel;
@@ -137,7 +138,9 @@ async fn a_threshold_compaction_between_runs_leaves_the_context_compacted_and_sa
         vec![MockTurn::text("THRESHOLD-SUMMARY")],
     );
     let before = saved_texts(&session).len();
-    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+        .await;
     let CompactResult::Compacted {
         before: was,
         after: now,
@@ -160,13 +163,13 @@ async fn an_unpriced_threshold_compaction_returns_usage_without_a_cost() {
         MockTurn::text("THRESHOLD-SUMMARY")
             .with_usage(Usage::new().input_tokens(10).output_tokens(5).cost(cost))
     };
-    for (priced, expect_cost) in [(false, false), (true, true)] {
+    for (cost, expect_cost) in [(CostBasis::Unpriced, false), (CostBasis::Billed, true)] {
         let w = World::new();
         let (session, _) = session_with_history(&w, 8);
         let (_, dynamic) = model(Some(small_window_spec(1_000)), vec![turn()]);
-        let result = session.compact_if_needed(&dynamic, priced, &DenyAll).await;
+        let result = session.compact_if_needed(&dynamic, cost, &DenyAll).await;
         let usage = result.usage().expect("the summarizer answered");
-        assert_eq!(usage.cost.is_some(), expect_cost, "priced = {priced}");
+        assert_eq!(usage.cost.is_some(), expect_cost, "{cost:?}");
     }
 }
 
@@ -179,7 +182,9 @@ async fn a_conversation_that_fits_is_not_compacted() {
         vec![MockTurn::text("unused")],
     );
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
@@ -193,13 +198,17 @@ async fn compaction_is_skipped_when_the_window_is_unknown() {
     spec.context_window = None;
     let (mock, dynamic) = model(Some(spec), vec![MockTurn::text("unused")]);
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
     let (mock, dynamic) = model(None, vec![MockTurn::text("unused")]);
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
@@ -211,7 +220,9 @@ async fn an_empty_summary_leaves_the_context_unchanged() {
     let (session, _) = session_with_history(&w, 8);
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![MockTurn::text("")]);
     let before = saved_texts(&session);
-    let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let usage = session
+        .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+        .await;
     assert_eq!(mock.request_count(), 1);
     assert!(
         matches!(usage, CompactResult::Failed { usage: Some(_), .. }),
@@ -227,7 +238,9 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![]);
     let before = saved_texts(&session);
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Failed {
             usage: None,
             falls_through: false
@@ -517,7 +530,9 @@ async fn a_configured_window_compacts_a_conversation_the_reserve_would_leave_alo
     let spec = small_window_spec(100_000);
     let (mock, dynamic) = model(Some(spec.clone()), vec![MockTurn::text("unused")]);
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
@@ -529,7 +544,9 @@ async fn a_configured_window_compacts_a_conversation_the_reserve_would_leave_alo
         Some(spec),
         vec![MockTurn::text(summary.clone()), MockTurn::text("unused")],
     );
-    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+        .await;
     let CompactResult::Compacted { after, .. } = result else {
         panic!("{result:?}");
     };
@@ -540,7 +557,9 @@ async fn a_configured_window_compacts_a_conversation_the_reserve_would_leave_alo
     assert_eq!(mock.request_count(), 1);
     assert!(saved_texts(&session).iter().any(|m| m.contains(&summary)));
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped,
         "the next turn does not summarize again"
     );
@@ -555,13 +574,17 @@ async fn a_listed_model_without_a_window_is_compacted_only_when_a_window_is_conf
     spec.context_window = None;
     let (mock, dynamic) = model(Some(spec.clone()), vec![MockTurn::text("SUMMARY")]);
     assert_eq!(
-        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        session
+            .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
 
     session.set_autocompact_window(Some(2_000));
-    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+        .await;
     assert!(
         matches!(result, CompactResult::Compacted { .. }),
         "{result:?}"
@@ -571,7 +594,9 @@ async fn a_listed_model_without_a_window_is_compacted_only_when_a_window_is_conf
     // A model the catalog does not list is never compacted automatically.
     let (mock, unlisted) = model(None, vec![MockTurn::text("unused")]);
     assert_eq!(
-        session.compact_if_needed(&unlisted, true, &DenyAll).await,
+        session
+            .compact_if_needed(&unlisted, CostBasis::Billed, &DenyAll)
+            .await,
         CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
@@ -601,7 +626,7 @@ async fn asking_an_unlisted_model_to_summarize_warns_and_fails() {
     let result = session
         .compact_logged(
             &unlisted,
-            true,
+            CostBasis::Billed,
             CompactReason::Asked {
                 focus: String::new(),
             },
@@ -690,7 +715,7 @@ async fn a_summarizer_that_ran_out_of_quota_fails_for_the_caller_to_move_on_with
         .compact_logged_via(
             &main,
             Some(&failing),
-            true,
+            CostBasis::Billed,
             CompactReason::Asked {
                 focus: String::new(),
             },
@@ -724,7 +749,7 @@ async fn the_summary_request_goes_to_the_summarizer_while_the_main_model_sets_th
         .compact_logged_via(
             &main,
             Some(&summarizer),
-            true,
+            CostBasis::Billed,
             CompactReason::Asked {
                 focus: String::new(),
             },
@@ -755,7 +780,7 @@ async fn a_summarizer_failure_warns_with_its_whole_cause_chain() {
     let result = session
         .compact_logged(
             &failing,
-            true,
+            CostBasis::Billed,
             CompactReason::Asked {
                 focus: String::new(),
             },
@@ -1172,7 +1197,9 @@ async fn the_initial_summary_request_carries_the_evidence_rules_after_a_window_i
         Some(small_window_spec(100_000)),
         vec![MockTurn::text("SUMMARY-ONE")],
     );
-    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&dynamic, CostBasis::Billed, &DenyAll)
+        .await;
     assert!(
         matches!(result, CompactResult::Compacted { .. }),
         "{result:?}"
@@ -1199,7 +1226,9 @@ async fn the_update_summary_request_keeps_unverified_claims_unverified() {
         Some(small_window_spec(100_000)),
         vec![MockTurn::text("SUMMARY-ONE")],
     );
-    let result = session.compact_if_needed(&first, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&first, CostBasis::Billed, &DenyAll)
+        .await;
     assert!(
         matches!(result, CompactResult::Compacted { .. }),
         "{result:?}"
@@ -1216,7 +1245,9 @@ async fn the_update_summary_request_keeps_unverified_claims_unverified() {
         Some(small_window_spec(100_000)),
         vec![MockTurn::text("SUMMARY-TWO")],
     );
-    let result = session.compact_if_needed(&second, true, &DenyAll).await;
+    let result = session
+        .compact_if_needed(&second, CostBasis::Billed, &DenyAll)
+        .await;
     assert!(
         matches!(result, CompactResult::Compacted { .. }),
         "{result:?}"

@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use rig_core::catalog::Catalog;
 
 use super::context_editing;
-use super::derived_facts::{facts_as, no_facts_notice, notice, unlisted, unlisted_facts};
+use super::derived_facts::{Price, facts_as, no_facts_notice, notice, unlisted, unlisted_facts};
 use super::{
     AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
 };
@@ -79,7 +79,7 @@ impl Provider for Anthropic {
                     ),
                 ));
             }
-            if facts_as(anthropic, anthropic, target, served).is_none() {
+            if facts_as(anthropic, anthropic, target, served, Price::Strip).is_none() {
                 return Err((
                     "model_facts",
                     format!("`{served}` maps to `{target}`, which is not a catalog Claude model"),
@@ -133,7 +133,7 @@ impl Connected {
         let mapped = self
             .model_facts
             .get(model)
-            .and_then(|target| facts_as(anthropic, anthropic, target, model))
+            .and_then(|target| facts_as(anthropic, anthropic, target, model, Price::Strip))
             .map(|(facts, ..)| facts);
         if let Some(facts) = mapped.or_else(|| unlisted_facts(anthropic, model)) {
             built.wire = built.wire.with_facts(facts);
@@ -165,7 +165,8 @@ impl AccountClient for Connected {
     fn facts_notice(&self, model: &str) -> Option<String> {
         let anthropic = vendor("anthropic");
         if let Some(target) = self.model_facts.get(model)
-            && let Some((_, from, listed)) = facts_as(anthropic, anthropic, target, model)
+            && let Some((_, from, listed)) =
+                facts_as(anthropic, anthropic, target, model, Price::Strip)
         {
             return (!listed).then(|| notice(model, target, &from, None));
         }

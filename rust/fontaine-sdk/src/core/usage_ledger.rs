@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
 
+use crate::cost::CostBasis;
 use crate::tools::lock::lock;
 use rig_core::completion::Usage;
 use serde_json::Value;
@@ -75,12 +76,22 @@ pub struct Bucket {
     pub cost_usd: Option<f64>,
     /// Input and output tokens (no cache tokens) of the calls that had no price.
     pub unpriced_tokens: u64,
+    /// Whether `cost_usd` is an estimate of a list price rather than a bill, so the figure is
+    /// never presented as one. A bucket holding both is marked.
+    pub estimated: bool,
 }
 
 impl Bucket {
-    /// Adds one call. `sent_request` is false for a record that stands for no request, such
-    /// as a guardian answer served from its cache: the tokens and cost still accrue.
-    pub fn add(&mut self, usage: &Usage, writes: Option<CacheWrites>, sent_request: bool) {
+    /// Adds one call of `basis`. `sent_request` is false for a record that stands for no
+    /// request, such as a guardian answer served from its cache: the tokens and cost still
+    /// accrue.
+    pub fn add(
+        &mut self,
+        usage: &Usage,
+        writes: Option<CacheWrites>,
+        sent_request: bool,
+        basis: CostBasis,
+    ) {
         if sent_request {
             self.calls += 1;
         }
@@ -97,7 +108,10 @@ impl Bucket {
             self.cache_write_1h_tokens += writes.one_hour;
         }
         match usage.cost {
-            Some(cost) => *self.cost_usd.get_or_insert(0.0) += cost.total,
+            Some(cost) => {
+                *self.cost_usd.get_or_insert(0.0) += cost.total;
+                self.estimated |= basis.estimated();
+            }
             None => self.unpriced_tokens += input + output,
         }
     }
@@ -112,6 +126,7 @@ impl Bucket {
         self.cache_write_5m_tokens += other.cache_write_5m_tokens;
         self.cache_write_1h_tokens += other.cache_write_1h_tokens;
         self.unpriced_tokens += other.unpriced_tokens;
+        self.estimated |= other.estimated;
         if let Some(cost) = other.cost_usd {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
@@ -176,12 +191,18 @@ impl UsageLedger {
         writes: Option<CacheWrites>,
         sent_request: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
-        lock(&self.by_source, "usage ledger")[source.index()].add(usage, writes, sent_request);
+        lock(&self.by_source, "usage ledger")[source.index()].add(
+            usage,
+            writes,
+            sent_request,
+            basis,
+        );
         lock(&self.by_model, "usage ledger by model")
             .entry(served.clone())
             .or_default()
-            .add(usage, writes, sent_request);
+            .add(usage, writes, sent_request, basis);
     }
 
     /// One bucket per role and model that served a call, in name order.
@@ -236,8 +257,8 @@ mod tests {
         let mut call = usage(100, 10, Some(0.5));
         call.cached_input_tokens = Some(60);
         call.cache_creation_input_tokens = Some(7);
-        bucket.add(&call, None, true);
-        bucket.add(&call, None, true);
+        bucket.add(&call, None, true, CostBasis::Billed);
+        bucket.add(&call, None, true, CostBasis::Billed);
         assert_eq!(bucket.calls, 2);
         assert_eq!(bucket.input_tokens, 200);
         assert_eq!(bucket.output_tokens, 20);
@@ -248,27 +269,54 @@ mod tests {
     #[test]
     fn cost_accrues_only_from_priced_calls_and_unpriced_tokens_exclude_cache() {
         let mut bucket = Bucket::default();
-        bucket.add(&usage(10, 5, None), None, true);
+        bucket.add(&usage(10, 5, None), None, true, CostBasis::Billed);
         assert_eq!(bucket.cost_usd, None);
         assert_eq!(bucket.unpriced_tokens, 15);
 
-        bucket.add(&usage(100, 10, Some(0.25)), None, true);
+        bucket.add(&usage(100, 10, Some(0.25)), None, true, CostBasis::Billed);
         let mut unpriced = usage(20, 2, None);
         unpriced.cached_input_tokens = Some(500);
-        bucket.add(&unpriced, None, true);
+        bucket.add(&unpriced, None, true, CostBasis::Billed);
         assert_eq!(bucket.cost_usd, Some(0.25));
         assert_eq!(bucket.unpriced_tokens, 37);
     }
 
     #[test]
+    fn only_an_estimate_priced_call_marks_a_bucket() {
+        let mut bucket = Bucket::default();
+        bucket.add(&usage(10, 1, Some(0.1)), None, true, CostBasis::Billed);
+        assert!(!bucket.estimated);
+        bucket.add(&usage(10, 1, Some(0.1)), None, true, CostBasis::Estimated);
+        assert!(bucket.estimated);
+        // A call whose report carried no price says nothing about the figure.
+        let mut unpriced = Bucket::default();
+        unpriced.add(&usage(10, 1, None), None, true, CostBasis::Estimated);
+        assert!(!unpriced.estimated);
+        assert_eq!(unpriced.unpriced_tokens, 11);
+    }
+
+    #[test]
+    fn a_bucket_holding_one_estimate_is_marked_and_merge_carries_it() {
+        let mut billed = Bucket::default();
+        billed.add(&usage(10, 1, Some(0.5)), None, true, CostBasis::Billed);
+        let mut estimate = Bucket::default();
+        estimate.add(&usage(10, 1, Some(0.25)), None, true, CostBasis::Estimated);
+        assert!(!billed.estimated);
+        assert!(estimate.estimated);
+        billed.merge(&estimate);
+        assert!(billed.estimated);
+        assert_eq!(billed.cost_usd, Some(0.75));
+    }
+
+    #[test]
     fn calls_count_only_usage_marked_as_a_sent_request() {
         let mut bucket = Bucket::default();
-        bucket.add(&Usage::new(), None, false);
-        bucket.add(&usage(10, 1, Some(0.1)), None, false);
+        bucket.add(&Usage::new(), None, false, CostBasis::Billed);
+        bucket.add(&usage(10, 1, Some(0.1)), None, false, CostBasis::Billed);
         assert_eq!(bucket.calls, 0);
         assert_eq!(bucket.input_tokens, 10);
         assert_eq!(bucket.cost_usd, Some(0.1));
-        bucket.add(&usage(10, 1, Some(0.1)), None, true);
+        bucket.add(&usage(10, 1, Some(0.1)), None, true, CostBasis::Billed);
         assert_eq!(bucket.calls, 1);
     }
 
@@ -282,6 +330,7 @@ mod tests {
             None,
             true,
             &served,
+            CostBasis::Billed,
         );
         ledger.record(
             UsageSource::Subagent,
@@ -289,6 +338,7 @@ mod tests {
             None,
             true,
             &served,
+            CostBasis::Billed,
         );
         ledger.record(
             UsageSource::Guardian,
@@ -296,6 +346,7 @@ mod tests {
             None,
             true,
             &served,
+            CostBasis::Billed,
         );
 
         assert_eq!(ledger.bucket(UsageSource::Main).input_tokens, 100);
@@ -318,6 +369,7 @@ mod tests {
             None,
             true,
             &Served::default(),
+            CostBasis::Billed,
         );
         assert_eq!(ledger.total().cost_usd, None);
     }
@@ -334,6 +386,7 @@ mod tests {
             None,
             true,
             &coding,
+            CostBasis::Billed,
         );
         ledger.record(
             UsageSource::Subagent,
@@ -341,6 +394,7 @@ mod tests {
             None,
             true,
             &coding,
+            CostBasis::Billed,
         );
         ledger.record(
             UsageSource::Subagent,
@@ -348,6 +402,7 @@ mod tests {
             None,
             true,
             &fallback,
+            CostBasis::Billed,
         );
         ledger.record(
             UsageSource::Guardian,
@@ -355,6 +410,7 @@ mod tests {
             None,
             true,
             &direct,
+            CostBasis::Billed,
         );
 
         let rows = ledger.by_model();
@@ -404,13 +460,13 @@ mod tests {
             one_hour: 10,
         };
         let mut split = Bucket::default();
-        split.add(&call, Some(writes), true);
-        split.add(&call, Some(writes), true);
+        split.add(&call, Some(writes), true, CostBasis::Billed);
+        split.add(&call, Some(writes), true, CostBasis::Billed);
         assert_eq!(split.cache_write_5m_tokens, 4);
         assert_eq!(split.cache_write_1h_tokens, 20);
 
         let mut unsplit = Bucket::default();
-        unsplit.add(&call, None, true);
+        unsplit.add(&call, None, true, CostBasis::Billed);
         assert_eq!(unsplit.cache_creation_input_tokens, 12);
         assert_eq!(unsplit.cache_write_5m_tokens, 0);
         assert_eq!(unsplit.cache_write_1h_tokens, 0);

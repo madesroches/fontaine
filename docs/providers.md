@@ -15,13 +15,15 @@ This page helps you choose a kind and shows a minimal example of each;
 | `kimi` | Kimi for Coding | Chat Completions | `https://api.kimi.com/coding/v1` | optional | unpriced | quota display |
 | `ollama` | Local Ollama | `/api/chat` | `http://localhost:11434` | optional | priced if catalog lists it | `context_tokens`, `think` |
 | `opencode-go` | OpenCode Go | four wires, per model | `https://opencode.ai/inference/go` | sign-in | unpriced | `wires` |
-| `databricks` | Databricks AI Gateway | four wires, per model | `base_url` required | required (Bearer) | unpriced | `wires`, `model_facts`, `thinking_off` |
+| `databricks` | Databricks AI Gateway | four wires, per model | `base_url` required | required (Bearer) | estimated (list price) | `wires`, `model_facts`, `thinking_off` |
 | `openrouter` | OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | required | priced | prompt caching |
 | `claude-subscription` | Claude Max or Ultra via the Claude CLI | Messages, via the CLI | none | the CLI's login | unpriced | native web search, plan quota |
 
 `--max-budget-usd` does not apply to unpriced models, and with one as the main model it is a usage
-error. Native web search is offered for `anthropic` and `claude-subscription`
-only; see [`[websearch]`](configuration.md#websearch).
+error. `databricks` is the one kind whose prices are estimates: a model whose vendor lists a price
+is counted at that list price, so the flag and the dollar caps work there too. Native web search is
+offered for `anthropic` and `claude-subscription` only; see
+[`[websearch]`](configuration.md#websearch).
 
 ## Easily confused choices
 
@@ -155,8 +157,11 @@ kind = "opencode-go"
 ## `databricks`
 
 `base_url` is the workspace origin, no path. `claude-` models use the Messages route, `gpt-` (except `gpt-oss-`)
-the Responses route, `gemini-` the Gemini route, the rest MLflow Chat Completions. Billed in DBUs.
-`model_facts` maps a custom endpoint; it does not change routing. See
+the Responses route, `gemini-` the Gemini route, the rest MLflow Chat Completions. The workspace
+bills in DBUs, which Fontaine cannot read per call, so a model whose vendor lists a catalog price
+is counted at that list price and every figure it feeds is marked ` est.`; a model no entry lists
+stays unpriced. `model_facts` maps a custom endpoint and does not change routing; a mapped endpoint
+takes its target's list price. See
 [Configuration](configuration.md#worked-examples).
 
 ```toml

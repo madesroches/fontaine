@@ -37,6 +37,7 @@ use crate::core::turn::SessionEvent;
 use crate::core::usage_ledger::{Bucket, CacheWrites, Served, UsageLedger, UsageSource};
 use crate::core::usage_limit::UsageLimit;
 use crate::core::usage_pause::{PauseEnd, PauseEvent, PauseInfo, UsagePause, describe_reset};
+use crate::cost::CostBasis;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -1298,7 +1299,8 @@ impl SessionState {
 
     /// Records one model call: in the session's usage ledger under `source` and against
     /// `agent`'s budget. `sent_request` is false for a record that stands for no request.
-    /// `served` names the model that made the call and the role it was asked for under.
+    /// `served` names the model that made the call and the role it was asked for under, and
+    /// `basis` how its cost is treated.
     pub fn record_usage(
         &self,
         source: UsageSource,
@@ -1306,12 +1308,14 @@ impl SessionState {
         usage: &Usage,
         sent_request: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
-        self.record_usage_split(source, agent, usage, None, sent_request, served);
+        self.record_usage_split(source, agent, usage, None, sent_request, served, basis);
     }
 
     /// [`record_usage`](Self::record_usage) for a call whose reply split its cache writes by
     /// lifetime.
+    #[allow(clippy::too_many_arguments)] // each is an independent input of one ledger entry
     pub fn record_usage_split(
         &self,
         source: UsageSource,
@@ -1320,6 +1324,7 @@ impl SessionState {
         writes: Option<CacheWrites>,
         sent_request: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
         self.record_usage_answered(
             source,
@@ -1329,6 +1334,7 @@ impl SessionState {
             sent_request,
             sent_request,
             served,
+            basis,
         );
     }
 
@@ -1344,10 +1350,11 @@ impl SessionState {
         sent_request: bool,
         answered: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
         self.usage
-            .record(source, usage, writes, sent_request, served);
-        self.agents.debit(agent, &spend_of(usage));
+            .record(source, usage, writes, sent_request, served, basis);
+        self.agents.debit(agent, &spend_of(usage, basis));
         // Only the paused account's own answer proves its window open, whoever held the probe.
         // A call whose account is unknown proves nothing.
         if answered && !served.model.is_empty() {
@@ -1367,8 +1374,16 @@ impl SessionState {
         usage: &Usage,
         sent_request: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
-        self.record_usage(UsageSource::Guardian, agent, usage, sent_request, served);
+        self.record_usage(
+            UsageSource::Guardian,
+            agent,
+            usage,
+            sent_request,
+            served,
+            basis,
+        );
     }
 
     /// [`add_guardian_usage`](Self::add_guardian_usage) for an adjudication: a request that
@@ -1381,6 +1396,7 @@ impl SessionState {
         sent_request: bool,
         answered: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
         self.record_usage_answered(
             UsageSource::Guardian,
@@ -1390,6 +1406,7 @@ impl SessionState {
             sent_request,
             sent_request && answered,
             served,
+            basis,
         );
     }
 
@@ -1401,6 +1418,7 @@ impl SessionState {
         usage: &Usage,
         answered: bool,
         served: &Served,
+        basis: CostBasis,
     ) {
         self.record_usage_answered(
             UsageSource::Guardian,
@@ -1410,6 +1428,7 @@ impl SessionState {
             true,
             answered,
             served,
+            basis,
         );
     }
 
@@ -1421,7 +1440,7 @@ impl SessionState {
     /// Counts a goal evaluation's model calls against the root, so the spend a goal's cost cap
     /// reads includes them.
     /// `answered` is false when the provider gave no response.
-    pub fn add_goal_usage(&self, usage: &Usage, answered: bool, served: &Served) {
+    pub fn add_goal_usage(&self, usage: &Usage, answered: bool, served: &Served, basis: CostBasis) {
         self.record_usage_answered(
             UsageSource::Goal,
             ROOT_AGENT,
@@ -1430,6 +1449,7 @@ impl SessionState {
             true,
             answered,
             served,
+            basis,
         );
     }
 
@@ -1789,7 +1809,7 @@ impl SessionState {
 }
 
 /// A usage report as the agent tree counts it.
-pub fn spend_of(usage: &Usage) -> Spend {
+pub fn spend_of(usage: &Usage, basis: CostBasis) -> Spend {
     Spend {
         input_tokens: usage.input_tokens.unwrap_or(0),
         output_tokens: usage.output_tokens.unwrap_or(0),
@@ -1799,6 +1819,7 @@ pub fn spend_of(usage: &Usage) -> Spend {
         } else {
             0
         },
+        estimated: usage.cost.is_some() && basis.estimated(),
     }
 }
 
@@ -1844,12 +1865,12 @@ mod tests {
         let mut usage = Usage::new();
         usage.input_tokens = Some(30);
         usage.output_tokens = Some(12);
-        let unpriced = spend_of(&usage);
+        let unpriced = spend_of(&usage, CostBasis::Billed);
         assert_eq!(unpriced.unpriced_tokens, 42);
         assert_eq!(unpriced.cost_usd, None);
 
         usage.cost = Some(rig_core::completion::Cost::from_total(0.5));
-        let priced = spend_of(&usage);
+        let priced = spend_of(&usage, CostBasis::Billed);
         assert_eq!(priced.unpriced_tokens, 0);
         assert_eq!(priced.cost_usd, Some(0.5));
     }

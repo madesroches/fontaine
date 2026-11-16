@@ -412,7 +412,7 @@ async fn run_attempt(
             attachments: Vec::new(),
             modalities,
             max_turns: options.max_turns,
-            priced: runtime.models.main.catalog_billed(),
+            cost: runtime.models.main.cost_basis(),
             model,
             provider,
             native_search: runtime.native_search_active(),

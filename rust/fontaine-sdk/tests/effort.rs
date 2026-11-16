@@ -9,7 +9,7 @@ use common::World;
 use common::runtime::{Built, build, build_with_approver};
 use fontaine_sdk::core::config::{AccountKind, PermissionMode::Manual};
 use fontaine_sdk::core::effort::Effort;
-use fontaine_sdk::core::models::{GuardianChoice, ModelHandle, ModelRef, Models};
+use fontaine_sdk::core::models::{CostBasis, GuardianChoice, ModelHandle, ModelRef, Models};
 use fontaine_sdk::core::permissions::{Answer, ApprovalRequest, Approver};
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
 use futures::future::BoxFuture;
@@ -215,7 +215,7 @@ async fn root_turn(built: &Built) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

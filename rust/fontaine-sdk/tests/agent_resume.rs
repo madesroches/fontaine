@@ -13,6 +13,7 @@ use fontaine_sdk::agents::runner::ChildStatus;
 use fontaine_sdk::core::agent::{Delivered, MessageRefusal};
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::gate::{AgentEventSink, AgentViewEvent};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
 use fontaine_sdk::tools::gate::ROOT_AGENT;
 use rig_core::completion::Usage;
@@ -93,7 +94,7 @@ async fn with_one_child_seen(
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -435,7 +436,7 @@ async fn a_resumed_session_brings_back_a_done_agent_idle_and_wakes_it_from_its_l
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

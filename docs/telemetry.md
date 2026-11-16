@@ -123,7 +123,7 @@ exported.
 |---|---|---|
 | `fontaine.session.count` | `{session}` | `start_type` (`fresh`, `resume` or `continue`; a fork takes the value of the flag it forks from, `--continue` with nothing to continue is `fresh`, and a `/resume` or `/branch` inside the terminal UI starts a new session span with `resume`), `headless` (`true` or `false`) |
 | `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `cacheWrite5m`, `cacheWrite1h`, `reasoning`; `cacheWrite5m` and `cacheWrite1h` are the parts of `cacheCreation` that Anthropic's reply split by cache lifetime, so do not sum all the types), `model`, `query_source` (`main`, `guardian`, `scanner`, `goal` or `subagent`); `estimated` (`true`) on the guardian spend estimate only |
-| `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
+| `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only; `cost.basis` (`list-price`) on a figure that is a list price rather than a bill |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
 | `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`, `not_signed_in`, `usage_pause_ended`) |
@@ -131,12 +131,21 @@ exported.
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint, a `kimi` account, an `opencode-go`
-account, a `databricks` account or a `claude-subscription` account (whose token usage is exported but whose cost is never inferred from
-the CLI's list-price figures). An
-`openrouter` account is priced by its upstream model.
+account or a `claude-subscription` account (whose token usage is exported but whose cost is never
+inferred from the CLI's list-price figures). An `openrouter` account is priced by its upstream
+model.
 `query_source` is `main` for the session model, `guardian` for the model calls made while a
 guardian adjudication is open, `scanner` for the calls the `llm` tool-result scanner makes, and
 `subagent` for the calls made under a subagent's span.
+
+A `databricks` gateway is the one whose figure is an estimate: the workspace bills in DBUs, so a
+Claude, GPT or Gemini model the catalog lists is priced at the served vendor's list price and the
+metric carries `cost.basis = "list-price"`. The provider name alone decides nothing — rig's Gemini
+wire reports `gcp.gemini` for a gateway model — so an id carrying `system.ai.` or the older
+`databricks-` prefix is priced from the served model's entry. A model no entry lists, such as an
+open `glm-*` or a shape-derived one, has no price and no metric. A custom endpoint priced through
+`model_facts` has none either: its span carries only the endpoint's name.
+
 Both guardian metrics are derived from the guardian attributes of the decision event. No metric
 carries a prompt or tool-call id.
 
@@ -145,7 +154,8 @@ guardian request it started is still pending, the request is dropped. The reques
 sent and billed by then, but no usage comes back for it. Fontaine adds an estimate to `fontaine.token.usage` (`type = input`) and, for a
 priced guardian model, to `fontaine.cost.usage`, with `query_source = guardian` and `estimated =
 true`: a quarter of the prompt's bytes, priced as input only. Real usage never carries
-`estimated`, so a query that leaves the estimate out filters on its absence. The session's `/cost`
+`estimated`, so a query that leaves the estimate out filters on its absence; a list-price figure is
+marked `cost.basis` instead, so that filter keeps every dbx cost. The session's `/cost`
 and budgets do not count the estimate. A guardian request that finished but whose verdict the
 composition did not use is counted in the session's usage like any other guardian call.
 
@@ -153,7 +163,7 @@ composition did not use is counted in the session's usage like any other guardia
 
 | Event | Fields |
 |---|---|
-| `api_request` | `model`, `provider`, `input_tokens`, `output_tokens`, `cost_usd` (when priced), `duration_ms`, `query_source` |
+| `api_request` | `model`, `provider`, `input_tokens`, `output_tokens`, `cost_usd` (when priced), `cost.basis` (`list-price` when that figure is a list-price estimate), `duration_ms`, `query_source` |
 | `user_prompt` | `prompt_id`, `prompt_length` (the length only) |
 | `subagent` | `event` (`spawn`, `resume`, `complete`, `killed`, `budget_exhausted` or `retired`), `agent.id`, `agent.name`, `agent.type` |
 | `task` | `event` (`created`, `claimed`, `completed` or `released`), `agent.id`, `agent.name`, `task.id`. A change to an agent's [task board](agents.md#the-task-board); the task's text is never exported. A task released because its owner ended or a wake was refused carries the owner's agent. |

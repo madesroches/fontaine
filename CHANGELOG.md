@@ -41,6 +41,18 @@ All notable changes are recorded here. The format follows
   command that starts with the typed text is shown dimmed after the cursor; Tab or Right accepts it
   and Esc hides it until the text changes. A bare `!` shows nothing, and `[tui] history_completion =
   false` turns it off.
+- A `databricks` model whose vendor lists a catalog price is priced at that list price (#677).
+  The workspace bills in DBUs, which Fontaine cannot read per call, so a Claude, GPT or Gemini
+  model served on the gateway is counted at what the same tokens would have cost on the served
+  vendor's own API: the usage ledger, `total_cost_usd`, `/cost`, `/agents`, the session and
+  subagent cost budgets, a goal's cost cap and `--max-budget-usd` all work on it. Every figure a
+  person reads ends in ` est.` (`$0.0066 est.`), and the OpenTelemetry `fontaine.cost.usage`
+  metric and `api_request` event carry `cost.basis = "list-price"`; `estimated` keeps its one
+  meaning, the guessed spend of a guardian request a composition dropped. Open models, `gpt-oss-*`
+  and an unmapped custom `catalog.schema.name` endpoint stay unpriced, and so does a model whose
+  facts were derived from one of the same shape. A custom endpoint mapped under `model_facts`
+  takes its target's list price in the ledger and `/cost`; on `anthropic` that mapping stays
+  unpriced.
 - Automatic background updates (#175): at interactive start, at most once a day, an install made by
   a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
   minisign signature against the key compiled into the running binary and makes it the next

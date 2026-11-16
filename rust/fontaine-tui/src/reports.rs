@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use fontaine_sdk::agents::budget::est_mark;
 use fontaine_sdk::agents::registry::TypeOrigin;
 use fontaine_sdk::core::afk_report::{AfkOutcome, AfkReport, Attempt, LinkKind};
 use fontaine_sdk::core::config::{
@@ -758,8 +759,9 @@ pub struct UsageReport {
     pub by_source: [Bucket; 8],
     /// One bucket per role and model that served a call.
     pub by_model: Vec<(Served, Bucket)>,
-    /// The `[agents]` session cost cap and what the session has spent against it.
-    pub budget: Option<(f64, f64)>,
+    /// The `[agents]` session cost cap, what the session has spent against it, and whether that
+    /// figure is a list-price estimate.
+    pub budget: Option<(f64, f64, bool)>,
 }
 
 /// `/cost`: tokens, cache tokens and dollars per source, then the total.
@@ -780,7 +782,7 @@ pub fn cost(report: &UsageReport) -> String {
     let split = total.cache_write_5m_tokens + total.cache_write_1h_tokens > 0;
     let cost_cell = |b: &Bucket| {
         let mut cell = match b.cost_usd {
-            Some(cost) => format!("${cost:.4}"),
+            Some(cost) => format!("${cost:.4}{}", est_mark(b.estimated)),
             None => return "n/a".to_string(),
         };
         if b.unpriced_tokens > 0 {
@@ -845,8 +847,12 @@ pub fn cost(report: &UsageReport) -> String {
     out.push_str(
         "\nExcludes the guardian estimate for requests a composition dropped, the tool-result scanner and local screen calls, and the auto-mode setup scan.",
     );
-    if let Some((spent, cap)) = report.budget {
-        let _ = write!(out, "\nSession cost budget: ${spent:.4} / ${cap:.2}");
+    if let Some((spent, cap, estimated)) = report.budget {
+        let _ = write!(
+            out,
+            "\nSession cost budget: ${spent:.4}{} / ${cap:.2}",
+            est_mark(estimated)
+        );
     }
     out
 }
@@ -1781,6 +1787,16 @@ mod tests {
     }
 
     #[test]
+    fn cost_marks_an_estimated_bucket() {
+        let mut bucket = spent(4, 1_200, 300, Some(0.21), 0);
+        bucket.estimated = true;
+        let text = cost(&usage_report(&[(UsageSource::Main, bucket)]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].ends_with("$0.2100 est."), "{text}");
+        assert!(lines[3].ends_with("$0.2100 est."), "{text}");
+    }
+
+    #[test]
     fn cost_marks_a_partial_figure_with_the_unpriced_tokens() {
         let text = cost(&usage_report(&[
             (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.412), 0)),
@@ -1870,11 +1886,17 @@ mod tests {
         let without = cost(&report);
         assert!(!without.contains("Session cost budget"), "{without}");
         assert!(without.contains("setup scan"), "{without}");
-        report.budget = Some((0.1, 5.0));
+        report.budget = Some((0.1, 5.0, false));
         let with = cost(&report);
         assert!(
             with.ends_with("Session cost budget: $0.1000 / $5.00"),
             "{with}"
+        );
+        report.budget = Some((0.1, 5.0, true));
+        let estimated = cost(&report);
+        assert!(
+            estimated.ends_with("Session cost budget: $0.1000 est. / $5.00"),
+            "{estimated}"
         );
     }
 

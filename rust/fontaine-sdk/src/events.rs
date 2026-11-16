@@ -327,7 +327,8 @@ pub fn main_usage(runtime: &AgentRuntime) -> Bucket {
 }
 
 /// Session spend: the main model, the guardian, the goal evaluator and the subagents' models.
-/// Null only when none is priced.
+/// Null only when none is priced. For a run whose model is priced by estimate, the figure is a
+/// list-price estimate of what the tokens would have cost on the served vendor's own API.
 pub fn session_cost(
     main: Option<f64>,
     guardian: Option<f64>,
@@ -653,6 +654,7 @@ mod tests {
     use crate::core::audit::Decision;
     use crate::core::quota::UsageRole;
     use crate::core::tier::Tier;
+    use crate::cost::CostBasis;
 
     const SID: &str = "sid-1";
 
@@ -989,7 +991,14 @@ mod tests {
             usage.input_tokens = Some(1000);
             usage.cached_input_tokens = read;
             usage.cache_creation_input_tokens = written;
-            ledger.record(UsageSource::Main, &usage, None, true, &Default::default());
+            ledger.record(
+                UsageSource::Main,
+                &usage,
+                None,
+                true,
+                &Default::default(),
+                CostBasis::Billed,
+            );
         }
         let bucket = |read, written| Bucket {
             cache_read_input_tokens: read,

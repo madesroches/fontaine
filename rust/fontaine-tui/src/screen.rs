@@ -2088,6 +2088,7 @@ mod tests {
             cost_usd: None,
             cost_budget: None,
             unpriced_tokens: 0,
+            estimated: false,
             depth: 1,
             writing: 0,
             idle: false,

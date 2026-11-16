@@ -134,27 +134,44 @@ fn dotted_version(id: &str) -> Option<String> {
     (out != id).then_some(out)
 }
 
+/// The exact catalog entry `base_id` names on `vendor`: as given, else with its dashed version
+/// dotted (`gpt-5-6-luna` is `gpt-5.6-luna`). `None` when the vendor lists no such id.
+pub fn exact_entry(vendor: ProviderId, base_id: &str) -> Option<&'static ModelSpec> {
+    let catalog = Catalog::builtin();
+    let exact = catalog.get(vendor, base_id).or_else(|| {
+        let dotted = dotted_version(base_id)?;
+        catalog.get(vendor, &dotted)
+    })?;
+    Some(exact.spec)
+}
+
+/// What a gateway does with the vendor entry's price. `Keep` is for a workspace that bills in
+/// its own units: the vendor's list price is the only per-token figure there is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Price {
+    Keep,
+    Strip,
+}
+
 /// The facts of `base_id` on `vendor`, for a gateway that serves it as `served_id`: the exact
 /// catalog entry when `vendor` lists it (as given, else with its dashed version dotted), else
 /// the facts [`derive()`] takes from the newest listed model of its shape. The spec is relabelled
 /// to `served_id`, declared under `served` (the wire's dialect name, so rig's
-/// `ModelFacts::for_model` hands the bound spec to a wire that asks under it) and stripped of
-/// pricing (the gateway bills in its own units). Returns the facts, the catalog id they came
-/// from and whether that entry is the model's own (listed) rather than derived; `None` when the
-/// catalog has nothing to take them from.
+/// `ModelFacts::for_model` hands the bound spec to a wire that asks under it) and keeps its price
+/// only when `price` says so and the entry is the model's own: a derived entry's price would be
+/// a guess stacked on the guess its limits already are. Returns the facts, the catalog id they
+/// came from and whether that entry is the model's own (listed) rather than derived; `None` when
+/// the catalog has nothing to take them from.
 pub fn facts_as(
     vendor: ProviderId,
     served: ProviderId,
     base_id: &str,
     served_id: &str,
+    price: Price,
 ) -> Option<(ModelFacts, String, bool)> {
     let catalog = Catalog::builtin();
-    let exact = catalog.get(vendor, base_id).or_else(|| {
-        let dotted = dotted_version(base_id)?;
-        catalog.get(vendor, &dotted)
-    });
-    let (mut spec, from, listed) = match exact {
-        Some(resolved) => (resolved.spec.clone(), resolved.spec.id.clone(), true),
+    let (mut spec, from, listed) = match exact_entry(vendor, base_id) {
+        Some(exact) => (exact.clone(), exact.id.clone(), true),
         None => {
             let derived = derive(catalog, vendor, base_id, &Capabilities::default())?;
             (derived.facts.spec()?.clone(), derived.from, false)
@@ -162,7 +179,9 @@ pub fn facts_as(
     };
     spec.id = served_id.to_string();
     spec.display_name = served_id.to_string();
-    spec.pricing = None;
+    if price == Price::Strip || !listed {
+        spec.pricing = None;
+    }
     spec.details.cost = Default::default();
     spec.provider = served;
     Some((ModelFacts::new(spec).with_catalog(catalog), from, listed))
@@ -586,12 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn facts_as_relabels_an_exact_entry_without_pricing() {
+    fn facts_as_relabels_an_exact_entry_and_strips_its_price() {
         let (facts, from, listed) = facts_as(
             anthropic(),
             served(),
             "claude-haiku-5-5",
             "system.ai.claude-haiku-5-5",
+            Price::Strip,
         )
         .expect("listed");
         assert_eq!(from, "claude-haiku-5-5");
@@ -611,10 +631,55 @@ mod tests {
     }
 
     #[test]
+    fn facts_as_keeps_an_exact_entry_price_only_for_keep() {
+        let listed_price = Catalog::builtin()
+            .get_exact(anthropic(), "claude-haiku-5-5")
+            .expect("listed")
+            .pricing
+            .expect("priced");
+        let (kept, _, listed) = facts_as(
+            anthropic(),
+            served(),
+            "claude-haiku-5-5",
+            "system.ai.claude-haiku-5-5",
+            Price::Keep,
+        )
+        .expect("listed");
+        assert!(listed);
+        assert_eq!(kept.spec().expect("bound").pricing, Some(listed_price));
+    }
+
+    #[test]
+    fn facts_as_gives_a_derived_entry_no_price_under_either_choice() {
+        for price in [Price::Keep, Price::Strip] {
+            let (facts, from, listed) = facts_as(
+                anthropic(),
+                served(),
+                "claude-haiku-9-9",
+                "system.ai.claude-haiku-9-9",
+                price,
+            )
+            .expect("derived");
+            assert!(!listed);
+            assert!(from.starts_with("claude-haiku-"), "{from}");
+            let spec = facts.spec().expect("bound");
+            assert_eq!(spec.id, "system.ai.claude-haiku-9-9");
+            assert!(spec.max_output_tokens.is_some());
+            assert_eq!(spec.pricing, None);
+        }
+    }
+
+    #[test]
     fn facts_as_finds_a_dashed_gpt_id_at_its_dotted_entry() {
         let openai = ProviderId::catalog("openai").expect("rig lists openai");
-        let (facts, from, listed) =
-            facts_as(openai, served(), "gpt-5-6-luna", "system.ai.gpt-5-6-luna").expect("listed");
+        let (facts, from, listed) = facts_as(
+            openai,
+            served(),
+            "gpt-5-6-luna",
+            "system.ai.gpt-5-6-luna",
+            Price::Strip,
+        )
+        .expect("listed");
         assert_eq!(from, "gpt-5.6-luna");
         assert!(listed);
         let spec = facts.spec().expect("bound");
@@ -630,8 +695,14 @@ mod tests {
             .expect("listed")
             .spec
             .context_window;
-        let (facts, from, listed) =
-            facts_as(openai, served(), "gpt-5-1", "system.ai.gpt-5-1").expect("listed");
+        let (facts, from, listed) = facts_as(
+            openai,
+            served(),
+            "gpt-5-1",
+            "system.ai.gpt-5-1",
+            Price::Strip,
+        )
+        .expect("listed");
         assert_eq!(from, "gpt-5.1");
         assert!(listed);
         assert_eq!(facts.spec().expect("bound").context_window, own);
@@ -652,7 +723,25 @@ mod tests {
 
     #[test]
     fn facts_as_has_nothing_for_an_unknown_id() {
-        assert!(facts_as(anthropic(), served(), "mystery", "system.ai.mystery").is_none());
-        assert!(facts_as(anthropic(), served(), "glm-5-3", "system.ai.glm-5-3").is_none());
+        assert!(
+            facts_as(
+                anthropic(),
+                served(),
+                "mystery",
+                "system.ai.mystery",
+                Price::Strip
+            )
+            .is_none()
+        );
+        assert!(
+            facts_as(
+                anthropic(),
+                served(),
+                "glm-5-3",
+                "system.ai.glm-5-3",
+                Price::Strip
+            )
+            .is_none()
+        );
     }
 }

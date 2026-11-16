@@ -848,3 +848,24 @@ fn the_scan_runs_only_with_a_terminal_a_trusted_workspace_and_no_opt_out() {
     // A refusal never depends on the other conditions being met.
     assert!(scan_gate(true, false, false).is_err());
 }
+
+#[test]
+fn a_scan_usage_line_marks_an_estimate_and_drops_an_unpriced_figure() {
+    use rig_core::completion::{Cost, Usage};
+    let mut usage = Usage::new();
+    usage.input_tokens = Some(10);
+    usage.output_tokens = Some(5);
+    usage.cost = Some(Cost::from_total(0.0021));
+    assert_eq!(
+        usage_line(&usage, CostBasis::Billed),
+        "10 input tokens, 5 output tokens, $0.0021"
+    );
+    assert_eq!(
+        usage_line(&usage, CostBasis::Estimated),
+        "10 input tokens, 5 output tokens, $0.0021 est."
+    );
+    assert_eq!(
+        usage_line(&usage, CostBasis::Unpriced),
+        "10 input tokens, 5 output tokens"
+    );
+}

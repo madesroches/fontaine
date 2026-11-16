@@ -12,7 +12,8 @@ use common::runtime::{build_with_approver, build_with_models};
 use fontaine_sdk::core::config::{AccountKind, PermissionMode::Manual};
 use fontaine_sdk::core::model_roles::ModelChain;
 use fontaine_sdk::core::models::{
-    FALLBACK_MAX_OUTPUT_TOKENS, GuardianChoice, Listing, ModelHandle, ModelRef, Models, Switcher,
+    CostBasis, FALLBACK_MAX_OUTPUT_TOKENS, GuardianChoice, Listing, ModelHandle, ModelRef, Models,
+    Switcher,
 };
 use fontaine_sdk::core::permissions::DenyAll;
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
@@ -122,7 +123,7 @@ async fn root_turn(runtime: &fontaine_sdk::core::agent::AgentRuntime) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

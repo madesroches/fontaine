@@ -194,7 +194,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `base_url` | Endpoint override. Required for `openai-compatible` and `databricks` (the workspace origin, with no path). | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
 | `wires` | `opencode-go` and `databricks` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
-| `model_facts` | `anthropic` and `databricks` only: a table from a model id this account serves under a name of its own (an Azure Foundry deployment, a custom serving endpoint, a proxy's alias) to the catalog model it serves (a Claude model on `anthropic`; a Claude, GPT or Gemini model on `databricks`), so the name takes that model's context window, output limit and tool-choice behavior. The name is not renamed anywhere else, and the mapped model is unpriced. A value the catalog does not resolve, or a key the catalog already lists, is refused. User scope only. See [model discovery](#model-discovery). | unset |
+| `model_facts` | `anthropic` and `databricks` only: a table from a model id this account serves under a name of its own (an Azure Foundry deployment, a custom serving endpoint, a proxy's alias) to the catalog model it serves (a Claude model on `anthropic`; a Claude, GPT or Gemini model on `databricks`), so the name takes that model's context window, output limit and tool-choice behavior. The name is not renamed anywhere else. A mapping on `anthropic` stays unpriced, because it is meant for limits and tool behavior; on `databricks` the mapped name takes its target's list price, which is the only way a custom endpoint there can be priced at all. A value the catalog does not resolve, or a key the catalog already lists, is refused. User scope only. See [model discovery](#model-discovery). | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
 | `prompt_caching` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` and `databricks` it affects only models served on the Messages wire (Claude, on `databricks`); the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic`, `openrouter` and `databricks`, `false` for `opencode-go` |
 | `cache_ttl` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
@@ -309,10 +309,10 @@ vendor's: `anthropic`, `openai`, `gemini`, `ollama`, `opencode-go`, `openrouter`
 `claude-subscription`. A `databricks` account does the same for Claude, GPT and Gemini models,
 taking the facts from the same model's catalog entry (a dashed version such as `gpt-5-1` matches the
 dotted `gpt-5.1`) or else deriving them as above. A `glm-` model gets minimal facts with a known
-25,000-token output cap and tools on, and any other model gets none. A host that serves Claude under a name of its own (an Azure Foundry deployment, a custom Databricks endpoint, a proxy behind an `anthropic` account) names it under `model_facts`, and the served name then takes the facts of that catalog model (a catalog Claude model on `anthropic`; a catalog Claude, GPT or Gemini model on `databricks`); it stays unpriced. A model with no facts at all (an unmapped name on `anthropic`, a custom `catalog.schema.name` endpoint on `databricks`) is warned about once and never compacts automatically.
+25,000-token output cap and tools on, and any other model gets none. A host that serves Claude under a name of its own (an Azure Foundry deployment, a custom Databricks endpoint, a proxy behind an `anthropic` account) names it under `model_facts`, and the served name then takes the facts of that catalog model (a catalog Claude model on `anthropic`; a catalog Claude, GPT or Gemini model on `databricks`). What the mapping does to the price follows the kind: on `anthropic` it stays unpriced, and on `databricks` it takes the target's list price like any other model the catalog lists there. A model with no facts at all (an unmapped name on `anthropic`, a custom `catalog.schema.name` endpoint on `databricks`) is warned about once and never compacts automatically.
 
 An `openai-compatible` account is an arbitrary gateway with no catalog
-vendor, so its unlisted models never get derived facts. A derived model is unpriced, so a cost
+vendor, so its unlisted models never get derived facts. A derived model keeps no price, so a cost
 cap treats it as any other unpriced model.
 
 A `claude-subscription` account is always listed, even with a `models` list, because the models'
@@ -393,9 +393,19 @@ wrong is routed with `wires`, as on `opencode-go`. A custom endpoint that serves
 `Authorization: Bearer`. Without a `models` list the account lists the chat-capable
 `system.ai.*` model services from the workspace's Unity Catalog; custom services are not listed,
 so a `models` list that names one replaces the listing (and must then also name the `system.ai.*`
-models you want). Workspace usage is billed in DBUs, so the models are unpriced and
-`--max-budget-usd` with a Databricks main model is a usage error (exit code 2). `auth = "bearer"`
-on an `anthropic` account still serves other gateways that take only a Bearer token.
+models you want).
+
+The workspace bills in DBUs, and Fontaine cannot read a per-call DBU figure, so a Claude, GPT or
+Gemini model whose vendor lists a catalog price is priced at that model's list price. Every figure
+it feeds — the usage ledger, `total_cost_usd`, `/cost`, the dollar budgets and
+`--max-budget-usd` — describes what the same tokens would have cost on the vendor's own API, and
+every figure a person reads carries ` est.` so it is never mistaken for the bill. A capped run
+binds on it like any other price. Open models, `gpt-oss-*` and an unmapped custom endpoint stay
+unpriced, and `--max-budget-usd` with one as the Databricks main model is a usage error (exit code
+2). A custom endpoint mapped under `model_facts` takes its target's list price, which prices it in
+the ledger and `/cost`; it has no OpenTelemetry cost metric, because its spans carry only the
+endpoint name. On `anthropic`, the same mapping stays unpriced. `auth = "bearer"` on an
+`anthropic` account still serves other gateways that take only a Bearer token.
 
 A second Anthropic account with its own key, stored with `/login personal`:
 

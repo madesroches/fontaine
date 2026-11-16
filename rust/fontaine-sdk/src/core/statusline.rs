@@ -119,6 +119,8 @@ pub struct ContextWindowInfo {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CostInfo {
+    /// The session's spend. For a run whose model is priced by estimate, this is a list-price
+    /// estimate of what the tokens would have cost on the served vendor's own API.
     pub total_cost_usd: f64,
 }
 
