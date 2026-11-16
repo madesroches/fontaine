@@ -67,6 +67,7 @@ so no other kind changes behavior.
 predicates become thin readers of it:
 
 ```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CostBasis { Billed, Estimated, Unpriced }
 
 impl ModelHandle {
@@ -96,6 +97,7 @@ gateway wants done with the price:
 ```rust
 /// What a gateway does with the vendor entry's price. `Keep` is for a workspace that bills in
 /// its own units: the vendor's list price is the only per-token figure there is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Price { Keep, Strip }
 ```
 
@@ -222,6 +224,10 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
    argument and add the `Keep`/derived/strip cases.
 2. `providers/databricks.rs`: pass `Price::Keep` from `facts_for`, `Price::Strip` from
    `check_model_facts`; add `pub fn listed_price(model) -> Option<Pricing>` next to `facts_for`.
+   `tests/databricks.rs`: `:249`'s `assert_eq!(spec.pricing, None)` on the Messages-bound
+   `system.ai.claude-haiku-5-5` becomes `Some`, and the wiremock cases the Testing Strategy's
+   databricks bullet describes are added — the kept price under the served id on each wire, and
+   none for `system.ai.glm-5-3` or the derived `system.ai.gemini-3-pro`.
 3. `providers/mod.rs`: add `Billing::Estimated` and the `listed_price(provider, model)` seam;
    `databricks::billing()` returns `Estimated`.
 
@@ -229,7 +235,11 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 
 4. `core/models.rs`: add `CostBasis`, `cost_basis()`, `listed_price()`; rewrite `catalog_billed()`
    and `priced()` on top of them. Unit-test all four arms, including a dbx model the catalog does
-   not list (`glm-*` → `Unpriced`).
+   not list (`glm-*` → `Unpriced`). `tests/databricks.rs`: `:144-145`'s `!handle.priced()` and
+   `!handle.catalog_billed()` become assertions that a listed id is `priced()`, `catalog_billed()`
+   and `cost_basis() == Estimated`, and the wiremock cases the Testing Strategy's databricks
+   bullet describes are added — `say_hi` returning the response so `usage.cost` can be read, and
+   the new `system.ai.gemini-3-5-flash` entry, route constant and reply.
 5. Replace the `priced`/`billed` booleans with `CostBasis` at every site listed in Design §4 — the
    turn and per-agent paths, `guardian/guardian.rs` `Settings.priced`, `guardian/scanner.rs`
    `LlmScanner.priced`, the `permissions.rs`/`afk.rs`/`setup.rs` record calls and
@@ -243,7 +253,7 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
    `tests/{agent_pipeline,audit_telemetry,side_question,account_session,afk}.rs`,
    `tests/{usage_pause_turn,effort,turn_recovery,guardian_scanner}.rs`,
    `tests/{agent_reply,max_tokens,memory,multimodal,native_search,output_styles}.rs`,
-   `tests/{prefix_stability,rewind,teams,tool_search,priced,goal}.rs` and `fontaine/tests/embed.rs`.
+   `tests/{prefix_stability,rewind,teams,tool_search,priced,goal,ledger}.rs`.
 
 **Phase 3 — count and label the estimate**
 
@@ -263,8 +273,10 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 
 9. `fontaine/src/telemetry/span_bridge.rs`: `cost_usd` through `listed_price`, which takes a pair
    to `databricks::listed_price` when the provider is `databricks` or the id carries either prefix
-   `base_id` strips (`system.ai.`, `databricks-`), and the `estimated = "true"` attribute on the
-   cost metric when the same ancestor that supplies `model.priced` also records `model.estimated`.
+   `base_id` strips (`system.ai.`, `databricks-`), and, when the same ancestor that supplies
+   `model.priced` also records `model.estimated`, the `estimated = "true"` attribute on the cost
+   metric and `estimated = true` on the `api_request` event, whose `cost_usd` field is that same
+   figure.
 
 **Phase 5 — docs and changelog**
 
@@ -284,6 +296,7 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
 - `rust/fontaine-sdk/src/core/{turn,side_question,goal,child_runner,session,scanner_stage,user_hooks,project_env,permissions}.rs`
 - `rust/fontaine-sdk/src/core/agent/{goal,advisor,setup,afk}.rs`
 - `rust/fontaine-sdk/src/core/usage_ledger.rs`, `core/gate.rs`, `core/statusline.rs`, `run.rs`
+- `rust/fontaine-sdk/src/events.rs` — `ResultEvent.total_cost_usd`'s estimate documentation
 - `rust/fontaine-sdk/src/guardian/{guardian,scanner}.rs`
 - `rust/fontaine-sdk/src/agents/budget.rs`
 - `rust/fontaine-tui/src/{agents_panel,reports,agent_list,app,screen}.rs` (`PanelRow` literals in
@@ -296,7 +309,7 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   `rust/fontaine-sdk/tests/{usage_pause_turn,effort}.rs`,
   `rust/fontaine-sdk/tests/{agent_reply,max_tokens,memory,multimodal,native_search}.rs`,
   `rust/fontaine-sdk/tests/{output_styles,prefix_stability,rewind,teams,tool_search,priced,goal}.rs`,
-  `rust/fontaine/tests/embed.rs`
+  `rust/fontaine-sdk/tests/ledger.rs`
 - `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md`
 
@@ -338,6 +351,8 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   estimate-priced run; a priced dbx model makes `--max-budget-usd` and a preference list work.
 - `docs/telemetry.md:130-138` — `fontaine.cost.usage` is present for a dbx model the catalog lists
   and carries `estimated = "true"`.
+- `docs/telemetry.md:156` — the `api_request` row: its `cost_usd` (when priced) is the same
+  list-price estimate, and the event carries `estimated = true` when the figure is one.
 - `docs/telemetry.md:126` and `:146-148` — `estimated` on `fontaine.cost.usage` marks two things: a
   guessed guardian-drop spend, and a cost priced at a vendor's list price for an account that bills
   in its own units. The `fontaine.token.usage` row (`:125`) keeps the guardian estimate only.
@@ -361,13 +376,13 @@ labelled an estimate. `fontaine.token.usage` is untouched: those tokens were mea
   mixed bucket marked, and an unpriced bucket still `n/a` / `· N unpriced tok`. These are the
   strings the docs promise, so they are pinned where they are built.
 - **Telemetry** (`span_bridge.rs` unit tests): a `databricks` completion under `model.priced` yields
-  `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` under a
-  `model.estimated` span, a `gcp.gemini` completion for `system.ai.gemini-3-5-flash` (dotted to the
-  listed `gemini-3.5-flash`) yields the same cost, a `databricks` completion for the older
-  `databricks-claude-haiku-5-5` spelling yields it too, a `system.ai.glm-*` or an unlisted
-  `system.ai.gemini-3-pro` model still yields no cost, and — modelled on
-  `the_nearest_span_naming_a_billing_wins` — a catalog-billed subagent span under a dbx
-  interaction span carries no `estimated` attribute.
+  `fontaine.cost.usage` from the served vendor's price, carries `estimated = "true"` on the metric
+  and `estimated = true` on its `api_request` event under a `model.estimated` span, a `gcp.gemini`
+  completion for `system.ai.gemini-3-5-flash` (dotted to the listed `gemini-3.5-flash`) yields the
+  same cost, a `databricks` completion for the older `databricks-claude-haiku-5-5` spelling yields
+  it too, a `system.ai.glm-*` or an unlisted `system.ai.gemini-3-pro` model still yields no cost,
+  and — modelled on `the_nearest_span_naming_a_billing_wins` — a catalog-billed subagent span under
+  a dbx interaction span carries no `estimated` attribute.
 - **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5`
   handle is `priced()` and `cost_basis() == Estimated`, and each wire's reply reports a price at the
   existing `completion.call` seam — `usage.cost.is_some()` for Messages, `responses_reply()` and
