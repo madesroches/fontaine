@@ -49,7 +49,7 @@ TUI start (not -p, not send, receipt install, [updates] auto_update)
        stamp due? (<data>/update.stamp)   no → stop
        try_lock <data>/update.lock   (held elsewhere → stop); write stamp
        release_index::latest  → newer than installed? no → stop
-       stage: download archive+sig → verify_file + check_binding   (reuses update())
+       stage: download archive+sig → verify_file + check_binding   (reuses prepare)
        Unix:    take the receipt lock, re-compare, replace_binary (atomic persist), write receipt, write marker
        Windows: leave staged dir, start the helper (below)
 next launch: marker present and receipt version (receipt::locate) == marker.to → one Notice::info, delete marker
@@ -70,7 +70,7 @@ Split `update::update()` into stages that both callers use, in `update/mod.rs`:
 
 New `update/auto.rs` owns only the background policy: the cadence, the lock, the marker, the log,
 the notices, the Windows hand-off. Move `stamp_due`/`write_stamp` out of `plugin_auto_update.rs`
-into a shared `stamp.rs` that takes the file name, and have both passes call it.
+into a shared `stamp.rs` that takes the file name, and have both passes call it. `THROTTLE` and the stamp helpers live in `stamp.rs`; each pass supplies its own stamp file name.
 
 ### Config
 
@@ -118,7 +118,9 @@ The running executable is locked, so the session never replaces itself. After ve
 keeps the verified archive, its `.minisig` and a manifest (`channel`, `version`) in
 `<data>/update-staged/<version>/` (copied from the work dir, not renamed: it may be on another
 filesystem; the manifest is written to a temp name and renamed), then starts a detached
-helper and returns. The hand-off holds no receipt lock.
+helper and returns. The hand-off holds no receipt lock. The launching process probes
+`update-helper.lock` with `try_lock` before copying the exe and starts the helper only if the lock
+is free; the helper keeps its own `try_lock` as the authoritative check.
 
 - **Helper** = a per-spawn copy of the currently running, already trusted `fontaine.exe`
   (`<data>/update-helper/fontaine-helper-<pid>.exe`) started with a hidden internal subcommand. The
@@ -128,7 +130,10 @@ helper and returns. The hand-off holds no receipt lock.
 - **Wait:** the helper polls (every 2 s) whether the target can be opened for exclusive write, i.e.
   no Fontaine process runs from it. It gives up after 24 h and leaves the stage for the next
   launch's pass to retry. It never relaunches Fontaine and shows no console window.
-- **Swap:** when free, under the receipt lock it extracts the staged archive into a fresh
+- **Swap:** when free, under the receipt lock it takes the channel from the receipt
+  (`receipt::locate`), exactly as `update()` does, for key selection, `check_binding` and the version
+  re-compare (`release_index::installed_build(receipt channel, receipt version)`); the manifest
+  `channel` is only a consistency check. It extracts the staged archive into a fresh
   `.fontaine-update-*` work dir beside the binary, re-verifies the staged archive with
   `verify_file` + `check_binding` against the embedded key (the stage persisted across launches),
   re-compares versions (a newer build installed meanwhile wins), calls `replace_binary`, rewrites the
@@ -140,7 +145,7 @@ helper and returns. The hand-off holds no receipt lock.
   `update-helper.lock`; the helper re-verifies and re-compares under the receipt lock), skips the
   stamp and `update.lock`, and needs no network.
 - **Stage lifecycle:** the helper deletes a stage that is not newer than the receipt version, and a
-  stage that fails re-verify (logged to `updates.jsonl` as a failure), so a bad stage never makes
+  stage that fails re-verify or whose manifest channel differs from the receipt's (logged to `updates.jsonl` as a failure), so a bad stage never makes
   every launch spawn a helper or blocks the network pass from fetching a fresh release; the next due
   pass stages anew. Staging a newer build removes older stage dirs.
 - **Helper failures:** the helper writes each outcome (re-verify failure, failed swap, 24 h give-up)
@@ -182,7 +187,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 
 1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green, with
    the `leftovers()` helper in `tests/update_cmd.rs` updated to ignore `fontaine.prev`.
-2. Extract `stamp.rs` from `plugin_auto_update.rs`; switch the plugin pass to it.
+2. Extract `stamp.rs` from `plugin_auto_update.rs` (`THROTTLE` and the stamp helpers move there; each pass supplies its own stamp file name); switch the plugin pass and `plugin_auto_update/tests.rs` (it calls `stamp_due`/`write_stamp`) to it.
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
@@ -199,7 +204,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 ## Files to Modify
 
 - `rust/fontaine/src/update/mod.rs`, `install.rs`, new `auto.rs`, `helper.rs`
-- `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `lib.rs`, `cli.rs`
+- `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `rust/fontaine/src/plugin_auto_update/tests.rs` (calls `stamp_due`/`write_stamp`), `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs` (the `leftovers()` helper ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
 - `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`
@@ -254,6 +259,7 @@ Unit and integration tests with wiremock and the existing release-index and sign
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
 - Windows launch with an existing stage starts a helper without stamp, `update.lock` or network, tested with the injected lock probe.
+- Windows stage whose manifest channel differs from the receipt's (e.g. dev installer run while a release stage waits): no swap, stage deleted, failure logged.
 - Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
 - Windows helper failure (re-verify, failed swap, 24 h give-up) is recorded in `updates.jsonl` and `update-state.json`; the next interactive launch shows one `Notice::warning`, not repeated on later launches.
 - End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
