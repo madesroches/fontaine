@@ -92,6 +92,10 @@ impl Provider for Databricks {
         true
     }
 
+    fn accepts_thinking_off(&self) -> bool {
+        true
+    }
+
     fn accepts_prompt_caching(&self) -> bool {
         true
     }
@@ -176,6 +180,7 @@ impl Provider for Databricks {
             wires,
             overrides: ctx.account.wires.clone().unwrap_or_default(),
             model_facts: ctx.account.model_facts.clone().unwrap_or_default(),
+            thinking_off: ctx.account.thinking_off.unwrap_or(false),
             account_name: ctx.account_name.to_string(),
             listing: Listing {
                 client: reqwest_client(ctx.network).map_err(|e| chain(&e))?,
@@ -452,10 +457,18 @@ pub(crate) fn parse_model_services(body: &str) -> Result<(Vec<String>, Option<St
     Ok((ids.into_iter().collect(), next))
 }
 
+/// The Chat wire's thinking-off fragment, when the account asks for it. Only that wire: the
+/// other routes would refuse the unknown field.
+fn thinking_off(enabled: bool, model: &str, overrides: &BTreeMap<String, Wire>) -> Option<Value> {
+    (enabled && wire(model, overrides) == Wire::Chat)
+        .then(|| serde_json::json!({"thinking": {"type": "disabled"}}))
+}
+
 struct DatabricksClient {
     wires: WireClients,
     overrides: BTreeMap<String, Wire>,
     model_facts: BTreeMap<String, String>,
+    thinking_off: bool,
     account_name: String,
     listing: Listing,
 }
@@ -486,6 +499,10 @@ impl AccountClient for DatabricksClient {
         facts_notice_for(model, &self.model_facts, &self.account_name)
     }
 
+    fn thinking_off(&self, model: &str) -> Option<Value> {
+        thinking_off(self.thinking_off, model, &self.overrides)
+    }
+
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
         async move { self.listing.all().await }.boxed()
     }
@@ -508,6 +525,22 @@ mod tests {
         assert_eq!(route("system.ai.glm-5-3"), Wire::Chat);
         assert_eq!(route("main.team.router"), Wire::Chat);
         assert_eq!(route("databricks-claude-haiku-5-5"), Wire::Messages);
+    }
+
+    #[test]
+    fn thinking_off_follows_the_account_key_and_the_wire() {
+        let none = BTreeMap::new();
+        let off = Some(serde_json::json!({"thinking": {"type": "disabled"}}));
+        assert_eq!(thinking_off(true, "system.ai.glm-5-3", &none), off);
+        assert_eq!(thinking_off(false, "system.ai.glm-5-3", &none), None);
+        assert_eq!(
+            thinking_off(true, "system.ai.claude-haiku-5-5", &none),
+            None
+        );
+        assert_eq!(thinking_off(true, "system.ai.gpt-5-6-luna", &none), None);
+        assert_eq!(thinking_off(true, "system.ai.gemini-3-pro", &none), None);
+        let overrides = BTreeMap::from([("system.ai.glm-5-3".to_string(), Wire::Messages)]);
+        assert_eq!(thinking_off(true, "system.ai.glm-5-3", &overrides), None);
     }
 
     #[test]

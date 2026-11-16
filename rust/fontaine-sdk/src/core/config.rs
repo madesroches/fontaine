@@ -405,6 +405,10 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
+    /// `databricks` only: `true` asks the account's models for a verdict without reasoning, by
+    /// adding the Chat wire's thinking-off parameter to the guardian's and the scanner's
+    /// forced-call requests. Unset leaves it out.
+    pub thinking_off: Option<bool>,
     /// `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry
     /// cache breakpoints. Unset means the kind's default.
     pub prompt_caching: Option<bool>,
@@ -482,6 +486,7 @@ impl Account {
             model_facts: None,
             context_tokens: None,
             think: None,
+            thinking_off: None,
             prompt_caching: None,
             cache_ttl: None,
             context_editing: None,
@@ -1794,6 +1799,12 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
                 format!("not used by kind = \"{}\"", provider.name()),
             ));
         }
+    }
+    if account.thinking_off.is_some() && !provider.accepts_thinking_off() {
+        return Err((
+            format!("accounts.{name}.thinking_off"),
+            format!("not used by kind = \"{}\"", provider.name()),
+        ));
     }
     if let Some(tokens) = account.context_tokens
         && tokens < MIN_OLLAMA_CONTEXT_TOKENS

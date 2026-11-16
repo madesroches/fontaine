@@ -754,10 +754,12 @@ With no `[guardian] model`, the guardian is the highest-ranked validated model t
 accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
-non-Claude Messages models. On a `databricks` account it does not: the Chat route's acceptance of
-the parameter is unverified, so pick a model without default thinking there. On an `openai-compatible` or `kimi` account, a model that thinks by
-default cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model
-without default thinking.
+non-Claude Messages models. A `databricks` account does not send it unless it sets
+`thinking_off = true`, which adds the Chat wire's parameter to the guardian's and the scanner's
+calls; whether a deployment's gateway accepts it is unverified, and a refusal leaves the guardian
+failing closed. Without it, pick a model without default thinking there. On an `openai-compatible`
+or `kimi` account, a model that thinks by default cannot be the guardian: every call is denied as
+`GuardianUnavailable`. Pick a model without default thinking.
 
 A guardian on a `claude-subscription` account takes the same structured-answer path: the verdict
 arrives as the model's typed output or a forced call of an aliased tool of the inert tool
