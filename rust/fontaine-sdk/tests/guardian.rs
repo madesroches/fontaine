@@ -895,3 +895,30 @@ async fn additional_params_reach_the_body_beside_the_forced_tool_choice() {
     assert_eq!(sent["thinking"]["type"], "disabled", "{sent}");
     assert_eq!(sent["tool_choice"], "required");
 }
+
+#[tokio::test]
+async fn a_refusal_of_the_additional_params_is_healed_and_not_asked_again() {
+    let endpoint = Endpoint::start(vec![
+        Reply::FailWithBody(
+            400,
+            "Unrecognized request argument supplied: thinking".into(),
+        ),
+        Reply::Verdict(allow(0.95)),
+    ])
+    .await;
+    let guardian = endpoint
+        .guardian(settings())
+        .with_additional_params(Some(serde_json::json!({"thinking": {"type": "disabled"}})));
+
+    let first = guardian.adjudicate(&request("cargo test", false)).await;
+    assert_eq!(names(&first), (Decision::Allow, "allow"));
+    assert_eq!(first.fail_closed, None);
+    let second = guardian.adjudicate(&request("cargo build", false)).await;
+    assert_eq!(names(&second), (Decision::Allow, "allow"));
+
+    let sent = endpoint.requests().await;
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert_eq!(sent[0]["thinking"]["type"], "disabled", "{}", sent[0]);
+    assert!(sent[1].get("thinking").is_none(), "{}", sent[1]);
+    assert!(sent[2].get("thinking").is_none(), "{}", sent[2]);
+}

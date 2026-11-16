@@ -92,6 +92,10 @@ impl Provider for Databricks {
         true
     }
 
+    fn accepts_thinking_off(&self) -> bool {
+        true
+    }
+
     fn accepts_prompt_caching(&self) -> bool {
         true
     }
@@ -176,6 +180,7 @@ impl Provider for Databricks {
             wires,
             overrides: ctx.account.wires.clone().unwrap_or_default(),
             model_facts: ctx.account.model_facts.clone().unwrap_or_default(),
+            thinking_off: ctx.account.thinking_off,
             account_name: ctx.account_name.to_string(),
             listing: Listing {
                 client: reqwest_client(ctx.network).map_err(|e| chain(&e))?,
@@ -452,10 +457,23 @@ pub(crate) fn parse_model_services(body: &str) -> Result<(Vec<String>, Option<St
     Ok((ids.into_iter().collect(), next))
 }
 
+/// The Chat wire's reasoning-off fragment: sent unless the account says `false`. Measured on the
+/// Databricks AI Gateway (#673), the Anthropic-shaped `thinking` field is accepted and ignored on
+/// this wire while `reasoning_effort: "none"` drops the reasoning channel, so that is the one sent.
+fn thinking_off(
+    account: Option<bool>,
+    model: &str,
+    overrides: &BTreeMap<String, Wire>,
+) -> Option<Value> {
+    (account.unwrap_or(true) && wire(model, overrides) == Wire::Chat)
+        .then(|| serde_json::json!({"reasoning_effort": "none"}))
+}
+
 struct DatabricksClient {
     wires: WireClients,
     overrides: BTreeMap<String, Wire>,
     model_facts: BTreeMap<String, String>,
+    thinking_off: Option<bool>,
     account_name: String,
     listing: Listing,
 }
@@ -486,6 +504,10 @@ impl AccountClient for DatabricksClient {
         facts_notice_for(model, &self.model_facts, &self.account_name)
     }
 
+    fn thinking_off(&self, model: &str) -> Option<Value> {
+        thinking_off(self.thinking_off, model, &self.overrides)
+    }
+
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
         async move { self.listing.all().await }.boxed()
     }
@@ -508,6 +530,23 @@ mod tests {
         assert_eq!(route("system.ai.glm-5-3"), Wire::Chat);
         assert_eq!(route("main.team.router"), Wire::Chat);
         assert_eq!(route("databricks-claude-haiku-5-5"), Wire::Messages);
+    }
+
+    #[test]
+    fn thinking_off_is_on_unless_the_account_says_false_and_follows_the_wire() {
+        let none = BTreeMap::new();
+        let off = Some(serde_json::json!({"reasoning_effort": "none"}));
+        assert_eq!(thinking_off(None, "system.ai.glm-5-3", &none), off);
+        assert_eq!(thinking_off(Some(true), "system.ai.glm-5-3", &none), off);
+        assert_eq!(thinking_off(Some(false), "system.ai.glm-5-3", &none), None);
+        assert_eq!(
+            thinking_off(None, "system.ai.claude-haiku-5-5", &none),
+            None
+        );
+        assert_eq!(thinking_off(None, "system.ai.gpt-5-6-luna", &none), None);
+        assert_eq!(thinking_off(None, "system.ai.gemini-3-pro", &none), None);
+        let overrides = BTreeMap::from([("system.ai.glm-5-3".to_string(), Wire::Messages)]);
+        assert_eq!(thinking_off(None, "system.ai.glm-5-3", &overrides), None);
     }
 
     #[test]

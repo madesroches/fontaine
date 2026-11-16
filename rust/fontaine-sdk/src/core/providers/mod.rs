@@ -128,6 +128,12 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether the kind sends a thinking-off request parameter, from
+    /// `accounts.<name>.thinking_off`, on the guardian's and the scanner's forced-call requests.
+    fn accepts_thinking_off(&self) -> bool {
+        false
+    }
+
     /// Whether the account may set `prompt_caching` and `cache_ttl`.
     fn accepts_prompt_caching(&self) -> bool {
         false

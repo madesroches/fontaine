@@ -178,6 +178,7 @@ pub(crate) enum RunError {
     Failed(StructuredOutputError),
 }
 
+#[derive(Clone)]
 pub(crate) struct Options<'a> {
     /// The ceiling on the whole call, retries included. Each attempt gets a slice of what is
     /// left, so one that never answers is dropped and retried instead of using it all.
@@ -186,6 +187,9 @@ pub(crate) struct Options<'a> {
     pub retries: usize,
     pub max_tokens: u64,
     pub additional_params: Option<&'a serde_json::Value>,
+    /// Raised when a refusal blames `additional_params`, so this attempt and every later one
+    /// leave them out. The caller owns the flag, so it outlives the call.
+    pub params_refused: Option<&'a AtomicBool>,
     /// Turns an answer that did not deserialize into a note for the retry saying why. It must
     /// not repeat the answer: that is model-authored text. `None` retries with the message
     /// unchanged.
@@ -233,9 +237,17 @@ where
         let Some(slice) = attempt_slice(remaining, attempts_left) else {
             return Err(RunError::TimedOut);
         };
+        // Read here, not once before the loop: a refusal raises the flag between attempts.
+        let attempt_options = Options {
+            additional_params: match options.params_refused {
+                Some(refused) if refused.load(Ordering::Relaxed) => None,
+                _ => options.additional_params,
+            },
+            ..options.clone()
+        };
         let attempted = tokio::time::timeout(
             slice,
-            attempt_once::<T>(model, mode, preamble, &message, &options, spent),
+            attempt_once::<T>(model, mode, preamble, &message, &attempt_options, spent),
         )
         .await;
         let error = match attempted {
@@ -254,6 +266,16 @@ where
                 continue;
             }
         };
+        if let (Some(refused), Some(params)) = (options.params_refused, options.additional_params)
+            && !refused.load(Ordering::Relaxed)
+            && refuses_params(&error, params)
+        {
+            refused.store(true, Ordering::Relaxed);
+            tracing::warn!(
+                error = %error,
+                "the provider refused the request's additional parameters; retrying without them"
+            );
+        }
         if attempt >= options.retries {
             return Err(RunError::Failed(error));
         }
@@ -444,6 +466,33 @@ pub(crate) fn lacks_tool_support(error: &PromptError) -> bool {
     }
 }
 
+/// Whether a failed run is the provider refusing a request because of one of `params`' top-level
+/// keys: a 400 or 422 whose body names one, compared case-insensitively. Read from the typed
+/// response, like [`lacks_tool_support`]. A body that merely mentions the name makes this a false
+/// positive, and that costs one attempt without the parameters, not a wrong decision.
+pub(crate) fn refuses_params(error: &StructuredOutputError, params: &serde_json::Value) -> bool {
+    let StructuredOutputError::Prompt(error) = error else {
+        return false;
+    };
+    let (status, body) = match error {
+        PromptError::Provider(ProviderError::ProviderResponse(response)) => {
+            (response.status.map(|s| s.as_u16()), response.body.as_str())
+        }
+        PromptError::Report(report) => match &report.provider_response {
+            Some(response) => (report.http_status, response.body.as_str()),
+            None => return false,
+        },
+        _ => return false,
+    };
+    if !matches!(status, Some(400 | 422)) {
+        return false;
+    }
+    let body = body.to_lowercase();
+    params
+        .as_object()
+        .is_some_and(|keys| keys.keys().any(|key| body.contains(&key.to_lowercase())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,5 +536,52 @@ mod tests {
     fn nothing_left_is_none() {
         assert_eq!(attempt_slice(Duration::ZERO, 3), None);
         assert_eq!(attempt_slice(Duration::ZERO, 1), None);
+    }
+
+    fn refused(status: u16, body: &str) -> StructuredOutputError {
+        StructuredOutputError::Prompt(PromptError::Provider(ProviderError::ProviderResponse(
+            rig_core::ProviderResponseError::new(
+                http::StatusCode::from_u16(status).expect("a valid status"),
+                body,
+            ),
+        )))
+    }
+
+    fn thinking() -> serde_json::Value {
+        serde_json::json!({"thinking": {"type": "disabled"}})
+    }
+
+    #[test]
+    fn a_400_naming_the_parameter_is_a_refusal_of_it() {
+        let body = r#"{"message":"Unrecognized request argument supplied: Thinking"}"#;
+        assert!(refuses_params(&refused(400, body), &thinking()));
+        assert!(refuses_params(&refused(422, body), &thinking()));
+    }
+
+    #[test]
+    fn a_server_error_is_not_a_refusal_of_the_parameters() {
+        assert!(!refuses_params(
+            &refused(500, r#"{"message":"thinking failed"}"#),
+            &thinking()
+        ));
+    }
+
+    #[test]
+    fn a_400_naming_nothing_the_request_carried_is_not_one() {
+        assert!(!refuses_params(
+            &refused(400, r#"{"message":"max_tokens is too large"}"#),
+            &thinking()
+        ));
+    }
+
+    #[test]
+    fn a_relayed_report_with_a_400_and_a_body_is_read_the_same() {
+        let response = rig_core::ProviderResponseError::new(
+            http::StatusCode::BAD_REQUEST,
+            r#"{"message":"unknown field thinking"}"#,
+        );
+        let report = rig_core::error::ErrorReport::from(&ProviderError::ProviderResponse(response));
+        let error = StructuredOutputError::Prompt(PromptError::Report(report));
+        assert!(refuses_params(&error, &thinking()));
     }
 }

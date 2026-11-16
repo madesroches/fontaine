@@ -754,10 +754,18 @@ With no `[guardian] model`, the guardian is the highest-ranked validated model t
 accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
-non-Claude Messages models. On a `databricks` account it does not: the Chat route's acceptance of
-the parameter is unverified, so pick a model without default thinking there. On an `openai-compatible` or `kimi` account, a model that thinks by
-default cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model
-without default thinking.
+non-Claude Messages models. A `databricks` account sends the Chat wire's parameter to the
+guardian's and the scanner's calls by default. A workspace that refuses it costs the first
+attempt: the retry leaves the parameter out, and the guardian and the scanner do not send it
+again for the rest of the session. `thinking_off = false` skips that first attempt for a workspace
+known to refuse it. The parameter is `{"reasoning_effort": "none"}`, the value Databricks documents
+for turning a hybrid reasoning model off; the gateway's `thinking` field belongs to the Claude
+models it also serves, and is accepted and ignored for the others. Sending it is best-effort: a
+deployment that does not honour it leaves the model thinking, and the guardian's 1024-token output
+budget can then go entirely to reasoning — the call answers nothing and fails closed as `error`
+with `finish_reason=Length`, which no retry fixes, so the model is not usable as a guardian there.
+On an `openai-compatible` or `kimi` account, a model that thinks by default cannot be the guardian:
+every call is denied as `GuardianUnavailable`. Pick a model without default thinking.
 
 A guardian on a `claude-subscription` account takes the same structured-answer path: the verdict
 arrives as the model's typed output or a forced call of an aliased tool of the inert tool
@@ -781,8 +789,8 @@ model = "work/claude-haiku-5-5"
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, a `kimi` account,
   Ollama, an `opencode-go` or `databricks` account), only a model set explicitly in `guardian.model` is used, except for the
-  validated list's own `opencode-go` entry (`claude-haiku-5-5`), which an `opencode-go` account
-  that serves it picks up as its default guardian. A small local
+  validated list's own `databricks` entry (`system.ai.deepseek-v4-1-flash-1017`), which a
+  `databricks` account that serves that model id picks up as its default guardian. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
   prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
   `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the

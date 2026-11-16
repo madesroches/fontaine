@@ -281,6 +281,29 @@ async fn additional_params_reach_the_scanner_body_only_when_set() {
     assert_eq!(sent["tool_choice"], "required");
 }
 
+#[tokio::test]
+async fn a_refusal_of_the_additional_params_is_healed_and_not_asked_again() {
+    let endpoint = Endpoint::start(vec![
+        Reply::FailWithBody(
+            400,
+            "Unrecognized request argument supplied: thinking".into(),
+        ),
+        Reply::Verdict(answer("clean", "fine")),
+    ])
+    .await;
+    let scanner = llm(&endpoint, Duration::from_secs(5))
+        .with_additional_params(Some(json!({"thinking": {"type": "disabled"}})));
+
+    assert_eq!(scanner.scan("shell", "build ok").await, Scan::Clean);
+    assert_eq!(scanner.scan("shell", "tests ok").await, Scan::Clean);
+
+    let sent = endpoint.requests().await;
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert_eq!(sent[0]["thinking"]["type"], "disabled", "{}", sent[0]);
+    assert!(sent[1].get("thinking").is_none(), "{}", sent[1]);
+    assert!(sent[2].get("thinking").is_none(), "{}", sent[2]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_scan_that_stalls_once_is_retried_and_answered() {
     let model = Stalling::new(
