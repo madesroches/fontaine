@@ -44,12 +44,12 @@ check and repair path and shares the same download, verification and install cod
 ```
 TUI start (not -p, not send, receipt install, [updates] auto_update)
   └─ std::thread: background pass
-       stamp due?            no → stop
-       write stamp; try_lock <data>/update.lock   (held elsewhere → stop)
+       stamp due? (<data>/update.stamp)   no → stop
+       try_lock <data>/update.lock   (held elsewhere → stop); write stamp
        receipt::locate        (fails → silent stop: package manager, moved binary, no receipt)
        release_index::latest  → newer than installed? no → stop
        stage: download archive+sig → verify_file + check_binding   (reuses update())
-       Unix:    replace_binary (atomic persist under the receipt lock), write receipt, write marker
+       Unix:    take the receipt lock, re-compare, replace_binary (atomic persist), write receipt, write marker
        Windows: leave staged dir, start the helper (below)
 next launch: marker present and receipt version (receipt::locate) == marker.to → one Notice::info, delete marker
 ```
@@ -59,10 +59,11 @@ next launch: marker present and receipt version (receipt::locate) == marker.to �
 Split `update::update()` into stages that both callers use, in `update/mod.rs`:
 
 - `prepare(client, params) -> Result<Prepare, UpdateError>`, where `Prepare` is `UpToDate` or
-  `Ready(Prepared)`: locate, lock, compare, download,
-  verify, bind. `Prepared` holds `InstallInfo`, the verified archive path (in a work dir created
-  beside the binary), `Verified` and the receipt lock guard.
-- `install(prepared) -> Outcome`: `install::replace_binary` and the receipt rewrite.
+  `Ready(Prepared)`: locate, compare, download,
+  verify, bind, holding no receipt lock. `Prepared` holds `InstallInfo`, the verified archive path
+  (in a work dir created beside the binary) and `Verified`.
+- `install(prepared) -> Outcome`: takes the receipt lock, re-reads the receipt and re-compares
+  versions, then `install::replace_binary` and the receipt rewrite.
 - `update()` = `prepare` + `install` (behavior unchanged, still returns `Outcome::UpToDate` for
   `Prepare::UpToDate`; its tests keep passing).
 
@@ -90,9 +91,10 @@ runs no tool call and gets no new capability.
 - One pass per machine: `file_lock::try_lock(<data>/update.lock)`; a loser stops silently. The
   stamp is written under that lock before any network call, so an offline machine retries the next
   day and two simultaneous launches stage once.
-- The install itself takes the existing receipt lock (as `fontaine update` does) and re-reads the
-  receipt and re-compares versions under it, so a manual update running at the same time cannot
-  be undone or doubled.
+- The receipt lock (as `fontaine update` uses) is taken only around compare + install + receipt
+  write, with a re-read of the receipt and a re-compare under it, so a manual update running at
+  the same time cannot be undone or doubled. `prepare` (download/verify) holds no receipt lock, so
+  a manual update never waits for a background download.
 - Download goes to a `.fontaine-update-*` temp dir beside the binary and `replace_binary` persists
   with an atomic rename; a half-written file is never at the target path. A leftover temp dir from
   a crashed pass is removed at the start of the next pass.
@@ -110,13 +112,12 @@ The running executable is locked, so the session never replaces itself. After ve
 keeps the verified archive, its `.minisig` and a manifest (`channel`, `version`, `sha256`) in
 `<data>/update-staged/<version>/` (copied from the work dir, not renamed: it may be on another
 filesystem; the manifest is written to a temp name and renamed), then starts a detached
-helper and returns. The pass drops the receipt lock (the `Prepared` guard) when it hands off to
-the helper.
+helper and returns. The hand-off holds no receipt lock.
 
 - **Helper** = a per-spawn copy of the currently running, already trusted `fontaine.exe`
   (`<data>/update-helper/fontaine-helper-<pid>.exe`) started with a hidden internal subcommand. The
-  helper is therefore never the swap target, and "updating the helper itself" does not arise: the
-  next pass deletes stale copies (best effort, a running one is skipped).
+  helper is therefore never the swap target; the next pass deletes stale copies (best effort, a
+  running one is skipped).
 - **One helper:** `try_lock(<data>/update-helper.lock)`; a second helper exits at once.
 - **Wait:** the helper polls (every 2 s) whether the target can be opened for exclusive write, i.e.
   no Fontaine process runs from it. It gives up after 24 h and leaves the stage for the next
@@ -129,8 +130,9 @@ the helper.
 - **Interruption:** the stage stays until applied; a killed helper is replaced by the next launch's
   pass (stamp permitting, plus a check at every launch for an existing stage with no live helper,
   which needs no network).
-- `fontaine.exe.old*` handling from `fontaine update` is unchanged: the swap is exclusive, so the
-  rename-aside fallback path is not exercised by the helper.
+- `install::replace_binary` on Windows always renames the target aside to `<exe>.old[-pid]`, for
+  the helper swap too. `install::remove_stale` is called at the start of the helper swap (Unix:
+  n/a), so auto-updates clean up `.old*` leftovers; `update()` keeps calling it.
 
 ### Rollback
 
@@ -182,18 +184,8 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs`, new `update_auto.rs`; core `tests/config.rs`
-- `docs/installing.md`, `docs/configuration.md`, `docs/tui.md`, `docs/headless.md`
+- `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`
 - `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
-
-## Trade-offs
-
-- **Unix: swap in the background vs stage then swap at next launch:** the in-process swap at next
-  launch would run the old binary for that launch; an atomic rename in the background already
-  satisfies "no interruption" and "next launch uses the new version", with one verification.
-- **Windows helper as a copy of the running binary vs a new helper executable:** a copy ships no
-  second artifact to sign and cannot be the swap target.
-- **Windows: wait for all sessions vs rename-aside:** the issue forbids the running executable
-  replacing itself; rename-aside remains the behavior of manual `fontaine update`.
 
 ## Decisions
 
@@ -207,11 +199,11 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 
 - `docs/installing.md`: automatic updates, the opt-out, silent cases, rollback, Windows behavior,
   log and marker files; the uninstall sections name the new files (`.prev`, `update-staged`,
-  `update-helper`, `update.lock`, `updates.jsonl`, `update-applied.json`, `update-state.json`,
-  `update-skip`).
+  `update-helper`, `update.lock`, `update.stamp`, `update-helper.lock`, `updates.jsonl`, `update-applied.json`,
+  `update-state.json`, `update-skip`).
 - `docs/headless.md`: `fontaine update`, including `--rollback`.
-- `docs/configuration.md`: `[updates]` section and the user-only matrix row (validated by
-  `cargo test -p fontaine-core --test docs`).
+- `docs/configuration.md`: `[updates]` section, the user-only matrix row and the new data files
+  in the data-file table (validated by `cargo test -p fontaine-core --test docs`).
 - `docs/tui.md`: the post-update notice.
 - `CHANGELOG.md`.
 
