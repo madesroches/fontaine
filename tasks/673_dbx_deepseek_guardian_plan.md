@@ -49,16 +49,20 @@ entry scored on a different `dataset_version` (`report::merge`). The shipped ent
 `5daaae0b478a`, so this run drops it, and what the file holds afterwards is exactly the outcome: the
 deepseek entry if it clears the bar, no entry otherwise. That drop is the file's own rule — an
 entry is only validated for the dataset it was scored on — and it is not something this change
-hand-edits away; the `opencode-go` numbers stay in the `docs/evals.md` tables either way.
+hand-edits away; the `opencode-go` numbers stay in the `docs/evals.md` tables either way. The drop
+is user-visible: `available_validated` (`rust/fontaine-sdk/src/core/models.rs`) picks an account's
+default guardian from the entries whose `kind` matches it, so an `opencode-go` account that gets
+`claude-haiku-5-5` as its default guardian today (`CHANGELOG.md`, the release that added the list)
+falls back to the main model once the entry is gone.
 
 **The dataset.** Fourteen `*.jsonl` files under `evals/dataset`; the version is the first 12 hex
 characters of a SHA-256 over their bytes in file-name order (`report::dataset_version`),
 `5daaae0b478a` as of 362a90d (2026-11-15). A dataset edit before the run changes the value the run
 computes, and the report is the source for the file name and for the models entry.
 
-**Scanner cases.** `[guardian] scanner` is unset, so it is `off`: the four `spawn-report-*` scanner
-cases are listed as skipped with a reason, which never blocks the models file (as in the go
-scorecard).
+**Scanner cases.** `[guardian] scanner` is unset, so it is `off`: the seven scanner cases (five
+`spawn-report-*`, two webpage) are listed as skipped with a reason, which never blocks the models
+file (as in the go scorecard).
 
 ## Design
 
@@ -71,7 +75,7 @@ scorecard).
 3. Smoke test the route with a **filtered** live run — `--filter attack:iam-grant`, about ten
    guardian cases and half a minute. A filtered run never touches the models file, and without
    `--out` it leaves no report and no sidecar:
-   - every case scored (exit 0) → auth, routing and the forced call all work; go to step 2;
+   - every case scored (exit 0) → auth, routing and the forced call all work; go to Design 2;
    - cases `UNSCORED` with the provider's refusal in the explanation (exit 1) → the deployment
      rejects the forced call; go to Design 4;
    - exit 2 → the account or its credential did not resolve, and nothing was asked of the model.
@@ -87,8 +91,8 @@ ANTHROPIC_AUTH_TOKEN="$(cat ~/.claude_databricks_token)" cargo run -p fontaine-e
 ```
 
 - Run it as a background job and read the progress lines (`[n/total] <id> <verdict> <latency>ms` on
-  stderr): a full-profile run is 289 cases, plus the pipeline cases that reach the guardian, at tens
-  of minutes at this model's latencies.
+  stderr): a full-profile run is about 430 cases, plus the pipeline cases that reach the guardian, at
+  tens of minutes to an hour at this model's latencies.
 - An interrupted run leaves `<out>.partial.jsonl`; continue it with the same command plus
   `--resume ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json.partial.jsonl`. `--resume`
   refuses a sidecar whose dataset version, guardian, profile or filter differ from the command's.
@@ -107,9 +111,18 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   p95) inserted in the table's rank order, the row's text naming it as the Databricks deployment of
   the model the `go/` row already lists, and a bullet in that section's list next to the
   `opencode-go` one with the transport and the fail-closed counts. The prose that still reads as
-  though the shipped ranked list is empty is corrected.
-- `CHANGELOG.md`, `### Added`: one line naming the model, the deployment, the numbers, and that the
-  ranked list is what `auto` picks its guardian from.
+  though the shipped ranked list is empty is corrected, and the bullet at `docs/evals.md:657-661`
+  (haiku "is the only model that clears all three bars, and it is the first entry in
+  `guardian_models.toml`") is corrected to say the entry was dropped on the new dataset version and
+  the databricks entry is the list's.
+- `docs/guardian.md:783-786`: the exception for "the validated list's own `opencode-go` entry
+  (`claude-haiku-5-5`)" is rewritten to the databricks entry — `available_validated` matches on
+  `kind`, so any `databricks` account that serves `system.ai.deepseek-v4-1-flash` picks it up as
+  its default guardian.
+- `CHANGELOG.md`: under `### Added`, one line naming the model, the deployment, the numbers, and that
+  the ranked list is what `auto` picks its guardian from; under `### Removed`, one line saying
+  `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account until it is
+  re-scored on `5daaae0b478a`.
 - The numbers go up as a comment on issue #673, whose acceptance asks for them there, together with
   the transport and the fail-closed counts.
 
@@ -119,10 +132,15 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   was p95 by 0.2 s, so a near miss is a "rerun" verdict rather than a settled one — the issue asks
   for that call too.
 - The same `docs/evals.md` row and bullet, written as a miss, next to the `go/` row since it is the
-  same model on another endpoint.
+  same model on another endpoint. The bullet at `docs/evals.md:657-661` is corrected to say the
+  haiku entry was dropped on the new dataset version and the list is empty.
 - The models file keeps only what clears the bar, so a miss leaves it with no entries and the
   guardian falls back to the main model. That is the documented lifecycle (`report::merge` and the
-  file's own header), not a regression to paper over: the PR body calls the drop out.
+  file's own header). `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
+  kind has a default guardian from the list.
+- `CHANGELOG.md`: under `### Added`, one line for the measurement and its miss; under `### Removed`,
+  one line saying `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account
+  until it is re-scored on `5daaae0b478a`. The PR body calls the drop out.
 
 ### 5. Outcome C — the run fails closed on infrastructure
 
@@ -134,7 +152,8 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
     names each reason) and say in the docs that it is not a verdict on the model;
   - add one clause to `docs/guardian.md`'s "Choosing the guardian model", where the databricks
     limitation is already stated, pointing at the measurement;
-  - record the numbers on issue #673.
+  - record the numbers on issue #673;
+  - no `CHANGELOG.md` line: the models file is untouched, so nothing a user sees changes.
 
 ### 6. The counts the issue asks for
 
@@ -155,9 +174,9 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
 |---|---|
 | `evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json` | New report; the dataset version in the name is the value the run computes. |
 | `rust/fontaine-sdk/data/guardian_models.toml` | Written by the run: the databricks entry when it clears the bar, and the stale `opencode-go` entry dropped. |
-| `docs/evals.md` | The row, the bullet, the section's prose. |
-| `CHANGELOG.md` | `### Added`, one line. |
-| `docs/guardian.md` | Outcome C only: the pointer from the databricks limitation. |
+| `docs/evals.md` | The row, the bullet, the section's prose; in outcomes A and B also the haiku bullet (`:657-661`). |
+| `CHANGELOG.md` | Outcomes A and B: an `### Added` line, and a `### Removed` line for the haiku default guardian. None in C. |
+| `docs/guardian.md` | Outcomes A and B: the `opencode-go` exception at `:783-786`. Outcome C: the pointer from the databricks limitation. |
 | `tasks/completed/673_dbx_deepseek_guardian_plan.md` | This plan, moved by `pr`. |
 
 ## Trade-offs
@@ -187,9 +206,11 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
 
 - `docs/evals.md`: the row in "Other small and hosted guardian models" and the bullet beside the
   `opencode-go` one, with the dataset version, the date, the transport and the fail-closed counts.
-- `CHANGELOG.md`: the `### Added` line for the measurement and, when it clears the bar, for the
-  ranked-list entry.
-- `docs/guardian.md`: only in outcome C, one clause at the databricks limitation.
+- `docs/evals.md`: in outcomes A and B, the haiku bullet at `:657-661`.
+- `CHANGELOG.md`: outcomes A and B only — the `### Added` line (the measurement and, in A, the
+  ranked-list entry) and the `### Removed` line for the haiku default guardian; none in C.
+- `docs/guardian.md`: outcomes A and B, the `opencode-go` exception at `:783-786` (the databricks
+  entry in A, no exception in B); outcome C, one clause at the databricks limitation.
 
 ## Testing Strategy
 
@@ -200,9 +221,6 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   (`the_shipped_model_list_parses_and_every_entry_clears_the_bar`), which is what a malformed entry
   or a bad hand-edit would break. `pr` runs the workspace's `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings` and `cargo test` as usual.
-- The offline halves of the harness stay green on the changed tree:
-  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`, with and without
-  `--profile minimal`; a scorecard and a docs row change nothing they read.
 - The measurement itself is a live, billed provider run and is not a CI gate (`evals/README.md`,
   "Live mode"). No unit test can reach it; the automated covering check for what ships is the models
   test above.
