@@ -119,11 +119,14 @@ model reads `unpriced tok` exactly as today.
   `core/project_env.rs`, `core/permissions.rs`, `run.rs`, `fontaine-tui/src/ui/turn.rs`,
   `fontaine-tui/src/ui/commands/auto_mode_setup.rs`, `fontaine/src/auto_mode.rs`,
   `fontaine-evals/src/live.rs`: pass `handle.cost_basis()` where they pass
-  `handle.catalog_billed()` today — `permissions.rs:2242,2249` (`add_guardian_usage`),
-  `:2307,2374` (`add_guardian_adjudication`), `agent/afk.rs:70,83`
-  (`add_guardian_usage_answered`), `auto_mode_setup.rs:192` (`billed`). The span field stays
-  `model.priced` (bool) and gains `model.estimated` (bool) so a telemetry reader can tell the two
-  apart.
+  `handle.catalog_billed()` today — `auto_mode_setup.rs:192` is today's `billed`. The guardian
+  sites hold only a `Guardian`, so their basis comes from `guardian.settings()`
+  (`guardian/guardian.rs:191`): `permissions.rs:2242` (`add_guardian_usage`), `:2307,2374`
+  (`add_guardian_adjudication`), `agent/afk.rs:70,83` and `agent/setup.rs:795`
+  (`add_guardian_usage_answered`). The composition-read site `permissions.rs:2249` records what the
+  composition's own readers answered, not the guardian model, so it passes `CostBasis::Billed` and
+  keeps today's count-as-reported behavior. The span field stays `model.priced` (bool) and gains
+  `model.estimated` (bool) so a telemetry reader can tell the two apart.
 - `guardian/guardian.rs`: `Settings.priced` (`:51`) and the cost drop that reads it (`:403`)
   become the basis, and the span field it records (`:236`) splits into `model.priced` /
   `model.estimated`; `guardian/scanner.rs` `LlmScanner.priced` (`:108`) and its span (`:199`)
@@ -140,9 +143,10 @@ Two carriers, mirroring the existing `unpriced_tokens` convention:
 - `core/usage_ledger.rs` `Bucket` gains `estimated: bool` — set when a priced call's basis was
   `Estimated`, merged with `||`. Its doc says an estimate is never presented as a bill, so a bucket
   holding both is marked.
-- `agents/budget.rs` `Spend` gains the same field, and `core/gate.rs` `spend_of(usage, basis)` takes
-  the basis; `record_usage_answered` and its four callers (`gate.rs:1324`, `:1385`, `:1405`,
-  `:1425`) carry it through.
+- `agents/budget.rs` `Spend` gains the same field, combined by `Spend::add` (`:20`) with `||` too,
+  so a sum holding one estimate is marked; `core/goal.rs:271` `spend_since` takes `estimated` from
+  `now`. `core/gate.rs` `spend_of(usage, basis)` takes the basis; `record_usage_answered` and its
+  four callers (`gate.rs:1324`, `:1385`, `:1405`, `:1425`) carry it through.
 
 An estimate is rendered, never inferred: `spend_text` (`agents_panel.rs`) and `cost_cell`
 (`reports.rs`) append ` est.` to the dollar figure when the bucket or spend is estimated, so
@@ -213,8 +217,11 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
    not list (`glm-*` → `Unpriced`).
 5. Replace the `priced`/`billed` booleans with `CostBasis` at every site listed in Design §4 — the
    turn and per-agent paths, `guardian/guardian.rs` `Settings.priced`, `guardian/scanner.rs`
-   `LlmScanner.priced`, the `permissions.rs`/`afk.rs` record calls and `auto_mode_setup.rs` — add
-   the `model.estimated` span field, and pass the basis down the ledger `record` chain. The
+   `LlmScanner.priced`, the `permissions.rs`/`afk.rs`/`setup.rs` record calls and
+   `auto_mode_setup.rs` — taking it from `handle.cost_basis()` where a handle is at hand, from
+   `guardian.settings()` at the guardian-only sites (`permissions.rs:2242/2307/2374`, `afk.rs:70/83`,
+   `setup.rs:795`) and `CostBasis::Billed` at the composition-read site (`permissions.rs:2249`);
+   add the `model.estimated` span field, and pass the basis down the ledger `record` chain. The
    integration tests that build those fields or pass that flag move with them:
    `tests/{agent_pipeline,audit_telemetry,side_question,account_session,afk}.rs`,
    `tests/{usage_pause_turn,effort,turn_recovery,guardian_scanner}.rs` and
@@ -223,7 +230,8 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 **Phase 3 — count and label the estimate**
 
 6. `core/usage_ledger.rs`: `Bucket.estimated`, set in `add`, folded in `merge`; unit tests.
-7. `agents/budget.rs` `Spend.estimated`; `core/gate.rs` `spend_of(usage, basis)` and the
+7. `agents/budget.rs` `Spend.estimated`, combined with `||` in `Spend::add` and taken from `now` by
+   `core/goal.rs` `spend_since`; `core/gate.rs` `spend_of(usage, basis)` and the
    `record_usage_answered`/`add_*_usage` chain, with the integration tests that call them directly
    (`tests/{billing,agent_pipeline,agent_resume,usage_pause_turn}.rs`) updated to pass a basis.
 8. Displays: `agents_panel.rs` `SpendView.estimated` + `spend_text`, `reports.rs` `cost_cell` and
@@ -262,7 +270,6 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
 - `rust/fontaine-sdk/tests/{databricks,billing,audit_telemetry,agent_pipeline,agent_resume}.rs`,
   `rust/fontaine-sdk/tests/{side_question,guardian_scanner,turn_recovery,account_session,afk}.rs`,
   `rust/fontaine-sdk/tests/{usage_pause_turn,effort}.rs`, `rust/fontaine/tests/embed.rs`
-- `rust/fontaine/tests/` — the new `--max-budget-usd` caps test file
 - `docs/{providers,configuration,tui,headless,telemetry}.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -302,9 +309,9 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
   estimate-priced run; a priced dbx model makes `--max-budget-usd` and a preference list work.
 - `docs/telemetry.md:130-138` — `fontaine.cost.usage` is present for a dbx model the catalog lists
   and carries `estimated = "true"`.
-- `docs/telemetry.md:125-126` and `:146-148` — both are rewritten to say `estimated` marks two
-  things: a guessed guardian-drop spend, and a cost priced at a vendor's list price for an account
-  that bills in its own units.
+- `docs/telemetry.md:126` and `:146-148` — `estimated` on `fontaine.cost.usage` marks two things: a
+  guessed guardian-drop spend, and a cost priced at a vendor's list price for an account that bills
+  in its own units. The `fontaine.token.usage` row (`:125`) keeps the guardian estimate only.
 - `CHANGELOG.md` — one entry.
 
 ## Testing Strategy
@@ -325,19 +332,12 @@ the emitted `fontaine.cost.usage` for a call under a `model.estimated` span carr
   `model.estimated` span, a `gcp.gemini` completion for `system.ai.gemini-3-pro` yields the same
   cost, a `databricks` completion for the older `databricks-claude-haiku-5-5` spelling yields it
   too, and a `system.ai.glm-*` model still yields no cost.
-- **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5` handle
-  is `priced()`, `cost_basis() == Estimated`, and a reply's reported usage accrues a `cost_usd` in
-  a bucket marked `estimated` on the ledger instead of `unpriced_tokens`; a `system.ai.gpt-*` reply
-  (`responses_reply()`) and a `system.ai.gemini-3-pro` reply (`gemini_reply()`) each add a
-  `cost_usd` to such a bucket, since each wire prices on its own path; `system.ai.glm-5-3` stays
-  unpriced.
-- **Caps** (`tests/` for `--max-budget-usd`, alongside the existing mock-server
-  `error_max_budget_usd` tests at `fontaine/tests/headless_contract.rs:217,260,652`): a wiremock dbx
-  Claude run with a tiny `--max-budget-usd` ends with exit 1 and `error_max_budget_usd`, and a dbx
-  GLM main model is still a usage error (exit 2).
-- The live gateway is not covered by any test — `AGENTS.md` forbids live APIs in tests — so the
-  one thing a mock cannot show, that a real dbx reply reports the token counts this prices, is the
-  manual step below.
+- **Databricks integration** (`tests/databricks.rs`, wiremock): a `system.ai.claude-haiku-5-5`
+  handle is `priced()` and `cost_basis() == Estimated`, and each wire's reply reports a price at the
+  existing `completion.call` seam — `usage.cost.is_some()` for Messages, `responses_reply()` and
+  `gemini_reply()`, none for `system.ai.glm-5-3`. `say_hi` returns the response rather than only its
+  text so the assertion can read `usage.cost`; the `estimated` bucket marking stays with the ledger
+  and gate unit tests.
 
 ## Manual Verification
 
@@ -347,9 +347,9 @@ in the user's settings (`kind = "databricks"`, its workspace `base_url`, and
 `~/.claude_databricks_token`, never on a command line.
 
 1. **A listed model is priced.** With `[model] model = "dbx/system.ai.claude-sonnet-5-5"`:
-   `DATABRICKS_TOKEN=$(cat ~/.claude_databricks_token) cargo run -p fontaine -- -p "Reply with exactly: ok"`
-   — expect exit 0 and a `result.total_cost_usd` that is a number well above zero, where today it
-   is `null`. Not automated: it is a live, billed call.
+   `DATABRICKS_TOKEN=$(cat ~/.claude_databricks_token) cargo run -p fontaine -- --output-format
+   json -p "Reply with exactly: ok"` — expect exit 0 and a `result.total_cost_usd` that is a
+   number well above zero, where today it is `null`. Not automated: it is a live, billed call.
 
 ## Open Questions
 
