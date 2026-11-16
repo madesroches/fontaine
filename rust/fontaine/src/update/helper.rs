@@ -242,7 +242,9 @@ fn apply_stage(args: &HelperArgs, env: &Env<'_>, info: &InstallInfo, dir: &Path)
         Ok(manifest) => manifest,
         Err(why) => return discard("verify-failed", None, &why),
     };
-    let candidate = Some(manifest.version.as_str());
+    // The release tag, the form the background pass records, so one build has one candidate key.
+    let tag = release_of(&manifest, "").map(|r| r.tag);
+    let candidate = Some(tag.as_deref().unwrap_or(manifest.version.as_str()));
     if manifest.channel != info.channel {
         return discard(
             "verify-failed",
@@ -456,5 +458,22 @@ mod tests {
         sort_oldest_first(&mut dirs);
         assert!(dirs[0].ends_with("0.1.0-dev.9+aaaaaaa"));
         assert!(dirs[1].ends_with("0.1.0-dev.10+bbbbbbb"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn target_in_use_tracks_an_open_handle() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fontaine.exe");
+        std::fs::write(&file, b"x").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        assert!(target_in_use(&file));
+        drop(held);
+        assert!(!target_in_use(&file));
     }
 }
