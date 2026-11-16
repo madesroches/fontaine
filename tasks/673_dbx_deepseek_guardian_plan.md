@@ -47,10 +47,8 @@ cascade via `--screen`, or any infrastructure failure. It upserts this run's mod
 entry scored on a different `dataset_version` (`report::merge`). The shipped entry
 `opencode-go/claude-haiku-5-5` is scored on `d1740a7c65ae`; the current dataset hashes to
 `5daaae0b478a`, so this run drops it, and what the file holds afterwards is exactly the outcome: the
-deepseek entry if it clears the bar, no entry otherwise. That drop is the file's own rule — an
-entry is only validated for the dataset it was scored on — and it is not something this change
-hand-edits away; the `opencode-go` numbers stay in the `docs/evals.md` tables either way. The drop
-is user-visible: `available_validated` (`rust/fontaine-sdk/src/core/models.rs`) picks an account's
+deepseek entry if it clears the bar, no entry otherwise. The `opencode-go` numbers stay in the
+`docs/evals.md` tables either way. The drop is user-visible: `available_validated` (`rust/fontaine-sdk/src/core/models.rs`) picks an account's
 default guardian from the entries whose `kind` matches it, so an `opencode-go` account that gets
 `claude-haiku-5-5` as its default guardian today (`CHANGELOG.md`, the release that added the list)
 falls back to the main model once the entry is gone.
@@ -77,7 +75,9 @@ file (as in the go scorecard).
    `--out` it leaves no report and no sidecar:
    - every case scored (exit 0) → auth, routing and the forced call all work; go to Design 2;
    - cases `UNSCORED` with the provider's refusal in the explanation (exit 1) → the deployment
-     rejects the forced call; go to Design 4;
+     rejects the forced call; go to Design 5, and still run the Design 2 command (with its
+     `--out ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json`) to produce the report
+     Design 5 commits;
    - exit 2 → the account or its credential did not resolve, and nothing was asked of the model.
 
 ### 2. The full run
@@ -110,8 +110,11 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
 - `docs/evals.md` gains a row in "Other small and hosted guardian models" (catch, false deny, p50,
   p95) inserted in the table's rank order, the row's text naming it as the Databricks deployment of
   the model the `go/` row already lists, and a bullet in that section's list next to the
-  `opencode-go` one with the transport and the fail-closed counts. The prose that still reads as
-  though the shipped ranked list is empty is corrected, and the bullet at `docs/evals.md:657-661`
+  `opencode-go` one with the transport and the fail-closed counts. The section's intro sentence
+  ("More full-profile runs on the same dataset (`d1740a7c65ae`) …") is amended so the dbx row is
+  named as scored on `5daaae0b478a`, and the row's text carries that dataset version. The prose in
+  `docs/evals.md` "## Results" (~537-542) that still reads as though the shipped ranked list is
+  empty is corrected, and the bullet at `docs/evals.md:657-661`
   (haiku "is the only model that clears all three bars, and it is the first entry in
   `guardian_models.toml`") is corrected to say the entry was dropped on the new dataset version and
   the databricks entry is the list's.
@@ -132,11 +135,12 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   was p95 by 0.2 s, so a near miss is a "rerun" verdict rather than a settled one — the issue asks
   for that call too.
 - The same `docs/evals.md` row and bullet, written as a miss, next to the `go/` row since it is the
-  same model on another endpoint. The bullet at `docs/evals.md:657-661` is corrected to say the
-  haiku entry was dropped on the new dataset version and the list is empty.
+  same model on another endpoint. The section's intro sentence ("More full-profile runs on the same
+  dataset (`d1740a7c65ae`) …") is amended so the dbx row is named as scored on `5daaae0b478a`, and
+  the row's text carries that dataset version. The bullet at `docs/evals.md:657-661` is corrected to
+  say the haiku entry was dropped on the new dataset version and the list is empty.
 - The models file keeps only what clears the bar, so a miss leaves it with no entries and the
-  guardian falls back to the main model. That is the documented lifecycle (`report::merge` and the
-  file's own header). `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
+  guardian falls back to the main model. `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
   kind has a default guardian from the list.
 - `CHANGELOG.md`: under `### Added`, one line for the measurement and its miss; under `### Removed`,
   one line saying `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account
@@ -192,8 +196,8 @@ Per-case `fail_closed` carries the same reasons for the cases that did score.
   row rather than in a section of its own: it is the same model on another endpoint, and that
   section already reads its latencies with the hosted-endpoint caveat.
 - **A ten-case smoke test before the full run** costs about ten calls and settles the forced-call
-  question first; without it, a route that refuses or times out per case spends far longer reaching
-  the same conclusion.
+  question first. It does not replace the full run: on a refusal the full run still produces the
+  report Outcome C commits, and it is started knowing that is its purpose.
 
 ## Decisions
 
