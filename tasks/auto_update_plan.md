@@ -206,8 +206,9 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 8. CI: a manually triggered / nightly workflow `update-e2e.yml` on ubuntu, macos and windows that
    installs the previous dev build with the real installer (the `dev-<n>` prerelease), uses the
    default GitHub feed (no api-base override ships in the binary), updates to the current dev build,
-   and asserts the version changed and the receipt is intact. Unix legs launch the TUI under a pty;
-   the Windows leg runs `fontaine update` (manual path); the helper swap is covered by unit tests
+   and asserts the version changed and the receipt is intact. Every leg (Linux, macOS, Windows) runs
+   `fontaine update` (manual path); the TUI background pass is not driven in CI because the workspace
+   trust prompt would have to be bypassed, so it and the Windows helper swap are covered by unit tests
    and Manual Verification. No Windows hidden pass entry point. Coordinate with #176.
 
 ## Files to Modify
@@ -217,7 +218,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine/tests/update_cmd.rs` (the `leftovers()` helper ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
 - `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`, `docs/verifying-releases.md` (the automatic background update also verifies downloaded archives)
-- `.github/workflows/update-e2e.yml` (new; default feed, pty on Unix, `fontaine update` on Windows), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `.github/workflows/update-e2e.yml` (new; default feed, `fontaine update` on every OS), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Decisions
 
@@ -228,7 +229,8 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - 2026-11-15 (#175): `fontaine update --rollback` is unsupported on Windows in the first release (no `.prev`; the swap renames the old exe to `<exe>.old[-pid]`, which is cleaned up).
 - 2026-11-15 (#175): the Windows helper's 24 h give-up is a constant, not configurable.
 - 2026-11-15 (#175): AFK: rollback reads a sidecar `<exe>.prev.json` (pre-swap receipt version and channel), written by every swap that links `.prev` under the receipt lock; a missing sidecar is treated like a missing `.prev`, and `update-skip` records the newer build rolled back from. Reason: `.prev` is a bare hard link and `receipt::write_version` needs the signed version.
-- 2026-11-15 (#175): AFK: no api-base override ships in the production binary; gating is tested as a pure predicate (headless, `[updates] auto_update`, `receipt::locate`) with the pass driven through `Params`, `update-e2e.yml` uses the default GitHub feed (pty on Unix, `fontaine update` on Windows), and the Windows hidden pass entry point is dropped. Reason: an override would move the trust root's feed.
+- 2026-11-15 (#175): AFK: no api-base override ships in the production binary; gating is tested as a pure predicate (headless, `[updates] auto_update`, `receipt::locate`) with the pass driven through `Params`, `update-e2e.yml` uses the default GitHub feed (`fontaine update` on every OS), and the Windows hidden pass entry point is dropped. Reason: an override would move the trust root's feed.
+- 2026-11-15 (#175): AFK: update-e2e.yml runs the manual `fontaine update` on every OS; it does not drive the TUI background pass because the workspace trust prompt would have to be bypassed. Reason: no trust bypass in CI.
 - 2026-11-15 (#175): AFK: keep the Windows helper (separate process waits, then swaps) instead of the in-process rename-aside. Reason: an in-process swap leaves already-running sessions on a renamed `.old` file and lets the session replace itself, which the issue forbids.
 
 ## Documentation
@@ -279,9 +281,9 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
 - Windows helper failure (re-verify, failed swap, 24 h give-up) is recorded in `updates.jsonl` and `update-state.json`; the next interactive launch shows one `Notice::warning`, not repeated on later launches.
 - Receipt write fails after a completed swap: the warning is shown once, no `update-applied.json` marker is written, and no second install is claimed as success.
-- End to end N → N+1 runs in `update-e2e.yml` (not a PR gate) against the default GitHub feed: Unix
-  legs in a pty, the Windows leg via `fontaine update`; it catches installer/receipt/updater
-  disagreements. The Windows background pass and real file locking are verified manually.
+- End to end N → N+1 runs in `update-e2e.yml` (not a PR gate) against the default GitHub feed: every
+  leg runs `fontaine update`; it catches installer/receipt/updater
+  disagreements. The TUI background pass on every OS and real Windows file locking are verified manually.
 
 ## Manual Verification
 
@@ -289,4 +291,7 @@ Unit and integration tests with wiremock and the existing release-index and sign
    background pass (or delete `update.stamp`), confirm `fontaine.exe` is unchanged and
    `update-staged\` exists, exit Fontaine, and within ~5 s `fontaine --version` shows the new build
    with no UAC prompt and no window. Not automated because it needs an interactive session holding
-   the lock; CI covers only the manual `fontaine update` path on Windows.
+   the lock; CI covers only the manual `fontaine update` path on every OS.
+2. On Linux and macOS, install the previous dev build, trust the workspace, start `fontaine`, wait for the
+   background pass (or delete `update.stamp`), exit, and confirm `fontaine --version` shows the new build.
+   Not automated because CI would have to bypass the workspace trust prompt.

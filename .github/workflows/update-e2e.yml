@@ -1,8 +1,8 @@
 # End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the newest one, and check the version changed and the receipt is intact.
 # Manual and nightly, never a PR gate: it needs two published `dev-<n>` builds and the network.
-# The binary ships no api-base override, so this uses the default feed. Unix legs start the TUI under
-# a pty so the automatic background pass runs; the Windows leg runs `fontaine update` (the helper
-# swap needs a session holding the executable and is verified by hand).
+# The binary ships no api-base override, so this uses the default feed. Every leg runs the manual
+# `fontaine update`; the TUI background pass would need the workspace trust prompt bypassed, so it
+# and the Windows helper swap are verified by hand.
 name: Update E2E
 permissions:
   contents: read
@@ -90,28 +90,7 @@ jobs:
           before=$(jq -r .version "$receipt")
           want_before="${PREVIOUS#dev-}"
           case "$before" in *"-dev.$want_before+"*) ;; *) echo "installed $before, expected build $want_before"; exit 1 ;; esac
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            "$exe" update
-          else
-            # The TUI needs a terminal, so run it under a pty (portable, unlike util-linux `script`).
-            # The pass runs in the background at start: give it time to download, verify and swap.
-            python3 - "$exe" <<'PY' || true
-          import os, pty, select, signal, sys, time
-          pid, fd = pty.fork()
-          if pid == 0:
-              os.execv(sys.argv[1], [sys.argv[1]])
-          end = time.time() + 90
-          while time.time() < end:
-              if select.select([fd], [], [], 1)[0]:
-                  try:
-                      if not os.read(fd, 65536):
-                          break
-                  except OSError:
-                      break
-          os.kill(pid, signal.SIGTERM)
-          os.waitpid(pid, 0)
-          PY
-          fi
+          "$exe" update
           after=$(jq -r .version "$receipt")
           want_after="${NEWEST#dev-}"
           case "$after" in *"-dev.$want_after+"*) ;; *) echo "receipt says $after, expected build $want_after"; exit 1 ;; esac
