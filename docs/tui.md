@@ -192,7 +192,7 @@ data, plus Fontaine extensions:
 | `recent_verdicts` | Last 5 gate decisions with a guardian verdict: `{tool, decision, rule, guardian_verdict}` |
 | `account_usage` | Main and guardian account usage windows, in the same shape as headless output |
 | `context_window.used_percentage` | Context used as a percentage of the model's window, when known |
-| `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced; for a run priced by estimate (a `databricks` account) this is a list-price estimate, always a number and never null on that account |
+| `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced; for a run priced by estimate (a `databricks` account) this is a list-price estimate |
 
 The `[statusline]` section is accepted only in the user file; it cannot be set from project,
 project-local or `--settings` files, because the command runs arbitrary code.

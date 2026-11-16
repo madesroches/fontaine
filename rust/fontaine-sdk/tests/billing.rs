@@ -12,7 +12,7 @@ use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{
     Drive, Flow, SessionEvent, TurnOutcome, TurnParams, drive, run_turn,
 };
-use fontaine_sdk::core::usage_ledger::UsageSource;
+use fontaine_sdk::core::usage_ledger::{Bucket, UsageSource};
 use rig_core::completion::{Cost, Usage};
 use rig_core::test_utils::{MockError, MockStreamEvent, mock_final};
 use serde_json::json;
@@ -26,7 +26,7 @@ fn costed_answer() -> Vec<MockStreamEvent> {
     ]
 }
 
-async fn root_turn(cost: CostBasis) -> (Option<f64>, Spend) {
+async fn root_turn(cost: CostBasis) -> (Option<f64>, Spend, Bucket) {
     let w = World::new();
     let built = build(&w, Manual, vec![costed_answer()], true);
     let mut reported = None;
@@ -61,12 +61,13 @@ async fn root_turn(cost: CostBasis) -> (Option<f64>, Spend) {
         .state
         .agents()
         .spend_of(fontaine_sdk::tools::gate::ROOT_AGENT);
-    (reported.expect("a usage event"), spent)
+    let bucket = built.runtime.state.usage_ledger().bucket(UsageSource::Main);
+    (reported.expect("a usage event"), spent, bucket)
 }
 
 #[tokio::test]
 async fn a_priced_turn_counts_the_cost_the_call_reported() {
-    let (reported, spent) = root_turn(CostBasis::Billed).await;
+    let (reported, spent, _) = root_turn(CostBasis::Billed).await;
     assert_eq!(reported, Some(0.25));
     assert_eq!(spent.cost_usd, Some(0.25));
     assert!(!spent.estimated);
@@ -74,7 +75,7 @@ async fn a_priced_turn_counts_the_cost_the_call_reported() {
 
 #[tokio::test]
 async fn an_unpriced_turn_reports_usage_and_spend_without_a_cost() {
-    let (reported, spent) = root_turn(CostBasis::Unpriced).await;
+    let (reported, spent, _) = root_turn(CostBasis::Unpriced).await;
     assert_eq!(reported, None);
     assert_eq!(spent.cost_usd, None);
     assert!(!spent.estimated);
@@ -82,34 +83,10 @@ async fn an_unpriced_turn_reports_usage_and_spend_without_a_cost() {
 
 #[tokio::test]
 async fn an_estimated_turn_keeps_the_cost_and_marks_the_spend_and_the_bucket() {
-    let (reported, spent) = root_turn(CostBasis::Estimated).await;
+    let (reported, spent, bucket) = root_turn(CostBasis::Estimated).await;
     assert_eq!(reported, Some(0.25));
     assert_eq!(spent.cost_usd, Some(0.25));
     assert!(spent.estimated);
-    let w = World::new();
-    let built = build(&w, Manual, vec![costed_answer()], true);
-    let mut seen = |_| Flow::Continue;
-    let outcome = run_turn(
-        TurnParams {
-            served: Default::default(),
-            agent: &built.runtime.agent,
-            state: &built.runtime.state,
-            prompt: "hi".to_string(),
-            attachments: Vec::new(),
-            modalities: rig_core::catalog::Modalities::default(),
-            max_turns: Some(3),
-            cost: CostBasis::Estimated,
-            model: "scripted".to_string(),
-            provider: "mock".to_string(),
-            native_search: false,
-            generation_options: None,
-            max_tokens: None,
-        },
-        &mut seen,
-    )
-    .await;
-    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
-    let bucket = built.runtime.state.usage_ledger().bucket(UsageSource::Main);
     assert_eq!(bucket.cost_usd, Some(0.25));
     assert!(bucket.estimated);
 }
