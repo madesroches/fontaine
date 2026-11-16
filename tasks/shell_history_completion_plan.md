@@ -85,7 +85,7 @@ shell completion and Esc, and mention it under "Shell commands".
   entry never completes plain text and vice versa; bare `!` gives `None`; multi-line entries are
   skipped; `/` still excluded.
 - `app.rs` tests (in `mod ghost`): ghost follows typing and deleting; Tab and Right accept and
-  Enter submits `Action::Submit("!git status", ..)`; Esc dismisses (idle); typing another character brings it back, and so does typing then backspacing to the
+  Enter submits `Action::Shell("git status")`; Esc dismisses (idle); typing another character brings it back, and so does typing then backspacing to the
   dismissed text; Esc while a turn runs still interrupts; off with `history_completion = false`.
 - `view.rs` test: shell ghost renders dim after the typed text and is clipped.
 
