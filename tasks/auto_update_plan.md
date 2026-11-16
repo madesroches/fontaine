@@ -99,7 +99,8 @@ runs no tool call and gets no new capability.
   a manual update never waits for a background download.
 - Download goes to a `.fontaine-update-*` temp dir beside the binary and `replace_binary` persists
   with an atomic rename; a half-written file is never at the target path. A leftover temp dir from
-  a crashed pass is removed at the start of the next pass.
+  a crashed pass is removed at the start of the next pass, only if its modification time is older
+  than 24 h (a concurrent manual `update()` or the Windows helper swap may own a fresh one).
 
 ### Linux and macOS
 
@@ -108,7 +109,8 @@ inode and are not interrupted; the next launch executes the new binary. The sign
 once, in the same process that installs (nothing persists unverified across launches). The previous
 binary is kept as `<exe>.prev` for rollback: on every swap an existing `.prev` is removed, then the
 running binary is hard-linked to it before the rename (so it is replaced each time). If the
-filesystem rejects the hard link, `.prev` is skipped.
+filesystem rejects the hard link, `.prev` is skipped. Order inside `replace_binary`: extract and
+set the mode first, then remove the old `.prev`, link, and persist; a link failure is ignored.
 
 ### Windows
 
@@ -171,13 +173,13 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 ## Implementation Steps
 
 1. Refactor `update/mod.rs` into `prepare`/`install`; keep `update()` and its tests green, with
-   `tests/update_cmd.rs` updated so its leftovers check ignores `fontaine.prev`.
+   the `leftovers()` helper in `tests/update_cmd.rs` updated to ignore `fontaine.prev`.
 2. Extract `stamp.rs` from `plugin_auto_update.rs`; switch the plugin pass to it.
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
-5. Unix: remove any existing `<exe>.prev` then re-link it in `install::replace_binary` (skip if the
-   link fails); Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
+5. Unix: in `install::replace_binary`, extract and set the mode first, then remove any existing
+   `<exe>.prev`, re-link it (ignore a link failure) and persist; Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
    skip file (cli.rs, update/mod.rs).
 6. Windows: staged dir, hidden helper subcommand (cli.rs, `update/helper.rs`), lock wait, re-verify
    and swap.
@@ -192,7 +194,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 - `rust/fontaine/src/update/mod.rs`, `install.rs`, new `auto.rs`, `helper.rs`
 - `rust/fontaine/src/stamp.rs` (new), `plugin_auto_update.rs`, `lib.rs`, `cli.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
-- `rust/fontaine/tests/update_cmd.rs` (leftovers check in `dev_update_replaces_the_binary_and_the_receipt_version` ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
+- `rust/fontaine/tests/update_cmd.rs` (the `leftovers()` helper ignores `fontaine.prev`), new `update_auto.rs`; core `tests/config.rs`
 - `docs/installing.md`, `docs/configuration.md` (incl. the data-file table), `docs/tui.md`, `docs/headless.md`
 - `.github/workflows/update-e2e.yml` (new), `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
@@ -229,6 +231,8 @@ Unit and integration tests with wiremock and the existing release-index and sign
 - Gating: no activity under `-p` and `fontaine send` (no request reaches the mock); receipt for
   another binary, no receipt: silent; `auto_update = false`: no request.
 - Cadence: stamp due/not due, clock moved back.
+- Cleanup: a fresh `.fontaine-update-*` dir of a concurrent update survives the start-of-pass
+  cleanup; one older than 24 h is removed.
 - Concurrency: two passes against one data dir stage once (second `try_lock` loses); a pass racing
   `update()` installs once.
 - Config: `updates.auto_update` rejected from project scope and `--settings` (`config_scope` tests),
@@ -237,13 +241,13 @@ Unit and integration tests with wiremock and the existing release-index and sign
   deleted silently; a dev-shaped `VERSION` (`<pkg>-dev+<sha12>`) with a receipt at
   `<base>-dev.<N>+<sha7>` still shows the notice.
 - Rollback: `--rollback` restores `.prev`, rewrites the receipt, and the skip file stops reinstall of
-  that build; a second update replaces an existing `.prev`; on Windows `--rollback` prints the
+  that build; a second update replaces an existing `.prev`; a failed extract keeps the existing `.prev`; on Windows `--rollback` prints the
   unsupported message and exits 1; with no `.prev` it reports nothing to restore.
 - Windows helper logic: the wait/give-up/one-helper/re-verify/newer-build-wins decisions are tested
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
 - Windows launch with an existing stage starts a helper without stamp, `update.lock` or network, tested with the injected lock probe.
-- Existing `tests/update_cmd.rs` tests still pass (the leftovers check ignores `fontaine.prev`).
+- Existing `tests/update_cmd.rs` tests still pass (the `leftovers()` helper ignores `fontaine.prev`).
 - End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
   catches installer/receipt/updater disagreements and the real Windows file locking that fakes
   cannot reproduce.
