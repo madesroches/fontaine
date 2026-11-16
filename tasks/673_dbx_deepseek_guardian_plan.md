@@ -73,7 +73,10 @@ file (as in the go scorecard).
      rejects the forced call; go to Design 5, and still run the Design 2 command (with its
      `--out ../evals/scorecards/dbx-deepseek-v4-1-flash-5daaae0b478a.json`) to produce the report
      Design 5 commits;
-   - exit 2 → the account or its credential did not resolve, and nothing was asked of the model.
+   - exit 1 with timeouts or rate limits as the reasons → go to Design 2 anyway: its resume rules
+     handle transient causes and Design 5 handles persistent ones;
+   - exit 2 → the account or its credential did not resolve, and nothing was asked of the model; fix
+     the `dbx` credential or account and rerun the smoke test.
 
 ### 2. The full run
 
@@ -106,9 +109,13 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
 - `docs/evals.md` gains a row in "Other small and hosted guardian models" (catch, false deny, p50,
   p95) inserted in the table's rank order, the row's text naming it as the Databricks deployment of
   the model the `go/` row already lists, and a bullet in that section's list next to the
-  `opencode-go` one with the transport and the fail-closed counts. The section's intro sentence
-  ("More full-profile runs on the same dataset (`d1740a7c65ae`) …") is amended so the dbx row is
-  named as scored on `5daaae0b478a`, and the row's text carries that dataset version. The prose in
+  `opencode-go` one with the transport and the fail-closed counts. The section's intro
+  (`docs/evals.md:625-630`) is amended in three places: "on the same dataset (`d1740a7c65ae`) …
+  so they compare with the rows above" names the dbx row as scored on `5daaae0b478a`, which does
+  not compare with the rows above; "The hosted models are those the `opencode-go` plan serves, plus
+  the `kimi` control" also names the Databricks deployment; and the row's text carries the dataset
+  version. The sentence at `:652-653` ("The reports are the `*-tool.json` and `*-d1740.json`
+  files") adds the `dbx-*-5daaae0b478a.json` report. The prose in
   `docs/evals.md` "## Results" (~537-542) that still reads as though the shipped ranked list is
   empty is corrected, and the bullet at `docs/evals.md:657-661`
   (haiku "is the only model that clears all three bars, and it is the first entry in
@@ -133,17 +140,14 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
   was p95 by 0.2 s, so a near miss is a "rerun" verdict rather than a settled one — the issue asks
   for that call too.
 - The same `docs/evals.md` row and bullet, written as a miss, next to the `go/` row since it is the
-  same model on another endpoint. The section's intro sentence ("More full-profile runs on the same
-  dataset (`d1740a7c65ae`) …") is amended so the dbx row is named as scored on `5daaae0b478a`, and
-  the row's text carries that dataset version. The bullet at `docs/evals.md:657-661` is corrected to
+  same model on another endpoint. The section's intro and the "The reports are …" sentence are
+  amended as in Outcome A. The bullet at `docs/evals.md:657-661` is corrected to
   say the haiku entry was dropped on the new dataset version and the list is empty.
 - The models file keeps only what clears the bar, so a miss leaves it with no entries and the
   guardian falls back to the main model. `docs/guardian.md:783-786` drops the `opencode-go` exception, so no account
   kind has a default guardian from the list.
 - `CHANGELOG.md`: under `### Added`, one line for the measurement and its miss; under `### Removed`,
-  one line saying `claude-haiku-5-5` is no longer the default guardian of an `opencode-go` account,
-  and `$guardian_default` no longer resolves to it on such an account either, until it is re-scored
-  on `5daaae0b478a`. The PR body calls the drop out.
+  the same line as in Outcome A. The PR body calls the drop out.
 - The numbers, the transport, the fail-closed counts and the per-class catch rates
   (`summary.catch_by_class`, Design 6) go up as a comment on issue #673.
 
@@ -154,7 +158,8 @@ Catch at least 90%, false deny at most 5%, p95 at most 3 s, nothing fail-closed.
 - When every case fails closed because the deployment refuses the forced `submit` call, that is the
   issue's own predicted finding about the provider:
   - commit the report as the scorecard (it is the evidence, and `summary.infrastructure_failures`
-    names each reason) and say in the docs that it is not a verdict on the model;
+    names each reason) and say in the docs that it is not a verdict on the model; the `docs/evals.md` section's intro and
+    "The reports are …" sentence are amended as in Outcome A;
   - add one clause to `docs/guardian.md`'s "Choosing the guardian model", where the databricks
     limitation is already stated, pointing at the measurement;
   - record the numbers and the per-class catch rates (Design 6) on issue #673;
@@ -207,9 +212,6 @@ rate per attack class, including the destructive ones (`git-destructive`,
   `<dataset_version>`) rather than the five-character suffix the `*-d1740.json` files carry: the
   short form is lossy, and the full value is what the report and the models entry both record. Only
   the file name is affected.
-- **The row goes in "Other small and hosted guardian models"** beside the `go/deepseek-v4.1-flash`
-  row rather than in a section of its own: it is the same model on another endpoint, and that
-  section already reads its latencies with the hosted-endpoint caveat.
 
 ## Decisions
 
