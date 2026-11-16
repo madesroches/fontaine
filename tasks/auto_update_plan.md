@@ -90,7 +90,7 @@ runs no tool call and gets no new capability.
 
 ### Concurrency and atomicity
 
-- One pass per data dir; the receipt lock keeps installs correct across data dirs: `file_lock::try_lock(<data>/update.lock)`; a loser stops silently. The
+- One pass per data dir via `file_lock::try_lock(<data>/update.lock)`; a loser stops silently; the receipt lock (next bullet) covers installs across data dirs. The
   stamp is written under that lock before any network call, so an offline machine retries the next
   day and two simultaneous launches stage once.
 - The receipt lock (as `fontaine update` uses) is taken only around compare + install + receipt
@@ -108,7 +108,7 @@ The verified binary replaces the file with an atomic rename, so running sessions
 inode and are not interrupted; the next launch executes the new binary. The signature is checked
 once, in the same process that installs (nothing persists unverified across launches). The previous
 binary is kept as `<exe>.prev` for rollback: on every swap an existing `.prev` is removed, then the
-running binary is hard-linked to it before the rename (so it is replaced each time). If the
+current file at the target path is hard-linked to it before the rename (so it is replaced each time). If the
 filesystem rejects the hard link, `.prev` is skipped. Order inside `replace_binary`: extract and
 set the mode first, then remove the old `.prev`, link, and persist; a link failure is ignored.
 
@@ -135,9 +135,17 @@ helper and returns. The hand-off holds no receipt lock.
   receipt, writes the marker, removes the stage. Per-user install dir, so no UAC. The helper rebuilds
   a `Release` offline from the manifest's `channel` and `version` (`release_index::tag_build` /
   `dev_build_number`) and the asset name from `archive_name(target)`, so it can call `check_binding`.
-- **Interruption:** the stage stays until applied. A launch with an existing stage starts a helper
-  (a second helper exits at once via `update-helper.lock`; the helper re-verifies and re-compares
-  under the receipt lock), skips the stamp and `update.lock`, and needs no network.
+- **Interruption:** the stage stays until applied. A launch with an existing stage that is newer
+  than the receipt version and not marked failed starts a helper (a second helper exits at once via
+  `update-helper.lock`; the helper re-verifies and re-compares under the receipt lock), skips the
+  stamp and `update.lock`, and needs no network.
+- **Stage lifecycle:** the helper deletes a stage that is not newer than the receipt version, and a
+  stage that fails re-verify (logged to `updates.jsonl` as a failure), so a bad stage never makes
+  every launch spawn a helper or blocks the network pass from fetching a fresh release; the next due
+  pass stages anew. Staging a newer build removes older stage dirs.
+- **Helper failures:** the helper writes each outcome (re-verify failure, failed swap, 24 h give-up)
+  to `updates.jsonl` and `update-state.json`; the next interactive launch turns an unwarned failure
+  entry into the one-time `Notice::warning` (same once-rule as the in-process pass).
 - `install::replace_binary` on Windows always renames the target aside to `<exe>.old[-pid]`, for
   the helper swap too. `install::remove_stale` is called at the start of the helper swap (Unix:
   n/a), so auto-updates clean up `.old*` leftovers; `update()` keeps calling it.
@@ -178,8 +186,7 @@ deletes the marker. The comparison uses the version in the receipt for the runni
 3. Add `[updates] auto_update` (config.rs, config_scope.rs, config_catalog.rs) with tests.
 4. Add `update/auto.rs`: pass, lock, state, log, marker, notices; wire `spawn` in `lib.rs` next to
    the plugin pass and the marker read before the TUI starts.
-5. Unix: in `install::replace_binary`, extract and set the mode first, then remove any existing
-   `<exe>.prev`, re-link it (ignore a link failure) and persist; Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
+5. Unix: `install::replace_binary` keeps `<exe>.prev` per "Linux and macOS"; Windows `--rollback` exits 1 with an unsupported message; add `fontaine update --rollback` and the
    skip file (cli.rs, update/mod.rs).
 6. Windows: staged dir, hidden helper subcommand (cli.rs, `update/helper.rs`), lock wait, re-verify
    and swap.
@@ -247,7 +254,8 @@ Unit and integration tests with wiremock and the existing release-index and sign
   against an injected "is the target locked" function so they run on every OS; the real lock probe
   is compiled and tested on the Windows CI leg.
 - Windows launch with an existing stage starts a helper without stamp, `update.lock` or network, tested with the injected lock probe.
-- Existing `tests/update_cmd.rs` tests still pass (the `leftovers()` helper ignores `fontaine.prev`).
+- Windows stage that fails re-verify: deleted and logged as a failure; the next launch spawns no helper and the next due pass fetches and stages anew.
+- Windows helper failure (re-verify, failed swap, 24 h give-up) is recorded in `updates.jsonl` and `update-state.json`; the next interactive launch shows one `Notice::warning`, not repeated on later launches.
 - End to end N → N+1 on Linux, macOS and Windows runs in `update-e2e.yml` (not a PR gate): it
   catches installer/receipt/updater disagreements and the real Windows file locking that fakes
   cannot reproduce.
