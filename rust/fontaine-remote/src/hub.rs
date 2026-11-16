@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
 
 use crate::protocol::{
-    HOST_FRAME_CAP, HostMsg, Level, Reason, Sender, encode_frame, split_snapshot,
+    HOST_FRAME_CAP, HostMsg, Level, Reason, SNAPSHOT_PART_CAP, Sender, encode_frame, split_snapshot,
 };
 
 /// The bounds the ring and each device's queue keep.
@@ -410,7 +410,7 @@ impl Hub {
         let mut state = self.state();
         state.snapshot_wanted = false;
         let seq = state.seq;
-        let parts: Vec<Vec<u8>> = split_snapshot(self.epoch, seq, state_json, HOST_FRAME_CAP)
+        let parts: Vec<Vec<u8>> = split_snapshot(self.epoch, seq, state_json, SNAPSHOT_PART_CAP)
             .iter()
             .map(encode_frame)
             .collect();
@@ -614,6 +614,39 @@ mod tests {
         )));
         assert!(matches!(reg2.queue.take(), Next::Empty));
         drop(reg);
+    }
+
+    #[test]
+    fn a_snapshot_is_cut_to_small_parts_that_reassemble() {
+        let (hub, _) = hub(HubLimits::default());
+        let _reg = hub.register(&node("a"), "l", None).unwrap();
+        hub.publish(serde_json::json!({}));
+        let reg2 = hub
+            .register(&node("b"), "l", Some((hub.epoch() ^ 1, 1)))
+            .unwrap();
+        let state = format!("{{\"pad\":\"{}\"}}", "x".repeat(700_000));
+        hub.provide_snapshot(&state);
+        let Next::Frames(frames) = reg2.queue.take() else {
+            panic!("frames");
+        };
+        assert!(frames.len() >= 3);
+        let mut assembler = crate::protocol::SnapshotAssembler::default();
+        let mut whole = None;
+        for frame in &frames {
+            assert!(frame.len() <= SNAPSHOT_PART_CAP);
+            let HostMsg::Snapshot {
+                epoch,
+                seq,
+                part,
+                of,
+                state,
+            } = serde_json::from_slice(frame).unwrap()
+            else {
+                panic!("a snapshot part");
+            };
+            whole = assembler.push(epoch, seq, part, of, state);
+        }
+        assert_eq!(whole.expect("all parts arrived").2, state);
     }
 
     #[test]

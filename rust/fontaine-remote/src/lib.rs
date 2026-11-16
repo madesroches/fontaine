@@ -21,7 +21,7 @@ pub use paired::{
 };
 pub use protocol::{
     ALPN, Auth, ClientMsg, HOST_FRAME_CAP, HostMsg, Level, MAX_FEEDBACK_BYTES, MAX_MESSAGE_BYTES,
-    MAX_TTL, Reason, Sender, SnapshotAssembler, WireAnswer,
+    MAX_TTL, Reason, Sender, SnapshotAssembler, WireAnswer, short_node,
 };
 pub use server::{RemoteServer, ServerConfig, ServerError};
 pub use session::{BoxFuture, Handled, HostSession};

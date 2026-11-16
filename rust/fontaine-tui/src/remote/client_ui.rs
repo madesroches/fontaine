@@ -325,7 +325,7 @@ impl RemoteClientUi {
         let kept = self.app.transcript.entries.len();
         let action = self.app.handle_input(input);
         // Anything the app wrote to the transcript itself would shift the host's positions.
-        self.app.transcript.mirror_truncate(kept);
+        self.app.transcript.mirror_cut(kept);
         self.action(action)
     }
 
@@ -525,13 +525,13 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
                     ClientEvent::Snapshot { state, .. } => {
                         match serde_json::from_str::<Snapshot>(&state) {
                             Ok(snapshot) => ui.snapshot(snapshot),
-                            Err(e) => break AttachEnd::Failed(AttachError::Protocol(e.to_string())),
+                            Err(e) => break AttachEnd::Failed(AttachError::protocol_from("undecodable snapshot", e)),
                         }
                     }
                     ClientEvent::Event { event, .. } => {
                         match serde_json::from_value::<RemoteEvent>(event) {
                             Ok(event) => ui.event(event),
-                            Err(e) => break AttachEnd::Failed(AttachError::Protocol(e.to_string())),
+                            Err(e) => break AttachEnd::Failed(AttachError::protocol_from("undecodable event", e)),
                         }
                     }
                     ClientEvent::Notice { severity, text } => {
@@ -941,6 +941,55 @@ mod tests {
             ))),
             Outcome::Detach
         );
+    }
+
+    #[test]
+    fn a_call_written_to_a_small_device_scrollback_still_shows_its_outcome() {
+        let theme = Theme::preset(Default::default());
+        let mut host = app();
+        host.on_event(SessionEvent::ToolCall {
+            id: "c".into(),
+            tool: "write".into(),
+            args: json!({ "path": "notes.txt", "content": "hello" }),
+        });
+        let mut device = RemoteClientUi::new(app());
+        device.event(RemoteEvent::Set {
+            at: 0,
+            entry: host.transcript.entries[0].clone(),
+        });
+        // A live area over budget writes the pending call into the device's scrollback.
+        assert!(
+            !device
+                .app
+                .transcript
+                .commit_within(60, &theme, 1)
+                .is_empty()
+        );
+        host.on_event(SessionEvent::ToolResult {
+            id: "c".into(),
+            tool: "write".into(),
+            success: false,
+            text: "disk full".into(),
+        });
+        device.event(RemoteEvent::Set {
+            at: 0,
+            entry: host.transcript.entries[0].clone(),
+        });
+        device.event(RemoteEvent::Set {
+            at: 1,
+            entry: Entry::User("next".into()),
+        });
+        let live = device
+            .app
+            .transcript
+            .live_lines(60, &theme)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(live.contains("disk full"), "{live}");
+        assert!(live.contains("next"), "{live}");
+        assert_eq!(device.app.transcript.mirror_entries().len(), 2);
     }
 
     #[test]

@@ -70,7 +70,10 @@ pub enum AttachError {
     Closed,
     Timeout,
     Connect(Box<dyn std::error::Error + Send + Sync>),
-    Protocol(String),
+    Protocol {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
     /// A key or host file could not be read or written.
     Store(std::io::Error),
 }
@@ -82,7 +85,9 @@ impl std::fmt::Display for AttachError {
             AttachError::Closed => f.write_str(Reason::Closed.describe()),
             AttachError::Timeout => f.write_str("timed out waiting for the session"),
             AttachError::Connect(_) => f.write_str("could not reach the session"),
-            AttachError::Protocol(what) => write!(f, "unexpected reply from the session: {what}"),
+            AttachError::Protocol { context, .. } => {
+                write!(f, "unexpected reply from the session: {context}")
+            }
             AttachError::Store(_) => f.write_str("could not read or write this device's files"),
         }
     }
@@ -93,7 +98,27 @@ impl std::error::Error for AttachError {
         match self {
             AttachError::Connect(e) => Some(e.as_ref()),
             AttachError::Store(e) => Some(e),
+            AttachError::Protocol { source, .. } => source.as_deref().map(|e| e as _),
             _ => None,
+        }
+    }
+}
+
+impl AttachError {
+    pub fn protocol(context: impl Into<String>) -> AttachError {
+        AttachError::Protocol {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn protocol_from(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> AttachError {
+        AttachError::Protocol {
+            context: context.into(),
+            source: Some(Box::new(source)),
         }
     }
 }
@@ -247,7 +272,7 @@ async fn next_frame<R: AsyncRead + Unpin>(
     match read_frame(recv, HOST_FRAME_CAP, Wait::Body).await {
         Ok(body) => match serde_json::from_slice::<HostMsg>(&body) {
             Ok(message) => Frame::Host(message),
-            Err(e) => Frame::Lost(AttachError::Protocol(e.to_string())),
+            Err(e) => Frame::Lost(AttachError::protocol_from("undecodable message", e)),
         },
         Err(crate::protocol::FrameError::Io(io)) => {
             Frame::Lost(match connection.and_then(|c| c.close_reason()) {
@@ -255,7 +280,7 @@ async fn next_frame<R: AsyncRead + Unpin>(
                 Some(other) => connect_error(other),
             })
         }
-        Err(other) => Frame::Lost(AttachError::Protocol(other.to_string())),
+        Err(other) => Frame::Lost(AttachError::protocol_from("bad frame", other)),
     }
 }
 
@@ -381,8 +406,8 @@ fn apply(
             // dropped and the reconnect gets a snapshot.
             progress.epoch = None;
             progress.last_seq = None;
-            return Some(Ended::Lost(AttachError::Protocol(
-                "an event was too large to send".to_string(),
+            return Some(Ended::Lost(AttachError::protocol(
+                "an event was too large to send",
             )));
         }
         HostMsg::Event { epoch, seq, event } => {
@@ -391,9 +416,7 @@ fn apply(
             if progress.epoch == Some(epoch)
                 && progress.last_seq.is_some_and(|last| seq != last + 1)
             {
-                return Some(Ended::Lost(AttachError::Protocol(
-                    "an event was missing".to_string(),
-                )));
+                return Some(Ended::Lost(AttachError::protocol("an event was missing")));
             }
             progress.epoch = Some(epoch);
             progress.last_seq = Some(seq);
@@ -431,10 +454,6 @@ fn relay_for(target: &Target, options: &AttachOptions) -> RelayMode {
     }
 }
 
-fn short(node: &str) -> String {
-    node.chars().take(10).collect()
-}
-
 /// Remembers the host and where it was reached, so a later attach needs no ticket.
 async fn remember(
     store: &dyn ClientStore,
@@ -448,7 +467,7 @@ async fn remember(
     }
     let node = addr.id.to_string();
     let host = StoredHost {
-        label: label.map_or_else(|| short(&node), str::to_string),
+        label: label.map_or_else(|| crate::protocol::short_node(&node), str::to_string),
         node,
         addr: known,
     };
@@ -538,6 +557,9 @@ async fn attach_with(
                             pair_secret = None;
                             remember(store, endpoint, &addr, options.host_label.as_deref()).await?;
                             let _ = events.send(ClientEvent::Paired);
+                        } else {
+                            // A resume refreshes the addresses; without a label the stored one stays.
+                            remember(store, endpoint, &addr, None).await?;
                         }
                         backoff = FIRST_BACKOFF;
                         let _ = events.send(ClientEvent::Connected);
@@ -574,7 +596,7 @@ async fn first_reply(link: &mut Link, pairing: bool) -> Result<(), AttachError> 
         match next_frame(&mut link.recv, Some(&link.connection)).await {
             Frame::Host(HostMsg::Paired) => Ok(()),
             Frame::Host(HostMsg::Rejected { reason }) => Err(AttachError::Rejected(reason)),
-            Frame::Host(other) => Err(AttachError::Protocol(format!("{other:?}"))),
+            Frame::Host(other) => Err(AttachError::protocol(format!("{other:?}"))),
             Frame::Lost(error) => Err(error),
         }
     };

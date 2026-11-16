@@ -49,7 +49,7 @@ pub fn exit_code(error: &AttachError) -> u8 {
         | AttachError::Timeout
         | AttachError::Connect(_)
         | AttachError::Store(_) => EXIT_UNREACHABLE,
-        AttachError::Protocol(_) => EXIT_PROTOCOL,
+        AttachError::Protocol { .. } => EXIT_PROTOCOL,
     }
 }
 
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(exit_code(&AttachError::Timeout), 4);
         assert_eq!(exit_code(&AttachError::Closed), 4);
         assert_eq!(exit_code(&AttachError::Connect("x".into())), 4);
-        assert_eq!(exit_code(&AttachError::Protocol("x".into())), 5);
+        assert_eq!(exit_code(&AttachError::protocol("x")), 5);
     }
 
     fn host(env: Option<&'static str>) -> Host {

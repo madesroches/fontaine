@@ -196,10 +196,6 @@ impl RemoteSurface {
     }
 }
 
-fn short(node: &str) -> String {
-    node.chars().take(10).collect()
-}
-
 impl HostSession for RemoteSurface {
     fn client_message(&self, from: &Sender, _label: &str, message: ClientMsg) -> Handled {
         if self.is_closed() {
@@ -348,7 +344,10 @@ impl HostSession for RemoteSurface {
         );
         self.note(
             Level::Info,
-            format!("device {} (\"{label}\") paired", short(node)),
+            format!(
+                "device {} (\"{label}\") paired",
+                fontaine_remote::short_node(node)
+            ),
         );
     }
 
@@ -360,7 +359,10 @@ impl HostSession for RemoteSurface {
         );
         self.note(
             Level::Info,
-            format!("device {} (\"{label}\") attached", short(node)),
+            format!(
+                "device {} (\"{label}\") attached",
+                fontaine_remote::short_node(node)
+            ),
         );
         if self.state.afk_on() {
             self.hub.notice_to(
@@ -377,7 +379,10 @@ impl HostSession for RemoteSurface {
             &format!("device {node} detached"),
             Decision::Allow,
         );
-        self.note(Level::Info, format!("device {} detached", short(node)));
+        self.note(
+            Level::Info,
+            format!("device {} detached", fontaine_remote::short_node(node)),
+        );
     }
 
     fn refused(&self, reason: Reason, node: &Sender) {

@@ -22,7 +22,6 @@ use fontaine_sdk::core::notice::Severity;
 use fontaine_sdk::core::steering::Retracted;
 use fontaine_sdk::tools::error_chain::chain;
 
-use crate::app::DeviceRefusal;
 use crate::remote::surface::{InputWaker, PairingRequest};
 use crate::remote::{
     DeviceInput, FileStore, MirrorTracker, RemoteCommand, RemoteSurface, parse_remote_command,
@@ -83,10 +82,6 @@ fn lifetime_text(ttl: Duration) -> String {
     } else {
         format!("{secs} second(s)")
     }
-}
-
-fn short(node: &str) -> String {
-    node.chars().take(10).collect()
 }
 
 const AFK_ON_NOTICE: &str = "AFK mode is on: approvals and questions are being answered unattended on the host, so nothing will ask this device";
@@ -182,7 +177,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         format!(
                             "{} · {} · paired {} · last seen {}{}",
                             device.label,
-                            short(&device.node),
+                            fontaine_remote::short_node(&device.node),
                             when(device.paired_at),
                             when(device.last_seen),
                             if attached.contains(&device.node) {
@@ -224,7 +219,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.transcript.notice(format!(
                     "revoked {} ({}){}",
                     device.label,
-                    short(&device.node),
+                    fontaine_remote::short_node(&device.node),
                     if live {
                         "; its connection was closed"
                     } else {
@@ -490,7 +485,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             && let Some(request) = running.surface.take_pairing()
         {
             self.app.begin_pairing(crate::guardian_prompt::pairing(
-                &short(&request.node),
+                &fontaine_remote::short_node(&request.node),
                 &request.label,
             ));
             running.pairing = Some(request);
@@ -516,7 +511,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
             self.app.transcript.notice(format!(
                 "device {} already left or timed out; nothing was paired",
-                short(&request.node)
+                fontaine_remote::short_node(&request.node)
             ));
             return;
         }
@@ -767,13 +762,9 @@ fn apply_answer(
             running
                 .surface
                 .hub()
-                .notice_to(&node, Level::Warning, refusal_text(refusal));
+                .notice_to(&node, Level::Warning, refusal.text());
         }
     }
-}
-
-fn refusal_text(refusal: DeviceRefusal) -> &'static str {
-    refusal.text()
 }
 
 #[cfg(test)]

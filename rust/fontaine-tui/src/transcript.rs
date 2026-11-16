@@ -114,6 +114,9 @@ pub struct Transcript {
     /// Entries that only repeat a call whose pending row was already in scrollback when it
     /// settled; the original holds the outcome too, so a reprint drops them.
     follow_ups: Vec<usize>,
+    /// The follow-ups a mirroring device added itself (ascending, also in `follow_ups`): the host
+    /// addresses entries without them.
+    mirror_local: Vec<usize>,
     pub glyphs: Glyphs,
     /// Whether the model's reasoning is shown; both reasoning events are ignored otherwise.
     pub show_reasoning: bool,
@@ -131,6 +134,7 @@ impl Default for Transcript {
             calls: 0,
             retired: Vec::new(),
             follow_ups: Vec::new(),
+            mirror_local: Vec::new(),
             glyphs: Glyphs::default(),
             show_reasoning: true,
             changes: 0,
@@ -245,6 +249,7 @@ impl Transcript {
         }
         self.entries.clear();
         self.follow_ups.clear();
+        self.mirror_local.clear();
         self.committed = 0;
         self.committed_chars = 0;
     }
@@ -261,6 +266,7 @@ impl Transcript {
             at += 1;
             keep
         });
+        self.mirror_local.clear();
         self.retired.clear();
         self.committed = 0;
         self.committed_chars = 0;
@@ -606,7 +612,7 @@ impl Transcript {
     }
 
     /// The entries a device mirrors: every one but the follow-up copies of calls whose original
-    /// already holds the final state, which only exist to patch scrollback the device lacks.
+    /// already holds the final state, which only exist to patch scrollback already written.
     pub(crate) fn mirror_entries(&self) -> Vec<&Entry> {
         self.entries
             .iter()
@@ -616,19 +622,46 @@ impl Transcript {
             .collect()
     }
 
-    /// Puts `entry` at `at` as the mirrored host has it; `at` may be one past the end.
+    /// Where the host's entry `at` is here, past the follow-ups this device added itself.
+    fn host_to_local(&self, at: usize) -> usize {
+        self.mirror_local
+            .iter()
+            .fold(at, |local, &l| if l <= local { local + 1 } else { local })
+    }
+
+    /// Puts `entry` at `at` as the mirrored host has it; `at` may be one past the end. A call
+    /// the device already wrote to its scrollback as pending cannot be redrawn there, so its
+    /// outcome is appended as a follow-up line, as `settle` does at the host.
     pub(crate) fn mirror_set(&mut self, at: usize, entry: Entry) {
         self.touch();
-        if at < self.entries.len() {
-            self.entries[at] = entry;
-        } else {
+        let local = self.host_to_local(at);
+        if local >= self.entries.len() {
             self.entries.push(entry);
+            return;
+        }
+        let written = local < self.committed
+            && matches!(
+                (&self.entries[local], &entry),
+                (
+                    Entry::Tool { status: ToolStatus::Pending, .. },
+                    Entry::Tool { status, .. },
+                ) if *status != ToolStatus::Pending
+            );
+        if written {
+            let follow_up = entry.clone();
+            self.entries[local] = entry;
+            self.follow_ups.push(self.entries.len());
+            self.mirror_local.push(self.entries.len());
+            self.entries.push(follow_up);
+        } else {
+            self.entries[local] = entry;
         }
     }
 
     /// Adds streamed text to the assistant or reasoning entry at `at`.
     pub(crate) fn mirror_append(&mut self, at: usize, more: &str, still_streaming: bool) {
         self.touch();
+        let at = self.host_to_local(at);
         match self.entries.get_mut(at) {
             Some(Entry::Assistant { text, streaming }) => {
                 text.push_str(more);
@@ -648,8 +681,14 @@ impl Transcript {
         }
     }
 
-    /// Cuts the entries back to `len`; whether anything was removed.
+    /// Cuts the host's entries back to `len`; whether anything was removed.
     pub(crate) fn mirror_truncate(&mut self, len: usize) -> bool {
+        let local = self.host_to_local(len);
+        self.mirror_cut(local)
+    }
+
+    /// Cuts the entries here back to `len`, follow-ups included.
+    pub(crate) fn mirror_cut(&mut self, len: usize) -> bool {
         if self.entries.len() <= len {
             return false;
         }
@@ -658,6 +697,7 @@ impl Transcript {
         self.committed = self.committed.min(len);
         self.committed_chars = 0;
         self.follow_ups.clear();
+        self.mirror_local.clear();
         true
     }
 

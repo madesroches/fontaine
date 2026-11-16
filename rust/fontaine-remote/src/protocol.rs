@@ -14,6 +14,14 @@ pub const MAX_FEEDBACK_BYTES: usize = 1024;
 pub const MAX_LABEL_CHARS: usize = 64;
 /// The largest frame the host sends. A client frame is far smaller: it carries typed input only.
 pub const HOST_FRAME_CAP: usize = 4 * 1024 * 1024;
+/// The frame size a snapshot is cut to. Far under `HOST_FRAME_CAP` so each part finishes within
+/// the client's frame timeout on a slow link.
+pub const SNAPSHOT_PART_CAP: usize = 256 * 1024;
+
+/// The leading characters of a node id, enough to tell devices apart on screen.
+pub fn short_node(node: &str) -> String {
+    node.chars().take(10).collect()
+}
 /// Room for an 8 KiB text in its worst JSON escaping (`\u00XX`, six bytes per byte).
 pub const CLIENT_FRAME_CAP: usize = 64 * 1024;
 /// Bounds the read of a frame's body, and of the whole handshake frame, so a stalled peer cannot
