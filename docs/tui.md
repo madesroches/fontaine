@@ -356,6 +356,9 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
   output cut as the agent's `shell` tool, because the output goes to the agent. On Windows without
   Git Bash it runs in PowerShell, like the agent's `powershell` tool. It is killed after 120 seconds, or after 60 seconds without
   output, and has no standard input.
+- As you type after the `!`, the newest earlier `!` command that starts with what you typed is shown
+  dimmed after the cursor (see [history completion](#prompt-suggestions-and-history-completion)).
+  Tab or Right accepts it and Esc hides it; the accepted text is ordinary input, run as typed.
 - A `!` input typed while a turn runs queues like a message and runs after the turn, in the order
   typed with everything else queued.
   While a command runs nothing else can be sent or queued; Esc or Ctrl-C interrupts it and kills
@@ -442,9 +445,10 @@ be sent or copied until you accept it, and it is clipped to the row so the box n
 
 - **History completion** is on by default. While you type, the newest earlier input that starts
   with what you typed (case-sensitive, single-line) is shown after the cursor. It appears only with
-  the cursor at the end of the text, and never for a `/` command or `!` shell line or while you
-  walk the history with Up and Down. `[tui] history_completion = false` turns it off. It makes no
-  model call.
+  the cursor at the end of the text, and never for a `/` command, for a bare `!`, or while you
+  walk the history with Up and Down. A `!` shell line is completed only from earlier `!` lines, and
+  Esc hides that completion until the text changes. `[tui] history_completion = false` turns it
+  off. It makes no model call.
 - **Prompt suggestions** are off by default; `[tui] prompt_suggestions = true` turns them on. When a
   turn has ended, the main model is asked, on a background task, for the message you are most
   likely to type next, and it is shown dimmed in the empty input. Starting a new turn, quitting or
@@ -455,7 +459,8 @@ be sent or copied until you accept it, and it is clipped to the row so the box n
   count again; otherwise it expires after five more turns of yours). A suggestion that is empty, longer than 200 characters, a repeat of your last message, or
   starts with `/` or `!` is dropped, so it never pre-types a command or a shell line.
 
-Tab or Right fills the input with the dimmed text, and Enter then sends it as an ordinary message.
+Tab or Right fills the input with the dimmed text, and Enter then sends it as an ordinary message
+(or runs it, for a `!` line).
 Typing, Esc or sending something else dismisses a suggestion. Nothing is shown while a menu, an
 overlay or a search is open, with files attached, in an agent's view, or in vim Normal mode. The
 screen-reader renderer shows no dimmed text.

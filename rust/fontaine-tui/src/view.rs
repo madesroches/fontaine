@@ -1329,6 +1329,25 @@ mod tests {
     }
 
     #[test]
+    fn shell_history_completion_is_dim_after_the_typed_command_and_clipped() {
+        let mut app = typed("!git s");
+        app.history.push("!git status");
+        app.history_completion = true;
+        let rows = drawn(&app, 60, 12);
+        let at = input_row(&rows, "git status");
+        let buffer = drawn_cells(&app, 60, 12);
+        assert_eq!(dim_text(&buffer, at as u16, 60).trim(), "tatus");
+        assert_eq!(app.input.text(), "!git s");
+
+        let mut long = typed("!echo ");
+        long.history.push(&format!("!echo {}", "long ".repeat(40)));
+        let rows = drawn(&long, 30, 14);
+        let at = input_row(&rows, "echo");
+        assert!(rows[at].contains('…'), "{rows:?}");
+        assert!(rows[at].trim_end().ends_with('│'), "{rows:?}");
+    }
+
+    #[test]
     fn ghost_text_is_clipped_so_the_input_height_does_not_change() {
         let mut app = typed("fix the ");
         app.history.push(&format!("fix the {}", "long ".repeat(40)));

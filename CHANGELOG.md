@@ -37,6 +37,10 @@ All notable changes are recorded here. The format follows
   off; its Anthropic-shaped `thinking` field belongs to the Claude models behind the same gateway and
   is accepted and ignored for the others (#673). Only the guardian-side calls carry it, so the main
   agent keeps reasoning at its own default.
+- `!` shell command history completion (#682): while typing a `!` line, the newest earlier `!`
+  command that starts with the typed text is shown dimmed after the cursor; Tab or Right accepts it
+  and Esc hides it until the text changes. A bare `!` shows nothing, and `[tui] history_completion =
+  false` turns it off.
 - Automatic background updates (#175): at interactive start, at most once a day, an install made by
   a Fontaine installer looks for a newer build on its own channel, downloads it, verifies its
   minisign signature against the key compiled into the running binary and makes it the next

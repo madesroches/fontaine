@@ -154,9 +154,10 @@ impl History {
 
     /// What the newest single-line entry that starts with `typed` and goes on past it adds, for
     /// ghost text after the cursor. Case-sensitive, unlike `search`, so the ghost always extends
-    /// exactly what was typed. A command or shell line is never completed.
+    /// exactly what was typed. A `/` command is never completed, and a bare `!` is not either, so
+    /// the box is not pre-filled with the last shell command before one is typed.
     pub fn completion(&self, typed: &str) -> Option<&str> {
-        if typed.is_empty() || typed.contains('\n') || typed.starts_with(['/', '!']) {
+        if typed.is_empty() || typed == "!" || typed.contains('\n') || typed.starts_with('/') {
             return None;
         }
         self.entries
@@ -320,9 +321,26 @@ mod tests {
         assert_eq!(history.completion(""), None);
         assert_eq!(history.completion("exact"), None);
         assert_eq!(history.completion("/mo"), None);
-        assert_eq!(history.completion("!l"), None);
+        assert_eq!(history.completion("!"), None);
         assert_eq!(history.completion("line one\nl"), None);
         assert_eq!(history.completion("line o"), None);
+    }
+
+    #[test]
+    fn shell_lines_complete_only_from_shell_entries() {
+        let mut history = History::in_memory("p");
+        for entry in ["!git status", "!git stash", "git push", "!ls\n!pwd"] {
+            history.push(entry);
+        }
+        assert_eq!(history.completion("!gi"), Some("t stash"), "newest wins");
+        assert_eq!(history.completion("!git status"), None);
+        assert_eq!(history.completion("gi"), Some("t push"));
+        assert_eq!(
+            history.completion("!l"),
+            None,
+            "multi-line entries are skipped"
+        );
+        assert_eq!(history.completion("!x"), None);
     }
 
     #[test]
