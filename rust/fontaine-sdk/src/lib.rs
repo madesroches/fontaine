@@ -38,6 +38,8 @@ pub mod run;
 pub mod session;
 pub mod tools;
 
+pub use crate::core::afk_report::AfkReport;
+pub use crate::core::agent::EnvLookup;
 pub use error::EmbedError;
 pub use events::{Event, SCHEMA_VERSION};
 pub use session::{InterruptHandle, Session, SessionBuilder, SessionRef, Turn};

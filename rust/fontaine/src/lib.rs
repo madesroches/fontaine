@@ -781,7 +781,11 @@ fn prepare_session(
 
 /// Prints a failed assembly and returns the exit code it ends the process with.
 fn usage_failure(e: &EmbedError) -> u8 {
-    eprintln!("fontaine: {}", fontaine_sdk::tools::error_chain::chain(e));
+    // The sign-in line is the whole message; the model error under it only repeats it.
+    match e {
+        EmbedError::Credentials(d) => eprintln!("fontaine: {}", d.message()),
+        _ => eprintln!("fontaine: {}", fontaine_sdk::tools::error_chain::chain(e)),
+    }
     e.exit_code()
 }
 

@@ -18,7 +18,7 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 
 /// Looks variables up in the sandbox's own environment first, then in the process's.
-fn lookup(s: &Sandbox) -> fontaine_sdk::core::agent::EnvLookup {
+fn lookup(s: &Sandbox) -> fontaine_sdk::EnvLookup {
     let runtime = s.runtime.clone().into_os_string();
     let (config, data) = (
         s.config.clone().into_os_string(),

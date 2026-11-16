@@ -340,8 +340,6 @@ pub async fn run(
         Err(code) => return code,
     };
     let mut runtime = started.runtime;
-    // Servers that fail to start are reported on stderr and skipped.
-    runtime.connect_mcp(&[]).await;
     shared.attach(Attached {
         state: runtime.state.clone(),
         mcp: runtime.mcp_states_reader(),

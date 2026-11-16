@@ -344,7 +344,7 @@ impl SessionBuilder {
         let (project_executables, untrusted) =
             assemble::headless_project_executables(&config, &dirs.data);
         warnings.extend(untrusted.map(|line| Notice::warning(line, None)));
-        let (mut prep, scratch) = assemble::prepare_session(
+        let prepared = assemble::prepare_session(
             &PrepareParams {
                 env: &env,
                 dirs: &dirs,
@@ -356,7 +356,16 @@ impl SessionBuilder {
             },
             &mut config,
             &mut warnings,
-        )?;
+        );
+        let (mut prep, scratch) = match prepared {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                for warning in &warnings {
+                    approver.warn(&warning.to_string());
+                }
+                return Err(e);
+            }
+        };
         for warning in std::mem::take(&mut prep.warnings) {
             approver.warn(&warning.to_string());
         }
@@ -708,9 +717,10 @@ impl Session {
                 if code == 0 {
                     Ok(())
                 } else {
-                    Err(EmbedError::runtime(format!(
-                        "the session's run ended with exit code {code}"
-                    )))
+                    Err(EmbedError::runtime_with_code(
+                        format!("the session's run ended with exit code {code}"),
+                        code,
+                    ))
                 }
             }
             Exit::Panicked(Some(e)) => Err(EmbedError::runtime_from(e)),
@@ -723,9 +733,10 @@ impl Session {
 
     fn ended_error(&mut self) -> EmbedError {
         match &mut self.exited {
-            Some(Exit::Done(_, code)) => {
-                EmbedError::runtime(format!("the session's run ended with exit code {code}"))
-            }
+            Some(Exit::Done(_, code)) => EmbedError::runtime_with_code(
+                format!("the session's run ended with exit code {code}"),
+                *code,
+            ),
             Some(Exit::Panicked(e)) => match e.take() {
                 Some(e) => EmbedError::runtime_from(e),
                 None => EmbedError::runtime("the session's task panicked"),

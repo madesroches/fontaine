@@ -134,6 +134,14 @@ impl EmbedError {
         })
     }
 
+    pub(crate) fn runtime_with_code(message: impl Into<String>, exit_code: u8) -> EmbedError {
+        EmbedError::Runtime(Detail {
+            message: message.into(),
+            source: None,
+            exit_code,
+        })
+    }
+
     pub(crate) fn runtime_from(cause: impl Error + Send + Sync + 'static) -> EmbedError {
         EmbedError::Runtime(Detail {
             message: cause.to_string(),
@@ -175,5 +183,11 @@ mod tests {
     fn a_failed_run_exits_one() {
         assert_eq!(EmbedError::runtime("the run ended").exit_code(), 1);
         assert_eq!(EmbedError::credentials("not signed in").exit_code(), 1);
+    }
+
+    #[test]
+    fn a_run_that_ended_with_a_code_carries_it() {
+        let e = EmbedError::runtime_with_code("usage limit", crate::run::EXIT_USAGE_LIMIT);
+        assert_eq!(e.exit_code(), 3);
     }
 }
