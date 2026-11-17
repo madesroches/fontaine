@@ -1210,3 +1210,21 @@ async fn an_exit_command_typed_during_work_latches_the_quit() {
         "the quit was not queued behind the work"
     );
 }
+
+#[test]
+fn background_jobs_split_into_shells_and_monitors() {
+    use fontaine_sdk::tools::jobs::JobInfo;
+    let job = |monitor| JobInfo {
+        id: "job-1".into(),
+        command: "sleep 1".into(),
+        monitor,
+        description: None,
+        age: std::time::Duration::ZERO,
+        running: true,
+        state: "running".into(),
+    };
+    assert_eq!(super::split(&[]), (0, 0));
+    assert_eq!(super::split(&[job(false), job(false)]), (2, 0));
+    assert_eq!(super::split(&[job(true)]), (0, 1));
+    assert_eq!(super::split(&[job(false), job(true), job(true)]), (1, 2));
+}

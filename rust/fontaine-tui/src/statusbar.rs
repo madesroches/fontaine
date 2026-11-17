@@ -179,6 +179,26 @@ where
     Some((text, warn))
 }
 
+/// `· 1 shell, 2 monitors running (<keys> to manage)`, or nothing with no job. The key hint is
+/// left out when `panel_keys` is `None`.
+fn jobs_clause(shells: usize, monitors: usize, panel_keys: Option<&str>) -> String {
+    let noun = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let counts = match (shells, monitors) {
+        (0, 0) => return String::new(),
+        (s, 0) => noun(s, "shell", "shells"),
+        (0, m) => noun(m, "monitor", "monitors"),
+        (s, m) => format!(
+            "{}, {}",
+            noun(s, "shell", "shells"),
+            noun(m, "monitor", "monitors")
+        ),
+    };
+    match panel_keys {
+        Some(keys) => format!(" · {counts} running ({keys} to manage)"),
+        None => format!(" · {counts} running"),
+    }
+}
+
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     // In an agent's view the state is the agent's: the main turn is out of sight, and Esc does
@@ -235,6 +255,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         1 => " · 1 agent running".to_string(),
         n => format!(" · {n} agents running"),
     };
+    let panel_keys = binding(app, TuiAction::AgentsPanel).filter(|_| !app.attached_device);
+    let agents = format!(
+        "{agents}{}",
+        jobs_clause(
+            app.background_shells,
+            app.background_monitors,
+            panel_keys.as_deref()
+        )
+    );
     let scheduled = match app.scheduled {
         0 => String::new(),
         n => format!(" · ⏱ {n}"),
@@ -780,6 +809,67 @@ mod tests {
         );
         assert_eq!(next_mode(PermissionMode::DontAsk), PermissionMode::Manual);
         assert_eq!(mode_label(PermissionMode::Afk), "⏵⏵⏵ AFK mode on");
+    }
+
+    #[test]
+    fn the_jobs_clause_counts_with_grammar_and_an_optional_key_hint() {
+        assert_eq!(jobs_clause(0, 0, Some("ctrl+g")), "");
+        assert_eq!(jobs_clause(1, 0, None), " · 1 shell running");
+        assert_eq!(jobs_clause(2, 0, None), " · 2 shells running");
+        assert_eq!(jobs_clause(0, 1, None), " · 1 monitor running");
+        assert_eq!(jobs_clause(0, 3, None), " · 3 monitors running");
+        assert_eq!(jobs_clause(1, 2, None), " · 1 shell, 2 monitors running");
+        assert_eq!(
+            jobs_clause(1, 1, Some("ctrl+g")),
+            " · 1 shell, 1 monitor running (ctrl+g to manage)"
+        );
+    }
+
+    fn bound_panel(app: &mut App) {
+        app.keymap = crate::keymap::Keymap::resolve(
+            &[("ctrl+g".to_string(), "agents_panel".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .expect("a valid binding");
+    }
+
+    #[test]
+    fn a_background_job_shows_idle_and_during_a_turn_with_the_panel_key() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        assert!(!bar(&app).contains("running"), "{}", bar(&app));
+        app.background_shells = 1;
+        let text = bar(&app);
+        assert!(text.contains("· 1 shell running"), "{text}");
+        assert!(!text.contains("to manage"), "{text}");
+
+        bound_panel(&mut app);
+        app.running = true;
+        let text = bar(&app);
+        assert!(
+            text.contains("· 1 shell running (ctrl+g to manage)"),
+            "{text}"
+        );
+
+        app.attached_device = true;
+        let text = bar(&app);
+        assert!(text.contains("· 1 shell running"), "{text}");
+        assert!(!text.contains("to manage"), "{text}");
+    }
+
+    #[test]
+    fn a_background_job_follows_the_agents_and_shows_beside_a_custom_line() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.running_agents = 2;
+        app.background_monitors = 1;
+        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
+            line: "CUSTOM".into(),
+        });
+        let text = bar(&app);
+        assert!(
+            text.contains("· 2 agents running · 1 monitor running · CUSTOM"),
+            "{text}"
+        );
     }
 
     #[test]

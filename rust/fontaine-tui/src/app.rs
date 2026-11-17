@@ -328,6 +328,8 @@ pub struct App {
     pub ticket_prompt: Option<crate::ticket_prompt::TicketPrompt>,
     /// What the status bar says of remote control and attached devices; `None` when it is off.
     pub remote_indicator: Option<String>,
+    /// This UI is a `fontaine attach` device: the panel and its keys are the host's alone.
+    pub attached_device: bool,
     /// The `/bug` preview while it is open.
     pub bug_prompt: Option<crate::bug_prompt::BugPrompt>,
     /// Warnings shown this session, newest last, for the bug report. Display-only state.
@@ -370,6 +372,10 @@ pub struct App {
     pub menu: Vec<MenuEntry>,
     /// Subagents running right now, for the status bar.
     pub running_agents: usize,
+    /// Background shells still running, for the status bar.
+    pub background_shells: usize,
+    /// Monitors still running, for the status bar.
+    pub background_monitors: usize,
     /// Scheduled tasks, for the status bar.
     pub scheduled: usize,
     /// The active goal's age and whether it waits for the user, for the status bar.
@@ -555,6 +561,7 @@ impl App {
             pairing_prompt: None,
             ticket_prompt: None,
             remote_indicator: None,
+            attached_device: false,
             bug_prompt: None,
             recent_warnings: Default::default(),
             warn_sink: Arc::new(|message| eprintln!("fontaine: warning: {message}")),
@@ -579,6 +586,8 @@ impl App {
             menu_prompts: Vec::new(),
             hidden_prompt_notices: std::collections::HashSet::new(),
             running_agents: 0,
+            background_shells: 0,
+            background_monitors: 0,
             scheduled: 0,
             goal: None,
             statusline: None,
