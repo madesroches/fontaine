@@ -8,8 +8,10 @@ A read-only `shell` command that the pre-classifier accepts (`cat secrets/key`) 
 the session's `rules.deny`/`rules.ask` on the `read`/`ls`/`grep` calls it stands for, then allowed
 at `Tier05`. Two deterministic restrictions never see those synthesized calls: agent-type
 `disallowed`/`only` restrictions on `read(...)` and `pre_tool_use` hooks whose matcher names
-`read`, `ls` or `grep`. This plan closes both so the fast path is never looser than the same read
-made through the file tool.
+`read`, `ls` or `grep`. This plan closes the first fully. For the second it takes the shell read off
+the `Tier05` fast path, so the fast path no longer allows what a read-scoped hook may deny; the
+hook itself is not run on the synthesized call, so its deny/ask is replaced by the mode's decision
+(in `auto` the guardian can still allow the read), not enforced.
 
 ## Current State
 
@@ -76,7 +78,9 @@ vector already built.
 
 - Running the hooks on the built calls was rejected: a hook's decision (allow, updated input) has
   no meaning for a shell command, and `updated_input` could not be applied back. Skipping the fast
-  path hands the call to the mode (guardian in `auto`).
+  path hands the call to the mode (guardian in `auto`). A read-scoped hook's deny/ask is therefore
+  replaced by the mode's decision, not enforced; running hooks on built calls (honoring only deny
+  and ask) was declined to stay within the issue's suggested fix.
 
 ## Testing Strategy
 
@@ -96,6 +100,11 @@ a temp scope; no live APIs):
 - Hook gate set with a secret operand, a `read(secrets/**)` allow rule and a read-naming hook: the
   call is allowed via the allow rule (`AllowRule`), not `Tier05`.
 - A deny `ls(...)` or `grep(...)` agent-type restriction denies the matching shell command.
+
+## Decisions
+
+- AFK: Read-scoped hooks are not run on built read/ls/grep calls; the plan skips the Tier05 allow only (the issue's suggested fix), and the Overview and Trade-offs now say a hook's deny/ask is replaced by the mode's decision (guardian in `auto`), not enforced.
+- AFK: An explicit `shell(...)` allow rule, a `read(...)` allow restoring a secret operand, or a `shell` hook's allow may still override the hook-gated skip (matches the existing plan text: only the Tier05 fast-path allow is removed; deny, ask and restrictions still run first).
 
 ## Open Questions
 
