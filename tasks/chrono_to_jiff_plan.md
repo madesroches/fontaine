@@ -41,11 +41,13 @@ Tests use the bundled tzdb: `tzdb-bundle-always` as a dev-dependency feature.
 | `parse_from_rfc3339` | `str::parse::<Timestamp>()` |
 | `parse_from_rfc2822` | `jiff::fmt::rfc2822::parse` → `Zoned`/`Timestamp` → `SystemTime` |
 | `.format("..")` | `.strftime("..")` (check `%H:%M`, `%Y-%m-%d %H:%M`, `%Y%m%dT%H%M%SZ` render identically; use `Timestamp` for the `Z` form) |
-| `LocalResult::{Single,Ambiguous,None}` | `tz.to_ambiguous_zoned(dt)` → explicit match on `Unambiguous`/`Fold`/`Gap`: `Fold(first, second)` → first if > after, else second if > after, else continue; `Gap` skipped, as `LocalResult::None` is |
+| `LocalResult::{Single,Ambiguous,None}` | `AmbiguousZoned` |
+| `first_match`/`day_matches` on `NaiveDateTime`/`NaiveDate` | `civil::DateTime`/`civil::Date` with `checked_add`/`Span`, `Date::tomorrow`, `weekday().to_sunday_zero_offset()` |
 
 **schedule.rs**: `next_after` stops being generic over a chrono `TimeZone`; it takes `&Zoned` and
-uses the zone carried by it (`after.time_zone()`), so tests pass a real zone. A gap is detected via
-`ambiguous.offset()`/`AmbiguousOffset::Gap` and passed over; a fold takes the first occurrence if > after, else the second if > after, else continues (matching the current `first`/`second` handling). `representable(ms)` becomes `Timestamp::from_millisecond(ms).is_ok()`
+uses the zone carried by it (`after.time_zone()`), so tests pass a real zone. Check
+`tz.to_ambiguous_zoned(dt)`'s `.offset()` (`AmbiguousOffset`): skip on `Gap`; for `Fold` use `earlier()` then `later()`
+(first if > after, else second if > after, else continue); `compatible()` for `Unambiguous`. `representable(ms)` becomes `Timestamp::from_millisecond(ms).is_ok()`
 combined with a successful zoned conversion; the guard is kept because a saved file can hold an unrepresentable value.
 
 **statusbar.rs**: `reset_label`/`quota_segment` take `&Zoned` for `now`; reset converted with
@@ -62,17 +64,19 @@ combined with a successful zoned conversion; the guard is kept because a saved f
 3. Migrate `project_env.rs`, `usage_limit.rs`, `kimi_quota.rs`, `usage_pause.rs`, `bug_submit.rs`, `agent.rs`.
 4. Migrate `schedule.rs` including the `Spring` test fake → real-zone gap test (e.g. `Europe/Paris`,
    2026-03-29 02:00–03:00 gap; a fold on 2026-10-25), and rename
-   `a_saved_time_chrono_cannot_show_is_dropped_not_a_panic`.
-5. Migrate `statusbar.rs` and its tests.
+   `a_saved_time_chrono_cannot_show_is_dropped_not_a_panic`. Test helpers (`at()` in schedule and statusbar tests)
+   build `Zoned` values with `TimeZone::fixed(offset)` or `TimeZone::UTC` so non-UTC offsets like +05:00/-08:00
+   are preserved (`Timestamp` parsing drops the offset).
+5. Migrate `statusbar.rs` and its tests (same `at()` helper rule as step 4).
 6. Update tests: `project_env/tests.rs`, `fontaine-sdk/tests/project_environment.rs`.
 7. Fix doc comments mentioning chrono (`schedule.rs:81`); grep for stragglers.
 8. Remove `chrono` from the three Cargo files; run the full gate; confirm no workspace crate is a direct
-   dependent of `chrono` (`cargo tree -i chrono` still lists it via micromegas, oauth2, rmcp, schemars; the
-   RUSTSEC-2026-0543 ignore in `rust/deny.toml` stays).
+   dependent of `chrono`. The RUSTSEC-2026-0543 ignore in `rust/deny.toml` stays.
 
 ## Files to Modify
 
 `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/fontaine-sdk/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`,
+`rust/deny.toml` (keep the ignore; reword the stale comment and reason that say our call sites/#691 are pending),
 `core/{schedule,project_env,project_env/tests,usage_limit,usage_pause,bug_submit,agent}.rs`,
 `core/providers/kimi_quota.rs`, `fontaine-sdk/tests/project_environment.rs`, `fontaine-tui/src/statusbar.rs`, `CHANGELOG.md`.
 
