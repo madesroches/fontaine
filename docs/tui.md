@@ -111,13 +111,18 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, how many [background jobs](tools.md#background-jobs) are (`· 1 shell running`, `· 2 shells, 1 monitor running`; shells and monitors are counted apart, and the clause shows during a turn as well as idle), `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key
 hint rendered from the effective [keybindings](#remapping-the-keys). With [vim input
 mode](#vim-input-mode) on, the bar also shows `vim:insert` or `vim:normal` after the mode. The
 mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏵⏵ auto mode on`, `⏵⏵⏵ AFK mode on` ([AFK mode](afk.md)) and
 `dontAsk`. ` AFK STOPPED ` (reversed) shows while a temperature stop waits for `/afk review`, next to
 the guardian-off chip.
+
+The background-job clause counts the main conversation's jobs only, since subagents cannot start
+background jobs. When the agents panel has a [key bound](#remapping-the-keys) the clause ends with
+`(<keys> to manage)`, which is where a job can be stopped; an attached device shows the count
+without the hint, because the panel is the host's alone.
 
 ### Subscription quota
 

@@ -296,6 +296,11 @@ All notable changes are recorded here. The format follows
   it whole. Registered only while auto memory is on; subagents get it, each call gated on its
   own. Reads still use `read`/`ls`/`glob` on the store root. Deviates from Claude Code, which
   has no such tool and saves memory with raw file writes (#329).
+- The status bar counts live background shells and monitors (`· 1 shell, 2 monitors running`), so a
+  finished turn with a job still running no longer reads as idle (#680). It shows during a turn too,
+  next to the agents count, with the `/agents` key beside it for killing a job; an attached device
+  shows the count without the key. The count is the main agent's registry, the only one that can
+  hold background jobs.
 
 ### Fixed
 

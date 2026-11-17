@@ -137,6 +137,10 @@ pub(crate) struct Status {
     pub cwd: String,
     pub branch: Option<String>,
     pub running_agents: usize,
+    #[serde(default)]
+    pub background_shells: usize,
+    #[serde(default)]
+    pub background_monitors: usize,
     pub scheduled: usize,
     /// The active goal's age in seconds and whether it waits for the user.
     pub goal: Option<(u64, bool)>,
@@ -157,6 +161,8 @@ impl Status {
             cwd: app.cwd.display().to_string(),
             branch: app.branch.clone(),
             running_agents: app.running_agents,
+            background_shells: app.background_shells,
+            background_monitors: app.background_monitors,
             scheduled: app.scheduled,
             goal: app.goal.map(|(age, waiting)| (age.as_secs(), waiting)),
         }
@@ -447,6 +453,24 @@ mod tests {
         deliver(&mut client, first);
         deliver(&mut client, events);
         assert!(client.running && client.model == "other");
+    }
+
+    #[test]
+    fn the_background_job_counts_round_trip_and_default_when_absent() {
+        let mut app = host();
+        app.background_shells = 2;
+        app.background_monitors = 1;
+        let status = Status::of(&app);
+        let wire = serde_json::to_value(&status).expect("a status serializes");
+        let back: Status = serde_json::from_value(wire.clone()).expect("a status parses");
+        assert_eq!((back.background_shells, back.background_monitors), (2, 1));
+
+        let mut old = wire;
+        let fields = old.as_object_mut().expect("a status is an object");
+        fields.remove("background_shells");
+        fields.remove("background_monitors");
+        let back: Status = serde_json::from_value(old).expect("an older status parses");
+        assert_eq!((back.background_shells, back.background_monitors), (0, 0));
     }
 
     #[test]

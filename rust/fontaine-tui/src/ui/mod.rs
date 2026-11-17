@@ -44,8 +44,15 @@ use fontaine_sdk::core::statusline::{self, StatuslineState};
 use fontaine_sdk::core::usage_ledger::UsageSource;
 use fontaine_sdk::tools::error_chain::chain;
 use fontaine_sdk::tools::gate::ROOT_AGENT;
+use fontaine_sdk::tools::jobs::JobInfo;
 use fontaine_sdk::tools::lock::read_recovering;
 use std::time::Duration;
+
+/// Running background jobs as (shells, monitors).
+fn split(jobs: &[JobInfo]) -> (usize, usize) {
+    let monitors = jobs.iter().filter(|job| job.monitor).count();
+    (jobs.len() - monitors, monitors)
+}
 
 /// How often the agent list redraws while it lists anything.
 const LIST_TICK: Duration = Duration::from_secs(1);
@@ -176,6 +183,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.set_link_root(&runtime.primary_root());
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
+        (self.app.background_shells, self.app.background_monitors) =
+            split(&runtime.jobs().running_background());
         let main_writing = runtime.state.agents().writing_of(ROOT_AGENT);
         let task_owners: HashSet<String> = runtime
             .state

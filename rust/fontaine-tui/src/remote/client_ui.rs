@@ -62,6 +62,8 @@ fn apply_status(app: &mut App, status: Status) {
     app.cwd = PathBuf::from(status.cwd);
     app.branch = status.branch;
     app.running_agents = status.running_agents;
+    app.background_shells = status.background_shells;
+    app.background_monitors = status.background_monitors;
     app.scheduled = status.scheduled;
     app.goal = status
         .goal
@@ -138,6 +140,7 @@ pub(crate) struct RemoteClientUi {
 impl RemoteClientUi {
     pub(crate) fn new(mut app: App) -> RemoteClientUi {
         app.remote_indicator = Some("attached".to_string());
+        app.attached_device = true;
         RemoteClientUi {
             app,
             waiting: None,
@@ -925,6 +928,8 @@ mod tests {
                 cwd: "/w".into(),
                 branch: None,
                 running_agents: 0,
+                background_shells: 0,
+                background_monitors: 0,
                 scheduled: 0,
                 goal: None,
             }),

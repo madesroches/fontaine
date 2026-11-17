@@ -356,7 +356,8 @@ timeout is not stopped: the call returns the output so far and the id of the job
 `job-3f2a`, and the command keeps running. `run_in_background: true` skips the wait and returns the
 id at once, which is how to start a server or a long build. Keep the command's process in the
 foreground of the command line (`npm start`, not `npm start &`): once the shell exits, what it left
-running is killed as soon as the shell exits, so `server &` dies with its shell.
+running is killed as soon as the shell exits, so `server &` dies with its shell. The terminal UI's
+[status bar](tui.md#status-bar) counts the jobs still running.
 
 - **Being told.** When a background job ends, the main conversation gets a notification with the
   exit status, the time it ran and the last 40 lines (at most 50 KB; a monitor's batch is cut
