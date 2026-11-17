@@ -194,9 +194,10 @@ pub fn statusline(ctx) {
 The leading space keeps the bar's one-column left margin; the single space between `{mode}`
 and `{vim}` goes with an empty `{vim}`. With no context, no cost, no safety badge and no message
 showing, this is today's bar except that a set vim badge sits one space from the mode chip
-instead of two; with a safety badge set it differs in the badge's position (§9). The golden
-test asserts the default program's bar matches today's rendered bar for the same `App`. That keeps `rust/fontaine-tui/tests/common/mod.rs`'s `idle()`
-anchor (`shift+tab mode · /add-dir`) and the existing `bar()` assertions valid.
+instead of two; with a safety badge set it differs in the badge's position (§9). The existing
+`bar()` assertions pass unchanged against the default program, with only the vim-spacing and
+badge-position cases updated as §5 and §9 describe; that keeps
+`rust/fontaine-tui/tests/common/mod.rs`'s `idle()` anchor (`shift+tab mode · /add-dir`) valid.
 
 ### 6. Compatibility with `command`
 
@@ -239,6 +240,17 @@ A runtime error, panic or exhausted budget renders the embedded default program 
 once per session through the transcript notice path, so the bar is never blank and its live
 segments never go stale.
 
+Catching the unwind is not enough by itself. The TUI installs a panic hook that calls
+`restore_terminal()` (`lib.rs:733-741`) and then the previous hook (`lib.rs:839-842`, and the
+same in the attach client at `remote/client_ui.rs:425-428`), and a hook runs before unwinding,
+so a panic raised inside the draw would end the synchronized update, turn off bracketed paste,
+show the cursor, turn off raw mode and print the default message over the live area even though
+the unwind is caught. The hook therefore consults a thread-local flag, `STATUSLINE_RENDERING`
+(a `thread_local!` `Cell<bool>` in `rust/fontaine-tui/src/lib.rs`), set only for the duration of
+a status-line render and cleared by a guard when it ends. While the flag is set the hook returns
+at once: it leaves the terminal alone and prints no message, so the caught panic becomes the
+default-program fallback above and the session keeps drawing.
+
 ### 8. Data plumbing and the draw path
 
 `App` gains `context: Option<ContextFigures { used: u64, window: Option<u32> }>` and
@@ -265,7 +277,7 @@ script's to draw, so a row with an empty cache has no chip by design.
 Width: the row clips on the right as the built-in bar does today, so a long line loses its
 tail, except the command line — `{command}` and a command line standing in for `{hint}` — whose
 run is marked `tail` and left-cut exactly as `truncate_row` cuts the custom command's line today, to the row width minus
-the width of every other run on the line.
+the width of the two Rust-drawn safety badges and of every other run on the line.
 
 ## Implementation Steps
 
@@ -290,7 +302,9 @@ the width of every other run on the line.
    `composition::build` (no stdio, diagnostics rendering, one-argument `statusline` entry point
    check); `render(&self, snapshot) -> Result<Vec<StyledText>, String>` running the VM under
    `budget::with(STATUSLINE_BUDGET, || vm.call(["statusline"], (ctx,))).call()` (50 000), the call wrapped in
-   `std::panic::catch_unwind(AssertUnwindSafe(..))` with a panic mapped to `Err`; the `Ctx`,
+   `std::panic::catch_unwind(AssertUnwindSafe(..))` with a panic mapped to `Err` — which only
+   reaches the fallback because the TUI sets `STATUSLINE_RENDERING` around every call (Step 5),
+   making the panic hook skip `restore_terminal()` and its message; the `Ctx`,
    `Line`, `Fragment` and `Style` host types; the template parser and the separator
    normalisation. `default.rn` beside it with `include_str!`.
 3. **SDK — config.** `StatuslineSection.script`, `Statusline.script` (copied in `Config::apply`, `:3552`, and
@@ -303,7 +317,9 @@ the width of every other run on the line.
    message/hint precedence out of `render` into `fn hint(app, command_line, scripted) ->
    Option<StyledText>`, the finished `hint` segment (`tail` set when the text is the command's
    line), stored in `segments["hint"]`.
-5. **TUI — wiring.** `App`'s new fields; `Ui`'s programs and `refresh_context`; `Ui::draw`
+5. **TUI — wiring.** `App`'s new fields; `Ui`'s programs and `refresh_context`, with the command
+   runner renamed to `Ui.statusline_command: Option<StatuslineCommand>` (`lib.rs:71`, `:463`,
+   `:563-569`) so `statusline_script` cannot read as the Rune script; `Ui::draw`
    builds the snapshot and renders the program synchronously after the `App` sync and before
    `(self.render)(&mut self.app)`, caching the runs in `App.statusline`; `run_statusline` and the
    trigger channel serve only the `command` and publish only `App.command_line`, with the result channel (`Ui.statusline_result_tx`/`_rx`,
@@ -317,20 +333,21 @@ the width of every other run on the line.
    `render(&mut ui.app)` — the device loads no config, so it never runs a user script; `refresh_context` called
    in `drive` (`lib.rs`) before the first render; the final flush in `drive` (`lib.rs:718-723`)
    rebuilds the snapshot and re-renders the cache before `(ui.render)`, as the one place outside
-   `Ui::draw` that must refresh it; warn-once on failure; update the `Ui`
-   literal in `ui/tests.rs`.
+   `Ui::draw` that must refresh it; warn-once on failure; the `STATUSLINE_RENDERING` thread-local
+   in `rust/fontaine-tui/src/lib.rs` and the panic hook that consults it (`:839-842`, and the
+   attach client's copy at `remote/client_ui.rs:425-428`), the flag set around every call into a
+   program's `render` and cleared by a guard; update the `Ui` literal in `ui/tests.rs`.
 6. **TUI — render.** `statusbar::render` reduced to badges plus runs, with the `tail` run cut;
    the existing custom-line tests move to runs and the `line` field goes. The `screen.rs` (and,
    where they assert the chip on a bare `App`, `view.rs`) tests seed the cache through a test
-   helper that builds a snapshot and renders the default program; `chrome_in_history`'s bar
-   marker (`"manual"`, `screen.rs:1848`) changes to something the seeded bar still contains.
+   helper that builds a snapshot and renders the default program.
 7. **Docs and changelog** (below), then the parity row.
 
 ## Files to Modify
 
 - `rust/fontaine-sdk/src/core/statusline.rs` → `statusline/mod.rs` (`StatuslineState { line }` →
-  `{ runs }`), plus new `snapshot.rs`,
-  `script.rs`, `default.rn`
+  `{ runs }`, and `StatuslineScript` → `StatuslineCommand` so the name freed by `script` still
+  means the shell command), plus new `snapshot.rs`, `script.rs`, `default.rn`
 - `rust/fontaine-sdk/src/core/config.rs` — `StatuslineSection.script`, `Statusline.script`
   (including `Config::apply` and the default literal), `check_statusline`, its call in `load`, value checks
 - `rust/fontaine-sdk/src/core/config_catalog.rs` — the `statusline.script` row
@@ -340,14 +357,17 @@ the width of every other run on the line.
 - `rust/fontaine-tui/src/screen.rs` (and `view.rs` if its tests assert the chip on a bare `App`) —
   tests seed `App.statusline` through the helper
 - `rust/fontaine-tui/src/lib.rs` — `Ui`'s program fields and their construction in `drive`, the
-  first `refresh_context` call there, the snapshot refresh in the final flush, and the retyped result channel (`:460-461`)
+  first `refresh_context` call there, the snapshot refresh in the final flush, the retyped
+  result channel (`:460-461`), and the `STATUSLINE_RENDERING` thread-local with the panic hook
+  that skips `restore_terminal()` and its message while it is set (`:733-741`, `:839-842`)
 - `rust/fontaine-tui/src/ui/mod.rs` — the snapshot render inside `Ui::draw`, `refresh_context`,
   warn-once, the retyped result channel (`:395`, `:411`, `:923`)
 - `rust/fontaine-tui/src/ui/turn.rs`, `rust/fontaine-tui/src/ui/commands/context.rs` (holds
   both `/compact` and `/clear`), `rust/fontaine-tui/src/ui/commands/model.rs`,
   `rust/fontaine-tui/src/ui/commands/rewind.rs` — the other five `refresh_context` call sites
 - `rust/fontaine-tui/src/remote/client_ui.rs` — the attach loop and its final flush render the
-  default program into `App.statusline` before each render; its test
+  default program into `App.statusline` before each render, and its panic hook (`:425-428`) gets
+  the same `STATUSLINE_RENDERING` check; its test
 - `rust/fontaine-tui/src/ui/tests.rs` — the test-only `Ui` constructor
 - `rust/fontaine-tui/tests/statusline.rs` — integration coverage
 - `rust/fontaine-sdk/tests/docs.rs` — the status line names test
@@ -372,6 +392,14 @@ the width of every other run on the line.
 - The left-cut run is the command line specifically — `{command}` and a command line standing in
   for `{hint}` — while every other run, messages included, clips on the right, so a refusal or
   attach notice keeps its beginning.
+- AFK: The TUI keeps its panic guarantee by making the hook terminal-aware rather than dropping
+  the handling: a thread-local `STATUSLINE_RENDERING` is set only while a status-line render
+  runs, and while it is set the installed hook skips `restore_terminal()` and prints no message,
+  so the panic the render catches becomes the default-program fallback instead of a broken
+  live session.
+- AFK: The command side is renamed `Ui.statusline_command: Option<StatuslineCommand>` and
+  `StatuslineCommand`, so `statusline_script` and `StatuslineScript` cannot be read as the Rune
+  script once `[statusline] script` and `Ui.statusline_program` exist.
 
 ## Documentation
 
@@ -410,7 +438,9 @@ the width of every other run on the line.
 - **Docs (`rust/fontaine-sdk/tests/docs.rs`).** A test, in the style of
   `the_tools_page_names_every_registered_built_in_tool`, asserting `docs/tui.md` names every
   entry of `SEGMENTS`, `VALUES` and `STYLE_NAMES`.
-- **Unit (`statusbar.rs`).** `bar()` against the default program: parity with today's rendered bar for the same `App` in the cases `bar()` pins today, plus with context known, with cost known, with cost estimated,
+- **Unit (`statusbar.rs`).** `bar()` against the default program: the existing assertions pass
+  unchanged, with only the vim-spacing and badge-position cases updated as §5 and §9 describe,
+  plus with context known, with cost known, with cost estimated,
   with both, with a branch, without one, while running, and with a refusal. Segment
   granularity: each segment present and absent, the quota warning colour, `jobs`' grammar after
   losing its leading separator, `{context}`/`{cost}` absent when unknown. A user script that
