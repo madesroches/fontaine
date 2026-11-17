@@ -37,6 +37,8 @@ pub struct Scripted {
     pub notices: Mutex<Vec<String>>,
     pub warnings: Mutex<Vec<String>>,
     pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
+    /// Runs once while the unavailable dialog is open, to repair the guardian before Retry.
+    pub repair: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     replies: Mutex<VecDeque<QuestionReply>>,
     pub questions: Mutex<Vec<Vec<Question>>>,
     elicit_replies: Mutex<VecDeque<fontaine_sdk::tools::mcp::ElicitReply>>,
@@ -137,6 +139,9 @@ impl Approver for Scripted {
     ) -> BoxFuture<'a, UnavailableChoice> {
         Box::pin(async move {
             self.unavailable_asked.lock().unwrap().push(info);
+            if let Some(repair) = self.repair.lock().unwrap().take() {
+                repair();
+            }
             self.unavailable
                 .lock()
                 .unwrap()
