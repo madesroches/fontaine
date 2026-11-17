@@ -771,7 +771,8 @@ mode: a built-in preset or a Rune script. With the `screen` preset it is an allo
 of the guardian: a small model, local (Ollama, yes/no questions) or hosted (Jev on OpenRouter), allows
 a call that is clearly safe without waiting for the guardian, and escalates a call that is
 confidently outside what you asked for (only if you set `stop_threshold`; no model has a default). Every
-other call meets the guardian.
+other call meets the guardian. A composition `script` is Rune source, hosted like the
+[`[statusline]` script](#statusline).
 [Composing the guardian](guardian.md#composing-the-guardian) explains it, how to calibrate it and
 how to write a script. The section is read from the user file only: other scopes may set
 `shadow = true`, which holds over the user file's `shadow = false`, and nothing else, so a
@@ -885,19 +886,29 @@ file, and the notice names the scope that wins from the next launch.
 
 ### `[statusline]`
 
-A user-defined command that draws the terminal UI status bar in place of the built-in hint
-segment. It runs arbitrary code, so it is accepted from the user file only: project,
+A Rune script that renders the terminal UI status bar's line, and a user-defined command whose
+output the bar shows. Both run code, so the section is accepted from the user file only: project,
 project-local and `--settings` files are refused.
 
 | Key | Meaning | Default |
 |---|---|---|
 | `command` | The shell command; when absent or empty the feature is off. | unset |
+| `script` | Inline Rune source that defines `pub fn statusline(ctx)` and returns the bar's line; the embedded default script renders it when unset. | unset |
 | `refresh_interval_secs` | Re-run the command while idle, at least 1; requires `command`. | unset |
 
 The command receives one JSON object on stdin and its first stdout line (ANSI escapes stripped)
 is shown in the bar. Its process tree is stopped after 5 seconds (on Windows, a descendant started before the command joins its Job Object can escape), and any non-zero exit, timeout or empty output
 keeps the previous good line. See [Custom status line](tui.md#custom-status-line) for the full JSON
 contract.
+
+`script` is source text, not a path (use a TOML multi-line string), and is read from the user file
+only. Fontaine compiles it at startup and checks that it defines `statusline` with one parameter; a
+script that does not compile stops startup with exit code 2 naming `statusline.script`, the way a
+[`[guardian.composition]`](#guardiancomposition) script does. It is not run at startup, so a
+runtime error shows while the bar draws, as one warning and the default bar. An empty `script` is
+refused, and `/config` and `fontaine doctor` show the key as `set`, never the source. With a
+`script` set, `refresh_interval_secs` still only re-runs the `command`. The host API is in
+[The status line script](tui.md#the-status-line-script).
 
 ```toml
 [statusline]

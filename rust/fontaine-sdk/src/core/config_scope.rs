@@ -136,8 +136,7 @@ const HEADLESS_TRUST: &str = "whether an unattended run loads project executable
 const HEADLESS_EXIT: &str = "only `exit` may be set here: a repository can end a run at a spent usage window but not make it wait longer";
 const SHELL: &str =
     "how long a model's shell command may block or run is set only in the user file or --settings";
-const STATUSLINE: &str =
-    "the status line command runs arbitrary code, so only the user file may set it";
+const STATUSLINE: &str = "the status line command runs arbitrary code and its script is code the bar runs every frame, so only the user file may set either";
 const REMOTE: &str =
     "which network paths the remote inbox may use is set only in the user file or --settings";
 const FEEDBACK: &str =

@@ -1,13 +1,22 @@
 //! The status bar and the labels the modes show under. This is the one place that names
 //! them: `manual`, `⏵⏵ accept edits on`, `⏵⏵ auto mode on`, `dontAsk`.
+//!
+//! The bar is a Rune script's line: [`snapshot`] preformats every segment the script can place,
+//! the script (the embedded default or the user's) turns it into styled runs, and [`render`] draws
+//! the safety badges and then those runs.
 
 use std::fmt::Display;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 use fontaine_sdk::core::config::PermissionMode;
 use fontaine_sdk::core::goal;
 use fontaine_sdk::core::quota::{AccountUsage, UsageRole};
+use fontaine_sdk::core::statusline::{
+    DEFAULT_SCRIPT, Role, StatuslineProgram, StatuslineSnapshot, StatuslineState, StyledText,
+    Values, used_percentage,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -71,14 +80,39 @@ pub fn next_mode(mode: PermissionMode) -> PermissionMode {
     }
 }
 
-fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
-    let color = match mode {
-        PermissionMode::Manual | PermissionMode::DontAsk => theme.mode_manual,
-        PermissionMode::AcceptEdits => theme.mode_accept,
-        PermissionMode::Auto => theme.mode_auto,
-        PermissionMode::Afk => theme.mode_afk,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
+/// The role the mode chip is drawn in.
+fn mode_role(mode: PermissionMode) -> Role {
+    match mode {
+        PermissionMode::Manual | PermissionMode::DontAsk => Role::ModeManual,
+        PermissionMode::AcceptEdits => Role::ModeAccept,
+        PermissionMode::Auto => Role::ModeAuto,
+        PermissionMode::Afk => Role::ModeAfk,
+    }
+}
+
+/// The terminal style a role is drawn in. Colours come from the theme; `dim` and `bold` are
+/// modifiers on the terminal's own foreground.
+pub fn role_style(theme: &Theme, role: Role) -> Style {
+    let colored = |color| Style::default().fg(color);
+    let bold = |color| colored(color).add_modifier(Modifier::BOLD);
+    match role {
+        Role::Normal => Style::default(),
+        Role::Dim => Style::default().add_modifier(Modifier::DIM),
+        Role::Bold => Style::default().add_modifier(Modifier::BOLD),
+        Role::Accent => colored(theme.accent),
+        Role::Warning => colored(theme.warning),
+        Role::WarningBold => bold(theme.warning),
+        Role::Success => colored(theme.success),
+        Role::Error => colored(theme.error),
+        Role::User => colored(theme.user),
+        Role::Heading => colored(theme.heading),
+        Role::Link => colored(theme.link),
+        Role::Shell => colored(theme.shell),
+        Role::ModeManual => bold(theme.mode_manual),
+        Role::ModeAccept => bold(theme.mode_accept),
+        Role::ModeAuto => bold(theme.mode_auto),
+        Role::ModeAfk => bold(theme.mode_afk),
+    }
 }
 
 /// Longest directory the bar shows, in columns, and longest branch.
@@ -101,7 +135,7 @@ fn dir_label(cwd: &Path, home: Option<&Path>) -> String {
     format!("…{kept}")
 }
 
-/// ` · <dir> (<branch>)`, or nothing before the first draw has set a directory.
+/// `<dir> (<branch>)`, or nothing before the first draw has set a directory.
 fn location(app: &App) -> String {
     if app.cwd.as_os_str().is_empty() {
         return String::new();
@@ -109,10 +143,10 @@ fn location(app: &App) -> String {
     let dir = dir_label(&app.cwd, app.home.as_deref());
     match &app.branch {
         Some(branch) => format!(
-            "· {dir} ({}) ",
+            "{dir} ({})",
             crate::transcript::truncate(branch, BRANCH_COLUMNS)
         ),
-        None => format!("· {dir} "),
+        None => dir,
     }
 }
 
@@ -179,7 +213,7 @@ where
     Some((text, warn))
 }
 
-/// `· 1 shell, 2 monitors running (<keys> to manage)`, or nothing with no job. The key hint is
+/// `1 shell, 2 monitors running (<keys> to manage)`, or nothing with no job. The key hint is
 /// left out when `panel_keys` is `None`.
 fn jobs_clause(shells: usize, monitors: usize, panel_keys: Option<&str>) -> String {
     let noun = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
@@ -194,103 +228,314 @@ fn jobs_clause(shells: usize, monitors: usize, panel_keys: Option<&str>) -> Stri
         ),
     };
     match panel_keys {
-        Some(keys) => format!(" · {counts} running ({keys} to manage)"),
-        None => format!(" · {counts} running"),
+        Some(keys) => format!("{counts} running ({keys} to manage)"),
+        None => format!("{counts} running"),
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let dim = Style::default().add_modifier(Modifier::DIM);
+/// What the snapshot needs that is not on `App`.
+pub struct SnapshotData {
+    pub session_id: String,
+    pub version: String,
+    /// The session's spend, when any call was priced.
+    pub cost_total_usd: Option<f64>,
+    /// Whether any of the spend is a list-price estimate.
+    pub cost_estimated: bool,
+    /// Whether a `[statusline] script` renders the line, so `{hint}` leaves the command's line
+    /// to `{command}`.
+    pub scripted: bool,
+}
+
+impl Default for SnapshotData {
+    fn default() -> Self {
+        SnapshotData {
+            session_id: String::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            cost_total_usd: None,
+            cost_estimated: false,
+            scripted: false,
+        }
+    }
+}
+
+/// The state of the agent the human is viewing, which replaces the hint there.
+fn viewed_state(app: &App) -> Option<String> {
     // In an agent's view the state is the agent's: the main turn is out of sight, and Esc does
     // not stop it from here.
-    let viewed_state = app.viewing.as_ref().map(|id| {
-        let state = match app
-            .viewed_row()
-            .and_then(|row| Some((row.status?, row.idle)))
-        {
-            Some((status, _)) if status.is_running() => "working".to_string(),
-            Some((status, idle)) => row_label(status, idle).to_string(),
-            None => "no longer listed".to_string(),
-        };
-        let who = match app.viewed_row() {
-            Some(row) if row.name != *id => format!("{} ({id})", row.name),
-            _ => id.clone(),
-        };
-        let mut parts = vec![
-            format!("viewing {who}"),
-            state,
-            "↓ then Enter on main to go back".to_string(),
-        ];
-        parts.extend(cycle_hint(app));
-        parts.join(" · ")
-    });
+    let id = app.viewing.as_ref()?;
+    let state = match app
+        .viewed_row()
+        .and_then(|row| Some((row.status?, row.idle)))
+    {
+        Some((status, _)) if status.is_running() => "working".to_string(),
+        Some((status, idle)) => row_label(status, idle).to_string(),
+        None => "no longer listed".to_string(),
+    };
+    let who = match app.viewed_row() {
+        Some(row) if row.name != *id => format!("{} ({id})", row.name),
+        _ => id.clone(),
+    };
+    let mut parts = vec![
+        format!("viewing {who}"),
+        state,
+        "↓ then Enter on main to go back".to_string(),
+    ];
+    parts.extend(cycle_hint(app));
+    Some(parts.join(" · "))
+}
+
+/// The `hint` segment: a message the human must see (a refusal while a turn runs, an attach
+/// notice, the viewed agent's state), else the `command`'s line when no script places it, else
+/// nothing while a turn runs, else the idle hint. The command's line is the one run cut from
+/// the left.
+pub(crate) fn hint(app: &App, command_line: Option<&str>, scripted: bool) -> Option<StyledText> {
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);
     let message = refusal
         .map(str::to_string)
         .or_else(|| app.attach_notice.clone())
-        .or_else(|| viewed_state.clone());
-    let hint = if message.is_some() {
-        message.clone()
-    } else if app.running {
-        None
-    } else {
-        let mut parts = Vec::new();
-        if let Some(cycle) = cycle_hint(app) {
-            parts.push(cycle);
+        .or_else(|| viewed_state(app));
+    if let Some(message) = message {
+        return Some(StyledText::new(message, Role::Dim));
+    }
+    if let (Some(line), false) = (command_line, scripted) {
+        return Some(StyledText::new(line, Role::Dim).tail());
+    }
+    if app.running {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(cycle) = cycle_hint(app) {
+        parts.push(cycle);
+    }
+    parts.extend([
+        "/add-dir".to_string(),
+        "/denied".to_string(),
+        "/model".to_string(),
+    ]);
+    if let Some(keys) = binding(app, TuiAction::AgentsPanel) {
+        parts.push(format!("{keys} agents"));
+    }
+    parts.push("/exit".to_string());
+    Some(StyledText::new(parts.join(" · "), Role::Dim))
+}
+
+/// The quota segment of one role: every account's windows, the warning colour past the warning
+/// level.
+fn quota_runs(app: &App, role: UsageRole) -> Vec<StyledText> {
+    let as_of = DateTime::<Local>::from(app.usage_as_of);
+    let mut runs = Vec::new();
+    for usage in app.usage.iter().filter(|usage| usage.role == role) {
+        let Some((text, warn)) = quota_segment(usage, &as_of) else {
+            continue;
+        };
+        if !runs.is_empty() {
+            runs.push(StyledText::new(" · ", Role::Dim));
         }
-        parts.extend([
-            "/add-dir".to_string(),
-            "/denied".to_string(),
-            "/model".to_string(),
-        ]);
-        if let Some(keys) = binding(app, TuiAction::AgentsPanel) {
-            parts.push(format!("{keys} agents"));
-        }
-        parts.push("/exit".to_string());
-        Some(parts.join(" · "))
-    };
-    let agents = match app.running_agents {
-        0 => String::new(),
-        1 => " · 1 agent running".to_string(),
-        n => format!(" · {n} agents running"),
-    };
-    let panel_keys = binding(app, TuiAction::AgentsPanel).filter(|_| !app.attached_device);
-    let agents = format!(
-        "{agents}{}",
-        jobs_clause(
-            app.background_shells,
-            app.background_monitors,
-            panel_keys.as_deref()
-        )
-    );
-    let scheduled = match app.scheduled {
-        0 => String::new(),
-        n => format!(" · ⏱ {n}"),
-    };
-    let scheduled = match app.bug_drafts {
-        Some(n) => format!("{scheduled} · {n} bug draft(s): /bug"),
-        None => scheduled,
-    };
-    let goal = match app.goal {
-        None => String::new(),
-        Some((_, true)) => " · ◎ goal paused".to_string(),
-        Some((age, false)) => format!(" · ◎ goal {}", goal::duration_text(age)),
-    };
-    let goal = match &app.remote_indicator {
-        Some(text) => format!("{goal} · {text}"),
-        None => goal,
-    };
-    let mut spans = vec![Span::styled(
-        format!(" {} ", mode_label(app.mode)),
-        mode_style(app.mode, &app.theme),
-    )];
-    if let Some(vim) = app.input.vim_label() {
-        spans.push(Span::styled(
-            format!(" {vim} "),
-            Style::default().fg(app.theme.accent),
+        runs.push(StyledText::new(
+            text,
+            if warn { Role::Warning } else { Role::Dim },
         ));
     }
+    runs
+}
+
+/// The share of the context window in use, rounded; unknown until the window is.
+fn context_percentage(app: &App) -> Option<u32> {
+    let figures = app.context.as_ref()?;
+    used_percentage(figures.used, figures.window?)
+}
+
+/// Everything a status-line script can read, preformatted from `app`.
+pub fn snapshot(app: &App, data: &SnapshotData) -> StatuslineSnapshot {
+    let mut snapshot = StatuslineSnapshot::default();
+    let mut put = |name: &'static str, runs: Vec<StyledText>| {
+        snapshot.segments.insert(name, runs);
+    };
+    let dim = |text: String| vec![StyledText::new(text, Role::Dim)];
+    let dir = if app.cwd.as_os_str().is_empty() {
+        String::new()
+    } else {
+        dir_label(&app.cwd, app.home.as_deref())
+    };
+    let branch = app
+        .branch
+        .as_deref()
+        .map(|branch| crate::transcript::truncate(branch, BRANCH_COLUMNS));
+    let panel_keys = binding(app, TuiAction::AgentsPanel).filter(|_| !app.attached_device);
+    let context = context_percentage(app);
+    let used = context.map(|used| used.min(100));
+    let cost = data.cost_total_usd.map(|cost| {
+        format!(
+            "${cost:.4}{}",
+            if data.cost_estimated { " est." } else { "" }
+        )
+    });
+    put(
+        "mode",
+        vec![StyledText::new(mode_label(app.mode), mode_role(app.mode))],
+    );
+    put(
+        "vim",
+        app.input
+            .vim_label()
+            .map(|vim| vec![StyledText::new(vim, Role::Accent)])
+            .unwrap_or_default(),
+    );
+    put("location", dim(location(app)));
+    put("dir", dim(dir.clone()));
+    put("branch", dim(branch.clone().unwrap_or_default()));
+    put("model", dim(app.model.clone()));
+    put("quota", quota_runs(app, UsageRole::Main));
+    put("quota.guardian", quota_runs(app, UsageRole::Guardian));
+    put(
+        "effort",
+        dim(app
+            .effort
+            .map_or_else(String::new, |level| format!("effort {level}"))),
+    );
+    put(
+        "agents",
+        dim(match app.running_agents {
+            0 => String::new(),
+            1 => "1 agent running".to_string(),
+            n => format!("{n} agents running"),
+        }),
+    );
+    put(
+        "jobs",
+        dim(jobs_clause(
+            app.background_shells,
+            app.background_monitors,
+            panel_keys.as_deref(),
+        )),
+    );
+    put(
+        "scheduled",
+        dim(match app.scheduled {
+            0 => String::new(),
+            n => format!("⏱ {n}"),
+        }),
+    );
+    put(
+        "bug_drafts",
+        dim(app
+            .bug_drafts
+            .map_or_else(String::new, |n| format!("{n} bug draft(s): /bug"))),
+    );
+    put(
+        "goal",
+        dim(match app.goal {
+            None => String::new(),
+            Some((_, true)) => "◎ goal paused".to_string(),
+            Some((age, false)) => format!("◎ goal {}", goal::duration_text(age)),
+        }),
+    );
+    put(
+        "remote",
+        dim(app.remote_indicator.clone().unwrap_or_default()),
+    );
+    put(
+        "hint",
+        hint(app, app.command_line.as_deref(), data.scripted)
+            .into_iter()
+            .collect(),
+    );
+    put(
+        "context",
+        dim(context.map_or_else(String::new, |pct| format!("ctx {pct}%"))),
+    );
+    put("cost", dim(cost.unwrap_or_default()));
+    put("session_id", dim(data.session_id.clone()));
+    put("version", dim(data.version.clone()));
+    put(
+        "command",
+        app.command_line
+            .iter()
+            .map(|line| StyledText::new(line.as_str(), Role::Dim).tail())
+            .collect(),
+    );
+    // Runs with no text are dropped here so every segment with nothing to show is empty.
+    for runs in snapshot.segments.values_mut() {
+        runs.retain(|run| !run.text.is_empty());
+    }
+    snapshot.values = Values {
+        context_used_percentage: context,
+        context_remaining_percentage: used.map(|used| 100 - used),
+        context_total_tokens: app.context.as_ref().map(|figures| figures.used),
+        context_window_size: app.context.as_ref().and_then(|figures| figures.window),
+        cost_total_cost_usd: data.cost_total_usd,
+    };
+    snapshot.mode = app.mode.as_str().to_string();
+    snapshot.model = app.model.clone();
+    snapshot.dir = dir;
+    snapshot.branch = branch;
+    snapshot.cwd = app.cwd.display().to_string();
+    snapshot.project_dir = app.primary_root.display().to_string();
+    snapshot.session_id = data.session_id.clone();
+    snapshot.version = data.version.clone();
+    snapshot.effort = app.effort.map(|level| level.as_str().to_string());
+    snapshot.vim = app.input.vim_label().map(str::to_string);
+    snapshot.afk = app.afk;
+    snapshot.afk_stopped = app.afk_stopped;
+    snapshot.guardian_off = app.guardian_off;
+    snapshot.running_agents = app.running_agents;
+    snapshot.background_shells = app.background_shells;
+    snapshot.background_monitors = app.background_monitors;
+    snapshot.scheduled = app.scheduled;
+    snapshot.bug_drafts = app.bug_drafts;
+    snapshot.goal = app.goal.map(|(age, paused)| (age.as_secs(), paused));
+    snapshot.remote = app.remote_indicator.clone();
+    snapshot.cost_is_estimate = data.cost_estimated;
+    snapshot.command_line = app.command_line.clone();
+    snapshot
+}
+
+/// The embedded default program, compiled once: the line when nothing is configured and the
+/// fallback when a script fails.
+pub(crate) fn default_program() -> &'static StatuslineProgram {
+    static PROGRAM: OnceLock<StatuslineProgram> = OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        StatuslineProgram::compile(DEFAULT_SCRIPT).expect("the embedded status line compiles")
+    })
+}
+
+/// Runs a program with the terminal's panic hook told to leave the terminal alone, so a panic
+/// the render catches is a failed render and not a broken screen.
+pub(crate) fn render_program(
+    program: &StatuslineProgram,
+    snapshot: &StatuslineSnapshot,
+) -> Result<Vec<StyledText>, String> {
+    let _rendering = crate::StatuslineRendering::enter();
+    program.render(snapshot)
+}
+
+/// The default program's line over `app` alone, for a surface that has no config and no session
+/// to read the rest from.
+fn default_runs(app: &App) -> Vec<StyledText> {
+    render_program(default_program(), &snapshot(app, &SnapshotData::default()))
+        .expect("the embedded status line renders over any snapshot")
+}
+
+/// Caches the default program's line in `app`, for a surface that draws the bar without a
+/// `Ui` to do it.
+pub(crate) fn render_default(app: &mut App) {
+    app.statusline = Some(StatuslineState {
+        runs: default_runs(app),
+    });
+}
+
+pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let runs = app
+        .statusline
+        .as_ref()
+        .map_or(&[][..], |state| state.runs.as_slice());
+    draw(frame, area, app, runs);
+}
+
+/// The safety badges, which a script cannot drop, then `runs`.
+fn draw(frame: &mut Frame, area: Rect, app: &App, runs: &[StyledText]) {
+    let mut spans = Vec::new();
     if app.guardian_off {
         spans.push(Span::styled(
             " ⚠ guardian off ",
@@ -307,51 +552,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         ));
     }
-    let effort = app
-        .effort
-        .map_or_else(String::new, |level| format!(" · effort {level}"));
-    spans.push(Span::styled(
-        format!("{}· {}", location(app), app.model),
-        dim,
-    ));
-    let usage_as_of = DateTime::<Local>::from(app.usage_as_of);
-    for (text, warn) in app
-        .usage
-        .iter()
-        .filter_map(|usage| quota_segment(usage, &usage_as_of))
-    {
-        let style = if warn {
-            Style::default().fg(app.theme.warning)
+    // The cut runs get what the badges and every other run leave of the row.
+    let fixed = width_used(&spans)
+        + runs
+            .iter()
+            .filter(|run| !run.tail)
+            .map(|run| Span::raw(run.text.as_str()).width())
+            .sum::<usize>();
+    let mut room = usize::from(area.width).saturating_sub(fixed);
+    for run in runs {
+        let text = if run.tail {
+            let cut = truncate_row(&run.text, u16::try_from(room).unwrap_or(u16::MAX));
+            room = room.saturating_sub(Span::raw(cut.as_str()).width());
+            cut
         } else {
-            dim
+            run.text.clone()
         };
-        spans.push(Span::styled(format!(" · {text}"), style));
+        spans.push(Span::styled(text, role_style(&app.theme, run.role)));
     }
-    // The custom line replaces the static hint but never a message the user must see.
-    if let (Some(statusline), None) = (&app.statusline, &message) {
-        spans.push(Span::styled(
-            format!("{effort}{agents}{scheduled}{goal} · "),
-            dim,
-        ));
-        let custom = truncate_row(
-            &statusline.line,
-            area.width.saturating_sub(width_used(&spans)),
-        );
-        spans.push(Span::styled(custom, dim));
-    } else {
-        let trailer = match hint {
-            Some(h) => format!("{effort}{agents}{scheduled}{goal} · {h}"),
-            None => format!("{effort}{agents}{scheduled}{goal}"),
-        };
-        spans.push(Span::styled(trailer, dim));
-    }
-    let line = Line::from(spans);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// The displayed width of the spans already assembled, in columns.
-fn width_used(spans: &[Span<'_>]) -> u16 {
-    spans.iter().map(|s| s.width() as u16).sum()
+fn width_used(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
 }
 
 /// Cuts `text` to fit in the remaining `width`, adding a leading ellipsis when truncated.
@@ -404,18 +628,43 @@ mod tests {
         assert!(Span::raw(cut).width() <= 6);
     }
 
-    fn bar(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+    fn draw_row(app: &App, runs: &[StyledText], width: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), app))
+            .draw(|f| draw(f, f.area(), app, runs))
             .expect("draw the status bar");
-        terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect()
+        terminal.backend().buffer().clone()
+    }
+
+    fn text_of(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// The bar the default program draws over `app`, 120 columns wide.
+    fn bar(app: &App) -> String {
+        text_of(&draw_row(app, &default_runs(app), 120))
+    }
+
+    fn bar_with(app: &App, data: &SnapshotData) -> String {
+        let runs = render_program(default_program(), &snapshot(app, data)).unwrap();
+        text_of(&draw_row(app, &runs, 120))
+    }
+
+    /// What a user script renders over `app`, as the bar draws it at `width` columns.
+    fn scripted(app: &App, source: &str, width: u16) -> String {
+        text_of(&draw_row(app, &script_runs(app, source), width))
+    }
+
+    fn script_runs(app: &App, source: &str) -> Vec<StyledText> {
+        let data = SnapshotData {
+            scripted: true,
+            ..SnapshotData::default()
+        };
+        render_program(
+            &StatuslineProgram::compile(source).expect("the test script compiles"),
+            &snapshot(app, &data),
+        )
+        .expect("the test script renders")
     }
 
     fn located(cwd: &str, branch: Option<&str>) -> App {
@@ -814,14 +1063,14 @@ mod tests {
     #[test]
     fn the_jobs_clause_counts_with_grammar_and_an_optional_key_hint() {
         assert_eq!(jobs_clause(0, 0, Some("ctrl+g")), "");
-        assert_eq!(jobs_clause(1, 0, None), " · 1 shell running");
-        assert_eq!(jobs_clause(2, 0, None), " · 2 shells running");
-        assert_eq!(jobs_clause(0, 1, None), " · 1 monitor running");
-        assert_eq!(jobs_clause(0, 3, None), " · 3 monitors running");
-        assert_eq!(jobs_clause(1, 2, None), " · 1 shell, 2 monitors running");
+        assert_eq!(jobs_clause(1, 0, None), "1 shell running");
+        assert_eq!(jobs_clause(2, 0, None), "2 shells running");
+        assert_eq!(jobs_clause(0, 1, None), "1 monitor running");
+        assert_eq!(jobs_clause(0, 3, None), "3 monitors running");
+        assert_eq!(jobs_clause(1, 2, None), "1 shell, 2 monitors running");
         assert_eq!(
             jobs_clause(1, 1, Some("ctrl+g")),
-            " · 1 shell, 1 monitor running (ctrl+g to manage)"
+            "1 shell, 1 monitor running (ctrl+g to manage)"
         );
     }
 
@@ -858,13 +1107,11 @@ mod tests {
     }
 
     #[test]
-    fn a_background_job_follows_the_agents_and_shows_beside_a_custom_line() {
+    fn a_background_job_follows_the_agents_and_shows_beside_a_command_line() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.running_agents = 2;
         app.background_monitors = 1;
-        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
-            line: "CUSTOM".into(),
-        });
+        app.command_line = Some("CUSTOM".into());
         let text = bar(&app);
         assert!(
             text.contains("· 2 agents running · 1 monitor running · CUSTOM"),
@@ -873,37 +1120,41 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_line_replaces_the_built_in_hint() {
+    fn a_command_line_replaces_the_idle_hint_and_shows_while_a_turn_runs() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
-            line: "CUSTOM".into(),
-        });
+        app.command_line = Some("CUSTOM".into());
         let text = bar(&app);
         assert!(text.contains("CUSTOM"), "{text}");
         assert!(!text.contains("/add-dir"), "{text}");
+        app.running = true;
+        assert!(bar(&app).contains("CUSTOM"), "{}", bar(&app));
     }
 
     #[test]
-    fn a_message_replaces_the_custom_line() {
+    fn a_message_replaces_the_command_line() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
-            line: "CUSTOM".into(),
-        });
+        app.command_line = Some("CUSTOM".into());
         app.attach_notice = Some("NOTICE".into());
         let text = bar(&app);
         assert!(
             text.contains("NOTICE") && !text.contains("CUSTOM"),
             "{text}"
         );
+        app.attach_notice = None;
+        app.running = true;
+        app.refusal = Some("REFUSED".into());
+        let text = bar(&app);
+        assert!(
+            text.contains("REFUSED") && !text.contains("CUSTOM"),
+            "{text}"
+        );
     }
 
     #[test]
-    fn a_custom_line_keeps_the_guardian_off_badge_first() {
+    fn a_command_line_keeps_the_guardian_off_badge_first() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.guardian_off = true;
-        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
-            line: "custom".into(),
-        });
+        app.command_line = Some("custom".into());
         let text = bar(&app);
         let guardian_pos = text.find("guardian off").expect("guardian badge");
         let custom_pos = text.find("custom").expect("custom line");
@@ -911,13 +1162,344 @@ mod tests {
     }
 
     #[test]
-    fn a_long_custom_line_is_truncated_from_the_left() {
+    fn a_long_command_line_is_truncated_from_the_left() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
-        app.statusline = Some(fontaine_sdk::core::statusline::StatuslineState {
-            line: "a".repeat(200),
-        });
+        app.command_line = Some("a".repeat(200));
         let text = bar(&app);
         assert!(text.contains('…'), "{text}");
         assert!(!text.contains(&"a".repeat(200)), "{text}");
+        assert_eq!(text.trim_end().chars().count(), 120, "{text}");
+    }
+
+    #[test]
+    fn a_scripted_bar_leaves_the_command_line_to_the_command_segment() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.command_line = Some("CUSTOM".into());
+        let hinted = scripted(
+            &app,
+            r#"pub fn statusline(ctx) { ctx.format("{hint}") }"#,
+            120,
+        );
+        assert!(
+            hinted.contains("/add-dir") && !hinted.contains("CUSTOM"),
+            "{hinted}"
+        );
+        let placed = scripted(
+            &app,
+            r#"pub fn statusline(ctx) {
+                let line = ctx.line();
+                line.push(ctx.format("{model} → {command}"));
+                line.push_text(format!(" [{}]", ctx.command_line().unwrap()));
+                line
+            }"#,
+            120,
+        );
+        assert!(placed.starts_with("m → CUSTOM [CUSTOM]"), "{placed}");
+    }
+
+    fn populated() -> App {
+        let mut app = located("/work/proj", Some("main"));
+        app.input.mode = fontaine_sdk::core::config::EditorMode::Vim;
+        app.effort = Some(fontaine_sdk::core::effort::Effort::High);
+        app.usage = vec![
+            view(vec![window("5h", 0.4, None)]),
+            usage(UsageRole::Guardian, vec![window("5h", 0.8, None)]),
+        ];
+        app.running_agents = 1;
+        app.background_shells = 1;
+        app.scheduled = 2;
+        app.bug_drafts = Some(3);
+        app.goal = Some((std::time::Duration::from_secs(240), false));
+        app.remote_indicator = Some("attached".into());
+        app.context = Some(crate::app::ContextFigures {
+            used: 420,
+            window: Some(1000),
+        });
+        app.command_line = Some("CMD".into());
+        app
+    }
+
+    fn data() -> SnapshotData {
+        SnapshotData {
+            session_id: "s1".into(),
+            version: "1.2.3".into(),
+            cost_total_usd: Some(0.5),
+            cost_estimated: false,
+            scripted: false,
+        }
+    }
+
+    #[test]
+    fn every_segment_is_present_when_there_is_something_to_show_and_absent_when_not() {
+        let present = snapshot(&populated(), &data());
+        let bare = snapshot(
+            &App::new(PermissionMode::Manual, "m".into()),
+            &SnapshotData {
+                session_id: String::new(),
+                version: String::new(),
+                ..SnapshotData::default()
+            },
+        );
+        let shown = |snapshot: &StatuslineSnapshot, name: &str| -> String {
+            snapshot
+                .segment(name)
+                .unwrap_or_else(|| panic!("{name} is a segment"))
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect()
+        };
+        let expected = [
+            ("mode", "manual"),
+            ("vim", "vim:insert"),
+            ("location", "/work/proj (main)"),
+            ("dir", "/work/proj"),
+            ("branch", "main"),
+            ("model", "m"),
+            ("quota", "kimi · 5h 40%"),
+            ("quota.guardian", "guardian kimi · 5h 80%"),
+            ("effort", "effort high"),
+            ("agents", "1 agent running"),
+            ("jobs", "1 shell running"),
+            ("scheduled", "⏱ 2"),
+            ("bug_drafts", "3 bug draft(s): /bug"),
+            ("goal", "◎ goal 4m"),
+            ("remote", "attached"),
+            ("context", "ctx 42%"),
+            ("cost", "$0.5000"),
+            ("session_id", "s1"),
+            ("version", "1.2.3"),
+            ("command", "CMD"),
+        ];
+        for (name, text) in expected {
+            assert_eq!(shown(&present, name), text, "{name}");
+        }
+        assert!(shown(&present, "hint").starts_with("CMD"));
+        for name in fontaine_sdk::core::statusline::SEGMENTS {
+            assert!(
+                present.segment(name).is_some_and(|runs| !runs.is_empty()),
+                "{name} has nothing to show in the populated app"
+            );
+        }
+        let always = ["mode", "model", "hint"];
+        for name in fontaine_sdk::core::statusline::SEGMENTS {
+            let runs = bare.segment(name).expect("a segment");
+            if always.contains(name) {
+                assert!(!runs.is_empty(), "{name}");
+            } else {
+                assert!(runs.is_empty(), "{name} shows {runs:?} in a bare app");
+            }
+        }
+    }
+
+    #[test]
+    fn the_values_follow_the_context_and_the_cost() {
+        let snapshot = snapshot(&populated(), &data());
+        assert_eq!(snapshot.values.context_used_percentage, Some(42));
+        assert_eq!(snapshot.values.context_remaining_percentage, Some(58));
+        assert_eq!(snapshot.values.context_total_tokens, Some(420));
+        assert_eq!(snapshot.values.context_window_size, Some(1000));
+        assert_eq!(snapshot.values.cost_total_cost_usd, Some(0.5));
+        assert_eq!(snapshot.mode, "manual");
+        assert_eq!(snapshot.effort.as_deref(), Some("high"));
+        assert_eq!(snapshot.goal, Some((240, false)));
+        let unknown = super::snapshot(
+            &App::new(PermissionMode::Manual, "m".into()),
+            &SnapshotData::default(),
+        );
+        assert_eq!(unknown.values, Values::default());
+    }
+
+    #[test]
+    fn the_context_shows_once_the_window_is_known_and_the_cost_once_a_call_was_priced() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        let text = bar(&app);
+        assert!(!text.contains("ctx") && !text.contains('$'), "{text}");
+        app.context = Some(crate::app::ContextFigures {
+            used: 500,
+            window: None,
+        });
+        assert!(!bar(&app).contains("ctx"), "{}", bar(&app));
+        app.context = Some(crate::app::ContextFigures {
+            used: 420,
+            window: Some(1000),
+        });
+        let text = bar(&app);
+        assert!(text.contains("· m · ctx 42% · shift+tab mode"), "{text}");
+        let priced = SnapshotData {
+            cost_total_usd: Some(0.1234),
+            ..SnapshotData::default()
+        };
+        let text = bar_with(&app, &priced);
+        assert!(
+            text.contains("· ctx 42% · $0.1234 · shift+tab mode"),
+            "{text}"
+        );
+        assert!(!text.contains("est."), "{text}");
+        let estimated = SnapshotData {
+            cost_estimated: true,
+            ..priced
+        };
+        let text = bar_with(&app, &estimated);
+        assert!(text.contains("· $0.1234 est. · shift+tab mode"), "{text}");
+        app.context = None;
+        let text = bar_with(&app, &estimated);
+        assert!(text.contains("· m · $0.1234 est. · "), "{text}");
+        assert!(!text.contains("ctx"), "{text}");
+    }
+
+    #[test]
+    fn the_default_bar_reads_like_the_hand_built_one() {
+        let app = populated();
+        let text = text_of(&draw_row(&app, &default_runs(&app), 250));
+        assert!(
+            text.starts_with(
+                " manual vim:insert · /work/proj (main) · m · kimi · 5h 40% · guardian kimi · 5h 80% · effort high · 1 agent running · 1 shell running · ⏱ 2 · 3 bug draft(s): /bug · ◎ goal 4m · attached · ctx 42% · CMD"
+            ),
+            "{text}"
+        );
+        let idle = bar(&App::new(PermissionMode::Manual, "m".into()));
+        assert!(
+            idle.starts_with(" manual · m · shift+tab mode · /add-dir"),
+            "{idle}"
+        );
+    }
+
+    #[test]
+    fn the_quota_is_warning_coloured_past_ninety_percent_and_dim_below() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.usage = vec![view(vec![window("5h", 0.5, None)])];
+        let buffer = draw_row(&app, &default_runs(&app), 120);
+        let text = text_of(&buffer);
+        let at = text.find("kimi").expect("the quota");
+        let col = text[..at].chars().count() as u16;
+        assert_eq!(buffer[(col, 0)].fg, ratatui::style::Color::Reset);
+        assert!(buffer[(col, 0)].modifier.contains(Modifier::DIM));
+        app.usage = vec![view(vec![window("5h", 0.95, None)])];
+        let buffer = draw_row(&app, &default_runs(&app), 120);
+        assert_eq!(buffer[(col, 0)].fg, app.theme.warning);
+    }
+
+    #[test]
+    fn the_mode_chip_is_bold_in_the_mode_colour_and_the_vim_badge_the_accent() {
+        let mut app = App::new(PermissionMode::Auto, "m".into());
+        app.input.mode = fontaine_sdk::core::config::EditorMode::Vim;
+        let buffer = draw_row(&app, &default_runs(&app), 120);
+        assert_eq!(buffer[(1, 0)].fg, app.theme.mode_auto);
+        assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD));
+        let text = text_of(&buffer);
+        let at = text.find("vim:").expect("the vim badge");
+        let col = text[..at].chars().count() as u16;
+        assert_eq!(buffer[(col, 0)].fg, app.theme.accent);
+    }
+
+    #[test]
+    fn a_script_may_drop_a_segment_reorder_two_and_style_one() {
+        let app = populated();
+        let source = r#"pub fn statusline(ctx) {
+            let line = ctx.line();
+            line.push(ctx.format("{model} · {mode}"));
+            let style = if ctx.context_used_percentage().unwrap() >= 40 {
+                ctx.style("warning")
+            } else {
+                ctx.style("dim")
+            };
+            line.push_styled(" ctx!", style);
+            line
+        }"#;
+        let runs = script_runs(&app, source);
+        let buffer = draw_row(&app, &runs, 120);
+        let text = text_of(&buffer);
+        assert!(text.starts_with("m · manual ctx!"), "{text}");
+        assert!(
+            !text.contains("/work/proj") && !text.contains("kimi"),
+            "{text}"
+        );
+        let at = text.find("ctx!").unwrap();
+        assert_eq!(buffer[(at as u16, 0)].fg, app.theme.warning);
+    }
+
+    #[test]
+    fn the_two_badges_come_before_any_script_and_the_row_clips_on_the_right() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.guardian_off = true;
+        app.afk_stopped = true;
+        let text = scripted(&app, r#"pub fn statusline(ctx) { "SCRIPT" }"#, 120);
+        assert!(
+            text.starts_with(" ⚠ guardian off  AFK STOPPED SCRIPT"),
+            "{text}"
+        );
+        let long = scripted(
+            &app,
+            &format!(r#"pub fn statusline(ctx) {{ "{}" }}"#, "x".repeat(200)),
+            40,
+        );
+        assert!(long.starts_with(" ⚠ guardian off  AFK STOPPED x"), "{long}");
+        assert!(!long.contains('…'), "{long}");
+        assert_eq!(long.chars().count(), 40);
+    }
+
+    #[test]
+    fn a_row_with_no_cached_line_draws_only_the_badges() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        let draw_cache = |app: &App| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+            terminal.draw(|f| render(f, f.area(), app)).unwrap();
+            text_of(terminal.backend().buffer())
+        };
+        assert_eq!(draw_cache(&app).trim(), "");
+        app.guardian_off = true;
+        assert_eq!(draw_cache(&app).trim(), "⚠ guardian off");
+        render_default(&mut app);
+        assert!(draw_cache(&app).contains("manual"), "{}", draw_cache(&app));
+    }
+
+    #[test]
+    fn the_command_run_is_cut_to_what_the_other_runs_leave() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.command_line = Some("0123456789".repeat(10));
+        app.guardian_off = true;
+        let text = scripted(
+            &app,
+            r#"pub fn statusline(ctx) { ctx.format("{command} · {model}") }"#,
+            50,
+        );
+        // The badge, the separator and the model keep their place; the command keeps its end.
+        assert!(text.starts_with(" ⚠ guardian off …"), "{text}");
+        assert!(text.ends_with("789 · m"), "{text}");
+        assert_eq!(text.chars().count(), 50);
+    }
+
+    #[test]
+    fn the_default_program_renders_a_fully_populated_bar_within_its_budget() {
+        let mut app = populated();
+        app.running = true;
+        app.guardian_off = true;
+        app.afk_stopped = true;
+        let runs = render_program(default_program(), &snapshot(&app, &data()));
+        assert!(runs.is_ok(), "{runs:?}");
+    }
+
+    #[test]
+    fn a_role_maps_to_one_style_and_the_modes_to_their_colours() {
+        let theme = Theme::default();
+        assert_eq!(role_style(&theme, Role::Normal), Style::default());
+        assert_eq!(
+            role_style(&theme, Role::Dim),
+            Style::default().add_modifier(Modifier::DIM)
+        );
+        assert_eq!(
+            role_style(&theme, Role::Warning),
+            Style::default().fg(theme.warning)
+        );
+        assert_eq!(
+            role_style(&theme, mode_role(PermissionMode::DontAsk)),
+            Style::default()
+                .fg(theme.mode_manual)
+                .add_modifier(Modifier::BOLD)
+        );
+        for (name, role) in fontaine_sdk::core::statusline::STYLE_NAMES {
+            let _ = role_style(&theme, *role);
+            assert!(!name.is_empty());
+        }
     }
 }

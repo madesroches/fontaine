@@ -1734,6 +1734,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             while feed.try_next().is_some() {}
             while feed.try_next_preview().is_some() {}
         }
+        self.refresh_context(runtime).await;
     }
 
     /// Leaves nothing of the turn open: a call without a result would otherwise hold the live

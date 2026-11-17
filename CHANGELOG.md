@@ -301,6 +301,15 @@ All notable changes are recorded here. The format follows
   next to the agents count, with the `/agents` key beside it for killing a job; an attached device
   shows the count without the key. The count is the main agent's registry, the only one that can
   hold background jobs.
+- The status bar's line is the output of a Rune script (#692). `[statusline] script` is inline
+  source, user file only, that places, drops, reorders, conditions and restyles every segment
+  through a small host API (`ctx.format("{mode} · {location} · {model}")` is a whole bar); one that
+  does not compile stops startup with exit code 2, and one that fails while the bar draws is
+  replaced by the default script with a single warning. The embedded default script draws the bar
+  when nothing is configured, so the default bar gains `ctx 42%` (context window in use) and
+  `$0.1234` (session cost, `est.` when estimated) with no configuration. `[statusline] command`
+  keeps working: its line replaces the hint, or is `{command}` when a script places it. The
+  `⚠ guardian off` and `AFK STOPPED` badges are drawn first and cannot be dropped.
 
 ### Fixed
 

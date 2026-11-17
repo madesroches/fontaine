@@ -52,6 +52,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let had_goal = had_goal && outcome.conversation_restored;
         let mut lines = Vec::new();
         if outcome.conversation_restored {
+            self.refresh_context(runtime).await;
             self.app.transcript.clear();
             self.app.todos.set_items(runtime.session.todos().root());
             // They described the conversation that is gone.

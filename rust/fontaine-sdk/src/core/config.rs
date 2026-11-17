@@ -1362,6 +1362,8 @@ pub struct RemoteSection {
 #[serde(deny_unknown_fields)]
 pub struct StatuslineSection {
     pub command: Option<String>,
+    /// Inline Rune source that renders the status bar's line.
+    pub script: Option<String>,
     pub refresh_interval_secs: Option<u64>,
 }
 
@@ -2261,6 +2263,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         }
     }
     if let Some(sl) = &s.statusline
+        && sl.script.as_deref().is_some_and(|c| c.trim().is_empty())
+    {
+        return bad("statusline.script", "must not be empty");
+    }
+    if let Some(sl) = &s.statusline
         && sl.refresh_interval_secs == Some(0)
     {
         return bad("statusline.refresh_interval_secs", "must be at least 1");
@@ -2977,6 +2984,9 @@ pub struct Remote {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Statusline {
     pub command: Option<String>,
+    /// Inline Rune source that renders the status bar's line; the embedded default renders it
+    /// when unset.
+    pub script: Option<String>,
     pub refresh_interval_secs: Option<u64>,
 }
 
@@ -3211,6 +3221,7 @@ impl Config {
             shell_preclassifier_allow_extra: Vec::new(),
             statusline: Statusline {
                 command: None,
+                script: None,
                 refresh_interval_secs: None,
             },
             feedback: Feedback {
@@ -3552,6 +3563,9 @@ impl Config {
         if let Some(sl) = &s.statusline {
             if let Some(v) = &sl.command {
                 self.statusline.command = Some(v.clone());
+            }
+            if let Some(v) = &sl.script {
+                self.statusline.script = Some(v.clone());
             }
             if let Some(v) = sl.refresh_interval_secs {
                 self.statusline.refresh_interval_secs = Some(v);
@@ -4245,6 +4259,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
     check_composition(&mut config, &user_path, params.config_dir)?;
+    check_statusline(&config, &user_path)?;
     let roles = crate::core::model_roles::Roles::from_config(&config)?;
     for (name, ty) in &config.agents.types {
         if let Some(model) = &ty.model
@@ -4465,6 +4480,19 @@ pub fn check_composition(
         ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
     })?;
     Ok(())
+}
+
+/// The status line script comes only from the user file, so that is where one that does not
+/// compile is reported: a configured script that cannot be built stops startup rather than
+/// leaving the bar to the default. It only compiles and checks the entry point; a runtime error
+/// is the bar's to handle.
+pub fn check_statusline(config: &Config, user_path: &Path) -> Result<(), ConfigError> {
+    let Some(script) = &config.statusline.script else {
+        return Ok(());
+    };
+    crate::core::statusline::StatuslineProgram::compile(script)
+        .map(|_| ())
+        .map_err(|e| ConfigError::invalid(user_path, "statusline.script", e.to_string()))
 }
 
 /// A hosted screen model needs its account's key now, not at the first call: `check_composition`

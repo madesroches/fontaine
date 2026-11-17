@@ -1083,6 +1083,7 @@ mod tests {
         backend.set_cursor_position(Position::new(0, 4)).unwrap();
         let mut screen = Screen::new(backend, placeholder).unwrap();
         let mut app = app();
+        crate::statusbar::render_default(&mut app);
         screen.render(&mut app).unwrap();
         assert_eq!(screen.area(), Rect::new(0, 0, 30, 12));
         let history = nonblank(rows(screen.backend().scrollback()));

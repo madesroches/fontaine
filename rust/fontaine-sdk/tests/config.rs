@@ -1181,6 +1181,67 @@ mod scanner_selection {
     }
 }
 
+// --- [statusline] script ---
+
+const STATUSLINE_SCRIPT: &str = "pub fn statusline(ctx) { ctx.format(\"{mode} · {model}\") }";
+
+fn statusline_script(source: &str) -> String {
+    format!("[statusline]\nscript = \"\"\"\n{source}\n\"\"\"\n")
+}
+
+#[test]
+fn a_status_line_script_is_off_unless_configured_and_loads_inline() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().statusline.script, None);
+    w.user_file(&statusline_script(STATUSLINE_SCRIPT));
+    let script = w.load().unwrap().statusline.script.unwrap();
+    assert!(script.contains("pub fn statusline(ctx)"), "{script}");
+}
+
+#[test]
+fn a_status_line_script_that_does_not_compile_stops_startup_naming_the_key() {
+    for source in [
+        "pub fn statusline(ctx) { let = }",
+        "pub fn statusline() { \"x\" }",
+        "pub fn other(ctx) { \"x\" }",
+    ] {
+        let w = World::new();
+        w.user_file(&statusline_script(source));
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{source}");
+        assert!(err.to_string().contains("statusline.script"), "{err}");
+    }
+}
+
+#[test]
+fn a_runtime_error_in_a_status_line_script_is_not_a_startup_error() {
+    let w = World::new();
+    w.user_file(&statusline_script(
+        "pub fn statusline(ctx) { ctx.format(\"{no_such_name}\") }",
+    ));
+    assert!(w.load().is_ok());
+}
+
+#[test]
+fn an_empty_status_line_script_is_refused() {
+    for script in ["", "  \\n  "] {
+        let w = World::new();
+        w.user_file(&format!("[statusline]\nscript = \"{script}\"\n"));
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{script:?}");
+        assert!(err.to_string().contains("statusline.script"), "{err}");
+    }
+}
+
+#[test]
+fn a_repository_cannot_set_a_status_line_script() {
+    let w = World::new();
+    w.trusted_repo();
+    w.project_file(&statusline_script(STATUSLINE_SCRIPT));
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("statusline"), "{err}");
+}
+
 // --- [guardian.composition] ---
 
 const COMPOSITION_ACCOUNT: &str = "[accounts.local]\nkind = \"ollama\"\n";

@@ -37,6 +37,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         match runtime.switch_main_model(reference).await {
             Ok(switched) => {
+                // The window comes from the main model.
+                self.refresh_context(runtime).await;
                 let mut message = format!("model is now {}", switched.reference);
                 if switched.guardian_followed {
                     message.push_str("; the guardian runs on it too");

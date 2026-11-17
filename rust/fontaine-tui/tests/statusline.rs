@@ -42,3 +42,51 @@ async fn a_refresh_interval_re_runs_the_command() {
     })
     .await;
 }
+
+fn script_config(source: &str) -> String {
+    format!("[statusline]\nscript = \"\"\"\n{source}\n\"\"\"\n")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_script_renders_the_whole_line() {
+    let w = World::new(Vec::new()).with_config(&script_config(
+        r#"pub fn statusline(ctx) { ctx.format("SCRIPTED {mode} · {model}") }"#,
+    ));
+    w.run(|ui| async move {
+        ui.wait_for("SCRIPTED manual").await;
+        let screen = ui.screen();
+        assert!(
+            !screen.contains("shift+tab mode · /add-dir"),
+            "the script owns the line: {screen}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_that_errors_renders_the_default_bar() {
+    let w = World::new(Vec::new()).with_config(&script_config(
+        r#"pub fn statusline(ctx) { ctx.format("{no_such_name}") }"#,
+    ));
+    w.run(|ui| async move {
+        ui.wait_for("shift+tab mode · /add-dir").await;
+        let screen = ui.screen();
+        assert!(screen.contains("manual"), "{screen}");
+        ui.wait_for("the default status line is shown instead")
+            .await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_and_a_script_put_the_commands_line_where_the_script_asks() {
+    let w = World::new(Vec::new()).with_config(&format!(
+        "[statusline]\ncommand = \"echo FROM-CMD\"\n{}",
+        script_config(r#"pub fn statusline(ctx) { ctx.format("<{command}> {mode}") }"#)
+            .trim_start_matches("[statusline]\n")
+    ));
+    w.run(|ui| async move {
+        ui.wait_for("<FROM-CMD> manual").await;
+    })
+    .await;
+}

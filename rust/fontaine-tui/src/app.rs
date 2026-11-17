@@ -253,6 +253,14 @@ pub const SUGGESTION_BACKOFF_TURNS: u32 = 5;
 /// What a view that cannot run a command tells the human.
 pub const MAIN_ONLY: &str = "switch back to main to run this (↓ then Enter on main)";
 
+/// What the conversation holds against the model's window, as the status bar shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextFigures {
+    pub used: u64,
+    /// `None` when the model's window is not known.
+    pub window: Option<u32>,
+}
+
 pub struct App {
     /// The main conversation.
     pub transcript: Transcript,
@@ -380,8 +388,14 @@ pub struct App {
     pub scheduled: usize,
     /// The active goal's age and whether it waits for the user, for the status bar.
     pub goal: Option<(std::time::Duration, bool)>,
-    /// The last good line produced by a configured `[statusline]` command, if any.
+    /// The status bar's line as the script last rendered it; drawn as it stands, never
+    /// re-evaluated by the frame. Empty until the first draw.
     pub statusline: Option<StatuslineState>,
+    /// The context window as of the last refresh, for the status bar: read, never awaited, when
+    /// the bar is built.
+    pub context: Option<ContextFigures>,
+    /// The last good line produced by a configured `[statusline]` command, if any.
+    pub command_line: Option<String>,
     /// Last gate decisions carrying a guardian verdict, oldest first, capped at 5.
     recent_verdicts: std::collections::VecDeque<RecentVerdict>,
     /// Where the main agent's next shell call starts, for the status bar. Empty until the
@@ -591,6 +605,8 @@ impl App {
             scheduled: 0,
             goal: None,
             statusline: None,
+            context: None,
+            command_line: None,
             recent_verdicts: std::collections::VecDeque::new(),
             cwd: PathBuf::new(),
             branch: None,

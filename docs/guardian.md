@@ -661,6 +661,10 @@ small Rust-like scripting language with `async` and `.await`, in a sandbox: it h
 network or terminal, and no access to the call's arguments. The host functions below are in scope
 without an import; the language itself is documented at rune-rs.github.io.
 
+The terminal UI's [status line script](tui.md#the-status-line-script) is the same Rune hosting
+(no stdio, a host module of opaque types, an instruction budget), with a smaller budget and a
+fallback to the default bar in place of a denial when it fails.
+
 | Item | Returns | Notes |
 |---|---|---|
 | `call.tool()`, `call.destructive()` | `String`, `bool` | The facts of the call a script may see. The arguments are not exposed: a script decides by reads, not by matching arguments. |

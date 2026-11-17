@@ -22,6 +22,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // Only a clear that happened tears the inbox down; a failed one keeps both it
                 // and its queue, which still belong to the surviving conversation.
                 let dropped = self.remote_clear(runtime);
+                self.refresh_context(runtime).await;
                 self.app.transcript.clear();
                 self.app.reset_suggestions();
                 // The old conversation would otherwise stay on screen and in scrollback, which
@@ -121,6 +122,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(CompactResult::Failed { .. }) => {}
             None => self.app.transcript.notice("interrupted"),
         }
+        self.refresh_context(runtime).await;
         if closed { Break(()) } else { Continue(()) }
     }
 

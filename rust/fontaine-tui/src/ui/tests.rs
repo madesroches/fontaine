@@ -122,7 +122,10 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         statusline_rx: None,
         statusline_result_tx: result_tx,
         statusline_result_rx: result_rx,
-        statusline_script: None,
+        statusline_command: None,
+        statusline_program: None,
+        statusline_default: crate::statusbar::default_program().clone(),
+        statusline_warned: false,
         statusline_running: false,
         statusline_last_run: None,
         statusline_dirty: false,
@@ -1227,4 +1230,114 @@ fn background_jobs_split_into_shells_and_monitors() {
     assert_eq!(super::split(&[job(false), job(false)]), (2, 0));
     assert_eq!(super::split(&[job(true)]), (0, 1));
     assert_eq!(super::split(&[job(false), job(true), job(true)]), (1, 2));
+}
+
+fn bar_text(app: &App) -> String {
+    app.statusline
+        .as_ref()
+        .expect("the bar was rendered")
+        .runs
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_script_is_rendered_over_the_current_snapshot() {
+    let (runtime, _tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    ui.statusline_program = Some(
+        fontaine_sdk::core::statusline::StatuslineProgram::compile(
+            r#"pub fn statusline(ctx) { ctx.format("{model}|{mode}|{session_id}") }"#,
+        )
+        .unwrap(),
+    );
+    ui.draw(&runtime);
+    let session = runtime.session.id.clone();
+    assert_eq!(bar_text(&ui.app), format!("test/mock|manual|{session}"));
+}
+
+#[tokio::test]
+async fn a_script_that_fails_renders_the_default_program_on_the_current_snapshot() {
+    let (runtime, _tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    ui.statusline_program = Some(
+        fontaine_sdk::core::statusline::StatuslineProgram::compile(
+            r#"pub fn statusline(ctx) { ctx.format("{no_such_name}") }"#,
+        )
+        .unwrap(),
+    );
+    ui.draw(&runtime);
+    let text = bar_text(&ui.app);
+    assert!(
+        text.contains("manual") && text.contains("test/mock"),
+        "{text}"
+    );
+    // The chip follows a mode change: the fallback is current, not the last good line.
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_sdk::core::afk_report::AfkSource::Cycle,
+        )
+        .unwrap();
+    ui.draw(&runtime);
+    let text = bar_text(&ui.app);
+    assert!(text.contains("auto mode on"), "{text}");
+}
+
+#[tokio::test]
+async fn a_failing_script_warns_once_per_session() {
+    let (runtime, _tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    ui.statusline_program = Some(
+        fontaine_sdk::core::statusline::StatuslineProgram::compile(
+            "pub fn statusline(ctx) { loop {} }",
+        )
+        .unwrap(),
+    );
+    for _ in 0..3 {
+        ui.draw(&runtime);
+    }
+    let shown: String = ui
+        .app
+        .transcript
+        .lines(120, &crate::theme::Theme::default())
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert_eq!(
+        shown
+            .matches("the default status line is shown instead")
+            .count(),
+        1,
+        "{shown}"
+    );
+    assert!(ui.statusline_warned);
+}
+
+#[tokio::test]
+async fn the_command_line_reaches_the_bar_through_the_default_hint_or_the_command_segment() {
+    let (runtime, _tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    ui.app.command_line = Some("FROM-COMMAND".into());
+    ui.draw(&runtime);
+    assert!(bar_text(&ui.app).contains("FROM-COMMAND"));
+    ui.statusline_program = Some(
+        fontaine_sdk::core::statusline::StatuslineProgram::compile(
+            r#"pub fn statusline(ctx) { ctx.format("{model} {command}") }"#,
+        )
+        .unwrap(),
+    );
+    ui.draw(&runtime);
+    assert_eq!(bar_text(&ui.app), "test/mock FROM-COMMAND");
+}
+
+#[tokio::test]
+async fn the_context_figures_are_read_into_the_app_and_show_once_the_window_is_known() {
+    let (runtime, _tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    assert!(ui.app.context.is_none());
+    ui.refresh_context(&runtime).await;
+    assert!(ui.app.context.is_some());
 }

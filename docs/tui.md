@@ -111,13 +111,14 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, how many [background jobs](tools.md#background-jobs) are (`· 1 shell running`, `· 2 shells, 1 monitor running`; shells and monitors are counted apart, and the clause shows during a turn as well as idle), `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, how many [background jobs](tools.md#background-jobs) are (`1 shell running`, `2 shells, 1 monitor running`; shells and monitors are counted apart, and the clause shows during a turn as well as idle), `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), `ctx 42%` for the share of the model's context window in use once the window is known, `$0.1234` for the session's spend once a call was priced (`$0.1234 est.` when any of it is a list-price estimate), and a key
 hint rendered from the effective [keybindings](#remapping-the-keys). With [vim input
 mode](#vim-input-mode) on, the bar also shows `vim:insert` or `vim:normal` after the mode. The
 mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏵⏵ auto mode on`, `⏵⏵⏵ AFK mode on` ([AFK mode](afk.md)) and
-`dontAsk`. ` AFK STOPPED ` (reversed) shows while a temperature stop waits for `/afk review`, next to
-the guardian-off chip.
+`dontAsk`. ` ⚠ guardian off ` and ` AFK STOPPED ` (reversed) show while the guardian is off or a temperature stop waits for `/afk review`; they come first on the bar, before everything else, and no script can drop them.
+
+The whole line after those two badges is the output of a [Rune script](#the-status-line-script); the embedded default script draws the bar described here. The context figure is refreshed when a turn settles and after `/clear`, `/compact`, `/model` and `/rewind`, so it holds its last value while a turn runs.
 
 The background-job clause counts the main conversation's jobs only, since subagents cannot start
 background jobs. When the agents panel has a [key bound](#remapping-the-keys) the clause ends with
@@ -159,14 +160,88 @@ While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen
 is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back · shift+tab mode`,
 with the agent's own state (`working`, how it ended, or `no longer listed`) in place of the main
 turn's. While the main turn runs the hint segment is empty, so the bar shows only the mode, directory,
-model, quota, effort, agents, scheduled tasks and goal segments.
+model, quota, effort, agents, scheduled tasks, goal, context and cost segments.
+
+### The status line script
+
+`[statusline] script` is inline [Rune](https://rune-rs.github.io/) source in the user file that
+renders the bar's line. It defines `pub fn statusline(ctx)` and returns the line: a `Line` built
+with `ctx.line()`, a fragment such as `ctx.format(...)`, or a string. The embedded default script is
+the worked example, and is what renders the bar when none is configured:
+
+```rune
+pub fn statusline(ctx) {
+    ctx.format(" {mode} {vim} · {location} · {model} · {quota} · {quota.guardian} · {effort} · {agents} · {jobs} · {scheduled} · {bug_drafts} · {goal} · {remote} · {context} · {cost} · {hint}")
+}
+```
+
+A simpler bar is one call, and a complex one can place, drop, reorder, condition and restyle every
+piece:
+
+```toml
+[statusline]
+script = """
+pub fn statusline(ctx) {
+    let line = ctx.line();
+    line.push(ctx.format("{mode} · {location} · {model} · {quota}"));
+    if let Some(pct) = ctx.context_used_percentage() {
+        let style = if pct >= 80 { ctx.style("warning") } else { ctx.style("dim") };
+        line.push_styled(format!(" · ctx {pct}%"), style);
+    }
+    line
+}
+"""
+```
+
+`ctx.format(template)` splits the template into `{name}` placeholders, `{{` and `}}` escapes and
+literal text. A placeholder expands to its segment's styled runs, and a literal is drawn `dim`. A
+**segment** is a preformatted piece of the bar, empty when it has nothing to show: `mode`, `vim`,
+`location`, `dir`, `branch`, `model`, `quota`, `quota.guardian`, `effort`, `agents`, `jobs`,
+`scheduled`, `bug_drafts`, `goal`, `remote`, `hint`, `context`, `cost`, `session_id`, `version` and
+`command`. A **value** placeholder expands to its bare number as plain text, and to nothing when it
+is not known: `context.used_percentage`, `context.remaining_percentage`, `context.total_tokens`,
+`context.window_size` and `cost.total_cost_usd` (four decimals). A name that is neither is an error
+raised when the script runs. `ctx.segment(name)` is the same lookup for one name.
+
+Segments carry no separators or padding of their own; the template supplies them. A literal of only
+spaces directly before a placeholder that expands to nothing is dropped with it. A literal whose
+trimmed text is exactly `·` is a separator: after expansion, runs with no text are dropped, each
+group of adjacent separators becomes one, and a separator that is first or last is dropped. So
+`{model} · {goal} · {hint}` reads `m · shift+tab mode · …` with no goal, and just `m` with neither.
+
+| Kind | Surface |
+|---|---|
+| Values | `ctx.mode()` and `ctx.effort()` (as in the JSON payload of a `command`), `ctx.model()`, `ctx.dir()`, `ctx.branch()`, `ctx.cwd()`, `ctx.project_dir()`, `ctx.session_id()`, `ctx.version()`, `ctx.vim()`, `ctx.afk()`, `ctx.afk_stopped()`, `ctx.guardian_off()`, `ctx.running_agents()`, `ctx.background_jobs()` (shells, monitors), `ctx.scheduled()`, `ctx.bug_drafts()`, `ctx.goal()`, `ctx.remote()`, `ctx.context_used_percentage()`, `ctx.context_remaining_percentage()`, `ctx.context_total_tokens()`, `ctx.context_window_size()`, `ctx.cost_total_cost_usd()`, `ctx.cost_is_estimate()`, `ctx.command_line()`. Those that can be unknown return an `Option`. |
+| Building | `ctx.format(template)`, `ctx.segment(name)`, `ctx.style(name)`, `ctx.line()` |
+| `Line` | `line.push(fragment)`, `line.push_text(text)`, `line.push_styled(text, style)` |
+| Styles | `normal`, `dim`, `bold`, `accent`, `warning`, `warning_bold`, `success`, `error`, `user`, `heading`, `link`, `shell`, `mode.manual`, `mode.accept`, `mode.auto`, `mode.afk` |
+
+Every function is synchronous and does no I/O, and `Fragment`, `Line` and `Style` have no settable
+fields, so a script builds a line only out of what the host hands it. The mode chip, like every
+other segment, is the script's to place: a script that leaves out `{mode}` shows no chip, and one
+that leaves out `{hint}` loses the refusal and attach notices, which the `hint` segment carries.
+The two safety badges are drawn before the script's line whatever it does. The row clips on the
+right when the line is wider; the command's line (`{command}`, or the command standing in for
+`{hint}`) is the one run cut from the left, to what the badges and every other run leave.
+
+A script runs on every frame over a snapshot of the session, with an instruction budget of
+50,000. A script that does not compile stops startup with exit code 2 naming `statusline.script`; the
+check only compiles it and checks the entry point, so a runtime error (an unknown template name, a
+wrong return type), a panic or an exhausted budget is found while the bar draws. Then the default
+script draws the bar over the current session instead, so the bar is never blank and never goes
+stale, and one warning per session is shown in the transcript. The status line is the same Rune
+hosting as the [guardian composition](guardian.md#writing-a-composition-script), with a smaller
+budget and a fallback in place of a denial.
 
 ### Custom status line
 
-A `[statusline]` command in your user settings replaces the built-in bar's hint area with its own
-output. The command receives one JSON object on stdin and the first line of its stdout (ANSI
-escape sequences stripped) is shown after the mode, directory, model, quota, effort, agents,
-scheduled tasks and goal segments. Any non-zero exit, timeout after five seconds, or empty output
+A `[statusline]` command in your user settings runs a program whose first line of output joins the
+bar. The command receives one JSON object on stdin and the first line of its stdout (ANSI
+escape sequences stripped) takes the place of the hint, after the mode, directory, model, quota,
+effort, agents, scheduled tasks, goal, context and cost segments; with a
+[`script`](#the-status-line-script) set, that line is the value `{command}` and
+`ctx.command_line()`, which the script places where it likes, and `{hint}` is only the message or
+the idle hint. Any non-zero exit, timeout after five seconds, or empty output
 keeps the previous good line; with none yet, the built-in rendering is used. While a refusal, attach notice or
 viewed-agent message is showing, it takes the custom line's place. The command runs through `sh -c`
 (Git Bash on Windows); on Windows without Git Bash it runs in PowerShell.
@@ -200,7 +275,8 @@ data, plus Fontaine extensions:
 | `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced; for a run priced by estimate (a `databricks` account) this is a list-price estimate |
 
 The `[statusline]` section is accepted only in the user file; it cannot be set from project,
-project-local or `--settings` files, because the command runs arbitrary code.
+project-local or `--settings` files, because the command runs arbitrary code and the script is
+code the bar runs on every frame.
 
 While the conversation on screen is working, a spinner row sits between the task list and the
 message box: a breathing-dot glyph whose colour drifts, the label `Working…` with a highlight
@@ -952,7 +1028,7 @@ scope that wins. A list key (`permissions.deny`, `hooks.pre_tool_use`, ...) show
 contributed, highest first, and its value is the entry count. A named table (`accounts`,
 `mcp.servers`, `agents.types`, `env`, `telemetry.resource_attributes`) is one row listing the entry
 names. `[env]` shows names only, never values; `statusline.command` and `guardian.scanner_command` show
-as `<program> (+N args)`, `guardian.composition.script` as `set` and `guardian.composition.params`
+as `<program> (+N args)`, `guardian.composition.script` and `statusline.script` as `set` and `guardian.composition.params`
 as `<hidden>` (keys only); and a proxy or endpoint URL is shown without its
 credentials. The column names config scopes only: a value set by a command-line flag or an
 environment variable (`--model`, screen-reader mode) is not labelled as such.

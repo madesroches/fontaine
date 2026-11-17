@@ -268,3 +268,21 @@ fn the_tools_page_names_every_registered_built_in_tool() {
         );
     }
 }
+
+#[test]
+fn the_status_line_docs_name_every_segment_value_and_style() {
+    use fontaine_sdk::core::statusline::{SEGMENTS, STYLE_NAMES, VALUES};
+
+    let text = std::fs::read_to_string(repo_root().join("docs/tui.md")).unwrap();
+    let names = SEGMENTS
+        .iter()
+        .chain(VALUES)
+        .copied()
+        .chain(STYLE_NAMES.iter().map(|(name, _)| *name));
+    for name in names {
+        assert!(
+            text.contains(&format!("`{name}`")),
+            "docs/tui.md does not name the status line name `{name}`"
+        );
+    }
+}
