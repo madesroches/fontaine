@@ -89,6 +89,8 @@ impl Profile {
                         scratch_dir: None,
                         project_environment: request.session_facts.project_environment.clone(),
                         active_skills: request.session_facts.active_skills.clone(),
+                        // The minimal prompt was calibrated without it, like the instructions.
+                        agent_task: None,
                     },
                     hook_context: Vec::new(),
                     prior_denials: Vec::new(),
@@ -205,6 +207,43 @@ mod tests {
         assert_eq!(shaped.agent_message_before_reply, None);
         request.screen_intent = None;
         assert_eq!(Profile::Minimal.shape(&request).screen_intent, None);
+    }
+
+    #[test]
+    fn the_minimal_shape_drops_the_agent_task() {
+        let mut request = AdjudicationRequest {
+            task_intent: String::new(),
+            recent_user_messages: Vec::new(),
+            screen_intent: None,
+            agent_message_before_reply: None,
+            project_instructions: None,
+            environment: EnvironmentConfig::default(),
+            rules: RuleConfig::default(),
+            tool_call: ToolCallSummary {
+                tool: "shell".into(),
+                args: serde_json::json!({}),
+                args_digest: String::new(),
+                destructive: false,
+                critical_deletions: vec![],
+                annotations: None,
+            },
+            session_facts: SessionFacts::default(),
+            hook_context: Vec::new(),
+            prior_denials: Vec::new(),
+        };
+        request.session_facts.agent_task = Some("merge the crates".into());
+        assert_eq!(
+            Profile::Full
+                .shape(&request)
+                .session_facts
+                .agent_task
+                .as_deref(),
+            Some("merge the crates")
+        );
+        assert_eq!(
+            Profile::Minimal.shape(&request).session_facts.agent_task,
+            None
+        );
     }
 
     #[test]

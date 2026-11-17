@@ -9,6 +9,8 @@ use crate::guardian::rules::{EnvironmentConfig, RuleConfig};
 
 /// The `task_intent` budget of the full profile, in characters.
 pub const TASK_INTENT_CHARS: usize = 2_000;
+/// The budget of the calling subagent's spawn task, in characters; its head is kept.
+pub const AGENT_TASK_CHARS: usize = 2_000;
 /// How many of the user's most recent turns the request carries.
 pub const RECENT_USER_MESSAGES: usize = 5;
 /// How many of the latest actions the session facts list.
@@ -115,6 +117,10 @@ pub struct SessionFacts {
     pub project_environment: Option<ProjectEnvironmentFacts>,
     /// Trusted skills active for the calling agent this turn. Only the guardian sees them.
     pub active_skills: Vec<ActiveSkill>,
+    /// What the calling subagent was told to do when it was spawned, cut to
+    /// [`AGENT_TASK_CHARS`]. Agent-written, so the guardian treats it as untrusted data and
+    /// never as the user's intent; `None` for the root agent. Only the guardian sees it.
+    pub agent_task: Option<String>,
 }
 
 /// The facts of a project's setup record that the guardian reads. The core builds it from its
@@ -252,6 +258,14 @@ pub fn trailing_chars(text: &str, budget: usize) -> &str {
     }
 }
 
+/// The first `budget` characters of `text`.
+pub fn leading_chars(text: &str, budget: usize) -> &str {
+    match text.char_indices().nth(budget) {
+        Some((at, _)) => &text[..at],
+        None => text,
+    }
+}
+
 /// The task intent for `messages` (oldest first): the user's words joined, never summarized,
 /// cut from the old end to fit `budget` characters.
 pub fn task_intent(messages: &[String], budget: usize) -> String {
@@ -272,6 +286,13 @@ mod tests {
             task_intent(&["first".into(), "second".into()], 8),
             "\n\nsecond"
         );
+    }
+
+    #[test]
+    fn the_newest_text_is_dropped_first_from_the_head_budget() {
+        assert_eq!(leading_chars("abcdef", 3), "abc");
+        assert_eq!(leading_chars("abc", 10), "abc");
+        assert_eq!(leading_chars("héllo", 2), "hé");
     }
 
     #[test]

@@ -252,6 +252,7 @@ impl RootLedger for LedgerWindow {
                 parent,
                 agent_type,
                 model,
+                task,
             } => Record::Agent {
                 event: "spawned".into(),
                 agent,
@@ -259,6 +260,7 @@ impl RootLedger for LedgerWindow {
                 detail: Some(agent_type),
                 name: Some(name),
                 model,
+                task,
             },
             AgentEvent::Finished { agent, status } => Record::Agent {
                 event: "finished".into(),
@@ -267,6 +269,7 @@ impl RootLedger for LedgerWindow {
                 detail: Some(status),
                 name: None,
                 model: None,
+                task: None,
             },
             AgentEvent::Message { from, to } => Record::Agent {
                 event: "message".into(),
@@ -275,6 +278,7 @@ impl RootLedger for LedgerWindow {
                 detail: Some(to),
                 name: None,
                 model: None,
+                task: None,
             },
             AgentEvent::Resumed { agent } => Record::Agent {
                 event: "resumed".into(),
@@ -283,6 +287,7 @@ impl RootLedger for LedgerWindow {
                 detail: None,
                 name: None,
                 model: None,
+                task: None,
             },
             AgentEvent::TaskCreated { task, agent } => task_record("task_created", agent, task),
             AgentEvent::TaskClaimed { task, agent } => task_record("task_claimed", agent, task),
@@ -302,6 +307,7 @@ fn task_record(event: &str, agent: String, task: String) -> Record {
         detail: Some(task),
         name: None,
         model: None,
+        task: None,
     }
 }
 

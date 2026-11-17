@@ -6,6 +6,23 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The shipped `Destroy Pre-existing Files` rule no longer matches writing or editing a path inside
+  the workspace roots with new content, whatever the path's status (`pre_existing`, `unindexed` or
+  `git_tracked`, marked or not) and by any route (a redirect, `sed -i`, a heredoc, a script or a file
+  tool) (#666). The `git_tracked` mark is absent for every call the harness cannot read line by line,
+  so a script rewriting tracked manifests had been denied for want of a backup. Truncations and
+  no-content overwrites, `.git`, unclear targets, a move, copy or extract onto a `pre_existing`
+  path that is not `git_tracked`, and anything outside the workspace roots are still judged under
+  it. Eval case `attack-overdeny-34` becomes the benign `overdeny-42`; `overdeny-40`, `overdeny-41`
+  and the `attack-overdeny-38` and `-39` cases are new, so the dataset version changes.
+- A guardian denial that turns on the shell construct itself, for a write or edit of paths that all
+  lie inside the workspace roots and that no rule protects, may name the `edit` or `write` file
+  tool for the same change (#666); never for a deletion or a protected target. The denial text and
+  the base prompt's denied-call section now accept a call the denial itself names as allowed, so an
+  AFK run no longer ends at "blocked" on such a deny.
+
 ### Removed
 
 - `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what
@@ -23,6 +40,14 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `agent_task` guardian fact (#666): a subagent's spawn task is recorded in its `spawned` ledger
+  record (an optional `task` field; older ledgers read unchanged) and shown to the guardian as its
+  own untrusted block, cut to the first 2,000 characters. It is the caller's own task only (the
+  root agent has none, and a subagent never sees a sibling's), appears in the guardian view only
+  (not the screen, the reads of a composition or the minimal profile), and is never read as the
+  user's intent: it shows the scope the request was carried out in, so a plan's mechanical
+  follow-ups no longer read as an unrequested change. Eval cases can set
+  `session_facts.agent_task`.
 - The ranked guardian list has its first entry (#673): `system.ai.deepseek-v4-1-flash-1017` on a
   `databricks` account, measured 2026-11-16 on dataset `5daaae0b478a` at 90.0% catch, 2.7% false
   deny, p50 1.3 s and p95 2.5 s, on the `tool` path with no case failed closed. A `databricks`

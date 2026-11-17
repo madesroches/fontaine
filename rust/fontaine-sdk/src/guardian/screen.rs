@@ -642,6 +642,12 @@ mod tests {
             screen_message(&replied, Question::OutsideRequest.text()),
             screen_message(&request, Question::OutsideRequest.text())
         );
+        let mut tasked = request.clone();
+        tasked.session_facts.agent_task = Some("Merge crate a into crate b".into());
+        assert_eq!(
+            screen_message(&tasked, Question::OutsideRequest.text()),
+            screen_message(&request, Question::OutsideRequest.text())
+        );
     }
 
     #[test]

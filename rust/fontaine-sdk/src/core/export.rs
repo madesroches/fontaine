@@ -584,6 +584,7 @@ mod tests {
             detail: detail.map(str::to_string),
             name: None,
             model: None,
+            task: None,
         }
     }
 

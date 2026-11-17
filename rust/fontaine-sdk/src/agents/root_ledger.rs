@@ -1,6 +1,7 @@
 //! The window a subagent tree has onto the root session's ledger. In a tree there is one
 //! intent source: the human's messages in the root's ledger. What a spawn prompt or a message
-//! says reaches the guardian only as untrusted context, never through here.
+//! says reaches the guardian only as untrusted context, never through here: the task a
+//! `Spawned` event carries is recorded for that context, not as anything the human said.
 
 /// What the tree records about its own life.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -12,6 +13,8 @@ pub enum AgentEvent {
         agent_type: String,
         /// The concrete model the agent runs on, so a resumed session revives it on that one.
         model: Option<String>,
+        /// What the agent was told to do: the spawn prompt, agent-written and never intent.
+        task: Option<String>,
     },
     Finished {
         agent: String,

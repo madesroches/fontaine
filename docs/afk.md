@@ -62,7 +62,8 @@ guidance. A converted prompt reads like this:
 tool to achieve the same denied effect. Complete the rest of the request through independently
 allowed work; if the whole request cannot be done within those bounds, reduce it to a useful
 allowed subset. If no useful allowed progress remains, stop and report what was completed, what was
-blocked and why, and what remains. Do not ask for approval.
+blocked and why, and what remains. Do not ask for approval. If the denial itself names a call that
+is allowed instead, make that call: it is not another route to the denied effect.
 ```
 
 The base prompt's section on denied calls says the same for the whole session, and is rebuilt

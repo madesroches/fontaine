@@ -856,9 +856,9 @@ impl NoHuman {
 
 /// What a denied model is told to do next in AFK mode: finish what the rules still allow, or stop
 /// and report. It never says to ask, and never to route around the denial.
-const AFK_RECOVERY: &str = "The user is not available. Do not retry this call, evade the denial, or use another tool to achieve the same denied effect. Complete the rest of the request through independently allowed work; if the whole request cannot be done within those bounds, reduce it to a useful allowed subset. If no useful allowed progress remains, stop and report what was completed, what was blocked and why, and what remains. Do not ask for approval.";
+const AFK_RECOVERY: &str = "The user is not available. Do not retry this call, evade the denial, or use another tool to achieve the same denied effect. Complete the rest of the request through independently allowed work; if the whole request cannot be done within those bounds, reduce it to a useful allowed subset. If no useful allowed progress remains, stop and report what was completed, what was blocked and why, and what remains. Do not ask for approval. If the denial itself names a call that is allowed instead, make that call: it is not another route to the denied effect.";
 
-const ATTENDED_RECOVERY: &str = "Do not retry it or look for another route to the same effect; tell the user what you could not do.";
+const ATTENDED_RECOVERY: &str = "Do not retry it or look for another route to the same effect; tell the user what you could not do. If the denial itself names a call that is allowed instead, make that call: it is not another route to the denied effect.";
 
 /// The one sentence every denial ends with. Attended and headless runs get the same words.
 fn recovery(no_human: Option<NoHuman>) -> &'static str {
@@ -3195,6 +3195,15 @@ mod tests {
     use crate::tools::live::Live;
     use crate::tools::scope::Scope;
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn every_denial_ends_with_the_sentence_that_accepts_a_route_it_names() {
+        const ACCEPTS: &str = "If the denial itself names a call that is allowed instead, make that call: it is not another route to the denied effect.";
+        for no_human in [None, Some(NoHuman::Headless), Some(NoHuman::Afk)] {
+            let text = denied_text("shell", "it needs the user's approval", no_human);
+            assert!(text.ends_with(ACCEPTS), "{text}");
+        }
+    }
 
     /// Records the URL elicitations it is shown and accepts them.
     struct Recording {
