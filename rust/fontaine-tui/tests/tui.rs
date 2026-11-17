@@ -167,6 +167,20 @@ async fn add_dir_grants_the_next_read_without_a_prompt_and_keeps_the_conversatio
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn add_dir_expands_a_leading_tilde_to_the_session_home() {
+    let w = World::new(vec![]);
+    let shared = w.home.join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    w.run(|ui| async move {
+        ui.send("/add-dir ~/shared");
+        ui.wait_for("added workspace root").await;
+        let screen = ui.screen();
+        assert!(!screen.contains("does not exist"), "{screen}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_shell_command_that_is_not_one_simple_command_offers_only_once_or_deny() {
     let w = World::new(vec![
         tool_turn("c1", "shell", json!({"command": "ls; echo hi"})),

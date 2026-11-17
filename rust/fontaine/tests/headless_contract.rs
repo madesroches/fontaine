@@ -475,6 +475,35 @@ async fn system_prompt_flags_shape_the_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn add_dir_expands_a_leading_tilde_to_home() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let mut s = Sandbox::compatible(&endpoint.url());
+    let home = s.work.parent().unwrap().join("tilde-home");
+    std::fs::create_dir_all(home.join("shared")).unwrap();
+    s.set_env("HOME", home.to_str().unwrap());
+    let out = s
+        .headless(&[
+            "--add-dir",
+            "~/shared",
+            "--output-format",
+            "stream-json",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let init = &out.lines()[0];
+    let roots = init["workspace_roots"].as_array().unwrap();
+    assert_eq!(
+        roots[1],
+        home.join("shared")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_nonexistent_add_dir_and_a_nonexistent_config_entry_are_skipped_with_a_warning() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
     let s = Sandbox::compatible(&endpoint.url());

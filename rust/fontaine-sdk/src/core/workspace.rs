@@ -1,6 +1,6 @@
 //! The workspace roots of a session: the primary root plus every directory the user added.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub struct Roots {
     /// Canonical, primary first, without duplicates.
@@ -28,12 +28,32 @@ impl RootSource {
     }
 }
 
-/// Resolves the added entries against `launch_dir`. An entry that does not exist, is not a
-/// directory or cannot be canonicalized is left out with a warning: a bad entry never widens
+/// A leading `~`, alone or before a separator, names `home`. `None` when the entry names the home
+/// directory and the session does not know it.
+fn expand_home(entry: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let mut rest = entry.components();
+    match rest.next() {
+        Some(Component::Normal(first)) if first == "~" => {
+            let home = home?;
+            let rest = rest.as_path();
+            Some(if rest.as_os_str().is_empty() {
+                home.to_path_buf()
+            } else {
+                home.join(rest)
+            })
+        }
+        _ => Some(entry.to_path_buf()),
+    }
+}
+
+/// Resolves the added entries against `launch_dir`. A leading `~` names `home`; an entry that
+/// does so while the home is unknown is left out with a warning. An entry that does not exist, is
+/// not a directory or cannot be canonicalized is left out with a warning: a bad entry never widens
 /// scope and never stops the run.
 pub fn resolve(
     primary: &Path,
     launch_dir: &Path,
+    home: Option<&Path>,
     added: impl IntoIterator<Item = (RootSource, PathBuf)>,
 ) -> Roots {
     let mut roots = vec![primary.to_path_buf()];
@@ -46,7 +66,11 @@ pub fn resolve(
                 entry.display()
             )
         };
-        let path = launch_dir.join(&entry);
+        let Some(expanded) = expand_home(&entry, home) else {
+            warnings.push(skip("the home directory is unknown"));
+            continue;
+        };
+        let path = launch_dir.join(&expanded);
         match std::fs::canonicalize(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 warnings.push(skip("it does not exist"));

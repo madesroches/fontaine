@@ -92,7 +92,12 @@ pub fn load_config(
 }
 
 /// The workspace roots: the project directory and the directories added by flag and settings.
-pub fn resolve_roots(config: &Config, launch_dir: &Path, add_dirs: &[PathBuf]) -> workspace::Roots {
+pub fn resolve_roots(
+    config: &Config,
+    launch_dir: &Path,
+    home: Option<&Path>,
+    add_dirs: &[PathBuf],
+) -> workspace::Roots {
     let added = add_dirs
         .iter()
         .map(|dir| (RootSource::Flag, dir.clone()))
@@ -103,7 +108,7 @@ pub fn resolve_roots(config: &Config, launch_dir: &Path, add_dirs: &[PathBuf]) -
                 .iter()
                 .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
         );
-    workspace::resolve(&config.workspace, launch_dir, added)
+    workspace::resolve(&config.workspace, launch_dir, home, added)
 }
 
 /// The user's home directory, canonical when it can be.
@@ -373,7 +378,8 @@ pub fn prepare_session(
         powershell,
     } = shells(p.env)?;
     let env = &*p.env.env;
-    let mut roots = resolve_roots(config, &p.env.cwd, p.add_dirs);
+    let home = home_dir(env);
+    let mut roots = resolve_roots(config, &p.env.cwd, home.as_deref(), p.add_dirs);
     warnings.extend(
         roots
             .warnings
@@ -467,7 +473,7 @@ pub fn prepare_session(
         scrub_env: tools::scrubbed_env(config, p.env.env_names.clone()),
         git_bash,
         powershell,
-        home: home_dir(env),
+        home,
         extensions,
         plugins: contributions,
         origin,

@@ -299,6 +299,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `/add-dir ~/path`, `--add-dir ~/path` and `[permissions] additional_directories` entries
+  starting with `~` were refused as missing (#672): a leading `~`, alone or before a separator,
+  now expands to the session's home directory. A `~` deeper in the path and `~user` stay literal,
+  and an entry naming an unknown home is skipped with a warning.
 - A retryable model failure late in a turn was never retried (#678): the retry budget
   (`[retry] max_total_delay_secs`) was charged the whole run's wall time instead of the time spent
   waiting between attempts, so any run longer than the budget settled its first failure at once.

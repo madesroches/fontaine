@@ -949,7 +949,7 @@ asking modes, is judged by the guardian in `auto` (an un-asked external write is
 [Guardian](guardian.md#writing-outside-the-workspace)) and is denied in `dontAsk` and headless
 runs unless an allow rule or hook already covers it (see
 [Permissions](permissions.md#the-pipeline)). A relative entry
-is resolved against the project directory (the launch directory, or `--cd`). An entry that does not exist, is not a directory or
+is resolved against the project directory (the launch directory, or `--cd`); a leading `~` expands to the home directory (see [Workspace roots](tools.md#workspace-roots)). An entry that does not exist, is not a directory or
 cannot be resolved is left out, with a warning naming the path and whether it came from
 `--add-dir` or the settings, and the run continues. The terminal UI shows the warning in the
 conversation; a headless run prints it on stderr.

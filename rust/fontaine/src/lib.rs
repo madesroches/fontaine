@@ -143,7 +143,7 @@ fn load_config(
 
 /// The workspace roots: the project directory and the directories added by flag and settings.
 fn resolve_roots(cli: &Cli, config: &Config, host: &Host) -> workspace::Roots {
-    assemble::resolve_roots(config, &host.cwd, &cli.add_dir)
+    assemble::resolve_roots(config, &host.cwd, home_dir(host).as_deref(), &cli.add_dir)
 }
 
 /// The user's home directory, canonical when it can be.

@@ -211,7 +211,10 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
   carry one unconfined write fallback each; a fallback serves only a call whose target lies
   outside every root, only after the gate has allowed the call, and it consumes the resolved
   target the pipeline normalized — it never re-resolves the path and never serves a shell call.
-- A relative `--add-dir` or configuration entry is resolved against the project directory (the launch directory, or `--cd`). An entry
+- A relative `--add-dir` or configuration entry is resolved against the project directory (the launch directory, or `--cd`). A leading `~`,
+  alone or before a separator, expands to the session's home directory (`$HOME`, or
+  `%USERPROFILE%` on Windows); a `~` after the first path component and `~user` stay literal, and
+  an entry naming a home directory that is unknown is left out like any other bad entry. An entry
   that does not exist, is not a directory or cannot be resolved is left out, with a warning that
   names the path and where it came from (in the conversation in the terminal UI, on stderr in a
   headless run), and the run continues with the other roots.
