@@ -14,6 +14,7 @@ fn added_directories_follow_the_primary_root_in_order_without_duplicates() {
     let roots = resolve(
         &w.work,
         &w.work,
+        Some(&w.root),
         [
             (RootSource::Flag, a.clone()),
             (RootSource::Settings, b.clone()),
@@ -33,6 +34,7 @@ fn relative_entries_resolve_against_the_launch_directory() {
     let roots = resolve(
         &w.work,
         &w.work,
+        Some(&w.root),
         [(RootSource::Flag, std::path::PathBuf::from("../sibling"))],
     );
     assert_eq!(
@@ -50,6 +52,7 @@ fn entries_that_cannot_be_roots_are_left_out_with_a_warning_naming_path_and_sour
     let roots = resolve(
         &w.work,
         &w.work,
+        Some(&w.root),
         [
             (RootSource::Flag, missing.clone()),
             (RootSource::Settings, file.clone()),
@@ -63,4 +66,65 @@ fn entries_that_cannot_be_roots_are_left_out_with_a_warning_naming_path_and_sour
     assert!(roots.warnings[1].contains("additional_directories"));
     assert!(roots.warnings[1].contains(&file.display().to_string()));
     assert!(roots.warnings[1].contains("not a directory"));
+}
+
+fn one(
+    w: &World,
+    home: Option<&std::path::Path>,
+    entry: &str,
+) -> fontaine_sdk::core::workspace::Roots {
+    resolve(
+        &w.work,
+        &w.work,
+        home,
+        [(RootSource::Flag, std::path::PathBuf::from(entry))],
+    )
+}
+
+#[test]
+fn a_leading_tilde_names_the_home_directory() {
+    let w = World::new();
+    let home = w.root.join("home");
+    std::fs::create_dir_all(home.join("sub")).unwrap();
+    let alone = one(&w, Some(&home), "~");
+    assert!(alone.warnings.is_empty(), "{:?}", alone.warnings);
+    assert_eq!(alone.roots, [w.work.clone(), home.canonicalize().unwrap()]);
+    for entry in ["~/sub", "~/sub/"] {
+        let roots = one(&w, Some(&home), entry);
+        assert!(roots.warnings.is_empty(), "{:?}", roots.warnings);
+        assert_eq!(
+            roots.roots,
+            [w.work.clone(), home.join("sub").canonicalize().unwrap()]
+        );
+    }
+}
+
+#[test]
+fn a_tilde_after_the_first_component_and_a_named_user_stay_literal() {
+    let w = World::new();
+    let home = w.root.join("home");
+    std::fs::create_dir_all(home.join("sub")).unwrap();
+    std::fs::create_dir_all(w.work.join("a/~/sub")).unwrap();
+    let deeper = one(&w, Some(&home), "a/~/sub");
+    assert_eq!(
+        deeper.roots,
+        [
+            w.work.clone(),
+            w.work.join("a/~/sub").canonicalize().unwrap()
+        ]
+    );
+    let user = one(&w, Some(&home), "~user/x");
+    assert_eq!(user.roots, std::slice::from_ref(&w.work));
+    assert!(user.warnings[0].contains("does not exist"));
+}
+
+#[test]
+fn a_tilde_entry_is_left_out_when_the_home_is_unknown_even_if_a_tilde_directory_exists() {
+    let w = World::new();
+    std::fs::create_dir_all(w.work.join("~")).unwrap();
+    let roots = one(&w, None, "~");
+    assert_eq!(roots.roots, std::slice::from_ref(&w.work));
+    assert_eq!(roots.warnings.len(), 1);
+    assert!(roots.warnings[0].contains("`~`"));
+    assert!(roots.warnings[0].contains("home directory is unknown"));
 }

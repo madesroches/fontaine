@@ -63,7 +63,7 @@ pub struct World {
     pub user_config: PathBuf,
     pub config_dir: PathBuf,
     pub data: PathBuf,
-    home: PathBuf,
+    pub home: PathBuf,
     pub mock: MockCompletionModel,
     pub mode: PermissionMode,
     /// The scripted guardian, when the world has one.

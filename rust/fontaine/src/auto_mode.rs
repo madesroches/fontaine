@@ -703,7 +703,8 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
                     .iter()
                     .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
             );
-        let roots = workspace::resolve(root, &host.cwd, added).roots;
+        let roots =
+            workspace::resolve(root, &host.cwd, crate::home_dir(host).as_deref(), added).roots;
         let remotes = ledger::git_remotes_of(&roots);
         let found = discover::discover(&SystemGh, root, &remotes, audit::now_rfc3339()).await;
         let step = scan_step(cli, args, (config, dirs, host), &found).await;

@@ -828,6 +828,7 @@ impl AgentRuntime {
         let resolved = workspace::resolve(
             &self.primary_root(),
             launch_dir,
+            self.home(),
             [(RootSource::Command, entry.to_path_buf())],
         );
         if let Some(warning) = resolved.warnings.first() {
