@@ -316,6 +316,10 @@ All notable changes are recorded here. The format follows
 - The provider's own web search stays offered in `auto` and `afk` after the denial breaker pauses
   auto (#676): it is withheld from the next turn, in the TUI and in headless goal, notification and
   `stop`-hook turns too, and returns once the human approves a call.
+- Retry from the guardian-unavailable dialog now runs the whole adjudication again (#674): the
+  usage gate, the guardian composition and its screen stop, allow and deny routing, and the
+  usage-limit pause. It used to call the guardian alone, so a repaired guardian could allow a call
+  the screen would have escalated, and the audit record kept the first pass's `unavailable` screen.
 - `/add-dir ~/path`, `--add-dir ~/path` and `[permissions] additional_directories` entries
   starting with `~` were refused as missing (#672): a leading `~`, alone or before a separator,
   now expands to the session's home directory. A `~` deeper in the path and `~user` stay literal,

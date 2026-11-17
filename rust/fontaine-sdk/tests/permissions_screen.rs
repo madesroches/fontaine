@@ -958,3 +958,25 @@ async fn a_failed_hosted_read_is_left_to_the_guardian_and_the_label_is_recorded(
     assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
     assert_eq!(record.screen_model.as_deref(), Some(HOSTED_MODEL));
 }
+
+/// A retry from the guardian-unavailable dialog used to call the guardian alone, so the screen's
+/// stop was skipped and the repaired guardian could allow the call.
+#[tokio::test]
+async fn retrying_an_unavailable_guardian_runs_the_screen_again() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = Rig::with(Options::new(Auto));
+    rig.state.set_composition(Some(stage(&server, false)));
+    rig.approver
+        .when_unavailable(fontaine_sdk::core::permissions::UnavailableChoice::Retry);
+    let state = rig.state.clone();
+    let repaired = slow.guardian.clone();
+    *rig.approver.repair.lock().unwrap() = Some(Box::new(move || state.set_guardian(repaired)));
+    rig.approver.answer(Answer::Deny { feedback: None });
+    let decision = rig.check("shell", shell("python a.py")).await;
+    assert!(!allowed(&decision));
+    assert_eq!(rig.approver.last_request().tier, Tier::Screen);
+    let audit = rig.audit();
+    let record = audit.iter().find(|r| r.tier == Tier::Screen).unwrap();
+    assert_eq!(record.screen_outcome.as_deref(), Some("stop"));
+}

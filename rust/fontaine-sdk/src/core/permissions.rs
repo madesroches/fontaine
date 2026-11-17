@@ -358,6 +358,12 @@ pub struct HookDecision {
     pub guardian_context: Option<String>,
 }
 
+/// What one guardian adjudication pass came to.
+enum Adjudicated {
+    Settled(GateDecision),
+    Adjudicated(Box<(Adjudication, Option<Screened>)>),
+}
+
 /// The denial of a call whose guardian check was waiting on a usage window that never reopened.
 fn pause_ended(guardian: &LlmGuardian, ended: &crate::core::gate::UsagePauseEnded) -> Adjudication {
     let reason = FailClosed::UsagePauseEnded;
@@ -2259,7 +2265,77 @@ impl PermissionPipeline {
         // A spent usage window holds the call pending, neither denied nor run, and the guardian
         // judges it again from the start once the window is open. Every pass waits at the gate
         // first, outside the guardian's own timeout, so a pause is never turned into one.
-        let (mut adjudication, screened) = loop {
+        let (mut adjudication, mut screened) = match self.adjudication_pass(cx, &request).await {
+            Adjudicated::Settled(decision) => return decision,
+            Adjudicated::Adjudicated(done) => *done,
+        };
+        if adjudication
+            .fail_closed
+            .is_some_and(FailClosed::is_unavailable)
+            && self.no_human().is_none()
+        {
+            let mut reason = self
+                .state
+                .guardian()
+                .unavailable_reason()
+                .unwrap_or_default()
+                .to_string();
+            if adjudication.fail_closed == Some(FailClosed::NotSignedIn)
+                && let Some((account, _)) = adjudication.model.split_once('/')
+            {
+                reason.push_str(&format!("; sign in with `/login {account}`"));
+            }
+            let info = GuardianUnavailable {
+                model: adjudication.model.clone(),
+                reason,
+                tool: call.tool.to_string(),
+            };
+            let _waiting = self.state.wait_on_human(call.agent);
+            match self.approver.guardian_unavailable(info).await {
+                UnavailableChoice::Retry => match self.adjudication_pass(cx, &request).await {
+                    Adjudicated::Settled(decision) => return decision,
+                    Adjudicated::Adjudicated(retried) => {
+                        (adjudication, screened) = *retried;
+                    }
+                },
+                UnavailableChoice::Manual => {
+                    self.state
+                        .set_mode(PermissionMode::Manual, AfkSource::Command)
+                        .expect("only entering AFK mode is refused");
+                    return self
+                        .prompt_or_ask(
+                            cx,
+                            Prompt {
+                                tier: Tier::Mode,
+                                rule: None,
+                                reason: "it needs the user's approval".to_string(),
+                                forced: false,
+                            },
+                        )
+                        .await;
+                }
+                UnavailableChoice::Deny => {}
+            }
+        }
+        self.state.add_guardian_adjudication(
+            cx.call.agent,
+            &adjudication.usage,
+            adjudication.transport.is_some() && !adjudication.cache_hit,
+            adjudication.fail_closed.is_none(),
+            &Served::direct(self.state.guardian().label()),
+            self.state.guardian().settings().cost,
+        );
+        self.settle(cx, adjudication, screened.as_ref()).await
+    }
+
+    /// One adjudication of a call: the usage gate, the guardian or its composition, and the
+    /// usage-limit pause. The retry from the unavailable dialog runs it again whole.
+    async fn adjudication_pass(
+        &self,
+        cx: &CallCtx<'_>,
+        request: &Arc<crate::guardian::AdjudicationRequest>,
+    ) -> Adjudicated {
+        loop {
             let stage = self.state.composition();
             let guardian = self.state.guardian();
             if let Err(ended) = self
@@ -2267,11 +2343,11 @@ impl PermissionPipeline {
                 .usage_gate_for(crate::core::usage_ledger::account_of(guardian.label()))
                 .await
             {
-                break (pause_ended(&guardian, &ended), None);
+                return Adjudicated::Adjudicated(Box::new((pause_ended(&guardian, &ended), None)));
             }
             let (decided, screened) = match stage {
                 None => (
-                    Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
+                    Decided::Guardian(Box::new(guardian.adjudicate(request).await)),
                     None,
                 ),
                 Some(stage) => {
@@ -2313,7 +2389,9 @@ impl PermissionPipeline {
             let adjudication = match decided {
                 Decided::Escalate { node, reason } => {
                     let screened = screened.expect("an escalation comes from a composition");
-                    return self.screen_stop(cx, &screened, &node, &reason).await;
+                    return Adjudicated::Settled(
+                        self.screen_stop(cx, &screened, &node, &reason).await,
+                    );
                 }
                 Decided::Allow {
                     node,
@@ -2321,7 +2399,9 @@ impl PermissionPipeline {
                     threshold,
                 } => {
                     let screened = screened.expect("an allow comes from a composition");
-                    return self.screen_allow(cx, &screened, &node, score, threshold);
+                    return Adjudicated::Settled(
+                        self.screen_allow(cx, &screened, &node, score, threshold),
+                    );
                 }
                 Decided::Deny {
                     node,
@@ -2330,7 +2410,9 @@ impl PermissionPipeline {
                     ..
                 } => {
                     let screened = screened.expect("a deny comes from a composition");
-                    return self.screen_deny(cx, &screened, &node, &reason).await;
+                    return Adjudicated::Settled(
+                        self.screen_deny(cx, &screened, &node, &reason).await,
+                    );
                 }
                 // A composition that failed is a guardian denial like any other: it can be approved
                 // from `/denied`, retried by a hook, and counts toward the breaker.
@@ -2360,7 +2442,7 @@ impl PermissionPipeline {
                 .as_deref()
                 .and_then(|cause| crate::core::usage_limit::usage_limit(cause));
             let Some(limit) = spent else {
-                break (adjudication, screened);
+                return Adjudicated::Adjudicated(Box::new((adjudication, screened)));
             };
             self.state.add_guardian_adjudication(
                 cx.call.agent,
@@ -2382,63 +2464,14 @@ impl PermissionPipeline {
                 .await
             {
                 Ok(()) => continue,
-                Err(ended) => break (pause_ended(&guardian, &ended), None),
-            }
-        };
-        if adjudication
-            .fail_closed
-            .is_some_and(FailClosed::is_unavailable)
-            && self.no_human().is_none()
-        {
-            let mut reason = self
-                .state
-                .guardian()
-                .unavailable_reason()
-                .unwrap_or_default()
-                .to_string();
-            if adjudication.fail_closed == Some(FailClosed::NotSignedIn)
-                && let Some((account, _)) = adjudication.model.split_once('/')
-            {
-                reason.push_str(&format!("; sign in with `/login {account}`"));
-            }
-            let info = GuardianUnavailable {
-                model: adjudication.model.clone(),
-                reason,
-                tool: call.tool.to_string(),
-            };
-            let _waiting = self.state.wait_on_human(call.agent);
-            match self.approver.guardian_unavailable(info).await {
-                UnavailableChoice::Retry => {
-                    adjudication = self.state.guardian().adjudicate(&request).await;
+                Err(ended) => {
+                    return Adjudicated::Adjudicated(Box::new((
+                        pause_ended(&guardian, &ended),
+                        None,
+                    )));
                 }
-                UnavailableChoice::Manual => {
-                    self.state
-                        .set_mode(PermissionMode::Manual, AfkSource::Command)
-                        .expect("only entering AFK mode is refused");
-                    return self
-                        .prompt_or_ask(
-                            cx,
-                            Prompt {
-                                tier: Tier::Mode,
-                                rule: None,
-                                reason: "it needs the user's approval".to_string(),
-                                forced: false,
-                            },
-                        )
-                        .await;
-                }
-                UnavailableChoice::Deny => {}
             }
         }
-        self.state.add_guardian_adjudication(
-            cx.call.agent,
-            &adjudication.usage,
-            adjudication.transport.is_some() && !adjudication.cache_hit,
-            adjudication.fail_closed.is_none(),
-            &Served::direct(self.state.guardian().label()),
-            self.state.guardian().settings().cost,
-        );
-        self.settle(cx, adjudication, screened.as_ref()).await
     }
 
     /// What the composition made of a call, for the audit record. One that cannot run to the end
