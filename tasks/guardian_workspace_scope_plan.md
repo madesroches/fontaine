@@ -160,9 +160,10 @@ Three parts, because any one alone leaves the agent stuck:
 3. **C, ledger.** Add `task` to `Record::Agent` and `AgentRecord`, thread it through
    `AgentEvent::Spawned` and `spawn.rs`, and fill it in `LedgerView`. Update every `Record::Agent`
    literal (`child_runner.rs:255` area, `export.rs:580`, the ledger's own tests) and the record
-   fixtures that construct one. The `Record::Agent` / `AgentEvent::Spawned` literals in
-   `core/afk_report.rs:1151`, `tests/agent_resume.rs`, `tests/seam.rs` and `tests/teams.rs` also
-   fail to compile once the field exists, so update them too.
+   fixtures that construct one. The `Record::Agent` literal in `core/afk_report.rs:1151` also fails
+   to compile once the field exists, so update it too. The `Record::Agent` / `AgentEvent::Spawned`
+   uses in `tests/agent_resume.rs`, `tests/seam.rs` and `tests/teams.rs` are matches that end in
+   `..` (seam's `Spawned` is a local test struct), so they compile unchanged.
 4. **C, request and rendering.** Add `SessionFacts.agent_task` and `AGENT_TASK_CHARS` to
    `guardian/request.rs`; fill it in `adjudication::build` from the caller's `AgentRecord`; render it
    in `prompt_builder::blocks` for the guardian view; clear it in `Profile::Minimal.shape`; add the
@@ -188,7 +189,6 @@ Three parts, because any one alone leaves the agent stuck:
 - `rust/fontaine-sdk/src/core/ledger.rs` (C: record field, view, tests)
 - `rust/fontaine-sdk/src/agents/root_ledger.rs`, `agents/spawn.rs` (C: event and spawn site)
 - `rust/fontaine-sdk/src/core/child_runner.rs`, `core/export.rs`, `core/afk_report.rs` (C: record literals)
-- `rust/fontaine-sdk/tests/agent_resume.rs`, `tests/seam.rs`, `tests/teams.rs` (C: record literals)
 - `rust/fontaine-sdk/src/guardian/request.rs` (C: fact and budget)
 - `rust/fontaine-sdk/src/core/adjudication.rs` (C: fill the fact)
 - `rust/fontaine-sdk/src/guardian/prompt_builder.rs` (C: the block; tests)
@@ -232,6 +232,7 @@ Three parts, because any one alone leaves the agent stuck:
 - The issue's option B is not implemented; see Trade-offs.
 - `agent_task` is dropped from the minimal profile, because that prompt's calibration and snapshot
   were measured without it and small models are the reason the profile exists.
+- AFK: only `core/afk_report.rs:1151` is a full `Record::Agent` literal; `tests/agent_resume.rs`, `tests/seam.rs` and `tests/teams.rs` only match with `..` (seam's `Spawned` is a local struct), so Step 3 and Files to Modify do not list them and the compiler catches any literal the list misses.
 
 ## Documentation
 
