@@ -47,7 +47,7 @@ Scope: the TUI bar only. The status-line JSON payload of `command`, the linear
 - A configured composition that does not compile stops startup with exit code 2: `check_composition`
   (`core/config.rs:4365`, compile at `:4464`) returns `ConfigError::invalid(user_path,
   "guardian.composition.script", …)`, printed by `fontaine/src/lib.rs:402-408` via
-  `ConfigError::exit_code()` (`core/config.rs:92`, `CONFIG_EXIT_CODE = 2` at `:22`).
+  `ConfigError::exit_code()` (`core/config.rs:92`, `CONFIG_EXIT_CODE = 2` at `:23`).
 - `[statusline]` is user-scope only: `Rule::user_only("statusline", STATUSLINE)`
   (`core/config_scope.rs:244`, reason at `:139`), so a repository cannot set it. Its catalog
   rows are `config_catalog.rs:652-657`; `guardian.composition.script` is the one row that
@@ -233,8 +233,8 @@ startup — the default program's output is used, so the bar is never blank.
 ### 8. Data plumbing and the draw path
 
 `App` gains `context: Option<ContextFigures { used: u64, window: Option<u32> }>` and
-`command_line: Option<String>`; `App.statusline` becomes `Option<StatuslineState>` over runs
-instead of a `String`. `Ui` gains `statusline_program: Option<StatuslineProgram>`,
+`command_line: Option<String>`; `StatuslineState` (`core/statusline.rs:26`) changes from `{ line: String }` to `{ runs }`;
+`App.statusline` is already `Option<StatuslineState>`. `Ui` gains `statusline_program: Option<StatuslineProgram>`,
 `statusline_default: StatuslineProgram` and `statusline_warned: bool`.
 
 The context figures are refreshed by `Ui::refresh_context(runtime)` before the first render in
@@ -254,11 +254,7 @@ Nothing else. Every other segment, the mode chip included, is the script's to pl
 Width: the row clips on the right as the built-in bar does today, so a long line loses its
 tail, except the command line — `{command}` and a command line standing in for `{hint}` — whose
 run is marked `tail` and left-cut into the remaining width exactly as `truncate_row` cuts the
-custom command's line today. Every other run, messages included, clips on the right, so a
-refusal or attach notice keeps its beginning.
-
-With a script configured, `ctx.format`'s runs are the whole row: a script that writes
-`{model} · {mode}` gets the model first, and a script that omits `{quota}` never sees a quota.
+custom command's line today.
 
 ## Implementation Steps
 
@@ -277,18 +273,21 @@ With a script configured, `ctx.format`'s runs are the whole row: a script that w
    `budget::with(STATUSLINE_BUDGET, …)` (50 000); the `Ctx`,
    `Line`, `Fragment` and `Style` host types; the template parser and the separator
    normalisation. `default.rn` beside it with `include_str!`.
-3. **SDK — config.** `StatuslineSection.script`, `Statusline.script`, and `check_statusline`
+3. **SDK — config.** `StatuslineSection.script`, `Statusline.script` (copied in `Config::apply`, `:3552`, and
+   `script: None` in the default `Statusline`, `:3214`), and `check_statusline`
    called from `config::load` next to `check_composition`; the `statusline.script` catalog row
    reporting `set`/`unset`.
 4. **TUI — the snapshot builder.** `statusbar::snapshot(app, data) -> StatuslineSnapshot`,
-   where `data` carries what is not on `App`: `session_id`, `version`, `project_dir`, the cost
-   total and the cost `estimated` flag, and reusing every existing formatter, plus `role_style(theme, role) -> Style`. Extract the
+   where `data` carries what is not on `App`: `session_id`, `version`, the cost
+   total and the cost `estimated` flag, and reusing every existing formatter (`project_dir` is `app.primary_root`), plus `role_style(theme, role) -> Style`. Extract the
    message/hint precedence out of `render` into `fn hint(app, command_line, scripted) ->
    Option<String>`.
 5. **TUI — wiring.** `App`'s new fields; `Ui`'s programs and `refresh_context`; `Ui::draw`
    builds the snapshot and renders the program synchronously after the `App` sync and before
    `(self.render)(&mut self.app)`, caching the runs in `App.statusline`; `run_statusline` and the
-   trigger channel serve only the `command` and publish only `App.command_line`; the
+   trigger channel serve only the `command` and publish only `App.command_line`, with the result channel (`Ui.statusline_result_tx`/`_rx`,
+   `lib.rs:460-461`; `ui/mod.rs:395`, `:411`, `:923`) retyped from `Option<StatuslineState>` to
+   `Option<String>`; the
    `statusline_tx`/`statusline_rx`, `trigger_statusline`, `statusline_tick` and `run_statusline`
    gates keep meaning "no `command` configured" and are not lifted; `refresh_context` called
    in `drive` (`lib.rs`) before the first render; warn-once on failure; update the `Ui`
@@ -299,18 +298,19 @@ With a script configured, `ctx.format`'s runs are the whole row: a script that w
 
 ## Files to Modify
 
-- `rust/fontaine-sdk/src/core/statusline.rs` → `statusline/mod.rs`, plus new `snapshot.rs`,
+- `rust/fontaine-sdk/src/core/statusline.rs` → `statusline/mod.rs` (`StatuslineState { line }` →
+  `{ runs }`), plus new `snapshot.rs`,
   `script.rs`, `default.rn`
-- `rust/fontaine-sdk/src/core/config.rs` — `StatuslineSection.script`, `Statusline.script`,
-  `check_statusline`, its call in `load`, value checks
+- `rust/fontaine-sdk/src/core/config.rs` — `StatuslineSection.script`, `Statusline.script`
+  (including `Config::apply` and the default literal), `check_statusline`, its call in `load`, value checks
 - `rust/fontaine-sdk/src/core/config_catalog.rs` — the `statusline.script` row
 - `rust/fontaine-tui/src/statusbar.rs` — `snapshot`, `hint`, `role_style`, the reduced `render`,
   the `jobs_clause`/`location`/quota separator change, and their tests
-- `rust/fontaine-tui/src/app.rs` — `context`, `command_line`, the `StatuslineState` change
-- `rust/fontaine-tui/src/lib.rs` — `Ui`'s program fields and their construction in `drive`, and
-  the first `refresh_context` call there
+- `rust/fontaine-tui/src/app.rs` — `context`, `command_line`
+- `rust/fontaine-tui/src/lib.rs` — `Ui`'s program fields and their construction in `drive`, the
+  first `refresh_context` call there, and the retyped result channel (`:460-461`)
 - `rust/fontaine-tui/src/ui/mod.rs` — the snapshot render inside `Ui::draw`, `refresh_context`,
-  warn-once
+  warn-once, the retyped result channel (`:395`, `:411`, `:923`)
 - `rust/fontaine-tui/src/ui/turn.rs`, `rust/fontaine-tui/src/ui/commands/context.rs` (holds
   both `/compact` and `/clear`), `rust/fontaine-tui/src/ui/commands/model.rs`,
   `rust/fontaine-tui/src/ui/commands/rewind.rs` — the other five `refresh_context` call sites
@@ -320,25 +320,13 @@ With a script configured, `ctx.format`'s runs are the whole row: a script that w
 - `docs/tui.md`, `docs/configuration.md`, `docs/guardian.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`
 
-## Trade-offs
-
-- **Inline source vs. a file.** Inline keeps a one-line bar to one key and needs no path
-  resolution; a composition earns a file because it is a program with declared reads. A file
-  form can be added later without moving anyone's configuration.
-- **Bare segments with template separators vs. self-delimiting segments.** Self-delimiting
-  segments would be a straight transcription of today's `render`, but reordering one then
-  carries its separator into the middle of a line and the parens around an absent branch cannot
-  collapse. Separators in the template make reordering and dropping ordinary, and cost one
-  normalisation pass over the runs.
-- **A Rune-rendered default vs. a Rust default plus an override.** Two renderers would mean two
-  definitions of the line and two places to add a segment. One renderer makes the default the
-  documented example, at the price of a golden-line test on the default script.
-- **Cached context figures vs. awaiting `context_usage()` per snapshot.** The cache is a
-  behaviour change — while a turn runs the percentage holds the figure from the last refresh
-  point — bought so that a snapshot never reloads the conversation log inside the run loop.
-
 ## Decisions
 
+- The script is inline source, not a file.
+- Segments are bare and the template supplies the separators, not self-delimiting segments.
+- One Rune renderer draws the default line, not a Rust default plus an override.
+- Context figures are cached on `App` and never awaited per snapshot; accepted risk: the context
+  percentage holds its last refreshed value while a turn runs.
 - The guardian-off and `AFK STOPPED` badges stay Rust-drawn and cannot be dropped by a script,
   carrying forward the custom status line's decision; `badges` is therefore not a format name.
 - `{hint}` stays a segment and takes the message precedence, so a script that omits it drops
