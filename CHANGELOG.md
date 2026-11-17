@@ -304,6 +304,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- The provider's own web search stays offered in `auto` and `afk` after the denial breaker pauses
+  auto (#676): it is withheld from the next turn, in the TUI and in headless goal, notification and
+  `stop`-hook turns too, and returns once the human approves a call.
 - `/add-dir ~/path`, `--add-dir ~/path` and `[permissions] additional_directories` entries
   starting with `~` were refused as missing (#672): a leading `~`, alone or before a separator,
   now expands to the session's home directory. A `~` deeper in the path and `~user` stay literal,
