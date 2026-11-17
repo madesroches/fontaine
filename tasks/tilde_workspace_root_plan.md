@@ -138,11 +138,6 @@ and still the value `/add-dir` reports back to the transcript.
 - `rust/fontaine/tests/headless_contract.rs`
 - `docs/tools.md`, `docs/configuration.md`, `docs/tui.md`
 
-## Trade-offs
-
-- **Path-level helper vs. reusing `plugin_ops::expand_tilde`.** The overlap is a four-line match,
-  so duplicating it is cheaper than coupling root resolution to the plugin module.
-
 ## Decisions
 
 - 2026-11-16: expand `~` in `workspace::resolve`, not at each entry point, so every root source is covered by one implementation.
