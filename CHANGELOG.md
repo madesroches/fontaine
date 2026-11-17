@@ -287,6 +287,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A retryable model failure late in a turn was never retried (#678): the retry budget
+  (`[retry] max_total_delay_secs`) was charged the whole run's wall time instead of the time spent
+  waiting between attempts, so any run longer than the budget settled its first failure at once.
+  It now counts only the waits.
 - A `shell` allow rule (a user rule, an agent type's `shell(...)` entry such as the `reviewer`'s,
   a skill grant or a hook allow) now also matches one leading `cd <dir> &&` whose directory is
   inside the workspace roots, judging the command after it (#635). `cd <repo> && gh issue view 627`

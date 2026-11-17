@@ -53,13 +53,14 @@ impl RetryPolicy {
 
     /// The wait before retry number `attempt + 1`, or `None` when the failure should settle now:
     /// the wait would pass `max_delay` (a `Retry-After` longer than that is the server asking for
-    /// more than we will give) or push the total past `max_total_delay`. `jitter` is the factor
+    /// more than we will give) or push the total past `max_total_delay`. `waited` is the sum of
+    /// the waits taken so far, not the time the turn has run. `jitter` is the factor
     /// applied to the exponential step, clamped to `[0.5, 1.0]`.
     pub fn next_delay(
         &self,
         attempt: u32,
         retry_after: Option<Duration>,
-        elapsed: Duration,
+        waited: Duration,
         jitter: f64,
     ) -> Option<Duration> {
         let factor = if jitter.is_nan() {
@@ -75,7 +76,7 @@ impl RetryPolicy {
         if let Some(asked) = retry_after {
             delay = delay.max(asked);
         }
-        if delay > self.max_delay || elapsed.saturating_add(delay) > self.max_total_delay {
+        if delay > self.max_delay || waited.saturating_add(delay) > self.max_total_delay {
             return None;
         }
         Some(delay)
@@ -149,6 +150,20 @@ mod tests {
         let nearly = p.max_total_delay - Duration::from_millis(100);
         assert_eq!(p.next_delay(0, None, nearly, 1.0), None);
         assert!(p.next_delay(0, None, ZERO, 1.0).is_some());
+    }
+
+    #[test]
+    fn the_budget_accumulates_across_attempts() {
+        let p = RetryPolicy {
+            base_delay: Duration::from_secs(40),
+            max_delay: Duration::from_secs(40),
+            max_total_delay: Duration::from_secs(100),
+            ..RetryPolicy::default()
+        };
+        let at = |secs| p.next_delay(0, None, Duration::from_secs(secs), 1.0);
+        assert_eq!(at(0), Some(Duration::from_secs(40)));
+        assert_eq!(at(40), Some(Duration::from_secs(40)));
+        assert_eq!(at(80), None);
     }
 
     #[test]

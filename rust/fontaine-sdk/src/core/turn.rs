@@ -633,7 +633,7 @@ pub async fn drive(
     mut feed: Option<&mut DecisionFeed>,
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
 ) -> TurnOutcome {
-    let started = tokio::time::Instant::now();
+    let mut waited = std::time::Duration::ZERO;
     let policy = params.state.retry_policy();
     let mut attempt: u32 = 0;
     loop {
@@ -690,7 +690,7 @@ pub async fn drive(
                 policy.next_delay(
                     attempt,
                     error_retry_after(&error, std::time::SystemTime::now()),
-                    started.elapsed(),
+                    waited,
                     crate::core::retry::jitter(),
                 )
             }
@@ -721,6 +721,7 @@ pub async fn drive(
             wait.as_secs_f64(),
         ));
         tokio::time::sleep(wait).await;
+        waited += wait;
         params.prompt = RETRY_NOTE.to_string();
         attempt += 1;
     }
