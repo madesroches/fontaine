@@ -168,6 +168,32 @@ async fn a_mode_switch_adds_and_removes_it_on_the_next_turn() {
 }
 
 #[tokio::test]
+async fn a_breaker_pause_withholds_it_until_the_human_resumes_auto() {
+    let w = world(ANTHROPIC);
+    let mut built = build(
+        &w,
+        PermissionMode::Auto,
+        "anthropic",
+        vec![answer(), answer()],
+    );
+    assert!(built.runtime.native_search_active());
+
+    while !built.runtime.state.auto_paused() {
+        built.runtime.state.guardian_denied();
+    }
+    built.runtime.refresh_before_turn().unwrap();
+    assert!(!built.runtime.native_search_active());
+    turn(&built).await;
+    assert!(sent_tools(&built).is_empty());
+
+    built.runtime.state.resume_auto();
+    built.runtime.refresh_before_turn().unwrap();
+    assert!(built.runtime.native_search_active());
+    turn(&built).await;
+    assert_eq!(sent_tools(&built), vec![entry()]);
+}
+
+#[tokio::test]
 async fn an_unchanged_gate_does_not_rebuild_the_agent() {
     let w = world(ANTHROPIC);
     common::write(&w.work.join("FONTAINE.md"), "marker-v1\n");

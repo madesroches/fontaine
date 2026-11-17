@@ -17,13 +17,15 @@ fn names_tool(rules: &[SourcedRule]) -> bool {
 
 /// Whether the live mode and rules let a search run without a decision of Fontaine's. A `deny`
 /// or `ask` rule for `websearch` always withholds it (so does a covering hook, see `offered`). Where a non-allowed call would ask or be
-/// denied (`manual`, `acceptEdits`, `dontAsk`) it needs an `allow` rule.
-pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
+/// denied (`manual`, `acceptEdits`, `dontAsk`) it needs an `allow` rule. While the loop breaker
+/// has paused `auto`, the guardian-judged modes withhold it too: the session is back with a
+/// human, and a search query is an outbound channel nothing judges.
+pub(crate) fn permitted(mode: PermissionMode, rules: &Rules, paused: bool) -> bool {
     if names_tool(&rules.deny) || names_tool(&rules.ask) {
         return false;
     }
     match mode {
-        PermissionMode::Auto | PermissionMode::Afk => true,
+        PermissionMode::Auto | PermissionMode::Afk => !paused,
         PermissionMode::Manual | PermissionMode::AcceptEdits | PermissionMode::DontAsk => {
             names_tool(&rules.allow)
         }
@@ -77,7 +79,7 @@ pub(crate) fn offered(config: &Config, models: &Models, state: &SessionState) ->
     if hook_covers(config) {
         return None;
     }
-    permitted(state.mode(), &state.rules()).then_some(entry)
+    permitted(state.mode(), &state.rules(), state.auto_paused()).then_some(entry)
 }
 
 #[cfg(test)]
@@ -181,8 +183,29 @@ mod tests {
     #[test]
     fn auto_and_afk_offer_it_without_a_rule() {
         for mode in [PermissionMode::Auto, PermissionMode::Afk] {
-            assert!(permitted(mode, &Rules::default()), "{mode:?}");
+            assert!(permitted(mode, &Rules::default(), false), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn auto_and_afk_withhold_it_while_paused() {
+        for mode in [PermissionMode::Auto, PermissionMode::Afk] {
+            assert!(!permitted(mode, &Rules::default(), true), "{mode:?}");
+            assert!(
+                !permitted(mode, &rules(&[], &[], &["websearch"]), true),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paused_manual_mode_still_follows_its_allow_rule() {
+        assert!(permitted(
+            PermissionMode::Manual,
+            &rules(&[], &[], &["websearch"]),
+            true
+        ));
+        assert!(!permitted(PermissionMode::Manual, &Rules::default(), true));
     }
 
     #[test]
@@ -192,9 +215,9 @@ mod tests {
             PermissionMode::AcceptEdits,
             PermissionMode::DontAsk,
         ] {
-            assert!(!permitted(mode, &Rules::default()), "{mode:?}");
+            assert!(!permitted(mode, &Rules::default(), false), "{mode:?}");
             assert!(
-                permitted(mode, &rules(&[], &[], &["websearch"])),
+                permitted(mode, &rules(&[], &[], &["websearch"]), false),
                 "{mode:?}"
             );
         }
@@ -209,11 +232,13 @@ mod tests {
         ] {
             assert!(!permitted(
                 mode,
-                &rules(&["websearch"], &[], &["websearch"])
+                &rules(&["websearch"], &[], &["websearch"]),
+                false
             ));
             assert!(!permitted(
                 mode,
-                &rules(&[], &["websearch"], &["websearch"])
+                &rules(&[], &["websearch"], &["websearch"]),
+                false
             ));
         }
     }
@@ -222,11 +247,13 @@ mod tests {
     fn rules_for_other_tools_do_not_count() {
         assert!(!permitted(
             PermissionMode::Manual,
-            &rules(&[], &[], &["webfetch(domain:example.com)"])
+            &rules(&[], &[], &["webfetch(domain:example.com)"]),
+            false
         ));
         assert!(permitted(
             PermissionMode::Auto,
-            &rules(&["webfetch"], &["shell"], &[])
+            &rules(&["webfetch"], &["shell"], &[]),
+            false
         ));
     }
 }

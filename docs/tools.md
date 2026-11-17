@@ -460,7 +460,8 @@ Search reaches the model in one of two ways, in this order:
    `websearch` and no [`pre_tool_use` hook](hooks.md) could (one with no `matcher`, a `matcher`
    naming `websearch`, or one whose matcher cannot be read), since a hook never sees a search the
    provider runs; in `manual`, `acceptEdits` and `dontAsk` it also needs an `allow` rule for
-   `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
+   `websearch`, since a call there would otherwise ask or be denied; and in `auto` and `afk`
+   only while the loop breaker has not paused `auto`. Switching modes, a pause or resume, or adding a
    rule takes effect on the next turn. If the endpoint rejects the request because of the search
    tool, the failure message on an `anthropic` account says to set `native = "off"`; nothing
    retries without it. On a `claude-subscription` account a rejection is reported as a plain
