@@ -204,6 +204,10 @@ command = "/home/me/.config/fontaine/hooks/answer.sh"
   `updatedInput` in configured order wins, and the rewritten call is what every later step judges:
   the floor, the pre-classifier, the rules, the guardian and the audit log, which records the
   digest of the original arguments too.
+- **A matcher is checked against the call the model made.** A read-only `shell` command such as
+  `cat src/private/x` does not run a hook matching `read(...)`, `ls` or `grep`; instead any such
+  hook takes shell reads off the pre-classifier fast path, so they reach the allow rules and the
+  mode (an allow rule in `dontAsk`, a prompt in manual mode, the guardian in `auto`).
 - **`deny`** denies the call. **`ask`** forces the human prompt like an `ask` rule (a denial in
   `dontAsk` and headless runs).
 - **`allow` is an allow rule, no more.** It acts after the floor and never past it: a deny rule, an
