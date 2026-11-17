@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rig_core::DynModel;
+use rig_core::catalog::Pricing;
 use rig_core::completion::{CheckError, CompletionRequest, GenerationOptions, UnsupportedOption};
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
@@ -27,6 +28,8 @@ use crate::guardian::{OutputProbe, WireIds};
 use crate::tools::tls::LoadedNetwork;
 
 type Client = Arc<dyn AccountClient>;
+
+pub use crate::cost::CostBasis;
 
 /// What a client is built from besides the account: the stored credentials, where the data
 /// directory is and the session the requests belong to.
@@ -299,10 +302,26 @@ impl ModelHandle {
         }
     }
 
-    /// Whether the cost a call reports is counted. An unpriced kind is billed outside per-token
-    /// prices, so whatever cost reaches us for it is dropped.
+    /// How the cost a call reports is treated: counted at the catalog's price, counted as an
+    /// estimate, or dropped. An `Estimated` kind prices only a model the catalog lists; one it
+    /// does not stays `Unpriced`, since no cost reaches us for it.
+    pub fn cost_basis(&self) -> CostBasis {
+        match self.kind.provider().billing() {
+            Billing::Catalog => CostBasis::Billed,
+            Billing::Unpriced => CostBasis::Unpriced,
+            Billing::Estimated if self.listed_price().is_some() => CostBasis::Estimated,
+            Billing::Estimated => CostBasis::Unpriced,
+        }
+    }
+
+    /// The catalog price of this model as the handle's wire knows it.
+    fn listed_price(&self) -> Option<Pricing> {
+        self.completion.spec().and_then(|spec| spec.pricing)
+    }
+
+    /// Whether the cost a call reports is counted at all; `cost_basis` says how.
     pub fn catalog_billed(&self) -> bool {
-        self.kind.provider().billing() == Billing::Catalog
+        self.cost_basis().counted()
     }
 
     /// The generation options one turn on this model sends for `effort`. `None` sends nothing,
@@ -377,11 +396,7 @@ impl ModelHandle {
 
     /// Whether rig's catalog knows a price for this model; a spend cap needs one.
     pub fn priced(&self) -> bool {
-        self.catalog_billed()
-            && self
-                .completion
-                .spec()
-                .is_some_and(|spec| spec.pricing.is_some())
+        self.listed_price().is_some() && self.catalog_billed()
     }
 }
 
@@ -400,6 +415,14 @@ pub enum GuardianModel {
 }
 
 impl GuardianModel {
+    /// How a call on this model's cost is treated; `Billed` when there is no model to ask.
+    pub fn cost_basis(&self) -> CostBasis {
+        match self {
+            GuardianModel::Ready(handle) => handle.cost_basis(),
+            GuardianModel::Unavailable { .. } => CostBasis::Billed,
+        }
+    }
+
     pub fn reference(&self) -> &ModelRef {
         match self {
             GuardianModel::Ready(handle) => &handle.reference,
@@ -1496,5 +1519,106 @@ mod bare_tests {
             .map(|(name, _, _)| name)
             .collect();
         assert_eq!(names, ["listed"]);
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+    use crate::core::providers::derived_facts::{Price, facts_as};
+    use crate::core::providers::vendor;
+    use rig_core::catalog::{ModelFacts, ModelSpec};
+    use rig_core::driver::{Exchange, Opening, Transport};
+    use rig_core::providers::ollama::{Chat, OllamaConfig};
+    use rig_core::providers::registry::ProviderId;
+    use rig_core::wire::Wire;
+
+    /// Stands in for the HTTP client: the tests never make a call.
+    #[derive(Clone)]
+    struct Silent;
+
+    impl<W: Wire> Transport<W> for Silent {
+        fn send(&self, _payload: W::Payload, _exchange: Exchange) -> Opening<W::Frame> {
+            Opening::new(std::future::pending())
+        }
+    }
+
+    /// A model whose facts (and so its price) the wire describes; no call is ever made, so any
+    /// wire serves.
+    fn completion(id: &str, facts: Option<ModelFacts>) -> DynModel<Completion> {
+        let wire = Chat::new(OllamaConfig::new(), id);
+        let wire = match facts {
+            Some(facts) => wire.with_facts(facts),
+            None => wire,
+        };
+        rig_core::Model::new(wire, Silent).erase()
+    }
+
+    fn handle(kind: &str, model: &str, facts: Option<ModelFacts>) -> ModelHandle {
+        ModelHandle::new(
+            ModelRef::parse(&format!("a/{model}")).expect("a reference"),
+            AccountKind::named(kind),
+            completion(model, facts),
+        )
+    }
+
+    /// The facts of a model the catalog lists, under the id the gateway serves it as.
+    fn listed() -> ModelFacts {
+        let served = ProviderId::declare("databricks").expect("declares");
+        let (facts, ..) = facts_as(
+            vendor("anthropic"),
+            served,
+            "claude-haiku-5-5",
+            "system.ai.claude-haiku-5-5",
+            Price::Keep,
+        )
+        .expect("listed");
+        facts
+    }
+
+    /// The facts of a model no catalog entry lists, such as a `glm-*` endpoint.
+    fn unlisted() -> ModelFacts {
+        let served = ProviderId::declare("databricks").expect("declares");
+        ModelFacts::new(ModelSpec::new(served, "system.ai.glm-5-3"))
+    }
+
+    #[test]
+    fn a_catalog_kind_bills_at_the_catalogs_price() {
+        let handle = handle("anthropic", "claude-haiku-5-5", None);
+        assert_eq!(handle.cost_basis(), CostBasis::Billed);
+        assert!(handle.catalog_billed());
+    }
+
+    #[test]
+    fn an_unpriced_kind_drops_whatever_cost_reaches_it() {
+        for kind in ["kimi", "claude-subscription"] {
+            let handle = handle(kind, "kimi-k3", Some(listed()));
+            assert_eq!(handle.cost_basis(), CostBasis::Unpriced, "{kind}");
+            assert!(!handle.catalog_billed(), "{kind}");
+            assert!(!handle.priced(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn an_estimate_kind_prices_only_a_model_the_catalog_lists() {
+        let listed = handle("databricks", "system.ai.claude-haiku-5-5", Some(listed()));
+        assert_eq!(listed.cost_basis(), CostBasis::Estimated);
+        assert!(listed.catalog_billed());
+        assert!(listed.priced());
+
+        let unlisted = handle("databricks", "system.ai.glm-5-3", Some(unlisted()));
+        assert_eq!(unlisted.cost_basis(), CostBasis::Unpriced);
+        assert!(!unlisted.catalog_billed());
+        assert!(!unlisted.priced());
+    }
+
+    #[test]
+    fn a_guardian_with_no_model_answers_billed() {
+        let gone = GuardianModel::Unavailable {
+            reference: ModelRef::parse("a/gone").expect("a reference"),
+            reason: "no credential".into(),
+            not_signed_in: false,
+        };
+        assert_eq!(gone.cost_basis(), CostBasis::Billed);
     }
 }

@@ -521,11 +521,11 @@ impl PromptSpec {
         label: &str,
     ) -> Result<Answer, HookError> {
         let guardian = read(&self.guardian, "hook guardian model").clone();
-        let (model, params, billed) = match &guardian {
+        let (model, params, cost) = match &guardian {
             Some(GuardianModel::Ready(handle)) => (
                 handle.completion.clone(),
                 handle.thinking_off.clone(),
-                handle.catalog_billed(),
+                handle.cost_basis(),
             ),
             Some(GuardianModel::Unavailable {
                 reference, reason, ..
@@ -548,7 +548,7 @@ impl PromptSpec {
         let (answer, usage) = judge::<PromptVerdict>(
             &model,
             params.as_ref(),
-            billed,
+            cost,
             // Shorter than the outer timeout, which would otherwise drop this future before
             // the usage is recorded below.
             timeout.saturating_sub(JUDGE_DEADLINE_MARGIN),

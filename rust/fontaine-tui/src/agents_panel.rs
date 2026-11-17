@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use fontaine_sdk::agents::budget::est_mark;
 use fontaine_sdk::agents::runner::ChildStatus;
 use fontaine_sdk::tools::display::compact_count;
 use fontaine_sdk::tools::jobs::format_age;
@@ -30,6 +31,8 @@ pub struct PanelRow {
     pub cost_budget: Option<f64>,
     /// Tokens of `tokens` that carried no price; `cost_usd` leaves them out.
     pub unpriced_tokens: u64,
+    /// Whether `cost_usd` is a list-price estimate, which its figure then says.
+    pub estimated: bool,
     pub depth: usize,
     /// Characters the model has written in its current step.
     pub writing: u64,
@@ -126,6 +129,8 @@ pub(crate) struct SpendView {
     pub cost_budget: Option<f64>,
     /// Tokens of `tokens` that carried no price, so `cost_usd` leaves them out.
     pub unpriced_tokens: u64,
+    /// Whether `cost_usd` is a list-price estimate, which its figure then says.
+    pub estimated: bool,
 }
 
 /// What an agent has spent, against its budget when it has one: the priced tokens next to their
@@ -137,6 +142,7 @@ pub(crate) fn spend_text(view: &SpendView) -> String {
         cost_usd,
         cost_budget,
         unpriced_tokens,
+        estimated,
     } = *view;
     let mut parts = Vec::new();
     match token_budget {
@@ -153,9 +159,10 @@ pub(crate) fn spend_text(view: &SpendView) -> String {
             }
         }
     }
+    let mark = est_mark(estimated);
     match (cost_usd, cost_budget) {
-        (Some(spent), Some(cap)) => parts.push(format!("${spent:.4} / ${cap:.2}")),
-        (Some(spent), None) => parts.push(format!("${spent:.4}")),
+        (Some(spent), Some(cap)) => parts.push(format!("${spent:.4}{mark} / ${cap:.2}")),
+        (Some(spent), None) => parts.push(format!("${spent:.4}{mark}")),
         (None, Some(_)) => parts.push("cost n/a".to_string()),
         (None, None) => {}
     }
@@ -304,6 +311,7 @@ impl AgentsPanel {
                 cost_usd: row.cost_usd,
                 cost_budget: row.cost_budget,
                 unpriced_tokens: row.unpriced_tokens,
+                estimated: row.estimated,
             });
             let spend = if row.status.is_running() && row.writing > 0 {
                 format!("{spend} · {}", writing_text(row.writing))
@@ -402,6 +410,7 @@ mod tests {
             cost_usd: Some(0.0042),
             cost_budget: Some(2.0),
             unpriced_tokens: 0,
+            estimated: false,
             depth: 1,
             writing: 0,
             idle: false,
@@ -435,6 +444,7 @@ mod tests {
             cost_usd: Some(0.0066),
             cost_budget,
             unpriced_tokens,
+            estimated: false,
         }
     }
 
@@ -447,6 +457,33 @@ mod tests {
         assert_eq!(
             spend_text(&view(Some(2.0), 128_000)),
             "110k tok · $0.0066 / $2.00 · 128k unpriced tok"
+        );
+    }
+
+    #[test]
+    fn an_estimate_marks_the_dollar_segment_only() {
+        assert_eq!(
+            spend_text(&SpendView {
+                estimated: true,
+                ..view(None, 128_000)
+            }),
+            "110k tok · $0.0066 est. · 128k unpriced tok"
+        );
+        assert_eq!(
+            spend_text(&SpendView {
+                estimated: true,
+                ..view(Some(2.0), 0)
+            }),
+            "238k tok · $0.0066 est. / $2.00"
+        );
+        // A budget with no price to measure it is still `n/a`, estimate or not.
+        assert_eq!(
+            spend_text(&SpendView {
+                cost_usd: None,
+                estimated: true,
+                ..view(Some(2.0), 0)
+            }),
+            "238k tok · cost n/a"
         );
     }
 

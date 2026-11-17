@@ -15,6 +15,7 @@ use rig_core::operation::Completion;
 use tracing::Instrument;
 
 use crate::core::goal::EVALUATOR_TIMEOUT;
+use crate::cost::CostBasis;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -163,16 +164,16 @@ impl Error for SideQuestionError {
 /// Asks the main model one question about a conversation it is shown as text.
 pub struct SideQuestion {
     model: DynModel<Completion>,
-    billed: bool,
+    cost: CostBasis,
     timeout: Duration,
     purpose: Purpose,
 }
 
 impl SideQuestion {
-    pub fn new(model: DynModel<Completion>, billed: bool) -> SideQuestion {
+    pub fn new(model: DynModel<Completion>, cost: CostBasis) -> SideQuestion {
         SideQuestion {
             model,
-            billed,
+            cost,
             timeout: SIDE_QUESTION_TIMEOUT,
             purpose: Purpose::SideQuestion,
         }
@@ -180,19 +181,19 @@ impl SideQuestion {
 
     /// The advisor's consult: its own preamble and token cap, and a question that is
     /// neutralized because the main model wrote it.
-    pub fn advisor(model: DynModel<Completion>, billed: bool) -> SideQuestion {
+    pub fn advisor(model: DynModel<Completion>, cost: CostBasis) -> SideQuestion {
         SideQuestion {
             purpose: Purpose::Advisor,
-            ..SideQuestion::new(model, billed)
+            ..SideQuestion::new(model, cost)
         }
     }
 
     /// The prompt suggestion: its own preamble, a small token cap and a short wait. Ask it with
     /// an empty question; the transcript is the input.
-    pub fn prompt_suggestion(model: DynModel<Completion>, billed: bool) -> SideQuestion {
+    pub fn prompt_suggestion(model: DynModel<Completion>, cost: CostBasis) -> SideQuestion {
         SideQuestion {
             purpose: Purpose::PromptSuggestion,
-            ..SideQuestion::new(model, billed)
+            ..SideQuestion::new(model, cost)
         }
         .with_timeout(PROMPT_SUGGESTION_TIMEOUT)
     }
@@ -208,21 +209,24 @@ impl SideQuestion {
             Purpose::SideQuestion => tracing::info_span!(
                 target: TARGET,
                 "fontaine.side_question",
-                model.priced = self.billed,
+                model.priced = self.cost.counted(),
+                model.estimated = self.cost.estimated(),
                 input_tokens = tracing::field::Empty,
                 output_tokens = tracing::field::Empty,
             ),
             Purpose::Advisor => tracing::info_span!(
                 target: TARGET,
                 "fontaine.advisor",
-                model.priced = self.billed,
+                model.priced = self.cost.counted(),
+                model.estimated = self.cost.estimated(),
                 input_tokens = tracing::field::Empty,
                 output_tokens = tracing::field::Empty,
             ),
             Purpose::PromptSuggestion => tracing::info_span!(
                 target: TARGET,
                 "fontaine.prompt_suggestion",
-                model.priced = self.billed,
+                model.priced = self.cost.counted(),
+                model.estimated = self.cost.estimated(),
                 input_tokens = tracing::field::Empty,
                 output_tokens = tracing::field::Empty,
             ),
@@ -274,7 +278,7 @@ impl SideQuestion {
             Ok(Ok(response)) => response,
         };
         let mut usage = response.usage;
-        if !self.billed {
+        if !self.cost.counted() {
             usage.cost = None;
         }
         let unusable = |what: &str| {

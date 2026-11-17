@@ -14,7 +14,7 @@ use fontaine_sdk::core::agent::AgentRuntime;
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::config::{Account, AccountKind, PermissionMode};
 use fontaine_sdk::core::credentials;
-use fontaine_sdk::core::models::{self, ResolveParams, Switcher};
+use fontaine_sdk::core::models::{self, CostBasis, ResolveParams, Switcher};
 use fontaine_sdk::guardian::{
     AdjudicationRequest, Decision, EnvironmentConfig, RuleConfig, SessionFacts, ToolCallSummary,
 };
@@ -627,7 +627,7 @@ async fn root_turn(runtime: &AgentRuntime) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: LISTED.to_string(),
             provider: "anthropic".to_string(),
             native_search: false,

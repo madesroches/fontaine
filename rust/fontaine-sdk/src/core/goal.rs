@@ -37,6 +37,7 @@ use crate::core::ledger::{GoalEvent, Ledger};
 use crate::core::models::GuardianModel;
 use crate::core::owner_only;
 use crate::core::turn::TurnOutcome;
+use crate::cost::CostBasis;
 
 pub const GOAL_FILE: &str = "goal.json";
 
@@ -143,7 +144,8 @@ pub fn parse_goal_arg(arg: &str) -> GoalArg {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PauseReason {
     TurnCap(u32),
-    CostCap(f64),
+    /// The cap, and whether the spend it measured is a list-price estimate.
+    CostCap(f64, bool),
     TokenCap(u64),
     DurationCap(Duration),
     NoProgress(u32),
@@ -172,7 +174,11 @@ impl fmt::Display for PauseReason {
                 "{n} goal turn{} ran without it being met",
                 if *n == 1 { "" } else { "s" }
             ),
-            PauseReason::CostCap(usd) => write!(f, "the goal's spend passed ${usd:.2}"),
+            PauseReason::CostCap(usd, estimated) => write!(
+                f,
+                "the goal's spend passed ${usd:.2}{}",
+                crate::agents::budget::est_mark(*estimated)
+            ),
             PauseReason::TokenCap(n) => {
                 write!(f, "the goal's tokens passed {}", compact_count(*n))
             }
@@ -276,6 +282,7 @@ pub fn spend_since(now: &Spend, base: &Spend) -> Spend {
             .cost_usd
             .map(|cost| (cost - base.cost_usd.unwrap_or(0.0)).max(0.0)),
         unpriced_tokens: now.unpriced_tokens.saturating_sub(base.unpriced_tokens),
+        estimated: now.estimated,
     }
 }
 
@@ -929,7 +936,7 @@ fn over_cost(
         cost_usd: Some(cap),
     }
     .exhausted(&spent, false)
-    .map(|_| PauseReason::CostCap(cap))
+    .map(|_| PauseReason::CostCap(cap, spent.estimated))
 }
 
 fn not_met(
@@ -1170,7 +1177,7 @@ pub struct Judged {
 pub struct GoalEvaluator {
     model: DynModel<Completion>,
     additional_params: Option<serde_json::Value>,
-    billed: bool,
+    cost: CostBasis,
     timeout: Duration,
 }
 
@@ -1181,7 +1188,7 @@ impl GoalEvaluator {
             Some(GuardianModel::Ready(handle)) => Ok(GoalEvaluator {
                 model: handle.completion.clone(),
                 additional_params: handle.thinking_off.clone(),
-                billed: handle.catalog_billed(),
+                cost: handle.cost_basis(),
                 timeout: EVALUATOR_TIMEOUT,
             }),
             Some(GuardianModel::Unavailable {
@@ -1203,7 +1210,8 @@ impl GoalEvaluator {
         let span = tracing::info_span!(
             target: TARGET,
             "fontaine.goal_evaluation",
-            model.priced = self.billed,
+            model.priced = self.cost.counted(),
+            model.estimated = self.cost.estimated(),
             verdict = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
@@ -1232,7 +1240,7 @@ impl GoalEvaluator {
         let (answer, usage) = judge::<GoalVerdict>(
             &self.model,
             self.additional_params.as_ref(),
-            self.billed,
+            self.cost,
             self.timeout,
             EVALUATOR_PROMPT,
             request,
@@ -1281,7 +1289,7 @@ pub enum JudgeFailure {
 pub async fn judge<T>(
     model: &DynModel<Completion>,
     additional_params: Option<&serde_json::Value>,
-    billed: bool,
+    cost: CostBasis,
     timeout: Duration,
     preamble: &str,
     request: String,
@@ -1307,7 +1315,7 @@ where
         Ok(Ok(response)) => Ok(response.output),
     };
     let mut usage = *spent.lock().expect("the usage tally lock is not poisoned");
-    if !billed {
+    if !cost.counted() {
         usage.cost = None;
     }
     (answer, usage)
@@ -1342,4 +1350,21 @@ pub fn checkin_prompt_text(check: &CheckIn) -> String {
 /// The prompt of the turn that starts a goal, which the user's own `/goal` line precedes.
 pub fn first_turn_prompt(condition: &str) -> String {
     format!("The user set a goal; an evaluator will check it after each turn: {condition}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cost_pause_marks_an_estimated_figure() {
+        assert_eq!(
+            PauseReason::CostCap(2.0, false).to_string(),
+            "the goal's spend passed $2.00"
+        );
+        assert_eq!(
+            PauseReason::CostCap(2.0, true).to_string(),
+            "the goal's spend passed $2.00 est."
+        );
+    }
 }

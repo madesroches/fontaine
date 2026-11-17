@@ -507,6 +507,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 cost_usd: row.spend.cost_usd,
                 cost_budget: row.budget.cost_usd,
                 unpriced_tokens: row.spend.unpriced_tokens,
+                estimated: row.spend.estimated,
                 depth: row.depth,
                 writing: row.writing,
                 idle: row.idle,

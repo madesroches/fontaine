@@ -27,6 +27,7 @@ use crate::core::owner_only;
 use crate::core::permissions::Approver;
 use crate::core::schedule::{Clock, Scheduler, SystemClock};
 use crate::core::todos::SessionTodos;
+use crate::cost::CostBasis;
 
 pub const SESSIONS_DIR: &str = "sessions";
 
@@ -532,16 +533,16 @@ impl Session {
     }
 
     /// Compacts the conversation when it has outgrown the model's window. Nothing happens
-    /// when the model's window is not known and no window is configured. `priced` is
-    /// `ModelHandle::catalog_billed`: the summarizer call runs outside a turn, so it drops an
+    /// when the model's window is not known and no window is configured. `cost` is
+    /// `ModelHandle::cost_basis`: the summarizer call runs outside a turn, so it drops an
     /// unpriced model's cost and tells the telemetry bridge itself.
     pub async fn compact_if_needed(
         &self,
         model: &DynModel<Completion>,
-        priced: bool,
+        cost: CostBasis,
         approver: &dyn Approver,
     ) -> CompactResult {
-        self.compact_logged(model, priced, CompactReason::Threshold, approver)
+        self.compact_logged(model, cost, CompactReason::Threshold, approver)
             .await
     }
 
@@ -549,22 +550,22 @@ impl Session {
     pub async fn compact_logged(
         &self,
         model: &DynModel<Completion>,
-        priced: bool,
+        cost: CostBasis,
         reason: CompactReason,
         approver: &dyn Approver,
     ) -> CompactResult {
-        self.compact_logged_via(model, None, priced, reason, approver, None)
+        self.compact_logged_via(model, None, cost, reason, approver, None)
             .await
     }
 
     /// [`compact_logged`](Self::compact_logged) where `main` sets the threshold and the window
-    /// and `summarizer`, when given, takes the summary request in its place; `priced` is the
+    /// and `summarizer`, when given, takes the summary request in its place; `cost` is the
     /// summarizer's. `pre` is a check run once a summary is due.
     pub async fn compact_logged_via(
         &self,
         main: &DynModel<Completion>,
         summarizer: Option<&DynModel<Completion>>,
-        priced: bool,
+        cost: CostBasis,
         reason: CompactReason,
         approver: &dyn Approver,
         pre: Option<PreSummary<'_>>,
@@ -577,7 +578,8 @@ impl Session {
         let span = tracing::info_span!(
             target: "fontaine::telemetry",
             "fontaine.compaction",
-            model.priced = priced,
+            model.priced = cost.counted(),
+            model.estimated = cost.estimated(),
             compaction.reason = why,
         );
         let result = tracing::Instrument::instrument(
@@ -585,7 +587,7 @@ impl Session {
             span,
         )
         .await;
-        if priced {
+        if cost.counted() {
             result
         } else {
             result.without_cost()

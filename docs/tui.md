@@ -192,7 +192,7 @@ data, plus Fontaine extensions:
 | `recent_verdicts` | Last 5 gate decisions with a guardian verdict: `{tool, decision, rule, guardian_verdict}` |
 | `account_usage` | Main and guardian account usage windows, in the same shape as headless output |
 | `context_window.used_percentage` | Context used as a percentage of the model's window, when known |
-| `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced |
+| `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced; for a run priced by estimate (a `databricks` account) this is a list-price estimate |
 
 The `[statusline]` section is accepted only in the user file; it cannot be set from project,
 project-local or `--settings` files, because the command runs arbitrary code.
@@ -868,8 +868,11 @@ a model named directly, and the guardian, show the reference alone. Compaction c
 
 A dollar figure covers only the calls that had a price. A source with none shows `n/a`, and when
 some calls had no price (an account whose models the catalog does not price) the figure is a lower
-bound and ends with ` · N unpriced tok`, the input and output tokens of those calls. A session
-cost budget set under `[agents]` adds a last line with the spend against it.
+bound and ends with ` · N unpriced tok`, the input and output tokens of those calls. A figure that
+is a list-price estimate rather than a bill — every priced call on a `databricks` account — ends in
+` est.`, as in `$0.0066 est.`, so it is never read as what the workspace charged. A session cost
+budget set under `[agents]` adds a last line with the spend against it, marked the same way when
+the spend is an estimate.
 
 The report does not count the estimate for a guardian request a composition dropped before its
 answer came back, the LLM tool-result scanner's calls, the local screen calls of a guardian
@@ -1365,10 +1368,12 @@ shows in place of the spend when a cost budget is set but no priced call has bee
 as for a model with no known price. Tokens that carried no price (an unpriced account's main model next to its priced guardian
 calls) are split out: the priced tokens sit next to their price and the rest follow as
 `N unpriced tok`, as in `110k tok · $0.0066 · 128k unpriced tok`. The dollar figure is a lower
-bound, and a cost budget still counts only the priced spend. With a token budget the first figure
-stays the total, since the cap binds on it (`238k / 500k tok · $0.0066 · 128k unpriced tok`). An
-agent with no priced call reads `4.9M unpriced tok`, or `cost n/a · 4.9M unpriced tok` under a cost
-budget. Displayed counts are compact (`999`, `1.2k`, `1.2M`), and agent spend and writing counts
+bound, and a cost budget still counts only the priced spend. A figure that is a list-price estimate
+rather than a bill (a `databricks` account) ends in ` est.`, as in `110k tok · $0.0066 est. / $2.00`
+or `$0.0021 est. / $2.00`, and a sum holding one estimate is marked. With a token budget the first
+figure stays the total, since the cap binds on it (`238k / 500k tok · $0.0066 · 128k unpriced
+tok`). An agent with no priced call reads `4.9M unpriced tok`, or `cost n/a · 4.9M unpriced tok`
+under a cost budget. Displayed counts are compact (`999`, `1.2k`, `1.2M`), and agent spend and writing counts
 drop a trailing `.0` (`200k`, not `200.0k`); the ledger, the audit
 log and JSON output keep exact values. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the

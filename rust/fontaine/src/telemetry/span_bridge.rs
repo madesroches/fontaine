@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use rig_core::catalog::Catalog;
+use fontaine_sdk::core::providers::listed_price;
 use rig_core::completion::Usage;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -119,10 +119,10 @@ impl<E: Export> SpanBridge<E> {
         fields: &[(String, String)],
         elapsed: std::time::Duration,
         query_source: &'static str,
-        priced: bool,
+        billing: Billing,
     ) {
         match name {
-            "chat" | "generate_content" => self.completion(fields, elapsed, query_source, priced),
+            "chat" | "generate_content" => self.completion(fields, elapsed, query_source, billing),
             "fontaine.session" => self.export.metric(Metric {
                 name: "fontaine.session.count",
                 unit: "{session}",
@@ -152,7 +152,7 @@ impl<E: Export> SpanBridge<E> {
         fields: &[(String, String)],
         elapsed: std::time::Duration,
         query_source: &'static str,
-        priced: bool,
+        billing: Billing,
     ) {
         let input = count(fields, "gen_ai.usage.input_tokens");
         let output = count(fields, "gen_ai.usage.output_tokens");
@@ -174,11 +174,14 @@ impl<E: Export> SpanBridge<E> {
             .cache_creation_input_tokens(cache_write);
         // The catalog may price a model that the account bills outside per-token prices, as a
         // gateway serving an Anthropic-wire model does.
-        let cost = if priced {
+        let cost = if billing.priced {
             cost_usd(provider, model, &usage)
         } else {
             None
         };
+        // The figure describes a list price rather than a bill; `estimated` keeps its other
+        // meaning, the guessed spend of a guardian request a screen dropped.
+        let basis = billing.list_price().then_some(LIST_PRICE);
 
         for (kind, tokens) in [
             ("input", input),
@@ -201,14 +204,18 @@ impl<E: Export> SpanBridge<E> {
             }
         }
         if let Some(cost) = cost {
+            let mut attrs = vec![
+                ("model", model.to_string()),
+                ("query_source", query_source.to_string()),
+            ];
+            if let Some(basis) = basis {
+                attrs.push(("cost.basis", basis.to_string()));
+            }
             self.export.metric(Metric {
                 name: "fontaine.cost.usage",
                 unit: "USD",
                 value: MetricValue::Float(cost),
-                attrs: vec![
-                    ("model", model.to_string()),
-                    ("query_source", query_source.to_string()),
-                ],
+                attrs,
             });
         }
         tracing::info!(
@@ -218,6 +225,7 @@ impl<E: Export> SpanBridge<E> {
             input_tokens = input,
             output_tokens = output,
             cost_usd = cost,
+            cost.basis = basis,
             duration_ms = elapsed.as_millis() as u64,
             query_source = query_source,
             "api_request"
@@ -266,12 +274,37 @@ impl<E: Export> SpanBridge<E> {
     }
 }
 
-/// The catalog price of `usage` for `provider`'s `model`, or `None` when rig has no price.
+/// The `cost.basis` of a figure that is a list price rather than a bill.
+const LIST_PRICE: &str = "list-price";
+
+/// The catalog price of `usage` for `provider`'s `model`, or `None` when no entry lists one.
 pub fn cost_usd(provider: &str, model: &str, usage: &Usage) -> Option<f64> {
-    let resolved = Catalog::builtin()
-        .resolve(&format!("{provider}/{model}"))
-        .ok()?;
-    resolved.spec.pricing?.cost(usage).map(|cost| cost.total)
+    listed_price(provider, model)?
+        .cost(usage)
+        .map(|cost| cost.total)
+}
+
+/// What the nearest span naming a billing said about a call's cost.
+#[derive(Clone, Copy, Debug)]
+struct Billing {
+    /// Whether the cost is counted at all.
+    priced: bool,
+    /// Whether the figure is a list-price estimate.
+    estimated: bool,
+}
+
+impl Billing {
+    /// A call outside any span that says: counted, at whatever the catalog knows.
+    fn unstated() -> Billing {
+        Billing {
+            priced: true,
+            estimated: false,
+        }
+    }
+
+    fn list_price(self) -> bool {
+        self.priced && self.estimated
+    }
 }
 
 impl<E: Export> SpanBridge<E> {
@@ -413,22 +446,27 @@ where
         } else {
             "main"
         };
-        // The nearest span that says what its model bills by decides.
-        let priced = span
+        // The nearest span that says what its model bills by decides, and an estimate is read
+        // from that same span only: a catalog-billed call under an estimate-priced one is no
+        // estimate itself.
+        let billing = span
             .scope()
             .skip(1)
             .find_map(|ancestor| {
                 let extensions = ancestor.extensions();
                 let fields = &extensions.get::<BridgeSpan>()?.fields;
-                lookup(fields, "model.priced").map(|v| v != "false")
+                Some(Billing {
+                    priced: lookup(fields, "model.priced").map(|v| v != "false")?,
+                    estimated: lookup(fields, "model.estimated") == Some("true"),
+                })
             })
-            .unwrap_or(true);
+            .unwrap_or_else(Billing::unstated);
         self.derive(
             span.name(),
             &bridge.fields,
             bridge.started.elapsed(),
             query_source,
-            priced,
+            billing,
         );
     }
 }
@@ -595,6 +633,119 @@ mod tests {
             .find(|e| e.message() == "api_request")
             .unwrap();
         assert!(!event.fields.contains_key("cost_usd"));
+    }
+
+    #[test]
+    fn a_dbx_completion_is_priced_from_the_served_vendors_list_price() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let turn = tracing::info_span!(
+                target: TARGET,
+                "fontaine.interaction",
+                model.priced = true,
+                model.estimated = true,
+            );
+            let _entered = turn.enter();
+            completion("databricks", "system.ai.claude-haiku-5-5");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let cost =
+            metric(&metrics, "fontaine.cost.usage", None).expect("a listed model has a price");
+        assert!((cost.1 - 0.00035).abs() < 1e-9, "{}", cost.1);
+        assert!(has(&cost.2, "cost.basis", LIST_PRICE));
+        let events = capture.events();
+        let event = events
+            .iter()
+            .find(|e| e.message() == "api_request")
+            .expect("the event");
+        assert_eq!(event.fields["cost.basis"], LIST_PRICE);
+    }
+
+    #[test]
+    fn a_gateway_gemini_completion_is_priced_from_the_served_models_entry() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let turn = tracing::info_span!(
+                target: TARGET,
+                "fontaine.interaction",
+                model.priced = true,
+                model.estimated = true,
+            );
+            let _entered = turn.enter();
+            // rig's Gemini wire names the model `gcp.gemini`, so only the gateway id prices it.
+            completion("gcp.gemini", "system.ai.gemini-3-5-flash");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let cost =
+            metric(&metrics, "fontaine.cost.usage", None).expect("a listed model has a price");
+        assert!(has(&cost.2, "cost.basis", LIST_PRICE));
+        let events = capture.events();
+        let event = events
+            .iter()
+            .find(|e| e.message() == "api_request")
+            .expect("the event");
+        assert_eq!(event.fields["cost.basis"], LIST_PRICE);
+    }
+
+    #[test]
+    fn the_older_databricks_prefix_is_priced_too() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            completion("databricks", "databricks-claude-haiku-5-5");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let cost =
+            metric(&metrics, "fontaine.cost.usage", None).expect("a listed model has a price");
+        assert!((cost.1 - 0.00035).abs() < 1e-9, "{}", cost.1);
+        assert!(!has(&cost.2, "cost.basis", LIST_PRICE));
+    }
+
+    #[test]
+    fn an_unlisted_or_shape_derived_gateway_model_has_no_cost() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            for model in ["system.ai.glm-5-3", "system.ai.gemini-3-pro"] {
+                completion("databricks", model);
+            }
+        });
+        let metrics = recorder.0.lock().unwrap();
+        assert!(metric(&metrics, "fontaine.cost.usage", None).is_none());
+        let events = capture.events();
+        for event in events.iter().filter(|e| e.message() == "api_request") {
+            assert!(!event.fields.contains_key("cost_usd"), "{event:?}");
+            assert!(!event.fields.contains_key("cost.basis"), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_catalog_billed_call_under_an_estimate_span_is_no_estimate() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let turn = tracing::info_span!(
+                target: TARGET,
+                "fontaine.interaction",
+                model.priced = true,
+                model.estimated = true,
+            );
+            let _entered = turn.enter();
+            let child = tracing::info_span!(
+                target: TARGET,
+                "fontaine.subagent",
+                model.priced = true,
+                model.estimated = false,
+            );
+            let _inner = child.enter();
+            completion("openai", "gpt-4o-mini");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let cost = metric(&metrics, "fontaine.cost.usage", None).expect("a priced model");
+        assert!(!has(&cost.2, "cost.basis", LIST_PRICE));
+        let events = capture.events();
+        let event = events
+            .iter()
+            .find(|e| e.message() == "api_request")
+            .expect("the event");
+        assert!(!event.fields.contains_key("cost.basis"), "{event:?}");
     }
 
     #[test]

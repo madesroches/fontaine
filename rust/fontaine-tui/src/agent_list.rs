@@ -113,6 +113,7 @@ pub fn rows(
                     cost_usd: row.spend.cost_usd,
                     cost_budget: row.budget.cost_usd,
                     unpriced_tokens: row.spend.unpriced_tokens,
+                    estimated: row.spend.estimated,
                 }),
                 unpriced: row.spend.unpriced_tokens > 0,
                 writing: row.writing,
@@ -555,6 +556,7 @@ mod tests {
             output_tokens: 63_024,
             cost_usd: Some(0.0519),
             unpriced_tokens: 4_850_000,
+            estimated: false,
         };
         let rows = rows(&[worker], None, &HashSet::new(), &HashSet::new(), now, 0);
         assert_eq!(rows[1].spend, "13k tok · $0.0519 · 4.9M unpriced tok");
@@ -577,6 +579,7 @@ mod tests {
             output_tokens: 63_024,
             cost_usd: Some(0.0519),
             unpriced_tokens: 4_850_000,
+            estimated: false,
         };
         let mut rows = rows(&[worker], None, &HashSet::new(), &HashSet::new(), now, 0);
         rows[1].agent_type = "general-purpose".into();

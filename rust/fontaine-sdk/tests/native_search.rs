@@ -8,7 +8,9 @@ use common::World;
 use common::runtime::build_with_models;
 use fontaine_sdk::core::agent::AgentRuntime;
 use fontaine_sdk::core::config::{AccountKind, PermissionMode};
-use fontaine_sdk::core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
+use fontaine_sdk::core::models::{
+    CostBasis, GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
+};
 use fontaine_sdk::core::permission_rules::{RuleSource, parse_rule};
 use fontaine_sdk::core::turn::{Flow, TurnFailure, TurnOutcome, TurnParams, run_turn};
 use http::StatusCode;
@@ -70,7 +72,7 @@ async fn turn(built: &Built) -> TurnOutcome {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: built.runtime.native_search_active(),

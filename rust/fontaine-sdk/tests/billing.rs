@@ -6,11 +6,13 @@ mod common;
 
 use common::World;
 use common::runtime::{build, build_with_document};
+use fontaine_sdk::agents::budget::Spend;
 use fontaine_sdk::core::config::PermissionMode::Manual;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{
     Drive, Flow, SessionEvent, TurnOutcome, TurnParams, drive, run_turn,
 };
-use fontaine_sdk::core::usage_ledger::UsageSource;
+use fontaine_sdk::core::usage_ledger::{Bucket, UsageSource};
 use rig_core::completion::{Cost, Usage};
 use rig_core::test_utils::{MockError, MockStreamEvent, mock_final};
 use serde_json::json;
@@ -24,7 +26,7 @@ fn costed_answer() -> Vec<MockStreamEvent> {
     ]
 }
 
-async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
+async fn root_turn(cost: CostBasis) -> (Option<f64>, Spend, Bucket) {
     let w = World::new();
     let built = build(&w, Manual, vec![costed_answer()], true);
     let mut reported = None;
@@ -43,7 +45,7 @@ async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced,
+            cost,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -58,19 +60,35 @@ async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
         .runtime
         .state
         .agents()
-        .spend_of(fontaine_sdk::tools::gate::ROOT_AGENT)
-        .cost_usd;
-    (reported.expect("a usage event"), spent)
+        .spend_of(fontaine_sdk::tools::gate::ROOT_AGENT);
+    let bucket = built.runtime.state.usage_ledger().bucket(UsageSource::Main);
+    (reported.expect("a usage event"), spent, bucket)
 }
 
 #[tokio::test]
 async fn a_priced_turn_counts_the_cost_the_call_reported() {
-    assert_eq!(root_turn(true).await, (Some(0.25), Some(0.25)));
+    let (reported, spent, _) = root_turn(CostBasis::Billed).await;
+    assert_eq!(reported, Some(0.25));
+    assert_eq!(spent.cost_usd, Some(0.25));
+    assert!(!spent.estimated);
 }
 
 #[tokio::test]
 async fn an_unpriced_turn_reports_usage_and_spend_without_a_cost() {
-    assert_eq!(root_turn(false).await, (None, None));
+    let (reported, spent, _) = root_turn(CostBasis::Unpriced).await;
+    assert_eq!(reported, None);
+    assert_eq!(spent.cost_usd, None);
+    assert!(!spent.estimated);
+}
+
+#[tokio::test]
+async fn an_estimated_turn_keeps_the_cost_and_marks_the_spend_and_the_bucket() {
+    let (reported, spent, bucket) = root_turn(CostBasis::Estimated).await;
+    assert_eq!(reported, Some(0.25));
+    assert_eq!(spent.cost_usd, Some(0.25));
+    assert!(spent.estimated);
+    assert_eq!(bucket.cost_usd, Some(0.25));
+    assert!(bucket.estimated);
 }
 
 #[tokio::test]
@@ -88,7 +106,7 @@ async fn an_unpriced_subagent_adds_tokens_but_no_cost_to_the_subagent_total() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: false,
+            cost: CostBasis::Unpriced,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -141,7 +159,7 @@ async fn writing_during_a_step(stop_at_delta: bool) -> (Vec<u64>, u64) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -191,7 +209,7 @@ async fn a_failed_step_leaves_no_writing_behind() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -265,7 +283,7 @@ async fn writing_across_a_tool_call() -> Vec<u64> {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -311,7 +329,7 @@ async fn argument_characters_count_toward_writing_at_the_next_delta() {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -348,7 +366,7 @@ async fn reasoning_events(turn: Vec<MockStreamEvent>) -> Vec<String> {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
@@ -440,7 +458,7 @@ async fn ledger_after_a_turn(
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

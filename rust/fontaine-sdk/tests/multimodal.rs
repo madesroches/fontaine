@@ -10,7 +10,9 @@ use common::runtime::build_with_models;
 use fontaine_sdk::core::agent::AgentRuntime;
 use fontaine_sdk::core::config::AccountKind;
 use fontaine_sdk::core::config::PermissionMode::Manual;
-use fontaine_sdk::core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
+use fontaine_sdk::core::models::{
+    CostBasis, GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
+};
 use fontaine_sdk::core::turn::{
     Attachment, AttachmentMedia, Flow, TurnOutcome, TurnParams, run_turn,
 };
@@ -91,7 +93,7 @@ async fn run(
             attachments,
             modalities,
             max_turns: Some(1),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

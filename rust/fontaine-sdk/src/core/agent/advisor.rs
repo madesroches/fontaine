@@ -61,12 +61,10 @@ impl ReportedAdvisor {
                     let served = Served::new(role.as_deref(), &handle.reference);
                     let transcript = &transcript;
                     async move {
-                        let asked = SideQuestion::advisor(
-                            handle.completion.clone(),
-                            handle.catalog_billed(),
-                        )
-                        .ask(question, transcript)
-                        .await;
+                        let asked =
+                            SideQuestion::advisor(handle.completion.clone(), handle.cost_basis())
+                                .ask(question, transcript)
+                                .await;
                         let usage = match &asked {
                             Ok(answer) => Some(&answer.usage),
                             Err(e) => e.usage(),
@@ -78,6 +76,7 @@ impl ReportedAdvisor {
                                 usage,
                                 true,
                                 &served,
+                                handle.cost_basis(),
                             );
                         }
                         asked.map(|answer| (answer.text, served))

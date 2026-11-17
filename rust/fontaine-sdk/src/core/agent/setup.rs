@@ -51,6 +51,7 @@ use crate::core::user_hooks::{
     self, HookDeps, HookLayer, HookProcess, LifecycleHooks, LivePlugins, PostHookStage,
     SubagentGate, TeamGate, UserHook,
 };
+use crate::cost::CostBasis;
 
 /// The guardian a session runs with, from the model that was resolved for it.
 pub fn build_guardian(
@@ -74,10 +75,7 @@ pub fn build_guardian_telling(
         confidence_threshold: config.guardian.confidence_threshold,
         cache: config.guardian.cache,
         profile,
-        priced: match model {
-            Some(GuardianModel::Ready(handle)) => handle.catalog_billed(),
-            _ => true,
-        },
+        cost: model.map_or(CostBasis::Billed, GuardianModel::cost_basis),
     };
     match model {
         Some(GuardianModel::Ready(handle)) => {
@@ -792,11 +790,13 @@ fn hook_deps(
         guardian: Arc::new(RwLock::new(setup.models.guardian.clone())),
         approver: setup.approver.clone(),
         usage: Some(Arc::new(move |agent, usage, answered| {
+            let guardian = usage_state.guardian();
             usage_state.add_guardian_usage_answered(
                 agent,
                 usage,
                 answered,
-                &Served::direct(usage_state.guardian().label()),
+                &Served::direct(guardian.label()),
+                guardian.settings().cost,
             );
         })),
         pause: Some(state.usage_pause().clone()),

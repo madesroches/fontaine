@@ -216,8 +216,11 @@ A session id from Claude Code cannot be resumed.
   `result.permission_denials`.
 - `result` has Claude's `subtype`s (`success`, `error_max_turns`, `error_max_budget_usd`,
   `error_during_execution`, `error_max_structured_output_retries`) and Fontaine's
-  `error_usage_limit`. `total_cost_usd` is `null` when no model is priced. `modelUsage` includes
-  the guardian and subagent models, and `fontaine_usage` carries the `headless-v1` buckets.
+  `error_usage_limit`. `total_cost_usd` is `null` when no model is priced, and for a run priced by
+  estimate — a `databricks` account, whose workspace bills in DBUs — it and each
+  `modelUsage[..].costUSD` are a list-price estimate of what the tokens would have cost on the
+  served vendor's own API. `modelUsage` includes the guardian and subagent models, and
+  `fontaine_usage` carries the `headless-v1` buckets.
 - An interrupted turn ends with `subtype: "error_during_execution"`, `is_error: true` and a
   `terminal_reason`, except when the last message was already assistant text.
 

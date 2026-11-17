@@ -141,7 +141,7 @@ pub async fn connect(
         // A cached verdict would hide the latency being measured.
         cache: false,
         profile,
-        priced: handle.catalog_billed(),
+        cost: handle.cost_basis(),
     };
     let mut snapshot = snapshot;
     if let Some(value) = env(&config.guardian.scanner_hf_token_env) {

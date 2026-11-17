@@ -5,12 +5,13 @@
 mod common;
 
 use common::{allow, guardian_at, request};
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::guardian::Settings;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-async fn adjudicate_with(priced: bool) -> Option<f64> {
+async fn adjudicate_with(cost: CostBasis) -> Option<f64> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -37,7 +38,7 @@ async fn adjudicate_with(priced: bool) -> Option<f64> {
         &server.uri(),
         "go/scripted",
         Settings {
-            priced,
+            cost,
             cache: false,
             ..Settings::default()
         },
@@ -49,10 +50,10 @@ async fn adjudicate_with(priced: bool) -> Option<f64> {
 
 #[tokio::test]
 async fn a_priced_guardian_reports_the_cost_the_provider_sent() {
-    assert_eq!(adjudicate_with(true).await, Some(0.5));
+    assert_eq!(adjudicate_with(CostBasis::Billed).await, Some(0.5));
 }
 
 #[tokio::test]
 async fn an_unpriced_guardian_reports_usage_without_a_cost() {
-    assert_eq!(adjudicate_with(false).await, None);
+    assert_eq!(adjudicate_with(CostBasis::Unpriced).await, None);
 }

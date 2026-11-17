@@ -21,7 +21,7 @@ use crate::core::goal::{
 };
 use crate::core::ledger::{GoalEvent, Record};
 use crate::core::model_roles::{COMPACTION_ROLE, ModelChain};
-use crate::core::models::{ModelError, ModelHandle, ModelRef, Switcher};
+use crate::core::models::{GuardianModel, ModelError, ModelHandle, ModelRef, Switcher};
 use crate::core::permissions::Approver;
 use crate::core::session::{
     CONVERSATION_LOG, CompactReason, CompactResult, PreSummary, SummaryGate,
@@ -30,6 +30,7 @@ use crate::core::side_question::{Answer, SideQuestion, SideQuestionError, clean_
 use crate::core::turn::TurnOutcome;
 use crate::core::usage_ledger::{Served, UsageSource};
 use crate::core::user_hooks::CompactGate;
+use crate::cost::CostBasis;
 
 /// How much of a job's command or description a line of background work keeps.
 const WORK_LINE_CHARS: usize = 200;
@@ -70,7 +71,7 @@ pub struct PreparedSuggestion {
     transcript: String,
     last_user_message: Option<String>,
     model: DynModel<Completion>,
-    billed: bool,
+    cost: CostBasis,
     served: Served,
     state: Arc<SessionState>,
 }
@@ -80,7 +81,7 @@ impl PreparedSuggestion {
     /// `None` for no suggestion: a failure or a timeout is advisory here, nothing a person
     /// would act on.
     pub async fn run(self) -> Option<String> {
-        let asked = SideQuestion::prompt_suggestion(self.model, self.billed)
+        let asked = SideQuestion::prompt_suggestion(self.model, self.cost)
             .ask("", &self.transcript)
             .await;
         let usage = match &asked {
@@ -94,6 +95,7 @@ impl PreparedSuggestion {
                 usage,
                 true,
                 &self.served,
+                self.cost,
             );
         }
         clean_suggestion(&asked.ok()?.text, self.last_user_message.as_deref())
@@ -249,7 +251,7 @@ impl AgentRuntime {
                 .compact_logged_via(
                     &main.completion,
                     None,
-                    main.catalog_billed(),
+                    main.cost_basis(),
                     reason,
                     self.approver(),
                     Some(&before),
@@ -258,6 +260,7 @@ impl AgentRuntime {
             self.record_compaction(
                 &result,
                 &Served::new(self.models.main_chain.role.as_deref(), &main.reference),
+                main.cost_basis(),
             );
             if matches!(
                 result,
@@ -281,10 +284,16 @@ impl AgentRuntime {
         result
     }
 
-    fn record_compaction(&self, result: &CompactResult, served: &Served) {
+    fn record_compaction(&self, result: &CompactResult, served: &Served, cost: CostBasis) {
         if let Some(usage) = result.usage() {
-            self.state
-                .record_usage(UsageSource::Compaction, ROOT_AGENT, usage, true, served);
+            self.state.record_usage(
+                UsageSource::Compaction,
+                ROOT_AGENT,
+                usage,
+                true,
+                served,
+                cost,
+            );
         }
     }
 
@@ -312,19 +321,20 @@ impl AgentRuntime {
                 |handle| {
                     let reason = reason.clone();
                     let served = Served::new(role.as_deref(), &handle.reference);
+                    let cost = handle.cost_basis();
                     async move {
                         let result = self
                             .session
                             .compact_logged_via(
                                 &main.completion,
                                 Some(&handle.completion),
-                                handle.catalog_billed(),
+                                cost,
                                 reason,
                                 self.approver(),
                                 Some(pre),
                             )
                             .await;
-                        self.record_compaction(&result, &served);
+                        self.record_compaction(&result, &served, cost);
                         match result {
                             CompactResult::Failed {
                                 falls_through: true,
@@ -359,7 +369,7 @@ impl AgentRuntime {
             .await
             .map_err(|e| SideQuestionError::caused_by("the wait for the usage window ended", e))?;
         let main = &self.models.main;
-        let asked = SideQuestion::new(main.completion.clone(), main.catalog_billed())
+        let asked = SideQuestion::new(main.completion.clone(), main.cost_basis())
             .ask(question, &transcript_of(&conversation))
             .await;
         let usage = match &asked {
@@ -373,6 +383,7 @@ impl AgentRuntime {
                 usage,
                 true,
                 &Served::direct(&main.reference),
+                main.cost_basis(),
             );
         }
         asked
@@ -398,7 +409,7 @@ impl AgentRuntime {
             transcript: visible_transcript_of(&conversation),
             last_user_message: last_user_text(&conversation),
             model: main.completion.clone(),
-            billed: main.catalog_billed(),
+            cost: main.cost_basis(),
             served: Served::direct(&main.reference),
             state: Arc::clone(&self.state),
         })
@@ -605,8 +616,13 @@ impl AgentRuntime {
             .guardian
             .as_ref()
             .map_or_else(Served::default, |model| Served::direct(model.reference()));
+        let cost = self
+            .models
+            .guardian
+            .as_ref()
+            .map_or(CostBasis::Billed, GuardianModel::cost_basis);
         self.state
-            .add_goal_usage(&judged.usage, judged.answered, &served);
+            .add_goal_usage(&judged.usage, judged.answered, &served, cost);
         judged.evaluation
     }
 

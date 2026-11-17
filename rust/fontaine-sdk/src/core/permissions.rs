@@ -49,6 +49,7 @@ use crate::core::usage_ledger::Served;
 use crate::core::usage_pause::PauseInfo;
 use crate::core::user_config;
 use crate::core::user_hooks::LivePlugins;
+use crate::cost::CostBasis;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -2238,15 +2239,27 @@ impl PermissionPipeline {
                     let screened = self.note_composition(&stage, &composed, &guardian);
                     if let Some(usage) = &composed.llm_usage {
                         let served = Served::direct(guardian.label());
-                        self.state
-                            .add_guardian_usage(cx.call.agent, usage, true, &served);
+                        self.state.add_guardian_usage(
+                            cx.call.agent,
+                            usage,
+                            true,
+                            &served,
+                            guardian.settings().cost,
+                        );
                     }
                     // Reads that share a request share its usage, which one of them carries.
+                    // What a reader reported is counted as reported: the guardian model's basis
+                    // says nothing about it.
                     for read in &composed.reads {
                         if let Some(usage) = &read.usage {
                             let served = Served::direct(&read.model);
-                            self.state
-                                .add_guardian_usage(cx.call.agent, usage, true, &served);
+                            self.state.add_guardian_usage(
+                                cx.call.agent,
+                                usage,
+                                true,
+                                &served,
+                                CostBasis::Billed,
+                            );
                         }
                     }
                     (composed.decided, Some(screened))
@@ -2310,6 +2323,7 @@ impl PermissionPipeline {
                 adjudication.transport.is_some() && !adjudication.cache_hit,
                 false,
                 &Served::direct(guardian.label()),
+                guardian.settings().cost,
             );
             let account = crate::core::usage_ledger::account_of(guardian.label());
             match self
@@ -2377,6 +2391,7 @@ impl PermissionPipeline {
             adjudication.transport.is_some() && !adjudication.cache_hit,
             adjudication.fail_closed.is_none(),
             &Served::direct(self.state.guardian().label()),
+            self.state.guardian().settings().cost,
         );
         self.settle(cx, adjudication, screened.as_ref()).await
     }
@@ -2405,7 +2420,7 @@ impl PermissionPipeline {
                     input_tokens,
                     provider,
                     model,
-                    priced: guardian.settings().priced,
+                    priced: guardian.settings().cost.counted(),
                 })
         });
         Screened {

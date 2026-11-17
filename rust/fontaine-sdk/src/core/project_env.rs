@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::config::{AutoMode, PermissionMode};
 use crate::core::notice::Notice;
 use crate::core::owner_only;
+use crate::cost::CostBasis;
 
 pub mod discover;
 pub mod sample;
@@ -365,8 +366,8 @@ pub struct ScanRun {
     pub proposals: Proposals,
     /// The model that answered.
     pub served: crate::core::models::ModelRef,
-    /// Whether its cost is counted.
-    pub billed: bool,
+    /// How its cost is treated.
+    pub cost: CostBasis,
     /// The entry the list started on, when another one answered.
     pub fell_from: Option<crate::core::models::ModelRef>,
 }
@@ -389,17 +390,17 @@ pub async fn propose_on_chain(
                 let label = handle.reference.to_string();
                 let settings = scan_settings(&handle, timeout_secs);
                 let proposals = propose(&handle.completion, &label, &settings, sample).await?;
-                Ok((proposals, handle.reference.clone(), handle.catalog_billed()))
+                Ok((proposals, handle.reference.clone(), handle.cost_basis()))
             },
             |e: &env_scan::ScanError| crate::core::turn::error_falls_through(e),
             |_, e| env_scan::ScanError::Model(Box::new(e)),
         )
         .await?;
-    let (proposals, served, billed) = through.value;
+    let (proposals, served, cost) = through.value;
     Ok(ScanRun {
         proposals,
         served,
-        billed,
+        cost,
         fell_from: through.from.map(|from| chain.entries[from].clone()),
     })
 }
@@ -562,12 +563,12 @@ impl ScanStep {
     pub fn proposed(
         proposals: Proposals,
         label: &str,
-        billed: bool,
+        cost: CostBasis,
     ) -> (ScanStep, Option<(ScanFacts, usize)>) {
         let count = proposals.scan.count();
         let step = ScanStep {
             dropped: proposals.dropped,
-            usage: Some(format!("{label}: {}", usage_line(&proposals.usage, billed))),
+            usage: Some(format!("{label}: {}", usage_line(&proposals.usage, cost))),
             ..ScanStep::without(ScanStatus::Skipped(
                 "the model proposed nothing".to_string(),
             ))
@@ -636,15 +637,19 @@ pub fn scan_settings(
     }
 }
 
-pub fn usage_line(usage: &rig_core::completion::Usage, billed: bool) -> String {
+pub fn usage_line(usage: &rig_core::completion::Usage, cost: CostBasis) -> String {
     let tokens = |n: Option<u64>| n.map_or("unknown".to_string(), |n| n.to_string());
     let mut line = format!(
         "{} input tokens, {} output tokens",
         tokens(usage.input_tokens),
         tokens(usage.output_tokens)
     );
-    if let Some(cost) = usage.cost.filter(|_| billed) {
-        line.push_str(&format!(", ${:.4}", cost.total));
+    if let Some(spent) = usage.cost.filter(|_| cost.counted()) {
+        line.push_str(&format!(
+            ", ${:.4}{}",
+            spent.total,
+            crate::agents::budget::est_mark(cost.estimated())
+        ));
     }
     line
 }

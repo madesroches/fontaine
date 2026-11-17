@@ -189,7 +189,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             let task = {
                 let state = runtime.state.clone();
                 let (model, label) = (handle.completion.clone(), label.clone());
-                let (served, billed) = (handle.reference.clone(), handle.catalog_billed());
+                let (served, cost) = (handle.reference.clone(), handle.cost_basis());
                 tokio::spawn(async move {
                     let sample = tokio::task::spawn_blocking(move || {
                         sample::gather(&repo_root, &project_settings)
@@ -203,7 +203,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     Ok(project_env::ScanRun {
                         proposals,
                         served,
-                        billed,
+                        cost,
                         fell_from: None,
                     })
                 })
@@ -236,7 +236,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice(fall_through_notice("setup", from, &run.served, "quota"));
         }
         let label = run.served.to_string();
-        let (mut step, proposed) = ScanStep::proposed(run.proposals, &label, run.billed);
+        let (mut step, proposed) = ScanStep::proposed(run.proposals, &label, run.cost);
         let Some((scan, count)) = proposed else {
             return Ok(step);
         };

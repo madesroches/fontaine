@@ -15,6 +15,7 @@ use fontaine_sdk::core::agent::{Delivered, MessageRefusal};
 use fontaine_sdk::core::checkpoint::RewindWhat;
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
 use fontaine_sdk::tools::gate::ROOT_AGENT;
 use rig_core::completion::Usage;
@@ -73,7 +74,7 @@ async fn root_turn(built: &Built, prompt: &str) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

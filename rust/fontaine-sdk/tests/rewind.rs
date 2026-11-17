@@ -10,6 +10,7 @@ use common::runtime::{Built, build};
 use fontaine_sdk::core::checkpoint::{RewindWhat, Step, StoreCapture};
 use fontaine_sdk::core::config::{Checkpoints, PermissionMode::AcceptEdits};
 use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::permissions::DenyAll;
 use fontaine_sdk::core::session::{CONVERSATION_LOG, Session};
 use fontaine_sdk::core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
@@ -58,7 +59,7 @@ async fn say(built: &Built, prompt: &str) {
             attachments: Vec::new(),
             modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
-            priced: true,
+            cost: CostBasis::Billed,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,

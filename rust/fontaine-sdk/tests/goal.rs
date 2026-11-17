@@ -473,7 +473,7 @@ fn the_cost_cap_reads_the_stretch_spend_and_is_inactive_without_a_price() {
     f.root_call();
     goal.turn_ended(Some(&answer()));
     let over = not_met(&goal, &caps, spend(0, Some(11.2)), true);
-    assert_eq!(over.step, Step::Pause(PauseReason::CostCap(1.0)));
+    assert_eq!(over.step, Step::Pause(PauseReason::CostCap(1.0, false)));
 
     goal.user_prompt(spend(0, Some(11.2)), Duration::ZERO);
     f.root_call();
@@ -787,7 +787,7 @@ fn a_due_check_in_over_the_cost_cap_pauses_and_is_inactive_without_a_price() {
     let at = at + minutes(120);
     assert_eq!(
         goal.take_step(&work(), at, true, &caps, spend(0, Some(11.2)), true),
-        Some(Due::Paused(PauseReason::CostCap(1.0)))
+        Some(Due::Paused(PauseReason::CostCap(1.0, false)))
     );
 }
 
@@ -1219,7 +1219,7 @@ fn the_caps_are_checked_after_turns_and_cost_and_unset_ones_change_nothing() {
     f.root_call();
     goal.turn_ended(Some(&answer()));
     let cost = not_met(&goal, &caps, spend(1_000, Some(5.0)), true);
-    assert_eq!(cost.step, Step::Pause(PauseReason::CostCap(1.0)));
+    assert_eq!(cost.step, Step::Pause(PauseReason::CostCap(1.0, false)));
 
     goal.user_prompt(Spend::default(), Duration::ZERO);
     std::thread::sleep(Duration::from_millis(5));

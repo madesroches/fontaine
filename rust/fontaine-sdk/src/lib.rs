@@ -33,6 +33,7 @@
 pub mod agents;
 pub mod assemble;
 pub mod core;
+pub(crate) mod cost;
 pub mod error;
 pub mod events;
 pub mod guardian;

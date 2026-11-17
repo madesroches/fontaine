@@ -66,7 +66,7 @@ pub fn llm_backend(guardian: Option<&GuardianModel>, timeout: Duration) -> Backe
     match guardian {
         Some(GuardianModel::Ready(handle)) => {
             let mut scanner =
-                LlmScanner::new(handle.completion.clone(), timeout, handle.catalog_billed())
+                LlmScanner::new(handle.completion.clone(), timeout, handle.cost_basis())
                     .with_additional_params(handle.thinking_off.clone());
             if let Some(probe) = &handle.output_probe {
                 scanner = scanner.with_output_probe(probe.clone());

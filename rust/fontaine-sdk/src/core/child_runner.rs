@@ -40,7 +40,7 @@ use tracing::Instrument;
 use crate::core::agent::apply_common;
 use crate::core::agent::deferred::{DeferredAdvertiser, child_section};
 use crate::core::fork_context::{FORK_NOTE, ParentContext};
-use crate::core::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
+use crate::core::gate::{AgentViewEvent, ChildRestrictions, SessionState};
 use crate::core::ledger::Record;
 use crate::core::model_roles::{
     FALLBACK_ROLE, ModelChain, RoleChains, Roles, Tried, fall_back_notice, fall_through_notice,
@@ -55,6 +55,7 @@ use crate::core::turn::{
 };
 use crate::core::turn_recovery::{InflightHook, RecoveryHook};
 use crate::core::usage_ledger::Served;
+use crate::cost::CostBasis;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -645,7 +646,8 @@ impl ChildRun {
             "fontaine.subagent",
             agent.id = shared.id.as_str(),
             agent.type = shared.agent_type.name.as_str(),
-            model.priced = shared.model().priced,
+            model.priced = shared.model().cost.counted(),
+            model.estimated = shared.model().cost.estimated(),
             resumed = true,
         );
         launch(shared.clone(), text, span);
@@ -760,7 +762,7 @@ fn child_model(
         model: model_id,
     } = model.wire_ids();
     ChildModel {
-        priced: model.catalog_billed(),
+        cost: model.cost_basis(),
         model: model_id,
         provider,
         generation_options: model.generation_options_warned(&context.state, effort),
@@ -856,7 +858,7 @@ impl CoreChildRunner {
         }
         let served = served_of(list.as_ref(), &model);
         let child = child_model(context, id, agent_type, &model, served, &budget);
-        let priced = child.priced;
+        let cost = child.cost;
         let tools = fork_tools(&context.tool_server, tools);
         // A child loads only the deferred tools its own toolset holds, and starts with none.
         // Names, not the handle: the closure outlives the child in the session-long map and a
@@ -880,7 +882,8 @@ impl CoreChildRunner {
             "fontaine.subagent",
             agent.id = id,
             agent.type = agent_type.name.as_str(),
-            model.priced = priced,
+            model.priced = cost.counted(),
+            model.estimated = cost.estimated(),
         );
         let (reports, _) = watch::channel((0, None));
         let shared = Arc::new(RunShared {
@@ -1003,7 +1006,7 @@ impl ChildRunner for CoreChildRunner {
 /// What a child's model call reports to usage and error telemetry.
 #[derive(Clone)]
 struct ChildModel {
-    priced: bool,
+    cost: CostBasis,
     model: String,
     provider: String,
     /// The reasoning effort the child's turns send, validated against its model at spawn.
@@ -1118,7 +1121,7 @@ async fn run_child(
                 attachments: Vec::new(),
                 modalities: model.modalities,
                 max_turns: None,
-                priced: model.priced,
+                cost: model.cost,
                 model: model.model.clone(),
                 provider: model.provider.clone(),
                 native_search: false,
@@ -1428,11 +1431,6 @@ fn child_report(
             reason: Some(failure.message),
         },
     }
-}
-
-/// A usage report in the tree's terms; re-exported for the surfaces.
-pub fn spend(usage: &rig_core::completion::Usage) -> Spend {
-    spend_of(usage)
 }
 
 #[cfg(test)]

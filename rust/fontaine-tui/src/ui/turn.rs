@@ -1407,7 +1407,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     attachments,
                     modalities,
                     max_turns: None,
-                    priced: runtime.models.main.catalog_billed(),
+                    cost: runtime.models.main.cost_basis(),
                     model,
                     provider,
                     native_search: runtime.native_search_active(),

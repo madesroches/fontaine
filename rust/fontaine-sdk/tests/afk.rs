@@ -16,6 +16,7 @@ use fontaine_sdk::core::audit::{Converted, Decision};
 use fontaine_sdk::core::config::PermissionMode::{Afk, Auto, Manual};
 use fontaine_sdk::core::gate::{AFK_STOPPED_MESSAGE, AfkRefusal, Blocked, ModeChanged};
 use fontaine_sdk::core::ledger::Record;
+use fontaine_sdk::core::models::CostBasis;
 use fontaine_sdk::core::permissions::{
     AfkApprover, Answer, ApprovalRequest, Approver, HookDecision, HookError, HookPermission,
     PreToolUseEvent, PreToolUseHook, UnavailableChoice,
@@ -747,7 +748,7 @@ async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
                 attachments: Vec::new(),
                 modalities: rig_core::catalog::Modalities::default(),
                 max_turns: Some(5),
-                priced: true,
+                cost: CostBasis::Billed,
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,

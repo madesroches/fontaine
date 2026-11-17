@@ -9,7 +9,7 @@ use std::ffi::OsString;
 
 use common::World;
 use fontaine_sdk::core::config::AccountKind;
-use fontaine_sdk::core::models::{self, GuardianModel, ModelHandle, ResolveParams};
+use fontaine_sdk::core::models::{self, CostBasis, GuardianModel, ModelHandle, ResolveParams};
 use rig_core::catalog::Catalog;
 use rig_core::completion::CompletionRequest;
 use serde_json::json;
@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TOKEN: &str = "dapi-test-token";
 
-const MODELS: &str = r#"models = ["system.ai.claude-haiku-5-5", "system.ai.claude-haiku-9-9", "system.ai.gpt-5-6-luna", "system.ai.gemini-3-pro", "system.ai.glm-5-3", "system.ai.kimi-k3", "main.team.router"]"#;
+const MODELS: &str = r#"models = ["system.ai.claude-haiku-5-5", "system.ai.claude-haiku-9-9", "system.ai.gpt-5-6-luna", "system.ai.gemini-3-pro", "system.ai.gemini-3-5-flash", "system.ai.glm-5-3", "system.ai.kimi-k3", "main.team.router"]"#;
 
 fn env(name: &str) -> Option<OsString> {
     (name == "DBX_KEY").then(|| OsString::from(TOKEN))
@@ -56,12 +56,15 @@ async fn resolve(w: &World, model: &str) -> Result<ModelHandle, models::ModelErr
 }
 
 async fn say_hi(handle: &ModelHandle) -> String {
+    reply_to(handle, "hi").await.text()
+}
+
+async fn reply_to(handle: &ModelHandle, prompt: &str) -> rig_core::completion::CompletionResponse {
     handle
         .completion
-        .call(CompletionRequest::new("hi"))
+        .call(CompletionRequest::new(prompt))
         .await
         .unwrap()
-        .text()
 }
 
 async fn only_request(server: &MockServer, route: &str) -> wiremock::Request {
@@ -132,6 +135,8 @@ const MESSAGES: &str = "/ai-gateway/anthropic/v1/messages";
 const RESPONSES: &str = "/ai-gateway/openai/v1/responses";
 const CHAT: &str = "/ai-gateway/mlflow/v1/chat/completions";
 const GEMINI: &str = "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-pro:generateContent";
+const GEMINI_FLASH: &str =
+    "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-5-flash:generateContent";
 
 #[tokio::test]
 async fn claude_uses_the_messages_route_with_a_bearer_token_and_no_api_key_header() {
@@ -141,8 +146,9 @@ async fn claude_uses_the_messages_route_with_a_bearer_token_and_no_api_key_heade
         .await
         .unwrap();
     assert_eq!(handle.kind, AccountKind::named("databricks"));
-    assert!(!handle.priced(), "the workspace bills in DBUs");
-    assert!(!handle.catalog_billed());
+    assert!(handle.priced(), "the catalog prices the served model");
+    assert!(handle.catalog_billed());
+    assert_eq!(handle.cost_basis(), CostBasis::Estimated);
     assert_eq!(say_hi(&handle).await, "hi from messages");
 
     let request = only_request(&server, MESSAGES).await;
@@ -152,6 +158,45 @@ async fn claude_uses_the_messages_route_with_a_bearer_token_and_no_api_key_heade
         "{:?}",
         request.headers
     );
+}
+
+#[tokio::test]
+async fn a_listed_model_reports_a_price_on_every_wire() {
+    let server = MockServer::start().await;
+    mount_post(&server, MESSAGES, messages_reply()).await;
+    mount_post(&server, RESPONSES, responses_reply()).await;
+    mount_post(&server, GEMINI_FLASH, gemini_reply()).await;
+    let w = world(&server);
+    for model in [
+        "system.ai.claude-haiku-5-5",
+        "system.ai.gpt-5-6-luna",
+        "system.ai.gemini-3-5-flash",
+    ] {
+        let handle = resolve(&w, model).await.unwrap();
+        assert_eq!(handle.cost_basis(), CostBasis::Estimated, "{model}");
+        let reply = reply_to(&handle, "hi").await;
+        assert!(reply.usage.cost.is_some(), "{model} reports no price");
+    }
+}
+
+#[tokio::test]
+async fn no_wire_prices_a_model_the_catalog_does_not_list() {
+    let server = MockServer::start().await;
+    mount_post(&server, CHAT, chat_reply()).await;
+    mount_post(&server, GEMINI, gemini_reply()).await;
+    let w = world(&server);
+    for model in ["system.ai.glm-5-3", "main.team.router"] {
+        let handle = resolve(&w, model).await.unwrap();
+        assert_eq!(handle.cost_basis(), CostBasis::Unpriced, "{model}");
+        assert!(!handle.priced(), "{model}");
+        let reply = reply_to(&handle, "hi").await;
+        assert!(reply.usage.cost.is_none(), "{model} reported a price");
+    }
+    // The shape-derived entry keeps no price, so the Gemini wire prices nothing.
+    let derived = resolve(&w, "system.ai.gemini-3-pro").await.unwrap();
+    assert_eq!(derived.cost_basis(), CostBasis::Unpriced);
+    let reply = reply_to(&derived, "hi").await;
+    assert!(reply.usage.cost.is_none());
 }
 
 #[tokio::test]
@@ -246,7 +291,10 @@ async fn facts_are_bound_under_the_served_id_on_the_responses_and_messages_wires
     let on_messages = resolve(&w, "system.ai.claude-haiku-5-5").await.unwrap();
     let spec = on_messages.completion.spec().unwrap();
     assert_eq!(spec.max_output_tokens, Some(limit));
-    assert_eq!(spec.pricing, None);
+    assert!(
+        spec.pricing.is_some(),
+        "a listed model keeps its price under the served id"
+    );
     assert_eq!(on_messages.facts_notice, None);
 }
 

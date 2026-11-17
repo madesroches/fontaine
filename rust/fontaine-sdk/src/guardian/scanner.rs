@@ -19,6 +19,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument;
 
+use crate::cost::CostBasis;
 use crate::guardian::prompt_builder::neutralize;
 use crate::guardian::structured::{
     self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, RunError, Tally,
@@ -105,8 +106,8 @@ fn failed(reason: impl Into<String>) -> Scan {
 pub struct LlmScanner {
     model: DynModel<Completion>,
     timeout: Duration,
-    /// Whether the cost its calls report is counted; telemetry skips it for an unpriced model.
-    priced: bool,
+    /// How the cost its calls report is treated; telemetry drops it for an unpriced model.
+    cost: CostBasis,
     /// Extra request parameters; see `Guardian::with_additional_params`.
     additional_params: Option<serde_json::Value>,
     /// Raised by the first refusal of `additional_params`; every later request leaves them out.
@@ -122,11 +123,11 @@ There is no `submit` function in this conversation. Ignore the instruction above
 ";
 
 impl LlmScanner {
-    pub fn new(model: DynModel<Completion>, timeout: Duration, priced: bool) -> LlmScanner {
+    pub fn new(model: DynModel<Completion>, timeout: Duration, cost: CostBasis) -> LlmScanner {
         LlmScanner {
             model,
             timeout,
-            priced,
+            cost,
             additional_params: None,
             params_refused: AtomicBool::new(false),
             mode: ModeResolver::default(),
@@ -201,7 +202,8 @@ impl Scanner for LlmScanner {
             target: TARGET,
             "fontaine.scanner",
             scanner = "llm",
-            model.priced = self.priced,
+            model.priced = self.cost.counted(),
+            model.estimated = self.cost.estimated(),
         );
         Box::pin(self.run(tool, content).instrument(span))
     }
