@@ -344,7 +344,7 @@ fn refresh_failed(e: &(dyn std::error::Error + 'static)) -> Outcome {
         text: String::new(),
         structured: None,
         error: Some(format!(
-            "the provider's web search could not be turned off, so the message was not run: {}",
+            "the provider's web search could not be turned off, so the turn did not run: {}",
             crate::tools::error_chain::chain(e)
         )),
         started: std::time::Instant::now(),
