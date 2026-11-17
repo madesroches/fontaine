@@ -118,7 +118,9 @@ simplest scripts.
 
 `ctx.format` splits its argument into `{name}` placeholders, `{{`/`}}` escapes and literal
 text, and appends one run per piece: a placeholder appends its segment's runs, a literal
-appends its text in `dim`. A name that is not a segment or a value is an error, not literal
+appends its text in `dim`. A value placeholder expands to its plain number (cost to four
+decimals, as the `cost` segment shows it) as one `dim` run, and to nothing when the value is
+`None`. A name that is not a segment or a value is an error, not literal
 text; it is raised when `ctx.format` runs, so it is a render-time error handled by the §7
 fallback, not a compile failure. `ctx.segment(name)` is the same lookup for one name.
 
@@ -134,7 +136,7 @@ reads `… · shift+tab mode …`, with neither goal nor hint it reads the model
 
 ```rune
 pub fn statusline(ctx) {
-    let mut line = ctx.line();
+    let line = ctx.line();
     line.push(ctx.format("{mode} · {location} · {model} · {quota}"));
     if let Some(pct) = ctx.context_used_percentage() {
         let style = if pct >= 80 { ctx.style("warning") } else { ctx.style("dim") };
@@ -197,7 +199,7 @@ anchor (`shift+tab mode · /add-dir`) and the existing `bar()` assertions valid.
 
 `command` alone behaves as it does today: it runs on the same triggers, receives the same JSON
 and its first line replaces the hint. The mechanism is that `{hint}` resolves to the command's
-last good line when no script is configured, and the snapshot's `hint` is:
+last good line when no script is configured, and the `hint` segment is:
 
 ```
 message (running refusal → attach notice → viewed-agent state)  →  command line (no script)  →  None while the turn runs  →  idle hint
@@ -246,7 +248,7 @@ session), at the turn-settled point (`ui/turn.rs:1720` `finish_turn`), in `/comp
 (`ui/commands/context.rs:82`), in `/clear` (`Ui::clear`, same file, `:12`), in `/model`
 (`ui/commands/model.rs:33`, since the window comes from the main model) and in `/rewind`
 (`Ui::run_rewind`, `ui/commands/rewind.rs`, when `conversation_restored`), and read — never
-awaited — when a snapshot is built. Cost is read from `UsageLedger` at snapshot time as the quota segments are today.
+awaited — when a snapshot is built. Cost is read from `UsageLedger` at snapshot time as `build_statusline_payload` does today (`ui/mod.rs:352-357`).
 
 ### 9. Rendering
 
@@ -256,15 +258,15 @@ Nothing else. Every other segment, the mode chip included, is the script's to pl
 
 Width: the row clips on the right as the built-in bar does today, so a long line loses its
 tail, except the command line — `{command}` and a command line standing in for `{hint}` — whose
-run is marked `tail` and left-cut into the remaining width exactly as `truncate_row` cuts the
-custom command's line today.
+run is marked `tail` and left-cut exactly as `truncate_row` cuts the custom command's line today, to the row width minus
+the width of every other run on the line.
 
 ## Implementation Steps
 
 1. **SDK — snapshot types.** New `rust/fontaine-sdk/src/core/statusline/snapshot.rs` (the
    existing `statusline.rs` becomes `statusline/mod.rs`): `Role`, `StyledText { text, role,
    tail: bool }`, `StatuslineSnapshot { segments: BTreeMap<&'static str, Vec<StyledText>>,
-   values: Values, hint: Option<String>, … }`, and the `SEGMENTS` / `VALUES` / `STYLE_NAMES`
+   values: Values, … }`, and the `SEGMENTS` / `VALUES` / `STYLE_NAMES`
    name tables that both the host and the docs are checked against. `Values` is typed —
    `Option<u32>` for the percentages, `Option<u64>` for the token counts, `Option<f64>` for the
    cost — so the getters return Rune numbers and
@@ -273,7 +275,7 @@ custom command's line today.
    `StatuslineProgram::compile(source) -> Result<Self, StatuslineError>` following
    `composition::build` (no stdio, diagnostics rendering, one-argument `statusline` entry point
    check); `render(&self, snapshot) -> Result<Vec<StyledText>, String>` running the VM under
-   `budget::with(STATUSLINE_BUDGET, …)` (50 000), the call wrapped in
+   `budget::with(STATUSLINE_BUDGET, || vm.call(["statusline"], (ctx,))).call()` (50 000), the call wrapped in
    `std::panic::catch_unwind(AssertUnwindSafe(..))` with a panic mapped to `Err`; the `Ctx`,
    `Line`, `Fragment` and `Style` host types; the template parser and the separator
    normalisation. `default.rn` beside it with `include_str!`.
@@ -285,7 +287,8 @@ custom command's line today.
    where `data` carries what is not on `App`: `session_id`, `version`, the cost
    total and the cost `estimated` flag, and reusing every existing formatter (`project_dir` is `app.primary_root`), plus `role_style(theme, role) -> Style`. Extract the
    message/hint precedence out of `render` into `fn hint(app, command_line, scripted) ->
-   Option<String>`.
+   Option<StyledText>`, the finished `hint` segment (`tail` set when the text is the command's
+   line), stored in `segments["hint"]`.
 5. **TUI — wiring.** `App`'s new fields; `Ui`'s programs and `refresh_context`; `Ui::draw`
    builds the snapshot and renders the program synchronously after the `App` sync and before
    `(self.render)(&mut self.app)`, caching the runs in `App.statusline`; `run_statusline` and the
@@ -382,14 +385,11 @@ custom command's line today.
   losing its leading separator, `{context}`/`{cost}` absent when unknown. A user script that
   drops a segment, reorders two, and styles one with `warning`. The two badges ahead of any
   script. The `tail` cut and the right clip.
-- **Unit (`config.rs`, `config_scope.rs`).** A script parses; a project-scope `[statusline]`
-  with a script is refused; a script that does not compile is `exit_code() == 2` naming
+- **Unit (`config.rs`, `config_scope.rs`).** A script parses; a script that does not compile is `exit_code() == 2` naming
   `statusline.script`.
 - **Unit (`config_catalog.rs`).** `effective("statusline.script", …)` reports `set` and never
   the source.
 - **Integration (`rust/fontaine-tui/tests/statusline.rs`).** `World::with_config` with a
-  `[statusline] script` renders its line through the real `Ui::run` on a `TestBackend`; the
-  unconfigured default keeps `idle()`'s anchor; a script that errors keeps the previous good
-  line; `command` alone still replaces the
-  hint; `command` plus `script` puts the command's line where the script asks.
+  `[statusline] script` renders its line through the real `Ui::run` on a `TestBackend`; a script that errors keeps the previous good
+  line; `command` plus `script` puts the command's line where the script asks.
 - No live API, network, database or container at any tier.
