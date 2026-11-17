@@ -41,7 +41,7 @@ use fontaine_sdk::core::prompt;
 use fontaine_sdk::core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_sdk::core::session;
 use fontaine_sdk::core::statusline::{self, StatuslineState};
-use fontaine_sdk::core::usage_ledger::UsageSource;
+use fontaine_sdk::core::usage_ledger::{UsageLedger, UsageSource};
 use fontaine_sdk::tools::error_chain::chain;
 use fontaine_sdk::tools::gate::ROOT_AGENT;
 use fontaine_sdk::tools::jobs::JobInfo;
@@ -52,6 +52,21 @@ use std::time::Duration;
 fn split(jobs: &[JobInfo]) -> (usize, usize) {
     let monitors = jobs.iter().filter(|job| job.monitor).count();
     (jobs.len() - monitors, monitors)
+}
+
+/// The session's cost so far, guardian spend left out, and whether any of it is an estimate.
+/// The bar's `{cost}` and the command payload's total both come from here.
+fn session_cost(ledger: &UsageLedger) -> (Option<f64>, bool) {
+    let buckets: Vec<_> = UsageSource::ALL
+        .iter()
+        .filter(|source| **source != UsageSource::Guardian)
+        .map(|source| ledger.bucket(*source))
+        .collect();
+    let total = buckets
+        .iter()
+        .filter_map(|b| b.cost_usd)
+        .reduce(|a, b| a + b);
+    (total, buckets.iter().any(|b| b.estimated))
 }
 
 /// How often the agent list redraws while it lists anything.
@@ -291,19 +306,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// never go stale; the first failure of a session is reported.
     pub(crate) fn refresh_statusline(&mut self, runtime: &AgentRuntime) {
         let ledger = runtime.state.usage_ledger();
-        let buckets: Vec<_> = UsageSource::ALL
-            .iter()
-            .filter(|source| **source != UsageSource::Guardian)
-            .map(|source| ledger.bucket(*source))
-            .collect();
+        let (cost_total_usd, cost_estimated) = session_cost(ledger);
         let mut data = statusbar::SnapshotData {
             session_id: runtime.session.id.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            cost_total_usd: buckets
-                .iter()
-                .filter_map(|b| b.cost_usd)
-                .reduce(|a, b| a + b),
-            cost_estimated: buckets.iter().any(|b| b.estimated),
+            cost_total_usd,
+            cost_estimated,
             scripted: self.statusline_program.is_some(),
         };
         let rendered = self.statusline_program.as_ref().map(|program| {
@@ -421,12 +429,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Ok(usage) => (Some(usage.total()), usage.window),
             Err(_) => (None, None),
         };
-        let usage_ledger = runtime.state.usage_ledger();
-        let cost_total_usd = UsageSource::ALL
-            .iter()
-            .filter(|s| **s != UsageSource::Guardian)
-            .filter_map(|s| usage_ledger.bucket(*s).cost_usd)
-            .reduce(|a, b| a + b);
+        let (cost_total_usd, _) = session_cost(runtime.state.usage_ledger());
         statusline::build_payload(
             model,
             &cwd,

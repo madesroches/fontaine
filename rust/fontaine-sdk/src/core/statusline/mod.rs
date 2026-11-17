@@ -323,14 +323,17 @@ pub fn build_payload(
         recent_verdicts,
         afk: AfkInfo::default(),
         account_usage: account_usage.iter().map(AccountUsage::json).collect(),
-        context_window: match (context_used, context_window) {
-            (Some(used), Some(window)) if window > 0 => Some(ContextWindowInfo {
-                used_percentage: ((used as f64 / f64::from(window)) * 100.0).round() as u32,
-            }),
-            _ => None,
-        },
+        context_window: context_used
+            .zip(context_window)
+            .and_then(|(used, window)| used_percentage(used, window))
+            .map(|used_percentage| ContextWindowInfo { used_percentage }),
         cost: cost_total_usd.map(|total_cost_usd| CostInfo { total_cost_usd }),
     }
+}
+
+/// The share of the context window in use, rounded; `None` for a zero window.
+pub fn used_percentage(used: u64, window: u32) -> Option<u32> {
+    (window > 0).then(|| ((used as f64 / f64::from(window)) * 100.0).round() as u32)
 }
 
 #[cfg(test)]

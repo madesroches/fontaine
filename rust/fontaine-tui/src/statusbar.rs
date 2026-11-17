@@ -15,7 +15,7 @@ use fontaine_sdk::core::goal;
 use fontaine_sdk::core::quota::{AccountUsage, UsageRole};
 use fontaine_sdk::core::statusline::{
     DEFAULT_SCRIPT, Role, StatuslineProgram, StatuslineSnapshot, StatuslineState, StyledText,
-    Values,
+    Values, used_percentage,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -343,8 +343,7 @@ fn quota_runs(app: &App, role: UsageRole) -> Vec<StyledText> {
 /// The share of the context window in use, rounded; unknown until the window is.
 fn context_percentage(app: &App) -> Option<u32> {
     let figures = app.context.as_ref()?;
-    let window = figures.window.filter(|window| *window > 0)?;
-    Some(((figures.used as f64 / f64::from(window)) * 100.0).round() as u32)
+    used_percentage(figures.used, figures.window?)
 }
 
 /// Everything a status-line script can read, preformatted from `app`.
