@@ -480,7 +480,9 @@ async fn add_dir_expands_a_leading_tilde_to_home() {
     let mut s = Sandbox::compatible(&endpoint.url());
     let home = s.work.parent().unwrap().join("tilde-home");
     std::fs::create_dir_all(home.join("shared")).unwrap();
+    // The session reads USERPROFILE on Windows and HOME elsewhere.
     s.set_env("HOME", home.to_str().unwrap());
+    s.set_env("USERPROFILE", home.to_str().unwrap());
     let out = s
         .headless(&[
             "--add-dir",
