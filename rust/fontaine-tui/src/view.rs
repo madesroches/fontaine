@@ -1030,6 +1030,7 @@ mod tests {
         app.agent_list
             .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
         assert_eq!(chrome(&app, 80, 30), bare + 2);
+        crate::statusbar::render_default(&mut app);
         let rows = drawn(&app, 80, 12);
         let status = rows
             .iter()
@@ -1103,6 +1104,7 @@ mod tests {
                     .collect(),
             );
             app.todos.toggle();
+            crate::statusbar::render_default(&mut app);
             let rows = drawn(&app, 60, height_rows);
             assert_eq!(rows.len(), usize::from(height_rows));
             assert_eq!(
@@ -1148,6 +1150,7 @@ mod tests {
         app.agent_list
             .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
         app.view(Some("agent-1".into()));
+        crate::statusbar::render_default(&mut app);
         let rows = drawn(&app, 80, 12);
         let border = rows.iter().find(|r| r.contains("message ·")).unwrap();
         assert!(

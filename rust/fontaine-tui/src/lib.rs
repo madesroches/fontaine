@@ -68,7 +68,7 @@ use fontaine_sdk::core::notice::{Notice, Severity};
 use fontaine_sdk::core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, PauseChoice, UnavailableChoice,
 };
-use fontaine_sdk::core::statusline::{StatuslineScript, StatuslineState};
+use fontaine_sdk::core::statusline::{StatuslineCommand, StatuslineProgram};
 use fontaine_sdk::core::usage_pause::PauseInfo;
 use fontaine_sdk::tools::ask_user::{Question, QuestionReply};
 use fontaine_sdk::tools::kills::KILL_SETTLE;
@@ -456,11 +456,18 @@ struct Ui<R> {
     /// Sends a request to run the configured status-line command. Drained in the run loop.
     statusline_tx: Option<tokio::sync::mpsc::UnboundedSender<StatuslineTrigger>>,
     statusline_rx: Option<tokio::sync::mpsc::UnboundedReceiver<StatuslineTrigger>>,
-    /// Receives the result of a status-line command run.
-    statusline_result_tx: tokio::sync::mpsc::UnboundedSender<Option<StatuslineState>>,
-    statusline_result_rx: tokio::sync::mpsc::UnboundedReceiver<Option<StatuslineState>>,
-    /// The configured status-line script, when `[statusline] command` is set.
-    statusline_script: Option<StatuslineScript>,
+    /// Receives the line a status-line command run produced.
+    statusline_result_tx: tokio::sync::mpsc::UnboundedSender<Option<String>>,
+    statusline_result_rx: tokio::sync::mpsc::UnboundedReceiver<Option<String>>,
+    /// The configured status-line command, when `[statusline] command` is set.
+    statusline_command: Option<StatuslineCommand>,
+    /// The configured `[statusline] script`, which renders the bar's line.
+    statusline_program: Option<StatuslineProgram>,
+    /// The embedded default program: the line when no script is configured, and what renders in
+    /// place of a script that fails.
+    statusline_default: StatuslineProgram,
+    /// Whether a failing script was already reported this session.
+    statusline_warned: bool,
     /// Whether a status-line run is in flight.
     statusline_running: bool,
     /// When the last status-line run started, for the draw-trigger minimum interval.
@@ -560,8 +567,8 @@ pub async fn drive(
     ];
     let (statusline_tx, statusline_rx) = tokio::sync::mpsc::unbounded_channel();
     let (statusline_result_tx, statusline_result_rx) = tokio::sync::mpsc::unbounded_channel();
-    let statusline_script = runtime.config.statusline.command.as_ref().map(|command| {
-        StatuslineScript::new(
+    let statusline_command = runtime.config.statusline.command.as_ref().map(|command| {
+        StatuslineCommand::new(
             command,
             runtime.scrub_env().to_vec(),
             fontaine_sdk::core::tools::subprocess_env(&runtime.config),
@@ -569,6 +576,16 @@ pub async fn drive(
             runtime.state.scope().primary().to_path_buf(),
         )
     });
+    // The config check compiled the script once and threw the program away; compiling it again
+    // here keeps the check free of what the interface holds.
+    let statusline_program = runtime
+        .config
+        .statusline
+        .script
+        .as_deref()
+        .map(StatuslineProgram::compile)
+        .transpose()
+        .expect("config validation has compiled the status line script");
     let mut ui = Ui {
         hook_notifier: notify::Notifier::new(fontaine_sdk::core::config::NotifyMethod::Off),
         afk_stops: runtime.state.afk_stop_signal(),
@@ -608,11 +625,14 @@ pub async fn drive(
         on_quit,
         quit_started: None,
         statusline_task: None,
-        statusline_tx: statusline_script.is_some().then_some(statusline_tx),
-        statusline_rx: statusline_script.is_some().then_some(statusline_rx),
+        statusline_tx: statusline_command.is_some().then_some(statusline_tx),
+        statusline_rx: statusline_command.is_some().then_some(statusline_rx),
         statusline_result_tx,
         statusline_result_rx,
-        statusline_script,
+        statusline_command,
+        statusline_program,
+        statusline_default: statusbar::default_program().clone(),
+        statusline_warned: false,
         statusline_running: false,
         statusline_last_run: None,
         statusline_dirty: false,
@@ -687,6 +707,7 @@ pub async fn drive(
             "AFK mode is on: nothing is asked of you; each call that would have needed approval is denied. Shift+Tab leaves it.",
         );
     }
+    ui.refresh_context(&runtime).await;
     if remote {
         ui.start_remote(&runtime, remote::DEFAULT_TTL);
     }
@@ -720,6 +741,8 @@ pub async fn drive(
         ui.app.view(None);
     }
     ui.app.flush = true;
+    // The last frame is drawn outside `Ui::draw`, so the bar it flushes is rebuilt here.
+    ui.refresh_statusline(&runtime);
     (ui.render)(&mut ui.app);
     Ok(ui
         .switch
@@ -728,6 +751,46 @@ pub async fn drive(
 }
 
 type LiveScreen = Screen<Anchored<CrosstermBackend<FrameWriter>>>;
+
+thread_local! {
+    /// Set while a status-line program renders on this thread.
+    static STATUSLINE_RENDERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks a status-line render in progress on this thread for as long as it lives. The panic
+/// hook leaves the terminal alone while it is set: a panic the render catches falls back to
+/// the default line, and the session keeps drawing on the same terminal.
+pub(crate) struct StatuslineRendering {
+    was: bool,
+}
+
+impl StatuslineRendering {
+    pub(crate) fn enter() -> StatuslineRendering {
+        StatuslineRendering {
+            was: STATUSLINE_RENDERING.with(|flag| flag.replace(true)),
+        }
+    }
+}
+
+impl Drop for StatuslineRendering {
+    fn drop(&mut self) {
+        STATUSLINE_RENDERING.with(|flag| flag.set(self.was));
+    }
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+/// The panic hook of a terminal session: it puts the terminal back and then runs `previous`,
+/// except during a status-line render, whose panics the render catches.
+pub(crate) fn terminal_panic_hook(previous: PanicHook) -> PanicHook {
+    Box::new(move |info| {
+        if STATUSLINE_RENDERING.with(std::cell::Cell::get) {
+            return;
+        }
+        restore_terminal();
+        previous(info);
+    })
+}
 
 /// Undoes what `run` set up, apart from the live area.
 pub(crate) fn restore_terminal() {
@@ -835,11 +898,7 @@ pub async fn run(
         )
     })?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        previous_hook(info);
-    }));
+    std::panic::set_hook(terminal_panic_hook(std::panic::take_hook()));
     let screen = if screen_reader.is_some() {
         None
     } else {
@@ -973,6 +1032,41 @@ pub async fn run(
         None => Some(reader.await),
     };
     result.map(|outcome| RunOutcome { outcome, watchdog })
+}
+
+#[cfg(test)]
+mod statusline_rendering_tests {
+    use super::*;
+
+    fn rendering() -> bool {
+        STATUSLINE_RENDERING.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn the_flag_is_set_for_the_render_and_cleared_when_the_guard_ends() {
+        assert!(!rendering());
+        {
+            let _outer = StatuslineRendering::enter();
+            assert!(rendering());
+            {
+                let _inner = StatuslineRendering::enter();
+                assert!(rendering());
+            }
+            assert!(rendering(), "an inner guard leaves the outer one's flag");
+        }
+        assert!(!rendering());
+    }
+
+    #[test]
+    fn a_render_sets_the_flag_around_the_program_and_clears_it_after_a_failure() {
+        let program = fontaine_sdk::core::statusline::StatuslineProgram::compile(
+            r#"pub fn statusline(ctx) { ctx.format("{nope}") }"#,
+        )
+        .unwrap();
+        let result = statusbar::render_program(&program, &Default::default());
+        assert!(result.is_err());
+        assert!(!rendering());
+    }
 }
 
 #[cfg(test)]

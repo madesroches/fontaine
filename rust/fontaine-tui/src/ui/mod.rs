@@ -267,7 +267,79 @@ impl<R: FnMut(&mut App)> Ui<R> {
             runtime.notify_hooks(hook_type, kind.message(), "Fontaine");
         }
         self.publish_remote();
+        self.refresh_statusline(runtime);
         (self.render)(&mut self.app);
+    }
+
+    /// Reads the context window's figures into `App`, where every snapshot reads them: the
+    /// bar never awaits it. They hold their last value between refreshes.
+    pub(crate) async fn refresh_context(&mut self, runtime: &AgentRuntime) {
+        self.app.context =
+            runtime
+                .context_usage()
+                .await
+                .ok()
+                .map(|usage| crate::app::ContextFigures {
+                    used: usage.total(),
+                    window: usage.window,
+                });
+    }
+
+    /// Renders the status line over the session as it stands and keeps the runs in `App`, which
+    /// the frame draws without evaluating anything. A script that fails is replaced by the
+    /// default program over the same session, so the bar is never blank and its live segments
+    /// never go stale; the first failure of a session is reported.
+    pub(crate) fn refresh_statusline(&mut self, runtime: &AgentRuntime) {
+        let ledger = runtime.state.usage_ledger();
+        let buckets: Vec<_> = UsageSource::ALL
+            .iter()
+            .filter(|source| **source != UsageSource::Guardian)
+            .map(|source| ledger.bucket(*source))
+            .collect();
+        let mut data = statusbar::SnapshotData {
+            session_id: runtime.session.id.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            cost_total_usd: buckets
+                .iter()
+                .filter_map(|b| b.cost_usd)
+                .reduce(|a, b| a + b),
+            cost_estimated: buckets.iter().any(|b| b.estimated),
+            scripted: self.statusline_program.is_some(),
+        };
+        let rendered = self.statusline_program.as_ref().map(|program| {
+            statusbar::render_program(program, &statusbar::snapshot(&self.app, &data))
+        });
+        let runs = match rendered {
+            Some(Ok(runs)) => Some(runs),
+            Some(Err(reason)) => {
+                self.warn_statusline_failed(&reason);
+                None
+            }
+            None => None,
+        };
+        let runs = runs.unwrap_or_else(|| {
+            // A failed script leaves the command's line to the default's hint.
+            data.scripted = false;
+            statusbar::render_program(
+                &self.statusline_default,
+                &statusbar::snapshot(&self.app, &data),
+            )
+            .expect("the embedded status line renders over any snapshot")
+        });
+        self.app.statusline = Some(StatuslineState { runs });
+    }
+
+    fn warn_statusline_failed(&mut self, reason: &str) {
+        if std::mem::replace(&mut self.statusline_warned, true) {
+            return;
+        }
+        let message = format!("{reason}; the default status line is shown instead");
+        self.app.remember_warning(&message);
+        self.app.transcript.push_notice(Notice {
+            severity: fontaine_sdk::core::notice::Severity::Warning,
+            headline: message,
+            hint: None,
+        });
     }
 
     fn trigger_statusline(&mut self, trigger: StatuslineTrigger) {
@@ -296,7 +368,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     fn statusline_tick(&self, runtime: &AgentRuntime) -> Option<Duration> {
         // A scheduled trigger is a no-op without a script or mid-run, so a zero tick there
         // would spin the loop.
-        if self.statusline_script.is_none() || self.statusline_running {
+        if self.statusline_command.is_none() || self.statusline_running {
             return None;
         }
         let since = self
@@ -376,12 +448,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// Runs the configured command with the given payload, publishing the result back to
-    /// `app.statusline`. Spawns a `'static` task so the run loop never awaits the script.
+    /// `app.command_line`. Spawns a `'static` task so the run loop never awaits the script.
     fn run_statusline(&mut self, payload: statusline::Payload) {
         if self.statusline_running {
             return;
         }
-        let Some(script) = self.statusline_script.clone() else {
+        let Some(command) = self.statusline_command.clone() else {
             return;
         };
         let result_tx = self.statusline_result_tx.clone();
@@ -389,11 +461,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.statusline_dirty = false;
         self.statusline_last_run = Some(std::time::Instant::now());
         self.statusline_task = Some(tokio::spawn(async move {
-            let line = script
-                .run(&payload)
-                .await
-                .map(|line| StatuslineState { line });
-            let _ = result_tx.send(line);
+            let _ = result_tx.send(command.run(&payload).await);
         }));
     }
 
@@ -408,7 +476,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // its own result causes.
             self.statusline_last_run = Some(std::time::Instant::now());
             if let Some(line) = line {
-                self.app.statusline = Some(line);
+                self.app.command_line = Some(line);
                 landed = true;
             }
         }
@@ -920,7 +988,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         self.statusline_result_redraw = true;
                         self.statusline_last_run = Some(std::time::Instant::now());
                         if let Some(line) = line {
-                            self.app.statusline = Some(line);
+                            self.app.command_line = Some(line);
                         }
                         Action::None
                     }

@@ -1,0 +1,3 @@
+pub fn statusline(ctx) {
+    ctx.format(" {mode} {vim} · {location} · {model} · {quota} · {quota.guardian} · {effort} · {agents} · {jobs} · {scheduled} · {bug_drafts} · {goal} · {remote} · {context} · {cost} · {hint}")
+}

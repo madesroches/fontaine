@@ -1,5 +1,12 @@
-//! Custom status line: a user command that receives JSON session data on stdin and whose
-//! stdout replaces the built-in TUI status bar. The feature is off when no command is configured.
+//! The status line: the Rune script that renders the bar (`script`, `snapshot`) and the optional
+//! user command that receives JSON session data on stdin and whose first stdout line the script
+//! can place (`StatuslineCommand`). The command is off when none is configured.
+
+mod script;
+mod snapshot;
+
+pub use script::{DEFAULT_SCRIPT, STATUSLINE_BUDGET, StatuslineError, StatuslineProgram};
+pub use snapshot::{Role, SEGMENTS, STYLE_NAMES, StatuslineSnapshot, StyledText, VALUES, Values};
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -23,10 +30,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(5);
 /// `FONTAINE_PROJECT_DIR`, set on the child so a script can locate the project it runs for.
 pub const PROJECT_DIR_VAR: &str = "FONTAINE_PROJECT_DIR";
 
-/// The last good custom status line produced by the configured command.
+/// The status line as last rendered: the styled runs the bar draws after its safety badges.
 #[derive(Clone, Debug, Default)]
 pub struct StatuslineState {
-    pub line: String,
+    pub runs: Vec<StyledText>,
 }
 
 /// One recent gate decision carrying a guardian verdict, as exposed to the script.
@@ -124,9 +131,9 @@ pub struct CostInfo {
     pub total_cost_usd: f64,
 }
 
-/// A configured status-line script and the environment it runs in.
+/// A configured status-line command and the environment it runs in.
 #[derive(Clone)]
-pub struct StatuslineScript {
+pub struct StatuslineCommand {
     command: String,
     scrub_env: Vec<OsString>,
     set_env: Vec<(OsString, OsString)>,
@@ -135,8 +142,8 @@ pub struct StatuslineScript {
     timeout: Duration,
 }
 
-impl StatuslineScript {
-    /// Builds a script runner from the runtime's configuration, matching the environment posture
+impl StatuslineCommand {
+    /// Builds a command runner from the runtime's configuration, matching the environment posture
     /// of hooks: scrubbed env, `[env]`, `FONTAINE_PROJECT_DIR`, and the same shell.
     pub fn new(
         command: impl Into<String>,
@@ -144,8 +151,8 @@ impl StatuslineScript {
         set_env: Vec<(OsString, OsString)>,
         shell: CommandShell,
         project_dir: PathBuf,
-    ) -> StatuslineScript {
-        StatuslineScript {
+    ) -> StatuslineCommand {
+        StatuslineCommand {
             command: command.into(),
             scrub_env,
             set_env,
@@ -330,8 +337,8 @@ pub fn build_payload(
 mod tests {
     use super::*;
 
-    fn script(command: &str) -> StatuslineScript {
-        StatuslineScript::new(
+    fn script(command: &str) -> StatuslineCommand {
+        StatuslineCommand::new(
             command,
             Vec::new(),
             Vec::new(),

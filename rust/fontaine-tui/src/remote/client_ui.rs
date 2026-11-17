@@ -421,11 +421,7 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
         )
     })?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        previous_hook(info);
-    }));
+    std::panic::set_hook(crate::terminal_panic_hook(std::panic::take_hook()));
     let screen: Option<Arc<Mutex<LiveScreen>>> = if params.linear {
         None
     } else {
@@ -488,6 +484,8 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
         ui.app.spinner_frame =
             (epoch.elapsed().as_millis() / u128::from(crate::spinner::FRAME_MS)) as u64;
         ui.app.turn_elapsed = ui.app.turn_started.map(|started| started.elapsed());
+        // The device loads no config, so its bar is always the default program's.
+        crate::statusbar::render_default(&mut ui.app);
         render(&mut ui.app);
         if stop.load(Ordering::Relaxed) {
             break AttachEnd::Detached;
@@ -561,6 +559,7 @@ pub async fn run_attached(params: AttachParams) -> Result<AttachEnd, String> {
     client.stop();
     // What the screen held back is written out so the conversation stays in the terminal.
     ui.app.flush = true;
+    crate::statusbar::render_default(&mut ui.app);
     render(&mut ui.app);
     let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
     Ok(end)
@@ -626,6 +625,16 @@ mod tests {
         let mut all = rows(screen.backend().scrollback());
         all.extend(rows(screen.backend().buffer()));
         all
+    }
+
+    #[test]
+    fn the_devices_bar_shows_the_mode_and_the_attached_indicator() {
+        let mut device = app();
+        device.remote_indicator = Some("attached".to_string());
+        crate::statusbar::render_default(&mut device);
+        let text = screen_text(&mut device).join("\n");
+        assert!(text.contains("manual · m"), "{text}");
+        assert!(text.contains("attached"), "{text}");
     }
 
     #[test]

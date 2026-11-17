@@ -652,6 +652,12 @@ pub const KEYS: &[KeyRow] = &[
     row!("statusline.command", Scalar, |c, _| {
         command_summary(c.statusline.command.as_deref())
     }),
+    row!("statusline.script", Scalar, |c, _| {
+        c.statusline
+            .script
+            .as_deref()
+            .map_or_else(|| "unset".into(), |_| "set".into())
+    }),
     row!("statusline.refresh_interval_secs", Scalar, |c, _| opt(c
         .statusline
         .refresh_interval_secs)),
@@ -881,6 +887,16 @@ mod tests {
         let shown = effective("websearch.command", &c);
         assert_eq!(shown, "docker (+3 args)");
         assert!(!shown.contains("hunter2"));
+    }
+
+    #[test]
+    fn the_status_line_script_row_reports_set_and_never_the_source() {
+        let mut c = defaults();
+        assert_eq!(effective("statusline.script", &c), "unset");
+        c.statusline.script = Some("pub fn statusline(ctx) { \"tok-script\" }".into());
+        let shown = effective("statusline.script", &c);
+        assert_eq!(shown, "set");
+        assert!(!shown.contains("tok-script"));
     }
 
     #[test]
