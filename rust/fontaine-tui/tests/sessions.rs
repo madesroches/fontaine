@@ -164,7 +164,10 @@ async fn branch_is_refused_while_a_subagent_runs() {
             ui.idle().await;
             ui.send("root task");
             ui.wait_for("launched").await;
-            ui.idle().await;
+            // The bar clips its idle hint behind the running-agents segment, so wait on the
+            // agents panel and give the root turn time to end instead.
+            ui.wait_for("worker-1 (agent-1)").await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             ui.send("/branch");
             ui.wait_for("refused").await;
         })
