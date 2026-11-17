@@ -300,7 +300,9 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 - A bare `websearch` rule also governs the provider's own search: while a `deny` or `ask` rule
   covers `websearch`, or a `pre_tool_use` hook could (it has no `matcher`, its `matcher` names
   `websearch`, or its matcher cannot be read), it is not offered to the model, and in `manual`, `acceptEdits` and `dontAsk`
-  it is offered only when an `allow` rule exists. In `auto` it is offered otherwise.
+  it is offered only when an `allow` rule exists. In `auto` and `afk` it is offered otherwise,
+  unless the [denial breaker](guardian.md#denial-limits) has paused `auto`: it is then withheld from the next turn (the turn that
+  trips the breaker keeps it until it ends) and returns on the next turn after you approve a call.
   Because it runs inside the model's response, an offered provider search is checked once, when the
   request is built, not per query. A mode switch or a new rule takes effect on the next turn, so
   tightening the mode mid-turn (Shift+Tab, or the fallback when the guardian is unavailable) leaves
