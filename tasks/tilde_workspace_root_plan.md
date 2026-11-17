@@ -21,11 +21,12 @@ are fixed together.
   with `ignoring <source> entry `<entry>`: <why>` and never widens scope.
 - Every root source reaches it: `--add-dir` and `[permissions] additional_directories` through
   `assemble::resolve_roots` (`rust/fontaine-sdk/src/assemble.rs:95`), and `/add-dir` through
-  `AgentRuntime::add_dir` (`rust/fontaine-sdk/src/core/agent.rs:827`). `resolve_roots` callers:
-  `rust/fontaine/src/lib.rs:145` (flag/settings roots for both surfaces), `rust/fontaine/src/doctor_cmd.rs:263`,
-  `rust/fontaine/src/auto_mode.rs:706` (a direct `workspace::resolve` call), and
+  `AgentRuntime::add_dir` (`rust/fontaine-sdk/src/core/agent.rs:827`). `assemble::resolve_roots` callers:
+  `rust/fontaine/src/lib.rs:145` (flag/settings roots for both surfaces) and
   `rust/fontaine-sdk/src/assemble.rs:376` (the SDK path used by the TUI, headless runs and the
-  embedded builder's `Session::add_dir`).
+  embedded builder's `Session::add_dir`). `rust/fontaine/src/doctor_cmd.rs:263` calls the binary's
+  own `resolve_roots` helper, and `rust/fontaine/src/auto_mode.rs:706` calls `workspace::resolve`
+  directly.
 - The session's home directory is already known wherever roots are resolved, but is not passed to
   `resolve`: `assemble::home_dir(env)` (`assemble.rs:110`) reads `$HOME` / `%USERPROFILE%` through
   the injected environment, falls back to `dirs::home_dir()`, and canonicalizes; it feeds
@@ -86,10 +87,7 @@ let Some(expanded) = expand_home(&entry, home) else {
 let path = launch_dir.join(&expanded);
 ```
 
-An entry that names an unknown home is skipped with a warning rather than falling back to the
-literal `~` component: a wider root is a permission widening, so the unknown case must fail closed,
-and a project that happens to contain a directory named `~` must not be picked up by accident. The
-warning keeps the entry exactly as the user wrote it.
+The warning keeps the entry exactly as the user wrote it.
 
 `launch_dir.join` stays as it is — it already ignores the launch directory when the expanded path is
 absolute, and a relative entry keeps resolving against the project directory.
@@ -113,9 +111,9 @@ and still the value `/add-dir` reports back to the transcript.
 1. `rust/fontaine-sdk/src/core/workspace.rs`: add `expand_home`, add the `home` parameter to
    `resolve`, expand before the join, and extend the doc comment to say a leading `~` names the
    home directory and an unknown home is a warning.
-2. Thread the parameter through `assemble::resolve_roots` and its four callers (`assemble.rs:376`,
-   `rust/fontaine/src/lib.rs:145`, `rust/fontaine/src/doctor_cmd.rs` via that helper,
-   `rust/fontaine/src/auto_mode.rs:706`), computing the home once in `prepare_session`.
+2. Thread the parameter through `assemble::resolve_roots` (callers `assemble.rs:376` and
+   `rust/fontaine/src/lib.rs:145`) and the direct `resolve` call in `auto_mode.rs:706`, computing
+   the home once in `prepare_session`.
 3. `rust/fontaine-sdk/src/core/agent.rs:828`: pass `self.home()` to `resolve`.
 4. `rust/fontaine-sdk/tests/workspace.rs`: pass a home at each existing call site and add the
    expansion, literal-`~`-deeper-in-the-path, `~user`, and unknown-home cases.
@@ -142,24 +140,15 @@ and still the value `/add-dir` reports back to the transcript.
 
 ## Trade-offs
 
-- **Expanding in `resolve` vs. at each entry point.** Doing it per surface (flag parsing, the
-  command, the settings list) would mean three implementations and a fourth for the embedded
-  builder. `resolve` is the single funnel, so one expansion covers every source — which is also
-  what the issue asks for.
-- **Path-level helper vs. reusing `plugin_ops::expand_tilde`.** The existing helper takes and
-  returns `String`, so it would mangle a non-UTF-8 entry, and it resolves against
-  `dirs::home_dir()` rather than the session's injected `$HOME` / `%USERPROFILE%`. Reusing it
-  would also couple root resolution to the plugin module. The overlap is a four-line match, so the
-  duplication is cheaper than the coupling.
-- **Unknown home is a warning, not a literal fallback.** `claude -p --add-dir` was observed to
-  ignore unresolvable entries silently, and Fontaine's existing rule is "skip it, say why, never
-  widen scope"; falling back to a directory named `~` would both surprise the user and add a root
-  they did not ask for.
-- **`~user/x` stays literal.** Resolving a named user needs a passwd lookup the standard library
-  does not offer, and the issue asks only for `~` and `~/…`; a literal `~user` entry simply fails
-  the existence check with a warning naming what the user typed.
+- **Path-level helper vs. reusing `plugin_ops::expand_tilde`.** The overlap is a four-line match,
+  so duplicating it is cheaper than coupling root resolution to the plugin module.
 
 ## Decisions
+
+- 2026-11-16: expand `~` in `workspace::resolve`, not at each entry point, so every root source is covered by one implementation.
+- 2026-11-16: use a path-level helper in `workspace.rs`, not `plugin_ops::expand_tilde`, because that one is `String`-based and uses `dirs::home_dir()` rather than the session's home.
+- 2026-11-16: an unknown home skips the entry with a warning and never falls back to a literal `~` component, matching the existing "skip it, say why, never widen scope" rule.
+- 2026-11-16: `~user` stays literal; a named-user lookup is out of scope.
 
 ## Documentation
 
@@ -195,4 +184,4 @@ and still the value `/add-dir` reports back to the transcript.
 
 ## Open Questions
 
-- Should `~user/x` resolve, as a login shell would?
+None.
