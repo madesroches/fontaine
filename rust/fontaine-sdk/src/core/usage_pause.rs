@@ -549,12 +549,20 @@ pub fn format_wait(wait: Duration) -> String {
     }
 }
 
+fn clock_in(at: SystemTime, zone: jiff::tz::TimeZone) -> String {
+    jiff::Timestamp::try_from(at)
+        .expect("a reset time is within jiff's range")
+        .to_zoned(zone)
+        .strftime("%H:%M")
+        .to_string()
+}
+
 /// When the pause says the window resets, as a clock time and the wait to it: `resets 14:30 (in
 /// 2h 14m)`, or that the time is unknown.
 pub fn describe_reset(reset_at: Option<SystemTime>, now: SystemTime) -> String {
     match reset_at {
         Some(at) => {
-            let clock = chrono::DateTime::<chrono::Local>::from(at).format("%H:%M");
+            let clock = clock_in(at, jiff::tz::TimeZone::system());
             match at.duration_since(now) {
                 Ok(wait) if !wait.is_zero() => {
                     format!("resets {clock} (in {})", format_wait(wait))

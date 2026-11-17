@@ -18,7 +18,7 @@ brush-parser.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
-chrono.workspace = true
+jiff.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
 futures.workspace = true
@@ -64,6 +64,7 @@ windows-sys.workspace = true
 [dev-dependencies]
 fontaine-testkit.workspace = true
 insta.workspace = true
+jiff = { workspace = true, features = ["tzdb-bundle-always"] }
 rcgen.workspace = true
 rustls.workspace = true
 tempfile.workspace = true

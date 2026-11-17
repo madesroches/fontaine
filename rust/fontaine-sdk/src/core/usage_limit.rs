@@ -136,7 +136,7 @@ pub(crate) fn retry_after(response: &ProviderResponseError, now: SystemTime) -> 
     if let Ok(secs) = value.parse::<u64>() {
         return Some(Duration::from_secs(secs));
     }
-    let at: SystemTime = chrono::DateTime::parse_from_rfc2822(value).ok()?.into();
+    let at = SystemTime::from(jiff::fmt::rfc2822::parse(value).ok()?.timestamp());
     Some(at.duration_since(now).unwrap_or_default())
 }
 

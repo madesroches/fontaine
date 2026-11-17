@@ -102,7 +102,7 @@ pub fn parse_usages(body: &str) -> Result<Quota, RuntimeError> {
             let reset_at = entry
                 .get("reset_time")
                 .and_then(Value::as_str)
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .and_then(|s| s.parse::<jiff::Timestamp>().ok())
                 .map(SystemTime::from);
             Some(QuotaWindow {
                 label: (*label).to_string(),

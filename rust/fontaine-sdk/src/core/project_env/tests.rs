@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use crate::guardian::env_scan::{Evidence, Finding, Reply};
 use crate::guardian::{EnvFileFacts, Protection, Visibility};
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use jiff::Timestamp;
 
 use super::discover::{Gh, GhOutcome, github_slug, host_of, is_env_like, parse_workflow};
 use super::sample::{self, Sample};
@@ -660,10 +660,8 @@ fn record(discovered_at: &str, visibility: Visibility) -> ProjectEnvironment {
     }
 }
 
-fn at(text: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(text)
-        .unwrap()
-        .with_timezone(&Utc)
+fn at(text: &str) -> Timestamp {
+    text.parse().unwrap()
 }
 
 #[test]

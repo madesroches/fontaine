@@ -3,6 +3,14 @@ use crate::core::RuntimeError;
 use crate::core::quota::QuotaWindow;
 use futures::future::BoxFuture;
 
+#[test]
+fn the_reset_clock_reads_hours_and_minutes_in_the_zone() {
+    // 2026-01-15 12:00:00 UTC.
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_768_478_400);
+    let zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(-8));
+    assert_eq!(clock_in(at, zone), "04:00");
+}
+
 fn info(reset_in: Option<Duration>) -> PauseInfo {
     PauseInfo::new(
         UsageRole::Main,

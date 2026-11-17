@@ -4,6 +4,7 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
 
 use crate::core::owner_only;
 
@@ -54,6 +55,13 @@ impl std::error::Error for SubmitError {
     }
 }
 
+fn stamp(at: SystemTime) -> String {
+    jiff::Timestamp::try_from(at)
+        .expect("the system clock is within jiff's range")
+        .strftime("%Y%m%dT%H%M%SZ")
+        .to_string()
+}
+
 /// Writes `text` to `<data_dir>/bug-reports/<session>-<timestamp>[-n].md`, owner-only, never over
 /// an existing file.
 pub fn write_bundle(data_dir: &Path, session: &str, text: &str) -> Result<PathBuf, SubmitError> {
@@ -63,7 +71,7 @@ pub fn write_bundle(data_dir: &Path, session: &str, text: &str) -> Result<PathBu
         source,
     };
     std::fs::create_dir_all(&dir).map_err(|e| fail(&dir, e))?;
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let stamp = stamp(SystemTime::now());
     let session = session.get(..8).unwrap_or(session);
     for attempt in 0u32.. {
         let name = if attempt == 0 {
@@ -197,6 +205,13 @@ pub fn prefilled_url(title: &str, body: &str, bundle: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stamp_is_compact_utc() {
+        // 2026-01-15 12:00:00 UTC.
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_768_478_400);
+        assert_eq!(stamp(at), "20260115T120000Z");
+    }
 
     #[test]
     fn bundles_are_never_overwritten() {

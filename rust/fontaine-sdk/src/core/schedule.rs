@@ -14,8 +14,8 @@ use crate::tools::schedule::{
     JobInfo, MAX_WAKE_SECONDS, MIN_WAKE_SECONDS, NewJob, ScheduleStore, WakeOutcome, WakeRequest,
 };
 pub use crate::tools::schedule::{MAX_JOBS, MAX_PROMPT_CHARS, ScheduleError};
-use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, NaiveDateTime, TimeDelta};
-use chrono::{TimeZone, Timelike};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Timestamp, Zoned, civil};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// How long after an iteration that scheduled nothing a self-paced loop tries once more.
 pub const FALLBACK_SECONDS: u64 = 20 * 60;
 /// How far ahead a cron expression is searched for a match before it counts as never firing.
-const SEARCH_YEARS: i32 = 5;
+const SEARCH_YEARS: i16 = 5;
 
 /// The time source, so tests can move time without sleeping.
 pub trait Clock: Send + Sync {
@@ -71,21 +71,28 @@ impl Clock for ManualClock {
     }
 }
 
-fn local(ms: i64) -> DateTime<Local> {
-    Local
-        .timestamp_millis_opt(ms)
-        .single()
-        .expect("an instant has exactly one local time")
+fn local(ms: i64) -> Zoned {
+    Timestamp::from_millisecond(ms)
+        .expect("a representable instant")
+        .to_zoned(TimeZone::system())
 }
 
-/// Whether chrono can show `ms` as a local time; a saved file can hold anything.
+/// Whether `ms` is an instant jiff can show as a local time; a saved file can hold anything.
 fn representable(ms: i64) -> bool {
-    Local.timestamp_millis_opt(ms).single().is_some()
+    Timestamp::from_millisecond(ms).is_ok()
 }
 
 /// A time as the user reads it, in their local zone.
 pub fn local_time(ms: i64) -> String {
-    local(ms).format("%Y-%m-%d %H:%M").to_string()
+    local_time_in(ms, TimeZone::system())
+}
+
+fn local_time_in(ms: i64, zone: TimeZone) -> String {
+    Timestamp::from_millisecond(ms)
+        .expect("a representable instant")
+        .to_zoned(zone)
+        .strftime("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 /// A parsed 5-field cron expression: `*`, values, `a-b`, `*/n`, `a-b/n` and lists, with Sunday
@@ -192,9 +199,9 @@ impl Cron {
         &self.text
     }
 
-    fn day_matches(&self, date: NaiveDate) -> bool {
+    fn day_matches(&self, date: civil::Date) -> bool {
         let day = self.days & (1 << date.day()) != 0;
-        let weekday = self.weekdays & (1 << date.weekday().num_days_from_sunday()) != 0;
+        let weekday = self.weekdays & (1 << date.weekday().to_sunday_zero_offset()) != 0;
         if !self.days_unrestricted && !self.weekdays_unrestricted {
             day || weekday
         } else {
@@ -205,9 +212,9 @@ impl Cron {
     /// The first matching local minute at or after `from`, as a wall-clock time.
     fn first_match(
         &self,
-        mut t: NaiveDateTime,
-        last_year: i32,
-    ) -> Result<NaiveDateTime, ScheduleError> {
+        mut t: civil::DateTime,
+        last_year: i16,
+    ) -> Result<civil::DateTime, ScheduleError> {
         let never = || ScheduleError::NeverFires;
         loop {
             if t.year() > last_year {
@@ -219,24 +226,20 @@ impl Cron {
                 } else {
                     (t.year(), t.month() + 1)
                 };
-                t = NaiveDate::from_ymd_opt(year, month, 1)
-                    .and_then(|d| d.and_hms_opt(0, 0, 0))
-                    .ok_or_else(never)?;
+                t = civil::DateTime::new(year, month, 1, 0, 0, 0, 0).map_err(|_| never())?;
             } else if !self.day_matches(t.date()) {
-                t = t
-                    .date()
-                    .succ_opt()
-                    .and_then(|d| d.and_hms_opt(0, 0, 0))
-                    .ok_or_else(never)?;
+                t = t.date().tomorrow().map_err(|_| never())?.at(0, 0, 0, 0);
             } else if self.hours & (1 << t.hour()) == 0 {
                 t = t
-                    .with_minute(0)
-                    .and_then(|t| t.checked_add_signed(TimeDelta::hours(1)))
-                    .ok_or_else(never)?;
+                    .with()
+                    .minute(0)
+                    .build()
+                    .and_then(|t| t.checked_add(SignedDuration::from_hours(1)))
+                    .map_err(|_| never())?;
             } else if self.minutes & (1 << t.minute()) == 0 {
                 t = t
-                    .checked_add_signed(TimeDelta::minutes(1))
-                    .ok_or_else(never)?;
+                    .checked_add(SignedDuration::from_mins(1))
+                    .map_err(|_| never())?;
             } else {
                 return Ok(t);
             }
@@ -246,33 +249,37 @@ impl Cron {
     /// The next matching minute after `after`, in `after`'s zone. A local time the zone skips
     /// (a clock change forward) is passed over; one it repeats fires on the first occurrence.
     /// An expression that matches nothing within 5 years is an error.
-    pub fn next_after<Tz: TimeZone>(
-        &self,
-        after: &DateTime<Tz>,
-    ) -> Result<DateTime<Tz>, ScheduleError> {
-        let zone = after.timezone();
-        let wall = after.naive_local();
-        let last_year = wall.year() + SEARCH_YEARS;
+    pub fn next_after(&self, after: &Zoned) -> Result<Zoned, ScheduleError> {
+        let never = |_| ScheduleError::NeverFires;
+        let zone = after.time_zone();
+        let wall = after.datetime();
+        let last_year = wall.year().saturating_add(SEARCH_YEARS);
         let mut t = wall
-            .with_second(0)
-            .and_then(|t| t.with_nanosecond(0))
-            .and_then(|t| t.checked_add_signed(TimeDelta::minutes(1)))
-            .ok_or(ScheduleError::NeverFires)?;
+            .with()
+            .second(0)
+            .subsec_nanosecond(0)
+            .build()
+            .and_then(|t| t.checked_add(SignedDuration::from_mins(1)))
+            .map_err(never)?;
         loop {
             t = self.first_match(t, last_year)?;
-            let found = match zone.from_local_datetime(&t) {
-                LocalResult::Single(at) => Some(at).filter(|at| at > after),
-                LocalResult::Ambiguous(first, second) => Some(first)
+            let ambiguous = zone.to_ambiguous_zoned(t);
+            let found = match ambiguous.offset() {
+                AmbiguousOffset::Unambiguous { .. } => {
+                    ambiguous.compatible().ok().filter(|at| at > after)
+                }
+                AmbiguousOffset::Fold { .. } => ambiguous
+                    .clone()
+                    .earlier()
+                    .ok()
                     .filter(|at| at > after)
-                    .or(Some(second).filter(|at| at > after)),
-                LocalResult::None => None,
+                    .or_else(|| ambiguous.later().ok().filter(|at| at > after)),
+                AmbiguousOffset::Gap { .. } => None,
             };
             if let Some(at) = found {
                 return Ok(at);
             }
-            t = t
-                .checked_add_signed(TimeDelta::minutes(1))
-                .ok_or(ScheduleError::NeverFires)?;
+            t = t.checked_add(SignedDuration::from_mins(1)).map_err(never)?;
         }
     }
 
@@ -540,7 +547,7 @@ impl Scheduler {
                         now < job.created_ms.saturating_add(WEEK_MS)
                             && Cron::parse(&job.cron)
                                 .and_then(|cron| cron.next_after(&local(now)))
-                                .map(|next| job.next_ms = next.timestamp_millis())
+                                .map(|next| job.next_ms = next.timestamp().as_millisecond())
                                 .is_ok()
                     }
                 };
@@ -630,7 +637,7 @@ impl Scheduler {
         validate_prompt(&spec.prompt)?;
         let cron = Cron::parse(&spec.cron)?;
         let now = self.clock.now_ms();
-        let next = cron.next_after(&local(now))?.timestamp_millis();
+        let next = cron.next_after(&local(now))?.timestamp().as_millisecond();
         let job = {
             let mut state = lock(&self.state, "schedule");
             self.insert(
@@ -740,7 +747,7 @@ impl Scheduler {
                 .then(|| {
                     Cron::parse(&job.cron)
                         .and_then(|cron| cron.next_after(&local(now)))
-                        .map(|next| next.timestamp_millis())
+                        .map(|next| next.timestamp().as_millisecond())
                         .ok()
                 })
                 .flatten();
@@ -1078,101 +1085,105 @@ impl ScheduleStore for ReportedSchedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::FixedOffset;
-
-    fn utc() -> FixedOffset {
-        FixedOffset::east_opt(0).unwrap()
+    fn at(y: i16, mo: i8, d: i8, h: i8, mi: i8) -> Zoned {
+        civil::date(y, mo, d)
+            .at(h, mi, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap()
     }
 
-    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<FixedOffset> {
-        utc().with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+    fn next(expr: &str, after: &Zoned) -> Result<Zoned, ScheduleError> {
+        Cron::parse(expr)?.next_after(after)
     }
 
-    fn next(
-        expr: &str,
-        after: DateTime<FixedOffset>,
-    ) -> Result<DateTime<FixedOffset>, ScheduleError> {
-        Cron::parse(expr)?.next_after(&after)
-    }
-
-    fn assert_next(expr: &str, after: DateTime<FixedOffset>, expected: DateTime<FixedOffset>) {
+    fn assert_next(expr: &str, after: &Zoned, expected: Zoned) {
         assert_eq!(next(expr, after).unwrap(), expected, "{expr} after {after}");
+    }
+
+    #[test]
+    fn a_local_time_reads_year_to_minute_in_the_zone() {
+        // 2026-01-15 12:00:00 UTC.
+        let zone = TimeZone::fixed(jiff::tz::Offset::from_seconds(5 * 3600 + 30 * 60).unwrap());
+        assert_eq!(local_time_in(1_768_478_400_000, zone), "2026-01-15 17:30");
     }
 
     #[test]
     fn every_field_form_matches() {
         let start = at(2026, 1, 1, 10, 0);
-        assert_next("* * * * *", start, at(2026, 1, 1, 10, 1));
-        assert_next("5 * * * *", start, at(2026, 1, 1, 10, 5));
+        assert_next("* * * * *", &start, at(2026, 1, 1, 10, 1));
+        assert_next("5 * * * *", &start, at(2026, 1, 1, 10, 5));
         assert_next(
             "*/15 * * * *",
-            at(2026, 1, 1, 10, 15),
+            &at(2026, 1, 1, 10, 15),
             at(2026, 1, 1, 10, 30),
         );
-        assert_next("10-20/5 * * * *", start, at(2026, 1, 1, 10, 10));
+        assert_next("10-20/5 * * * *", &start, at(2026, 1, 1, 10, 10));
         assert_next(
             "10-20/5 * * * *",
-            at(2026, 1, 1, 10, 10),
+            &at(2026, 1, 1, 10, 10),
             at(2026, 1, 1, 10, 15),
         );
         assert_next(
             "1,30,45 * * * *",
-            at(2026, 1, 1, 10, 1),
+            &at(2026, 1, 1, 10, 1),
             at(2026, 1, 1, 10, 30),
         );
-        assert_next("0 9 * * *", start, at(2026, 1, 2, 9, 0));
-        assert_next("0 */6 * * *", start, at(2026, 1, 1, 12, 0));
-        assert_next("30 14 15 * *", start, at(2026, 1, 15, 14, 30));
-        assert_next("0 0 1 3 *", start, at(2026, 3, 1, 0, 0));
-        assert_next("0 0 1 1,7 *", start, at(2026, 7, 1, 0, 0));
+        assert_next("0 9 * * *", &start, at(2026, 1, 2, 9, 0));
+        assert_next("0 */6 * * *", &start, at(2026, 1, 1, 12, 0));
+        assert_next("30 14 15 * *", &start, at(2026, 1, 15, 14, 30));
+        assert_next("0 0 1 3 *", &start, at(2026, 3, 1, 0, 0));
+        assert_next("0 0 1 1,7 *", &start, at(2026, 7, 1, 0, 0));
     }
 
     #[test]
     fn the_next_minute_is_strictly_after() {
         let exact = at(2026, 1, 1, 10, 5);
-        assert_next("5 10 * * *", exact, at(2026, 1, 2, 10, 5));
-        let mid_minute = utc().with_ymd_and_hms(2026, 1, 1, 10, 4, 30).unwrap();
-        assert_next("5 10 * * *", mid_minute, exact);
+        assert_next("5 10 * * *", &exact, at(2026, 1, 2, 10, 5));
+        let mid_minute = civil::date(2026, 1, 1)
+            .at(10, 4, 30, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap();
+        assert_next("5 10 * * *", &mid_minute, exact);
     }
 
     #[test]
     fn sunday_is_zero_or_seven() {
         // 2026-01-01 is a Thursday; the next Sunday is the 4th.
         let start = at(2026, 1, 1, 0, 0);
-        assert_next("0 0 * * 0", start, at(2026, 1, 4, 0, 0));
-        assert_next("0 0 * * 7", start, at(2026, 1, 4, 0, 0));
-        assert_next("0 0 * * 5-7", start, at(2026, 1, 2, 0, 0));
-        assert_next("0 0 * * 1-5", start, at(2026, 1, 2, 0, 0));
-        assert_next("0 0 * * */2", start, at(2026, 1, 3, 0, 0));
+        assert_next("0 0 * * 0", &start, at(2026, 1, 4, 0, 0));
+        assert_next("0 0 * * 7", &start, at(2026, 1, 4, 0, 0));
+        assert_next("0 0 * * 5-7", &start, at(2026, 1, 2, 0, 0));
+        assert_next("0 0 * * 1-5", &start, at(2026, 1, 2, 0, 0));
+        assert_next("0 0 * * */2", &start, at(2026, 1, 3, 0, 0));
     }
 
     #[test]
     fn day_of_month_and_day_of_week_match_on_either_when_both_are_restricted() {
         let start = at(2026, 1, 1, 0, 0);
         // The 15th, or a Monday.
-        assert_next("0 0 15 * 1", start, at(2026, 1, 5, 0, 0));
-        assert_next("0 0 15 * 1", at(2026, 1, 12, 0, 0), at(2026, 1, 15, 0, 0));
+        assert_next("0 0 15 * 1", &start, at(2026, 1, 5, 0, 0));
+        assert_next("0 0 15 * 1", &at(2026, 1, 12, 0, 0), at(2026, 1, 15, 0, 0));
         // A star on one side leaves the other to decide.
-        assert_next("0 0 15 * *", start, at(2026, 1, 15, 0, 0));
-        assert_next("0 0 * * 1", start, at(2026, 1, 5, 0, 0));
+        assert_next("0 0 15 * *", &start, at(2026, 1, 15, 0, 0));
+        assert_next("0 0 * * 1", &start, at(2026, 1, 5, 0, 0));
     }
 
     #[test]
     fn the_search_rolls_over_months_and_years() {
-        assert_next("0 0 1 1 *", at(2026, 1, 1, 0, 0), at(2027, 1, 1, 0, 0));
+        assert_next("0 0 1 1 *", &at(2026, 1, 1, 0, 0), at(2027, 1, 1, 0, 0));
         assert_next(
             "59 23 31 12 *",
-            at(2026, 1, 1, 0, 0),
+            &at(2026, 1, 1, 0, 0),
             at(2026, 12, 31, 23, 59),
         );
-        assert_next("0 0 * * *", at(2026, 12, 31, 12, 0), at(2027, 1, 1, 0, 0));
-        assert_next("0 0 31 * *", at(2026, 1, 31, 0, 0), at(2026, 3, 31, 0, 0));
+        assert_next("0 0 * * *", &at(2026, 12, 31, 12, 0), at(2027, 1, 1, 0, 0));
+        assert_next("0 0 31 * *", &at(2026, 1, 31, 0, 0), at(2026, 3, 31, 0, 0));
     }
 
     #[test]
     fn february_the_twenty_ninth_waits_for_a_leap_year() {
-        assert_next("0 0 29 2 *", at(2026, 1, 1, 0, 0), at(2028, 2, 29, 0, 0));
-        assert_next("0 0 29 2 *", at(2028, 3, 1, 0, 0), at(2032, 2, 29, 0, 0));
+        assert_next("0 0 29 2 *", &at(2026, 1, 1, 0, 0), at(2028, 2, 29, 0, 0));
+        assert_next("0 0 29 2 *", &at(2028, 3, 1, 0, 0), at(2032, 2, 29, 0, 0));
     }
 
     #[test]
@@ -1212,90 +1223,61 @@ mod tests {
     #[test]
     fn an_expression_that_never_matches_is_an_error() {
         assert!(matches!(
-            next("0 0 31 2 *", at(2026, 1, 1, 0, 0)),
+            next("0 0 31 2 *", &at(2026, 1, 1, 0, 0)),
             Err(ScheduleError::NeverFires)
         ));
         assert!(matches!(
-            next("0 0 30 2 *", at(2026, 1, 1, 0, 0)),
+            next("0 0 30 2 *", &at(2026, 1, 1, 0, 0)),
             Err(ScheduleError::NeverFires)
         ));
     }
 
-    /// Clocks run an hour ahead from 2026-03-29 02:00 UTC, so the local times 02:00-02:59 on that
-    /// day do not exist.
-    #[derive(Clone, Copy, Debug)]
-    struct Spring;
-
-    #[derive(Clone, Copy, Debug)]
-    struct SpringOffset(i32);
-
-    impl chrono::Offset for SpringOffset {
-        fn fix(&self) -> FixedOffset {
-            FixedOffset::east_opt(self.0).unwrap()
-        }
-    }
-
-    impl Spring {
-        fn gap() -> (NaiveDateTime, NaiveDateTime) {
-            let day = NaiveDate::from_ymd_opt(2026, 3, 29).unwrap();
-            (
-                day.and_hms_opt(2, 0, 0).unwrap(),
-                day.and_hms_opt(3, 0, 0).unwrap(),
-            )
-        }
-    }
-
-    impl TimeZone for Spring {
-        type Offset = SpringOffset;
-
-        fn from_offset(_: &SpringOffset) -> Spring {
-            Spring
-        }
-
-        fn offset_from_local_date(&self, date: &NaiveDate) -> LocalResult<SpringOffset> {
-            self.offset_from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        }
-
-        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<SpringOffset> {
-            let (start, end) = Spring::gap();
-            if *local >= start && *local < end {
-                LocalResult::None
-            } else if *local < start {
-                LocalResult::Single(SpringOffset(0))
-            } else {
-                LocalResult::Single(SpringOffset(3600))
-            }
-        }
-
-        fn offset_from_utc_date(&self, date: &NaiveDate) -> SpringOffset {
-            self.offset_from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        }
-
-        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> SpringOffset {
-            let (start, _) = Spring::gap();
-            SpringOffset(if *utc < start { 0 } else { 3600 })
-        }
+    fn paris(dt: civil::DateTime) -> Zoned {
+        dt.in_tz("Europe/Paris").unwrap()
     }
 
     #[test]
     fn a_local_time_the_clock_skips_is_passed_over() {
-        let before = Spring.with_ymd_and_hms(2026, 3, 28, 12, 0, 0).unwrap();
+        // Paris skips 02:00-03:00 on 2026-03-29.
+        let before = paris(civil::date(2026, 3, 28).at(12, 0, 0, 0));
         let cron = Cron::parse("30 2 * * *").unwrap();
         let fired = cron.next_after(&before).unwrap();
         // 02:30 does not exist on the 29th, so the run is the next day's.
-        assert_eq!(
-            fired.naive_local(),
-            NaiveDate::from_ymd_opt(2026, 3, 30)
-                .unwrap()
-                .and_hms_opt(2, 30, 0)
-                .unwrap()
-        );
+        assert_eq!(fired.datetime(), civil::date(2026, 3, 30).at(2, 30, 0, 0));
         // A time either side of the gap is unaffected.
         let after_gap = Cron::parse("30 3 * * *")
             .unwrap()
             .next_after(&before)
             .unwrap();
-        assert_eq!(after_gap.naive_local().day(), 29);
+        assert_eq!(after_gap.day(), 29);
+    }
+
+    #[test]
+    fn a_repeated_local_time_fires_on_its_first_occurrence() {
+        // Paris repeats 02:00-03:00 on 2026-10-25: first at +02:00, then at +01:00.
+        let before = paris(civil::date(2026, 10, 25).at(1, 0, 0, 0));
+        let fired = Cron::parse("30 2 * * *")
+            .unwrap()
+            .next_after(&before)
+            .unwrap();
+        assert_eq!(fired.datetime(), civil::date(2026, 10, 25).at(2, 30, 0, 0));
+        assert_eq!(fired.offset().seconds(), 2 * 3600);
+    }
+
+    #[test]
+    fn a_repeated_local_time_fires_on_its_second_occurrence_when_the_first_has_passed() {
+        // 01:10 UTC is 02:10 in Paris on the second pass, so the first 02:30 (00:30 UTC) is behind.
+        let after = "2026-10-25T01:10:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .to_zoned(TimeZone::get("Europe/Paris").unwrap());
+        assert_eq!(after.offset().seconds(), 3600);
+        let fired = Cron::parse("30 2 * * *")
+            .unwrap()
+            .next_after(&after)
+            .unwrap();
+        assert_eq!(fired.datetime(), civil::date(2026, 10, 25).at(2, 30, 0, 0));
+        assert_eq!(fired.offset().seconds(), 3600);
     }
 
     #[test]
@@ -1747,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_time_chrono_cannot_show_is_dropped_not_a_panic() {
+    fn a_saved_time_jiff_cannot_show_is_dropped_not_a_panic() {
         let rig = rig();
         let job = rig.scheduler.create(spec("*/5 * * * *", true)).unwrap();
         let mut bad = job.clone();

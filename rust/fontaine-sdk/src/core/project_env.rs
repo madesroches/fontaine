@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::guardian::{
     EnvFileFacts, ProjectEnvironmentFacts, Protection, RemoteEnvironment, ScanFindings, Visibility,
 };
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::core::config::{AutoMode, PermissionMode};
@@ -192,30 +192,30 @@ pub fn filter_to_remotes(
     record
 }
 
-fn collected_at(record: &ProjectEnvironment) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(&record.discovered_at)
-        .ok()
-        .map(|at| at.with_timezone(&Utc))
+fn collected_at(record: &ProjectEnvironment) -> Option<Timestamp> {
+    record.discovered_at.parse().ok()
 }
 
 /// The day the facts were collected; the stored text when it does not parse.
 fn collected_on(record: &ProjectEnvironment) -> String {
     collected_at(record).map_or_else(
         || record.discovered_at.clone(),
-        |at| at.format("%Y-%m-%d").to_string(),
+        |at| at.strftime("%Y-%m-%d").to_string(),
     )
 }
 
 /// Whether the record's public visibility is too old to rely on. A date that does not parse
 /// counts as old: the relaxation is the side to be wrong on.
-fn public_expired(record: &ProjectEnvironment, now: DateTime<Utc>) -> bool {
-    collected_at(record).is_none_or(|at| now - at > TimeDelta::days(PUBLIC_EXPIRY_DAYS))
+fn public_expired(record: &ProjectEnvironment, now: Timestamp) -> bool {
+    collected_at(record).is_none_or(|at| {
+        now.duration_since(at) > SignedDuration::from_hours(24 * PUBLIC_EXPIRY_DAYS)
+    })
 }
 
 /// The record as a session uses it: a `public` visibility that has outlived
 /// [`PUBLIC_EXPIRY_DAYS`] downgraded to its expired form. Facts that only tighten, and the
 /// entries the user accepted, do not expire.
-pub fn expire(mut record: ProjectEnvironment, now: DateTime<Utc>) -> ProjectEnvironment {
+pub fn expire(mut record: ProjectEnvironment, now: Timestamp) -> ProjectEnvironment {
     if public_expired(&record, now) {
         let day = collected_on(&record);
         for remote in &mut record.remotes {
@@ -229,7 +229,7 @@ pub fn expire(mut record: ProjectEnvironment, now: DateTime<Utc>) -> ProjectEnvi
 
 /// [`expire`] as of now.
 pub fn expire_now(record: ProjectEnvironment) -> ProjectEnvironment {
-    expire(record, Utc::now())
+    expire(record, Timestamp::now())
 }
 
 /// What the guardian is told of the record.
@@ -274,7 +274,7 @@ pub fn setup_notice(
     git_remotes: &[String],
     mode: PermissionMode,
     auto_mode: &AutoMode,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Option<Notice> {
     if mode.rules() != PermissionMode::Auto || !auto_mode.setup_reminder {
         return None;

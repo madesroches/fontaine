@@ -7,10 +7,10 @@ ignore = [
     # Reached only through rig-cassette's test-only replay server (httpmock); never in the shipped binary.
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via httpmock in dev-only rig-cassette" },
     { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time only) via gemm in candle-core" },
-    # chrono is unmaintained in every version, so no upgrade clears this. Our own call sites move to
-    # jiff (#691); micromegas, rmcp, schemars, iroh-relay and wmi keep chrono in the graph until they
-    # do too. Re-check when they migrate, or drop this entry if chrono leaves the tree.
-    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade; tracked by #691, remaining copies are third-party" },
+    # chrono is unmaintained in every version, so no upgrade clears this. No workspace crate uses it
+    # directly any more (#691); micromegas, rmcp, schemars, iroh-relay and wmi keep it in the graph
+    # until they migrate. Re-check then, or drop this entry if chrono leaves the tree.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade; only third-party dependencies still pull it in" },
 ]
 
 [licenses]
