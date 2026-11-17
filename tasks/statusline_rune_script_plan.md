@@ -85,7 +85,9 @@ pub fn statusline(ctx) {
 - A new `check_statusline(&config, user_path)` in `core/config.rs`, called next to
   `check_composition` in `load()` (`:4247`), compiles the script. A compile error is
   `ConfigError::invalid(user_path, "statusline.script", "the script does not compile: …")`,
-  which stops startup with exit code 2. `refresh_interval_secs` keeps its existing
+  which stops startup with exit code 2. The check only compiles and checks the entry point's
+  arity; it never runs the script, so a runtime error (e.g. an unknown template name) is not
+  caught here. `refresh_interval_secs` keeps its existing
   "requires `command`" check (`:2268-2275`) — a script is pure over its snapshot, so a timer
   would re-render the same line.
 - Catalog: `statusline.script` reports `set`/`unset` like `guardian.composition.script`,
@@ -117,7 +119,8 @@ simplest scripts.
 `ctx.format` splits its argument into `{name}` placeholders, `{{`/`}}` escapes and literal
 text, and appends one run per piece: a placeholder appends its segment's runs, a literal
 appends its text in `dim`. A name that is not a segment or a value is an error, not literal
-text. `ctx.segment(name)` is the same lookup for one name.
+text; it is raised when `ctx.format` runs, so it is a render-time error handled by the §7
+fallback, not a compile failure. `ctx.segment(name)` is the same lookup for one name.
 
 The built-in bar's pieces are **bare**: no segment carries its own `·` separator or padding,
 and the template supplies both. A literal made only of spaces that is directly followed by a
@@ -270,7 +273,8 @@ custom command's line today.
    `StatuslineProgram::compile(source) -> Result<Self, StatuslineError>` following
    `composition::build` (no stdio, diagnostics rendering, one-argument `statusline` entry point
    check); `render(&self, snapshot) -> Result<Vec<StyledText>, String>` running the VM under
-   `budget::with(STATUSLINE_BUDGET, …)` (50 000); the `Ctx`,
+   `budget::with(STATUSLINE_BUDGET, …)` (50 000), the call wrapped in
+   `std::panic::catch_unwind(AssertUnwindSafe(..))` with a panic mapped to `Err`; the `Ctx`,
    `Line`, `Fragment` and `Style` host types; the template parser and the separator
    normalisation. `default.rn` beside it with `include_str!`.
 3. **SDK — config.** `StatuslineSection.script`, `Statusline.script` (copied in `Config::apply`, `:3552`, and
@@ -317,7 +321,7 @@ custom command's line today.
 - `rust/fontaine-tui/src/ui/tests.rs` — the test-only `Ui` constructor
 - `rust/fontaine-tui/tests/statusline.rs` — integration coverage
 - `rust/fontaine-sdk/tests/docs.rs` — the status line names test
-- `docs/tui.md`, `docs/configuration.md`, `docs/guardian.md`, `CHANGELOG.md`,
+- `docs/tui.md`, `docs/doctor.md`, `docs/configuration.md`, `docs/guardian.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`
 
 ## Decisions
@@ -345,6 +349,8 @@ custom command's line today.
   the `## Status bar` segment list (`:114-120`), the running-turn sentence (`:159-161`) and the
   `### Custom status line` placement sentence (`:166-168`) are updated to include `ctx N%` and
   `$cost`/`est.`.
+- `docs/doctor.md:59` and `docs/tui.md:954` — the sentences listing redacted rows gain
+  `statusline.script` shown as `set`.
 - `docs/configuration.md` — `statusline.script` in `### [statusline]`, the inline-source rule,
   the exit-2 rule, and the `#### [guardian.composition]` cross-reference.
 - `docs/guardian.md` — one paragraph in `### Writing a composition script` noting the status
@@ -361,9 +367,9 @@ custom command's line today.
   and present neighbours, a leading and a trailing `·`, two adjacent `·`. Host surface: every
   value getter's `None` case, `push_text`/`push_styled`/`push` ordering, an unknown style name,
   a `String` return, a `Line` return, a `Fragment` return. Compile: a syntax error names the
-  diagnostics, a missing or two-argument `statusline` is refused, `ctx.format` with an unknown
-  name fails. Bounds: an infinite loop ends on the instruction budget, a host panic is an error
-  rather than a crash.
+  diagnostics, a missing or two-argument `statusline` is refused. Runtime errors: `ctx.format` with an
+  unknown name fails at render time. Bounds: an infinite loop ends on the instruction budget, a
+  host panic is an error rather than a crash.
 - **Unit (`statusline/snapshot.rs`).** Role tables and name tables agree; the default script
   compiles.
 - **Docs (`rust/fontaine-sdk/tests/docs.rs`).** A test, in the style of
@@ -378,10 +384,12 @@ custom command's line today.
   script. The `tail` cut and the right clip.
 - **Unit (`config.rs`, `config_scope.rs`).** A script parses; a project-scope `[statusline]`
   with a script is refused; a script that does not compile is `exit_code() == 2` naming
-  `statusline.script`; `settings_section` reports `set` and never the source.
+  `statusline.script`.
+- **Unit (`config_catalog.rs`).** `effective("statusline.script", …)` reports `set` and never
+  the source.
 - **Integration (`rust/fontaine-tui/tests/statusline.rs`).** `World::with_config` with a
   `[statusline] script` renders its line through the real `Ui::run` on a `TestBackend`; the
   unconfigured default keeps `idle()`'s anchor; a script that errors keeps the previous good
-  line; a script that loops forever does not stall typing; `command` alone still replaces the
+  line; `command` alone still replaces the
   hint; `command` plus `script` puts the command's line where the script asks.
 - No live API, network, database or container at any tier.
