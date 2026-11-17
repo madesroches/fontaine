@@ -29,18 +29,20 @@ beside it so the kill path is one keystroke away.
   `running_agents`).
 - `ui/mod.rs` refresh: `running_background()` partitioned by `monitor`; this is the same definition
   the goal wait uses, so no second definition is computed. (#579 will want the same; if it lands
-  first, reuse its helper.)
+  first, reuse its helper.) The partition is a small pure helper `fn split(&[JobInfo]) -> (usize, usize)`
+  (shells, monitors).
 - `statusbar.rs`: a pure `jobs_clause(shells, monitors, panel_keys: Option<&str>) -> String`:
   - none → empty
-  - `· 1 shell running`, `· 2 shells running`, `· 1 monitor`, `· 3 monitors`, mixed:
-    `· 1 shell running · 2 monitors`... kept compact as `· 1 shell, 2 monitors`.
-  - while jobs exist, append ` (<keys> to manage)` using the `AgentsPanel` binding; omitted when
-    unbound.
+  - grammar: `· {n} shell(s)[, {m} monitor(s)] running`, singular/plural per count, e.g.
+    `· 1 shell running`, `· 2 shells running`, `· 3 monitors running`,
+    `· 1 shell, 2 monitors running`.
+  - followed by ` (<keys> to manage)` using the `AgentsPanel` binding when it is bound; omitted
+    when unbound, and always omitted when rendered from a remote `Status` (`panel_keys = None`).
   Placed right after the `agents` clause; included in both trailer branches (custom statusline and
   hint). It shows during a turn as well as idle; the spinner row is untouched.
-- Scope: the count is the main agent's registry. This is documented in `docs/tui.md` and pinned by
-  a test in the SDK that a non-root background shell is refused (existing behaviour) plus a doc line;
-  the panel needs no owner column.
+- Scope: the main agent's registry only; see the Decisions entry. Pinned by the existing test
+  `a_subagent_gets_no_jobs_and_keeps_kill_at_timeout` in `rust/fontaine-sdk/tests/jobs.rs`; documented
+  in `docs/tui.md`.
 - Remote: add `background_shells`/`background_monitors` to `Status` with `#[serde(default)]` so older
   peers still parse; `client_ui.rs` copies them into the device's `App`, so an attached device shows
   the same clause.
@@ -65,12 +67,15 @@ beside it so the kill path is one keystroke away.
 
 - Spinner-row line for jobs: rejected; the issue asks the spinner to stop with the turn and the
   status bar to carry the state.
-- Aggregating subagent registries: unnecessary, they cannot hold background jobs.
 
 ## Decisions
 
 - 2026-11-16: The count covers the main agent's registry only, because subagents cannot start
   background jobs (#680).
+- 2026-11-16: AFK: the "(<keys> to manage)" hint is omitted on an attached device, because the
+  panel/kill path is host-only.
+- 2026-11-16: AFK: the clause keeps its own key hint even though the idle hint already ends with
+  `<keys> agents`; the idle hint is unchanged.
 
 ## Documentation
 
@@ -81,12 +86,9 @@ beside it so the kill path is one keystroke away.
 
 - Unit tests on `jobs_clause`: none, one shell, many shells, one monitor, mixed, key hint present
   and absent.
-- `TestBackend` render tests of `statusbar::render`: no jobs → no clause; one shell with the main
-  turn finished (`running = false`) shows the clause; mixed; counts dropping to zero removes it;
-  clause shows while `running = true`; present with a custom statusline.
-- Refresh test: with a real `Jobs` registry holding a background shell and a monitor, the refresh
-  sets the counts; after `kill_by_user`/end they return to zero. A promoted foreground command
-  counts (reuses the registry's own `counts` definition).
+- Unit test on `split` with constructed `JobInfo` values (shells, monitors, mixed, empty).
+- `TestBackend` render tests of `statusbar::render` (wiring only): idle with a job, during a turn,
+  with a custom statusline, zero jobs → no clause.
 - Remote: `Status` round-trips and parses without the new fields.
 - A tmux capture is not needed: only the status bar row changes, not the live area.
 
