@@ -101,6 +101,33 @@ impl Transport<MockScript> for Holding {
     }
 }
 
+/// A scripted transport that takes `delay` before the first request is answered, so a turn
+/// has already run a long time when that request's failure arrives.
+#[derive(Clone)]
+struct Slow {
+    inner: MockRuntime,
+    delay: std::time::Duration,
+    sent: Arc<AtomicUsize>,
+}
+
+impl Transport<MockScript> for Slow {
+    fn send(
+        &self,
+        request: <MockScript as rig_core::wire::Wire>::Payload,
+        exchange: Exchange,
+    ) -> Opening<MockFrame> {
+        let first = self.sent.fetch_add(1, Ordering::SeqCst) == 0;
+        let inner = self.inner.clone();
+        let delay = self.delay;
+        Opening::new(async move {
+            if first {
+                tokio::time::sleep(delay).await;
+            }
+            inner.send(request, exchange).await
+        })
+    }
+}
+
 /// Models whose main model answers `turns` but holds request `hold`, and the mock that records
 /// every request it answered.
 fn holding(
@@ -632,6 +659,96 @@ fn build_warning(w: &World, turns: Vec<Vec<MockStreamEvent>>, warnings: Arc<Warn
         warnings,
     );
     Built { runtime, main }
+}
+
+/// A runtime over `turns` whose first model call takes `delay`, with the warnings collected.
+fn build_slow(
+    w: &World,
+    turns: Vec<Vec<MockStreamEvent>>,
+    delay: std::time::Duration,
+    warnings: Arc<Warnings>,
+) -> Built {
+    let main = MockCompletionModel::from_stream_turns(turns);
+    let transport = Slow {
+        inner: main.transport.clone(),
+        delay,
+        sent: Arc::new(AtomicUsize::new(0)),
+    };
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/mock").unwrap(),
+        AccountKind::named("openai-compatible"),
+        Model::new(MockScript::default(), transport).into(),
+    );
+    let models = Models {
+        main_chain: fontaine_sdk::core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
+        main: handle.clone(),
+        main_listing: fontaine_sdk::core::models::Listing::default(),
+        guardian: Some(GuardianModel::Ready(handle)),
+        guardian_choice: GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = runtime::build_with_approver(
+        w,
+        Manual,
+        models,
+        None,
+        true,
+        Default::default(),
+        None,
+        warnings,
+    );
+    Built { runtime, main }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_long_turn_still_retries_a_transient_failure() {
+    let w = World::new();
+    let warnings = Arc::new(Warnings::default());
+    // Longer than the default 120 s budget: the turn has outlived it before the 503 arrives.
+    let built = build_slow(
+        &w,
+        vec![error_turn(503), answer_turn("done")],
+        std::time::Duration::from_secs(130),
+        warnings.clone(),
+    );
+    let outcome = run(&built, "hi").await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    assert_eq!(built.main.request_count(), 2);
+    let lines = warnings.0.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|line| line.contains("retry 1 of 4")),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_total_wait_budget_still_settles_the_retries() {
+    let w = World::new();
+    w.user_file("[retry]\nmax_total_delay_secs = 10\n");
+    let warnings = Arc::new(Warnings::default());
+    let built = build_warning(
+        &w,
+        vec![
+            throttle_with_retry_after("7"),
+            throttle_with_retry_after("7"),
+            answer_turn("done"),
+        ],
+        warnings.clone(),
+    );
+    let outcome = run(&built, "hi").await;
+    assert!(matches!(outcome, TurnOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(built.main.request_count(), 2);
+    let lines: Vec<String> = warnings
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("model call failed"))
+        .cloned()
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
 }
 
 /// The preflight's record write succeeds and the post-compaction rewrite fails: the turn
