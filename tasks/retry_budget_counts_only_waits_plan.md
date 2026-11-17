@@ -57,18 +57,12 @@ Because only the sleeps are added, everything else a turn spends time on — mod
 runs, approval waits, usage-window pauses, the failed attempt's own duration — is free of the
 budget. That is exactly the documented meaning.
 
-`RetryPolicy::next_delay`'s third parameter is renamed `elapsed` → `waited` (its doc comment and
-the unit tests' `ZERO`/`nearly` arguments move with it), so the pure policy states the quantity it
+`RetryPolicy::next_delay`'s third parameter is renamed `elapsed` → `waited` (and its doc comment), so the pure policy states the quantity it
 wants and a future caller cannot repeat this bug. The `delay > max_delay` arm is untouched: a
 `Retry-After` above `max_delay` still settles the failure at once.
 
 `RetryPolicy::immediate` stays correct by construction: its `max_total_delay` is `ZERO` and so is
 every wait it returns, so an accumulating budget never grows off zero.
-
-No whole-turn wall-clock cap is added. The issue only floats one ("if a cap on the whole turn's
-wall time is wanted as well, give it its own setting"), and one already exists where unattended
-runs need it: `[goal] max_duration_secs` pauses a goal stretch on wall time. Overloading
-`max_total_delay_secs` with both meanings is the bug being fixed.
 
 ## Implementation Steps
 
@@ -84,51 +78,27 @@ runs need it: `[goal] max_duration_secs` pauses a goal stretch on wall time. Ove
    `started` alone.
 3. `rust/fontaine-sdk/tests/turn_recovery.rs`: add a `Slow` transport wrapper next to the existing
    `Holding` one — same inner `MockRuntime`, but sleeping `delay` inside
-   `Opening::new(async move { sleep.await; inner.send(request, exchange).await })` for the requests
-   at or after a chosen index. Add a `build_slow` helper beside `build_warning` that wires the
-   wrapper into a `Models` with the `Warnings` approver, and the three tests below.
-4. `rust/fontaine-sdk/tests/turn_recovery.rs`: keep the existing retry cases green as they are —
-   `a_retryable_failure_is_retried_and_the_task_continues`, `retries_run_out_and_the_failure_is_reported_once`
-   (5 attempts), `a_quota_failure_gets_fewer_retries_and_still_falls_through` (3 attempts),
-   `a_retry_after_is_waited_out_and_each_retry_is_announced`,
-   `a_retry_after_beyond_the_cap_settles_the_failure_at_once`, `a_retry_never_replays_a_tool_call`.
-5. `docs/configuration.md:1203`: make the `max_total_delay_secs` meaning explicit about being the
-   running total of the waits, so the sentence that was already right cannot drift again.
+   `Opening::new(async move { sleep.await; inner.send(request, exchange).await })` for the first
+   request only. Add a `build_slow` helper beside `build_warning` that wires the
+   wrapper into a `Models` with the `Warnings` approver, and the two tests below.
 
 ## Files to Modify
 
 - `rust/fontaine-sdk/src/core/retry.rs` — parameter rename, doc comment, one new unit test.
 - `rust/fontaine-sdk/src/core/turn.rs` — `drive`'s budget source.
-- `rust/fontaine-sdk/tests/turn_recovery.rs` — `Slow` transport, `build_slow`, three tests.
-- `docs/configuration.md` — one clarifying clause on `max_total_delay_secs`.
+- `rust/fontaine-sdk/tests/turn_recovery.rs` — `Slow` transport, `build_slow`, two tests.
 - `CHANGELOG.md` — the fix, under `### Fixed`.
-
-## Trade-offs
-
-- **Accumulate the waits (chosen)** vs. **reset `started` per attempt**: resetting would bound each
-  attempt's budget separately, so N attempts could wait up to `N × max_total_delay` — not the
-  "longest the retries of one turn wait in total" the setting promises. Accumulating also keeps the
-  policy pure.
-- **Accumulate (chosen)** vs. **drop `max_total_delay` and let `max_retries` bound it**: a single
-  `Retry-After: 300` would then stall a turn for minutes. The bound is worth keeping; only its
-  input was wrong.
-- **No `AFK`-style "budget exhausted" warning line**: the per-attempt notices already show which
-  retries happened before a settle, and the failure text carries the last error. A new line would
-  be a user-visible message the issue does not ask for.
-- **A hung attempt is not charged (chosen)** vs. **charging attempts too**: charging attempts is
-  what made a 60 s hang cost a short run its second retry. Retry spacing is what a "total delay"
-  names; a turn that hangs unbounded is the transport's timeout to bound, not the backoff's.
 
 ## Decisions
 
 - Fixed inside `drive` and the policy's parameter name; no new `[retry]` key and no new
   whole-turn wall-clock setting (the conservative option: nothing new to configure).
+- Accumulate the waits rather than reset the budget per attempt; keep `max_total_delay`; add no
+  budget-exhausted warning line; do not charge hung attempts to the budget.
 
 ## Documentation
 
-- `docs/configuration.md` — the `max_total_delay_secs` row gains the "running total of the waits"
-  clause. `docs/architecture.md:190-195` already describes "a cap on the total wait" and stays
-  accurate.
+- `docs/architecture.md:190-195` already describes "a cap on the total wait" and stays accurate.
 - `CHANGELOG.md` — one `### Fixed` entry naming the bug: a retryable failure late in a turn was
   never retried.
 
@@ -140,15 +110,11 @@ jitter, `Retry-After` and quota-budget cases under the renamed parameter.
 Integration (`turn_recovery.rs`, paused clock, real `run_turn` over the scripted mock transport):
 
 - `a_long_turn_still_retries_a_transient_failure` — pins this bug. Script
-  `[shell_turn("echo x"), error_turn(503), answer_turn("done")]` and have `Slow` sleep
-  `max_total_delay + 10 s` before the first request, so the turn has been working far longer than
-  the budget when the 503 arrives. Assert `TurnOutcome::Answer`, `request_count() == 3`, and a
-  warning line containing `retry 1 of 4`. Before the fix the outcome is `Failed` with one request;
-  after it, the retry happens and is announced.
-- `a_slow_failing_attempt_does_not_spend_the_retry_budget` — the issue's second clause: `Slow`
-  sleeps past the budget before the *failing* request itself (`[error_turn(503), answer_turn]`),
-  which under the old code charged the attempt's own duration and settled at once. Assert
-  `Answer` and `request_count() == 2`.
+  `[error_turn(503), answer_turn("done")]` and have `Slow` sleep `max_total_delay + 10 s` before
+  the first request, so the turn has run far longer than the budget when the 503 arrives. Assert
+  `TurnOutcome::Answer`, `request_count() == 2`, and a warning line containing `retry 1 of 4`.
+  Before the fix the outcome is `Failed` with one request; after it, the retry happens and is
+  announced.
 - `the_total_wait_budget_still_settles_the_retries` — the bound must still bite. A user file with
   `[retry] max_total_delay_secs = 10`, turns `[throttle_with_retry_after("7"),
   throttle_with_retry_after("7"), answer_turn]`: the first wait is taken (7 s of 10 spent), the
