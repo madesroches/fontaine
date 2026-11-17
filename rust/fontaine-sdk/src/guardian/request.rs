@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_text_is_dropped_first_from_the_head_budget() {
+    fn the_head_budget_keeps_the_first_chars_and_drops_the_tail() {
         assert_eq!(leading_chars("abcdef", 3), "abc");
         assert_eq!(leading_chars("abc", 10), "abc");
         assert_eq!(leading_chars("héllo", 2), "hé");

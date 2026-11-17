@@ -1174,7 +1174,8 @@ impl Tool for AgentTool {
             id: id.clone(),
             armed: true,
         };
-        let task = args.prompt.clone();
+        let task = crate::guardian::leading_chars(&args.prompt, crate::guardian::AGENT_TASK_CHARS)
+            .to_string();
         let request = SpawnRequest {
             id: id.clone(),
             parent: caller.clone(),

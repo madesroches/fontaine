@@ -1609,6 +1609,57 @@ mod tests {
     }
 
     #[test]
+    fn a_spawned_event_reaches_the_ledger_with_its_task() {
+        use crate::agents::tree::Limits;
+        use crate::core::audit::AuditLog;
+        use crate::core::config::PermissionMode;
+        use crate::core::gate::{AutoContext, StateParams, no_guardian};
+        use crate::core::ledger::Ledger;
+        use crate::core::permissions::DenyAll;
+        use crate::tools::scope::Scope;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::create(dir.path()).unwrap());
+        let state = Arc::new(SessionState::new(StateParams {
+            session_id: "window-test".into(),
+            mode: PermissionMode::Manual,
+            scope: Arc::new(Scope::new(dir.path().to_path_buf(), [])),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allow: Vec::new(),
+            ledger: ledger.clone(),
+            audit: Arc::new(AuditLog::create(dir.path(), "window-test").unwrap()),
+            approver: Arc::new(DenyAll),
+            home: None,
+            protected_dirs: Vec::new(),
+            scratch: None,
+            memory_root: None,
+            guardian: no_guardian(),
+            auto: AutoContext::default(),
+            agents: Arc::new(AgentTree::new(Limits::default(), 1)),
+            agent_types: Arc::new(crate::tools::live::Live::new(
+                crate::agents::registry::AgentTypes::builtin(),
+            )),
+            reveal_mcp_names: false,
+            auto_edits: crate::core::gate::AutoEdits::default(),
+            effort: None,
+            retry: crate::core::retry::RetryPolicy::default(),
+        }));
+        let window = LedgerWindow(state);
+        window.append_event(AgentEvent::Spawned {
+            agent: "agent-1".into(),
+            name: "explore-1".into(),
+            parent: ROOT_AGENT.into(),
+            agent_type: "explore".into(),
+            model: None,
+            task: Some("map the repo".into()),
+        });
+        let view = ledger.view();
+        assert_eq!(view.agents.len(), 1);
+        assert_eq!(view.agents[0].task.as_deref(), Some("map the repo"));
+    }
+
+    #[test]
     fn a_run_without_the_kill_flag_keeps_its_own_outcome() {
         let tree = tree();
         let report = child_report(
