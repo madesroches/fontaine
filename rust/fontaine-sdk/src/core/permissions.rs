@@ -1034,6 +1034,37 @@ impl PermissionPipeline {
         )
     }
 
+    /// Why the agent type forbids a read-only shell command, judged on the file-tool calls
+    /// the command stands for.
+    fn restricted_read(
+        &self,
+        agent: &str,
+        reads: &[(&'static str, Value)],
+        scope: &Scope,
+        home: Option<&std::path::Path>,
+    ) -> Option<String> {
+        reads.iter().find_map(|(tool, args)| {
+            self.state.child_restriction(
+                agent,
+                &CallContext {
+                    tool,
+                    args,
+                    scope,
+                    home,
+                },
+            )
+        })
+    }
+
+    fn hooks_name_file_reads(&self) -> bool {
+        let layer = self.plugin_hooks.get();
+        self.hooks.iter().chain(layer.pre.iter()).any(|hook| {
+            hook.matcher()
+                .and_then(|text| parse_rule(&text).ok())
+                .is_some_and(|rule| matches!(rule.tool.as_str(), "read" | "ls" | "grep"))
+        })
+    }
+
     async fn run_hooks(
         &self,
         call: &CallView<'_>,
@@ -1351,6 +1382,14 @@ impl PermissionPipeline {
                         converted: None,
                     };
                 }
+                if let Some(why) = self.restricted_read(call.agent, &reads, &scope, home) {
+                    return Verdict::Deny {
+                        tier: Tier::DenyRule,
+                        rule: Some("agent tools".to_string()),
+                        why,
+                        converted: None,
+                    };
+                }
                 if let Some(rule) = ruled_hit(&rules.ask, &reads, &scope, home, Posture::Ask) {
                     let rule = rule.label();
                     return self.would_prompt(
@@ -1365,32 +1404,38 @@ impl PermissionPipeline {
                 }
                 let secrets = secret_read_calls(command, &paths, env.cwd, &scope);
                 if secrets.is_empty() {
-                    return Verdict::Allow {
-                        tier: Tier::Tier05,
-                        rule: None,
-                    };
-                }
-                // Every secret operand needs an allow of its own: one rule matching a plain
-                // operand must not vouch for the secret next to it.
-                let grants = self.state.skill_grants(call.agent);
-                let allows = rules.allow.iter().chain(grants.iter());
-                let mut restored = None;
-                for (_, calls) in &secrets {
-                    match ruled_hit(allows.clone(), calls, &scope, home, Posture::Allow) {
-                        Some(rule) => restored = Some(rule.label()),
-                        None => {
-                            restored = None;
-                            break;
+                    // Hooks do not run on the calls built above, so a hook that names a file
+                    // read must not be bypassed by the fast path: the call goes on to the
+                    // rules and the mode.
+                    if !self.hooks_name_file_reads() {
+                        return Verdict::Allow {
+                            tier: Tier::Tier05,
+                            rule: None,
+                        };
+                    }
+                } else {
+                    // Every secret operand needs an allow of its own: one rule matching a plain
+                    // operand must not vouch for the secret next to it.
+                    let grants = self.state.skill_grants(call.agent);
+                    let allows = rules.allow.iter().chain(grants.iter());
+                    let mut restored = None;
+                    for (_, calls) in &secrets {
+                        match ruled_hit(allows.clone(), calls, &scope, home, Posture::Allow) {
+                            Some(rule) => restored = Some(rule.label()),
+                            None => {
+                                restored = None;
+                                break;
+                            }
                         }
                     }
+                    if restored.is_some() {
+                        return Verdict::Allow {
+                            tier: Tier::AllowRule,
+                            rule: restored,
+                        };
+                    }
+                    secret_note = Some(format!("it reads a secret file ({})", secrets[0].0));
                 }
-                if restored.is_some() {
-                    return Verdict::Allow {
-                        tier: Tier::AllowRule,
-                        rule: restored,
-                    };
-                }
-                secret_note = Some(format!("it reads a secret file ({})", secrets[0].0));
             }
         }
         // `auto` sets broad code-execution rules aside for as long as it is on: a blanket

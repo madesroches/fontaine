@@ -1,0 +1,111 @@
+# Read-only shell fast path: agent-type restrictions and read-scoped hooks Plan
+
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/675
+
+## Overview
+
+A read-only `shell` command that the pre-classifier accepts (`cat secrets/key`) is checked against
+the session's `rules.deny`/`rules.ask` on the `read`/`ls`/`grep` calls it stands for, then allowed
+at `Tier05`. Two deterministic restrictions never see those synthesized calls: agent-type
+`disallowed`/`only` restrictions on `read(...)` and `pre_tool_use` hooks whose matcher names
+`read`, `ls` or `grep`. This plan closes the first fully. For the second it takes the shell read off
+the `Tier05` fast path, so the fast path no longer allows what a read-scoped hook may deny; the
+hook itself is not run on the synthesized call, so its deny/ask is replaced by the mode's decision
+(in `auto` the guardian can still allow the read), not enforced.
+
+## Current State
+
+- `PermissionPipeline::evaluate` (`rust/fontaine-sdk/src/core/permissions.rs`, the `tool == "shell"`
+  block after the read-only fast path) calls `Preclassifier::read_paths`, builds the file-tool calls
+  with `ruled_read_calls`, tests `rules.deny` then `rules.ask` through `ruled_hit`, then checks
+  secret operands via `secret_read_calls`; with none it returns `Verdict::Allow { Tier05 }`.
+- `SessionState::child_restriction` (`core/gate.rs`) is evaluated earlier in `evaluate`, but only on
+  the real call (`tool == "shell"`); `restriction_on` matches rules by tool name, so a
+  `read(secrets/**)` restriction never matches `shell`.
+- `run_hooks` (`permissions.rs`) filters hooks by `matches(rule, CallContext { tool: call.tool, .. })`
+  on the real call, so a `read(src/private/**)` hook never runs for a shell call.
+- Out-of-workspace paths are rejected by the pre-classifier; secret files are handled in the same
+  block. Both are unaffected.
+
+## Design
+
+Both fixes live in the `Some(paths) = read_paths(...)` branch of `evaluate`, reusing the `reads`
+vector already built.
+
+1. **Agent-type restrictions.** Run `self.state.child_restriction(call.agent, &CallContext { tool, args, scope, home })` for each
+   entry of `reads`. Place the check
+   immediately after the `rules.deny` check, before `rules.ask`, mirroring the main path where
+   `child_restriction` precedes `forced_ask`. A hit returns `Verdict::Deny { tier: Tier::DenyRule,
+   rule: Some("agent tools"), why, converted: None }` — the same shape as the existing denial.
+   `only` restrictions on `read`/`ls`/`grep` (`restriction_on`'s second arm) apply to the built
+   calls through the same function, with no extra code. Extract a small helper
+   `restricted_read(&self, agent, &reads, scope, home) -> Option<String>` next to `ruled_hit` to keep
+   `evaluate` readable.
+2. **Read-scoped hooks.** A hook that cannot be evaluated against built calls must not be bypassed.
+   Add `fn hooks_name_file_reads(&self) -> bool` on the pipeline: true when any hook in
+   `self.hooks` or `self.plugin_hooks.get().pre` has a parseable matcher whose tool is `read`, `ls`
+   or `grep`. When true, the shell branch skips the `Tier05` allow and falls through to the
+   normal rule/mode routing, as the issue suggests: hooks do not run on synthesized calls. When
+   the hook gate is set and `secrets` is empty, the whole secrets/restoration block is skipped and
+   the call falls through to the allow rules and mode routing (never index `secrets[0]` on an
+   empty vec). The skip is deliberately coarse: any hook naming `read`/`ls`/`grep` takes all shell
+   reads off the `Tier05` fast path, regardless of its specifier. Explicit allows (a `read(...)` allow
+   rule restoring a secret operand, a `shell(...)` allow rule, a `shell` hook's allow) are still
+   honored after the skip; it only removes the `Tier05` fast-path allow. The deny
+   and ask checks and the new restriction check above still run first. Hooks with no matcher, an
+   unparseable matcher, or a `shell` matcher already run on the real call and do not trigger the skip.
+
+## Implementation Steps
+
+1. `permissions.rs`: add `restricted_read` helper and call it after the `rules.deny` check in the
+   shell branch.
+2. `permissions.rs`: add `hooks_name_file_reads`; when set, skip the `Tier05` return and the secrets/restoration block if `secrets` is empty.
+3. Tests (below).
+4. `docs/permissions.md` and `docs/hooks.md` (matcher behavior for shell reads): note that a
+   read-only shell command is held to agent-type read restrictions and that a hook matching
+   `read`/`ls`/`grep` takes shell reads off the pre-classifier fast path. With such a hook, shell
+   reads in `dontAsk` mode need an allow rule (they fall through to the mode instead of `Tier05`),
+   and manual mode prompts.
+5. `CHANGELOG.md` entry, including the `dontAsk` and manual-mode note above.
+
+## Files to Modify
+
+- `rust/fontaine-sdk/src/core/permissions.rs`
+- `docs/permissions.md`, `docs/hooks.md`
+- `CHANGELOG.md`
+
+## Trade-offs
+
+- Running the hooks on the built calls was rejected: a hook's decision (allow, updated input) has
+  no meaning for a shell command, and `updated_input` could not be applied back. Skipping the fast
+  path hands the call to the mode (guardian in `auto`). A read-scoped hook's deny/ask is therefore
+  replaced by the mode's decision, not enforced; running hooks on built calls (honoring only deny
+  and ask) was declined to stay within the issue's suggested fix.
+
+## Testing Strategy
+
+Unit tests in `permissions.rs` next to the existing shell pre-classifier tests (pipeline built with
+a temp scope; no live APIs):
+
+- A child agent with `disallowed: ["read(secrets/**)"]` that keeps `shell`: `cat secrets/key` is
+  denied with rule `agent tools`; `cat src/a.txt` is still allowed at `Tier05`; the same restriction
+  on the parent applies to a grandchild.
+- An `only` restriction on `read` that does not cover the path denies `cat <path>`.
+- A `pre_tool_use` hook with matcher `read(src/private/**)`: `cat src/private/x` no longer returns
+  `Tier05` (it reaches the mode, e.g. the guardian in `auto`); with matchers `shell`, none, or
+  `edit(**)` it still returns `Tier05`.
+- `ls`/`grep` matchers likewise skip the fast path.
+- Hook gate set, no secret operand, plain non-covered command such as `cat src/a.txt`: no panic, and
+  not `Tier05`.
+- Hook gate set with a secret operand, a `read(secrets/**)` allow rule and a read-naming hook: the
+  call is allowed via the allow rule (`AllowRule`), not `Tier05`.
+- A deny `ls(...)` or `grep(...)` agent-type restriction denies the matching shell command.
+
+## Decisions
+
+- AFK: Read-scoped hooks are not run on built read/ls/grep calls; the plan skips the Tier05 allow only (the issue's suggested fix), and the Overview and Trade-offs now say a hook's deny/ask is replaced by the mode's decision (guardian in `auto`), not enforced.
+- AFK: An explicit `shell(...)` allow rule, a `read(...)` allow restoring a secret operand, or a `shell` hook's allow may still override the hook-gated skip (matches the existing plan text: only the Tier05 fast-path allow is removed; deny, ask and restrictions still run first).
+
+## Open Questions
+
+None.

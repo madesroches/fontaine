@@ -311,6 +311,11 @@ All notable changes are recorded here. The format follows
   starting with `~` were refused as missing (#672): a leading `~`, alone or before a separator,
   now expands to the session's home directory. A `~` deeper in the path and `~user` stay literal,
   and an entry naming an unknown home is skipped with a warning.
+- A read-only `shell` command that the pre-classifier accepts (`cat secrets/key`) now respects an
+  agent type's `disallowed`/`only` restrictions on `read`, `ls` and `grep` (#675), and a
+  `pre_tool_use` hook whose matcher names `read`, `ls` or `grep` takes shell reads off the `tier05`
+  fast path: the call goes on to the rules and the mode, so in `dontAsk` mode such reads need an
+  allow rule and in manual mode they prompt. The hook itself is not run on the shell command.
 - A retryable model failure late in a turn was never retried (#678): the retry budget
   (`[retry] max_total_delay_secs`) was charged the whole run's wall time instead of the time spent
   waiting between attempts, so any run longer than the budget settled its first failure at once.

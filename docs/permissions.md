@@ -429,7 +429,14 @@ against the `read` deny and ask rules, and against the `ls` or `grep` rules for 
 deny match denies the call and an ask match asks, so `deny = ["read(.env)"]` also stops `cat .env`. Only the words written in the command are
 checked: files a recursive search reaches under a directory (`grep -r KEY .`) are not checked
 one by one. `read` deny rules are not a containment boundary for shell; use a `shell` deny or
-ask rule, or the protected paths.
+ask rule, or the protected paths. The same calls are held to the restrictions of the agent type
+that runs the command (`disallowed` and `only` entries on `read`, `ls` and `grep`), so a
+`disallowed: ["read(secrets/**)"]` agent cannot `cat secrets/key` either.
+
+A [`pre_tool_use` hook](hooks.md) whose matcher names `read`, `ls` or `grep` is not run on these
+synthesized calls, so it takes every pre-classified shell read off the `tier05` fast path instead:
+the call goes on to the allow rules and the mode. Such reads need an allow rule in `dontAsk`
+mode, prompt in manual mode and go to the guardian in `auto`.
 
 A word that names a [secret file](tools.md#what-earns-the-read-only-fast-path) (`cat .env`,
 `grep -f.env x`; `ls` only lists names and is exempt) is not pre-classified: the call falls
