@@ -87,7 +87,8 @@ pub fn statusline(ctx) {
   `ConfigError::invalid(user_path, "statusline.script", "the script does not compile: …")`,
   which stops startup with exit code 2. The check only compiles and checks the entry point's
   arity; it never runs the script, so a runtime error (e.g. an unknown template name) is not
-  caught here. `refresh_interval_secs` keeps its existing
+  caught here. An empty or whitespace-only `script` is refused like an empty `command` is today:
+  `ConfigError::invalid(user_path, "statusline.script", …)`. `refresh_interval_secs` keeps its existing
   "requires `command`" check (`:2268-2275`) — a script is pure over its snapshot, so a timer
   would re-render the same line.
 - Catalog: `statusline.script` reports `set`/`unset` like `guardian.composition.script`,
@@ -100,7 +101,7 @@ The script defines `pub fn statusline(ctx)` and returns a `Line`, a `Fragment`, 
 
 | Kind | Surface |
 |---|---|
-| Values | `ctx.mode()`, `ctx.model()`, `ctx.dir()`, `ctx.branch() -> Option`, `ctx.cwd()`, `ctx.project_dir()`, `ctx.session_id()`, `ctx.version()`, `ctx.effort() -> Option`, `ctx.vim() -> Option`, `ctx.afk()`, `ctx.afk_stopped()`, `ctx.guardian_off()`, `ctx.running_agents()`, `ctx.background_jobs()`, `ctx.scheduled()`, `ctx.bug_drafts() -> Option`, `ctx.goal() -> Option`, `ctx.remote() -> Option`, `ctx.context_used_percentage() -> Option`, `ctx.context_remaining_percentage() -> Option`, `ctx.context_total_tokens() -> Option`, `ctx.context_window_size() -> Option`, `ctx.cost_total_usd() -> Option`, `ctx.cost_is_estimate()`, `ctx.command_line() -> Option` |
+| Values | `ctx.mode()`, `ctx.model()`, `ctx.dir()`, `ctx.branch() -> Option`, `ctx.cwd()`, `ctx.project_dir()`, `ctx.session_id()`, `ctx.version()`, `ctx.effort() -> Option`, `ctx.vim() -> Option`, `ctx.afk()`, `ctx.afk_stopped()`, `ctx.guardian_off()`, `ctx.running_agents()`, `ctx.background_jobs()`, `ctx.scheduled()`, `ctx.bug_drafts() -> Option`, `ctx.goal() -> Option`, `ctx.remote() -> Option`, `ctx.context_used_percentage() -> Option`, `ctx.context_remaining_percentage() -> Option`, `ctx.context_total_tokens() -> Option`, `ctx.context_window_size() -> Option`, `ctx.cost_total_cost_usd() -> Option`, `ctx.cost_is_estimate()`, `ctx.command_line() -> Option` |
 | Building | `ctx.format(template) -> Fragment`, `ctx.segment(name) -> Fragment`, `ctx.style(name) -> Style`, `ctx.line() -> Line` |
 | `Line` | `line.push(fragment)`, `line.push_text(text)`, `line.push_styled(text, style)` |
 | Styles | `normal`, `dim`, `bold`, `accent`, `warning`, `warning_bold`, `success`, `error`, `user`, `heading`, `link`, `shell`, `mode.manual`, `mode.accept`, `mode.auto`, `mode.afk` |
@@ -255,6 +256,8 @@ awaited — when a snapshot is built. Cost is read from `UsageLedger` at snapsho
 `statusbar::render` becomes: the two safety badges (`guardian off`, `AFK STOPPED`) drawn by
 Rust, always first; then `App.statusline`'s runs converted to `Span`s through the role map.
 Nothing else. Every other segment, the mode chip included, is the script's to place or drop.
+When `App.statusline` holds no runs, the row draws the safety badges only: the mode chip is the
+script's to draw, so a row with an empty cache has no chip by design.
 
 Width: the row clips on the right as the built-in bar does today, so a long line loses its
 tail, except the command line — `{command}` and a command line standing in for `{hint}` — whose
@@ -267,7 +270,15 @@ the width of every other run on the line.
    existing `statusline.rs` becomes `statusline/mod.rs`): `Role`, `StyledText { text, role,
    tail: bool }`, `StatuslineSnapshot { segments: BTreeMap<&'static str, Vec<StyledText>>,
    values: Values, … }`, and the `SEGMENTS` / `VALUES` / `STYLE_NAMES`
-   name tables that both the host and the docs are checked against. `Values` is typed —
+   name tables that both the host and the docs are checked against. The remaining fields,
+   one per non-numeric getter: `mode: String`, `model: String`, `dir: String`,
+   `branch: Option<String>`, `cwd: String`, `project_dir: String`, `session_id: String`,
+   `version: String`, `effort: Option<String>`, `vim: Option<String>`, `afk: bool`,
+   `afk_stopped: bool`, `guardian_off: bool`, `running_agents: usize`,
+   `background_shells: usize` and `background_monitors: usize` (`background_jobs()` returns the
+   `(shells, monitors)` tuple), `scheduled: usize`, `bug_drafts: Option<usize>`,
+   `goal: Option<(u64, bool)>` (age in seconds, paused), `remote: Option<String>`,
+   `cost_is_estimate: bool`, `command_line: Option<String>`. `Values` is typed —
    `Option<u32>` for the percentages, `Option<u64>` for the token counts, `Option<f64>` for the
    cost — so the getters return Rune numbers and
    `pct >= 80` compares numbers.
@@ -297,10 +308,15 @@ the width of every other run on the line.
    `Option<String>`; the
    `statusline_tx`/`statusline_rx`, `trigger_statusline`, `statusline_tick` and `run_statusline`
    gates keep meaning "no `command` configured" and are not lifted; `refresh_context` called
-   in `drive` (`lib.rs`) before the first render; warn-once on failure; update the `Ui`
+   in `drive` (`lib.rs`) before the first render; the final flush in `drive` (`lib.rs:718-723`)
+   rebuilds the snapshot and re-renders the cache before `(ui.render)`, as the one place outside
+   `Ui::draw` that must refresh it; warn-once on failure; update the `Ui`
    literal in `ui/tests.rs`.
 6. **TUI — render.** `statusbar::render` reduced to badges plus runs, with the `tail` run cut;
-   the existing custom-line tests move to runs and the `line` field goes.
+   the existing custom-line tests move to runs and the `line` field goes. The `screen.rs` (and,
+   where they assert the chip on a bare `App`, `view.rs`) tests seed the cache through a test
+   helper that builds a snapshot and renders the default program; `chrome_in_history`'s bar
+   marker (`"manual"`, `screen.rs:1848`) changes to something the seeded bar still contains.
 7. **Docs and changelog** (below), then the parity row.
 
 ## Files to Modify
@@ -314,8 +330,10 @@ the width of every other run on the line.
 - `rust/fontaine-tui/src/statusbar.rs` — `snapshot`, `hint`, `role_style`, the reduced `render`,
   the `jobs_clause`/`location`/quota separator change, and their tests
 - `rust/fontaine-tui/src/app.rs` — `context`, `command_line`
+- `rust/fontaine-tui/src/screen.rs` (and `view.rs` if its tests assert the chip on a bare `App`) —
+  tests seed `App.statusline` through the helper
 - `rust/fontaine-tui/src/lib.rs` — `Ui`'s program fields and their construction in `drive`, the
-  first `refresh_context` call there, and the retyped result channel (`:460-461`)
+  first `refresh_context` call there, the snapshot refresh in the final flush, and the retyped result channel (`:460-461`)
 - `rust/fontaine-tui/src/ui/mod.rs` — the snapshot render inside `Ui::draw`, `refresh_context`,
   warn-once, the retyped result channel (`:395`, `:411`, `:923`)
 - `rust/fontaine-tui/src/ui/turn.rs`, `rust/fontaine-tui/src/ui/commands/context.rs` (holds
@@ -359,7 +377,7 @@ the width of every other run on the line.
 - `docs/guardian.md` — one paragraph in `### Writing a composition script` noting the status
   line is the same Rune hosting with a smaller instruction budget and a fallback instead of a
   denial.
-- `CHANGELOG.md` — `### Added` → `#### TUI`.
+- `CHANGELOG.md` — a bullet under `## [Unreleased]` → `### Added`.
 - `research/research-claude-code-parity.md:383` — the custom status line row gains the script
   form.
 
@@ -385,11 +403,14 @@ the width of every other run on the line.
   losing its leading separator, `{context}`/`{cost}` absent when unknown. A user script that
   drops a segment, reorders two, and styles one with `warning`. The two badges ahead of any
   script. The `tail` cut and the right clip.
-- **Unit (`config.rs`, `config_scope.rs`).** A script parses; a script that does not compile is `exit_code() == 2` naming
+- **Unit (`config.rs`).** A script parses; a script that does not compile is `exit_code() == 2` naming
   `statusline.script`.
 - **Unit (`config_catalog.rs`).** `effective("statusline.script", …)` reports `set` and never
   the source.
 - **Integration (`rust/fontaine-tui/tests/statusline.rs`).** `World::with_config` with a
   `[statusline] script` renders its line through the real `Ui::run` on a `TestBackend`; a script that errors keeps the previous good
   line; `command` plus `script` puts the command's line where the script asks.
+- **Unit (`rust/fontaine-tui/src/ui/tests.rs`).** A script that fails at startup renders the
+  default program's output, never a blank bar; a failing script warns once per session across
+  repeated failures.
 - No live API, network, database or container at any tier.
