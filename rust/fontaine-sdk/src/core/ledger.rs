@@ -273,7 +273,8 @@ pub enum Record {
         how: String,
     },
     /// A subagent started or ended, or two agents exchanged a message. What an agent was told
-    /// to do is not recorded here as anything the human said.
+    /// to do is not recorded here as anything the human said; the `task` of a `spawned` record
+    /// is agent-written context for the guardian, never intent.
     Agent {
         event: String,
         agent: String,
@@ -288,6 +289,9 @@ pub enum Record {
         /// session revives it on that one; records from before it lack it.
         #[serde(default)]
         model: Option<String>,
+        /// What the agent was told to do, set on `spawned`; records from before it lack it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
     },
     /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
     /// when it did not exit with a code, such as when it was interrupted.
@@ -422,6 +426,8 @@ pub struct AgentRecord {
     pub agent_type: String,
     /// The model it was spawned on, when the record says.
     pub model: Option<String>,
+    /// What it was told to do at spawn, when the record says. Agent-written, never intent.
+    pub task: Option<String>,
     pub ended: Option<String>,
 }
 
@@ -767,6 +773,7 @@ impl LedgerView {
                 detail,
                 name,
                 model,
+                task,
             } => match event.as_str() {
                 "spawned" => {
                     if let Some(ordinal) = agent_ordinal(agent) {
@@ -778,6 +785,7 @@ impl LedgerView {
                         parent: parent.clone(),
                         agent_type: detail.clone().unwrap_or_default(),
                         model: model.clone(),
+                        task: task.clone(),
                         ended: None,
                     });
                 }
@@ -1550,6 +1558,7 @@ mod tests {
                 detail: Some("general".into()),
                 name: None,
                 model: None,
+                task: None,
             })
             .unwrap();
         ledger
@@ -1865,6 +1874,7 @@ mod tests {
             detail: detail.map(str::to_string),
             name: None,
             model: None,
+            task: None,
         }
     }
 
@@ -1902,6 +1912,7 @@ mod tests {
                         parent: Some("main".into()),
                         agent_type: "worker".into(),
                         model: None,
+                        task: None,
                         ended: Some("done".into()),
                     },
                     AgentRecord {
@@ -1910,6 +1921,7 @@ mod tests {
                         parent: Some("agent-1".into()),
                         agent_type: "explore".into(),
                         model: None,
+                        task: None,
                         ended: None,
                     },
                 ]
@@ -1933,6 +1945,7 @@ mod tests {
                 detail: Some("worker".into()),
                 name: Some("w".into()),
                 model: Some("acct/model".into()),
+                task: None,
             })
             .unwrap();
         ledger
@@ -1958,6 +1971,7 @@ mod tests {
                 detail: Some("worker".into()),
                 name: Some("survey-tech-debt".into()),
                 model: None,
+                task: None,
             })
             .unwrap();
         let legacy: Record = serde_json::from_str(
@@ -1977,6 +1991,48 @@ mod tests {
         check(&ledger);
         drop(ledger);
         check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_spawn_record_carries_its_task_and_one_without_serializes_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        let mut spawned = agent_event("spawned", "agent-1", Some("root"), Some("worker"));
+        if let Record::Agent { task, .. } = &mut spawned {
+            *task = Some("merge the two crates".into());
+        }
+        ledger.append(spawned).unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-2",
+                Some("root"),
+                Some("worker"),
+            ))
+            .unwrap();
+        let legacy: Record = serde_json::from_str(
+            r#"{"kind":"agent","event":"spawned","agent":"agent-3","parent":"root","detail":"worker"}"#,
+        )
+        .unwrap();
+        ledger.append(legacy).unwrap();
+        let check = |ledger: &Ledger| {
+            let tasks: Vec<Option<String>> = ledger
+                .view()
+                .agents
+                .iter()
+                .map(|a| a.task.clone())
+                .collect();
+            assert_eq!(
+                tasks,
+                [Some("merge the two crates".to_string()), None, None]
+            );
+        };
+        check(&ledger);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap());
+        let without =
+            serde_json::to_string(&agent_event("spawned", "agent-2", None, None)).unwrap();
+        assert!(!without.contains("task"), "{without}");
     }
 
     #[test]

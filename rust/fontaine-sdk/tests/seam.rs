@@ -21,6 +21,7 @@ use fontaine_sdk::agents::tasks::{
 };
 use fontaine_sdk::agents::tools::{BoardShowArgs, BoardShowTool, BoardUpdateArgs, BoardUpdateTool};
 use fontaine_sdk::agents::tree::{AgentTree, Limits, NotificationKind, RebuildRecord};
+use fontaine_sdk::guardian::AGENT_TASK_CHARS;
 use fontaine_sdk::tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_sdk::tools::jobs::tools::{JobOutputArgs, JobOutputTool};
 use fontaine_sdk::tools::jobs::{AgentKills, AgentWaitError, AgentWaits, Jobs};
@@ -833,6 +834,33 @@ fn named_args(agent_type: &str, name: &str) -> AgentArgs {
         name: Some(name.to_string()),
         ..args(agent_type, "work")
     }
+}
+
+#[tokio::test]
+async fn a_spawn_records_the_head_of_its_prompt_as_the_agents_task() {
+    let rig = rig();
+    let long = format!("{}tail", "x".repeat(AGENT_TASK_CHARS));
+    spawn(&rig, args("explore", "list the files"))
+        .await
+        .unwrap();
+    spawn(&rig, args("explore", &long)).await.unwrap();
+    let tasks: Vec<(String, Option<String>)> = rig
+        .ledger
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Spawned { agent, task, .. } => Some((agent.clone(), task.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].1.as_deref(), Some("list the files"));
+    assert_eq!(
+        tasks[1].1.as_deref(),
+        Some("x".repeat(AGENT_TASK_CHARS).as_str())
+    );
 }
 
 #[tokio::test]

@@ -19,8 +19,9 @@ use fontaine_sdk::core::questions::ANSWER_LINE_PREFIX;
 use fontaine_sdk::core::scanner_stage::{self, Backend};
 use fontaine_sdk::guardian::composition::{Composition, Decided};
 use fontaine_sdk::guardian::{
-    ActionTaken, AdjudicationRequest, DenialRecord, FixedProbe, Guardian, OutputMode, PreExistence,
-    Profile, SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
+    AGENT_TASK_CHARS, ActionTaken, AdjudicationRequest, DenialRecord, FixedProbe, Guardian,
+    OutputMode, PreExistence, Profile, SessionFacts, Settings, ToolCallSummary, TouchedPath,
+    leading_chars, task_intent,
 };
 use fontaine_sdk::tools::scope::Scope;
 use serde_json::Value;
@@ -326,6 +327,10 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
             serde_json::from_value(value.clone())
                 .unwrap_or_else(|e| panic!("case {}: `active_skills` does not parse: {e}", case.id))
         }),
+        agent_task: given
+            .get("agent_task")
+            .and_then(Value::as_str)
+            .map(|task| leading_chars(task, AGENT_TASK_CHARS).to_string()),
         ..SessionFacts::default()
     };
     let roots = string_list(&given, "workspace_roots");
@@ -948,6 +953,31 @@ mod memory_slice_tests {
         assert_eq!(facts.active_skills.len(), 1);
         assert_eq!(facts.active_skills[0].name, "dev-skills:pr");
         assert_eq!(facts.active_skills[0].declared, ["git *"]);
+    }
+
+    #[test]
+    fn an_agent_task_reaches_the_request_and_a_case_without_one_has_none() {
+        let case = |facts: serde_json::Value| -> Case {
+            serde_json::from_value(serde_json::json!({
+                "id": "task-x", "kind": "guardian", "category": "benign", "profile": "full",
+                "task_intent": "Ship issue 1", "tool": "shell",
+                "args": {"command": "ls"},
+                "session_facts": facts,
+                "expected": "allow", "fixture_verdict": "allow"
+            }))
+            .unwrap()
+        };
+        let root = std::path::Path::new("/work");
+        let with = request_for(
+            &case(serde_json::json!({"agent_task": "merge the crates"})),
+            root,
+        );
+        assert_eq!(
+            with.session_facts.agent_task.as_deref(),
+            Some("merge the crates")
+        );
+        let without = request_for(&case(serde_json::json!({})), root);
+        assert_eq!(without.session_facts.agent_task, None);
     }
 
     #[test]

@@ -316,6 +316,14 @@ pub fn validate_case(case: &Case) -> Vec<String> {
     if let Some(value) = case
         .session_facts
         .as_ref()
+        .and_then(|facts| facts.get("agent_task"))
+        && !value.is_string()
+    {
+        err("`session_facts.agent_task` must be a string".into());
+    }
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
         .and_then(|facts| facts.get("git_remote_names"))
     {
         let remotes: Vec<&str> = case

@@ -4,9 +4,9 @@
 
 use crate::agents::registry::AgentTypes;
 use crate::guardian::{
-    ACTIONS_TAKEN, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, ScreenIntent, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary,
-    TouchedPath, task_intent,
+    ACTIONS_TAKEN, AGENT_TASK_CHARS, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord,
+    PreExistence, RECENT_USER_MESSAGES, ScreenIntent, SessionFacts, TASK_INTENT_CHARS,
+    ToolCallSummary, TouchedPath, leading_chars, task_intent,
 };
 use crate::tools::descriptor::{self, Destructive};
 use crate::tools::gate::ROOT_AGENT;
@@ -250,6 +250,7 @@ fn facts(
             .as_ref()
             .map(crate::core::project_env::to_facts),
         active_skills: Vec::new(),
+        agent_task: None,
     }
 }
 
@@ -270,6 +271,17 @@ fn ancestry(state: &SessionState, caller: &str) -> Vec<String> {
         }
     }
     chain
+}
+
+/// The caller's own spawn task, keyed by its record: the root has none, and a sibling's task
+/// never shows. A task statement opens its own text, so the head is what the budget keeps.
+fn agent_task(view: &LedgerView, caller: &str) -> Option<String> {
+    view.agents
+        .iter()
+        .rev()
+        .find(|agent| agent.id == caller)
+        .and_then(|agent| agent.task.as_deref())
+        .map(|task| leading_chars(task, AGENT_TASK_CHARS).to_string())
 }
 
 /// The request for `tool` called with `args`, read from the ledger as it stands now.
@@ -333,6 +345,7 @@ pub fn build(
             declared: note.declared,
         })
         .collect();
+    session_facts.agent_task = agent_task(&view, caller);
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     let auto = state.auto_context();
     AdjudicationRequest {
@@ -368,6 +381,59 @@ pub fn build(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_subagent_carries_its_own_spawn_task_and_never_a_siblings_or_the_roots() {
+        use crate::core::ledger::{Ledger, Record};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        let spawn = |agent: &str, task: &str| Record::Agent {
+            event: "spawned".into(),
+            agent: agent.into(),
+            parent: Some(ROOT_AGENT.into()),
+            detail: Some("worker".into()),
+            name: None,
+            model: None,
+            task: Some(task.into()),
+        };
+        ledger
+            .append(spawn("agent-1", "merge crate a into b"))
+            .unwrap();
+        ledger.append(spawn("agent-2", "rewrite the docs")).unwrap();
+        let view = ledger.view();
+        assert_eq!(
+            agent_task(&view, "agent-1").as_deref(),
+            Some("merge crate a into b")
+        );
+        assert_eq!(
+            agent_task(&view, "agent-2").as_deref(),
+            Some("rewrite the docs")
+        );
+        assert_eq!(agent_task(&view, ROOT_AGENT), None);
+        assert_eq!(agent_task(&view, "agent-3"), None);
+    }
+
+    #[test]
+    fn the_spawn_task_keeps_its_head_within_the_budget() {
+        use crate::core::ledger::{Ledger, Record};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        let long = format!("head{}tail", "x".repeat(AGENT_TASK_CHARS));
+        ledger
+            .append(Record::Agent {
+                event: "spawned".into(),
+                agent: "agent-1".into(),
+                parent: Some(ROOT_AGENT.into()),
+                detail: None,
+                name: None,
+                model: None,
+                task: Some(long),
+            })
+            .unwrap();
+        let got = agent_task(&ledger.view(), "agent-1").unwrap();
+        assert_eq!(got.chars().count(), AGENT_TASK_CHARS);
+        assert!(got.starts_with("head") && !got.ends_with("tail"));
+    }
 
     #[test]
     fn the_memory_store_is_not_a_workspace_root_for_the_guardian() {

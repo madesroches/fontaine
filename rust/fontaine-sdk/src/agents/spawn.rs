@@ -1174,6 +1174,8 @@ impl Tool for AgentTool {
             id: id.clone(),
             armed: true,
         };
+        let task = crate::guardian::leading_chars(&args.prompt, crate::guardian::AGENT_TASK_CHARS)
+            .to_string();
         let request = SpawnRequest {
             id: id.clone(),
             parent: caller.clone(),
@@ -1204,6 +1206,7 @@ impl Tool for AgentTool {
             parent: caller.clone(),
             agent_type: agent_type.name.clone(),
             model: self.tree.model_of(&id),
+            task: Some(task),
         });
         subagent_event("spawn", &id, &name, &agent_type.name);
 

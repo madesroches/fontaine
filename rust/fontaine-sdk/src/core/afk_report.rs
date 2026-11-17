@@ -1155,6 +1155,7 @@ mod tests {
                     detail: None,
                     name: Some("scout".into()),
                     model: None,
+                    task: None,
                 },
             ),
             afk_on(1),
