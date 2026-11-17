@@ -125,6 +125,9 @@ spawn.rs ── AgentEvent::Spawned { task } ──▶ Record::Agent { event: "s
   shows the scope the user's request was carried out in, so a step of that task — and the manifests,
   lockfiles, imports and docs a step leaves behind — is part of the request rather than an
   unrequested change. Every deny rule still applies.
+- `guardian_prompt.md:23` ("often made by a subagent whose instructions you do not see") is
+  reworded: a subagent's spawn task is shown as `agent_task` when present, and the "do not see" case
+  is only an agent without one (the root).
 
 ### D. A construct-based deny may name the allowed call
 
@@ -163,7 +166,8 @@ Three parts, because any one alone leaves the agent stuck:
 4. **C, request and rendering.** Add `SessionFacts.agent_task` and `AGENT_TASK_CHARS` to
    `guardian/request.rs`; fill it in `adjudication::build` from the caller's `AgentRecord`; render it
    in `prompt_builder::blocks` for the guardian view; clear it in `Profile::Minimal.shape`; add the
-   "User messages" bullet to `guardian_prompt.md`.
+   "User messages" bullet to `guardian_prompt.md` and reword `guardian_prompt.md:23` so "a subagent
+   whose instructions you do not see" covers only an agent with no `agent_task` (the root).
 5. **D, prompt and recovery.** Edit the Answer-format paragraph of `guardian_prompt.md`, append
    the one sentence to both recovery constants in `core/permissions.rs`, and add the exception to
    the "# Denied tool calls" bullet of `prompts/core/system_prompt.md`.
@@ -196,7 +200,8 @@ Three parts, because any one alone leaves the agent stuck:
 - `evals/dataset/overdeny.jsonl` (A, C: cases)
 - `rust/fontaine-sdk/src/guardian/snapshots/fontaine_sdk__guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`
   (A, C, D: the spliced system prompt)
-- `docs/guardian.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
+- `docs/guardian.md`, `docs/evals.md`, `tasks/design/sessions.md`, `CHANGELOG.md`,
+  `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
 
@@ -235,9 +240,14 @@ Three parts, because any one alone leaves the agent stuck:
   pre-existence paragraph for A; update the denial-explanation bullet at `:157` for D.
 - `docs/guardian.md:214` and `docs/afk.md:61`: the quoted `ATTENDED_RECOVERY` and `AFK_RECOVERY`
   sentences carry the new appended sentence.
-- `docs/evals.md`: the overdeny slice description at `:100` gains the three new benign cases and says
-  which rewrite the rule no longer denies; the dataset version changes, so scorecards scored earlier
-  stop matching, as documented there.
+- `docs/evals.md:159-162` (the batch on writes onto `unindexed` files): replace the "overwrite of a
+  `pre_existing` untracked file" attack counterpart (`attack-overdeny-34`) with the benign
+  `overdeny-42`, list the new benign cases (`overdeny-40`, `-41`, `-42`) and add the `truncate` and
+  `shred` attacks there; the dataset version changes, so scorecards scored earlier stop matching, as
+  documented there.
+- `tasks/design/sessions.md:21`: the sentence that the request is built only from the ledger, with
+  `agent_message_before_reply` as the exception, also names `agent_task` (the caller's own spawn task,
+  from its `spawned` ledger record) as a second untrusted exception.
 - `CHANGELOG.md`, `## [Unreleased]`: `### Changed` for the narrowed rule and the deny explanation,
   `### Added` for the `agent_task` fact.
 - `tasks/fontaine_harness_plan.md`, `## Decisions`: dated lines for A, C and D, next to the
