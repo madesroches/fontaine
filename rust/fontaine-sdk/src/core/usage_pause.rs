@@ -549,12 +549,10 @@ pub fn format_wait(wait: Duration) -> String {
     }
 }
 
-fn clock_in(at: SystemTime, zone: jiff::tz::TimeZone) -> String {
-    jiff::Timestamp::try_from(at)
-        .expect("a reset time is within jiff's range")
-        .to_zoned(zone)
-        .strftime("%H:%M")
-        .to_string()
+// A reset time comes from provider input (a huge `Retry-After`), so it can be outside jiff's range.
+fn clock_in(at: SystemTime, zone: jiff::tz::TimeZone) -> Option<String> {
+    let ts = jiff::Timestamp::try_from(at).ok()?;
+    Some(ts.to_zoned(zone).strftime("%H:%M").to_string())
 }
 
 /// When the pause says the window resets, as a clock time and the wait to it: `resets 14:30 (in
@@ -562,7 +560,9 @@ fn clock_in(at: SystemTime, zone: jiff::tz::TimeZone) -> String {
 pub fn describe_reset(reset_at: Option<SystemTime>, now: SystemTime) -> String {
     match reset_at {
         Some(at) => {
-            let clock = clock_in(at, jiff::tz::TimeZone::system());
+            let Some(clock) = clock_in(at, jiff::tz::TimeZone::system()) else {
+                return "reset time unknown".to_string();
+            };
             match at.duration_since(now) {
                 Ok(wait) if !wait.is_zero() => {
                     format!("resets {clock} (in {})", format_wait(wait))

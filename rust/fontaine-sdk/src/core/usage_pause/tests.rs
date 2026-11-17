@@ -8,7 +8,7 @@ fn the_reset_clock_reads_hours_and_minutes_in_the_zone() {
     // 2026-01-15 12:00:00 UTC.
     let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_768_478_400);
     let zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(-8));
-    assert_eq!(clock_in(at, zone), "04:00");
+    assert_eq!(clock_in(at, zone).as_deref(), Some("04:00"));
 }
 
 fn info(reset_in: Option<Duration>) -> PauseInfo {
@@ -446,4 +446,13 @@ fn an_unknown_reset_is_said_so() {
         SystemTime::UNIX_EPOCH,
     );
     assert!(text.ends_with("(in 1h)"), "{text}");
+}
+
+#[test]
+fn a_reset_beyond_the_clock_range_is_unknown_not_a_panic() {
+    let far = SystemTime::UNIX_EPOCH + Duration::from_secs(300_000_000_000);
+    assert_eq!(
+        describe_reset(Some(far), SystemTime::UNIX_EPOCH),
+        "reset time unknown"
+    );
 }
