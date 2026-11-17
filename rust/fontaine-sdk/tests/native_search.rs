@@ -12,11 +12,17 @@ use fontaine_sdk::core::models::{
     CostBasis, GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models,
 };
 use fontaine_sdk::core::permission_rules::{RuleSource, parse_rule};
-use fontaine_sdk::core::turn::{Flow, TurnFailure, TurnOutcome, TurnParams, run_turn};
+use fontaine_sdk::core::turn::{
+    Flow, SessionEvent, TurnFailure, TurnOutcome, TurnParams, run_turn,
+};
+use fontaine_sdk::run::{
+    Cancel, EventSink, InputFormat, InputSource, Options, OutputFormat, PauseObserver, ResultInfo,
+    run_session,
+};
 use http::StatusCode;
 use rig_core::ProviderResponseError;
 use rig_core::completion::Usage;
-use rig_core::test_utils::{MockCompletionModel, MockError, MockStreamEvent, mock_final};
+use rig_core::test_utils::{MockCompletionModel, MockError, MockStreamEvent, MockTurn, mock_final};
 use serde_json::{Value, json};
 
 fn answer() -> Vec<MockStreamEvent> {
@@ -470,4 +476,110 @@ async fn a_failed_rebuild_that_would_only_offer_it_is_not() {
         .expect("not AFK mode");
     built.runtime.refresh_before_turn().unwrap();
     assert!(!built.runtime.native_search_active());
+}
+
+struct Once(Option<String>);
+
+impl InputSource for Once {
+    fn is_exhausted(&self) -> bool {
+        self.0.is_none()
+    }
+
+    async fn next(&mut self, _runtime: &mut AgentRuntime) -> Result<Option<String>, String> {
+        Ok(self.0.take())
+    }
+}
+
+/// Trips the denial breaker while the first turn runs, as a run of denied calls would.
+struct Tripping(std::sync::Arc<fontaine_sdk::core::gate::SessionState>);
+
+impl EventSink for Tripping {
+    fn notice(&mut self, _message: &str) {}
+    fn session_start(&mut self, _runtime: &AgentRuntime, _data_dir: &std::path::Path) {}
+    fn event(&mut self, _session_id: &str, _event: &SessionEvent) {
+        while !self.0.auto_paused() {
+            self.0.guardian_denied();
+        }
+    }
+    fn wants_account_usage(&self) -> bool {
+        false
+    }
+    fn result(&mut self, _result: &ResultInfo<'_>) {}
+    fn usage_observer(&self, _session_id: &str) -> Option<PauseObserver> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn a_goal_turn_after_a_breaker_pause_sends_no_search_tool() {
+    let w = world(ANTHROPIC);
+    let main = MockCompletionModel::from_stream_turns(vec![answer(), answer()]);
+    let evaluator = MockCompletionModel::from_turns(vec![
+        MockTurn::tool_call(
+            "s1",
+            "submit",
+            json!({"verdict": "not_met", "reason": "more to do"}),
+        ),
+        MockTurn::tool_call("s2", "submit", json!({"verdict": "met", "reason": "done"})),
+    ]);
+    let handle = |model: &MockCompletionModel| {
+        ModelHandle::new(
+            ModelRef::parse("test/mock").unwrap(),
+            AccountKind::named("anthropic"),
+            model.clone().into(),
+        )
+    };
+    let models = Models {
+        main_chain: fontaine_sdk::core::model_roles::ModelChain::single(
+            handle(&main).reference.clone(),
+        ),
+        main: handle(&main),
+        main_listing: fontaine_sdk::core::models::Listing::default(),
+        guardian: Some(GuardianModel::Ready(handle(&evaluator))),
+        guardian_choice: GuardianChoice::Pinned,
+        notices: Vec::new(),
+    };
+    let mut runtime = build_with_models(
+        &w,
+        PermissionMode::Auto,
+        models,
+        None,
+        true,
+        Default::default(),
+        None,
+    );
+    let mut sink = Tripping(runtime.state.clone());
+    let options = Options {
+        prompt: None,
+        input_format: InputFormat::Text,
+        output_format: OutputFormat::StreamJson,
+        include_partial_messages: false,
+        max_turns: Some(3),
+        max_budget_usd: None,
+        on_usage_limit: None,
+        max_usage_wait: None,
+        json_schema: None,
+    };
+    run_session(
+        options,
+        &mut runtime,
+        &w.data,
+        None,
+        Once(Some("/goal finish".to_string())),
+        &mut sink,
+        &Cancel::default(),
+    )
+    .await;
+
+    let requests = main.requests();
+    assert_eq!(requests.len(), 2, "the goal turn ran");
+    let carried = |i: usize| {
+        requests[i]
+            .additional_params
+            .as_ref()
+            .and_then(|p| p.get("tools"))
+            .is_some()
+    };
+    assert!(carried(0));
+    assert!(!carried(1));
 }

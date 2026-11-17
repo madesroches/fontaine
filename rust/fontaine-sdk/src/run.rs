@@ -287,6 +287,10 @@ async fn run_one(
     ctx: &mut Ctx<'_>,
     text: String,
 ) -> (Outcome, Option<String>) {
+    // Goal, notification and stop-hook turns start here without passing the per-message refresh.
+    if let Err(e) = runtime.refresh_before_turn() {
+        return (refresh_failed(&e), None);
+    }
     let mut fell = None;
     let mut tried = Tried::default();
     let (mut outcome, mut note) = run_attempt(runtime, ctx, text, &mut fell).await;
@@ -332,6 +336,20 @@ async fn run_one(
         note = next_note;
     }
     (outcome, note)
+}
+
+fn refresh_failed(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    Outcome {
+        subtype: Subtype::Execution,
+        text: String::new(),
+        structured: None,
+        error: Some(format!(
+            "the provider's web search could not be turned off, so the message was not run: {}",
+            crate::tools::error_chain::chain(e)
+        )),
+        started: std::time::Instant::now(),
+        denials: Vec::new(),
+    }
 }
 
 /// One run of the agent on `text`. A failure that is the model's quota running out is left in
@@ -1117,17 +1135,7 @@ pub async fn run_session<I: InputSource + Sync>(
                 handle_message(runtime, &mut ctx, text).await
             }
             Err(e) => Handled {
-                outcome: Outcome {
-                    subtype: Subtype::Execution,
-                    text: String::new(),
-                    structured: None,
-                    error: Some(format!(
-                        "the provider's web search could not be turned off, so the message was not run: {}",
-                        crate::tools::error_chain::chain(&e)
-                    )),
-                    started: std::time::Instant::now(),
-                    denials: Vec::new(),
-                },
+                outcome: refresh_failed(&e),
                 goal: None,
                 goal_ran: false,
                 afk: afk_report(runtime),
