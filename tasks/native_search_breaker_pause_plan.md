@@ -39,7 +39,7 @@ change).
    `state.auto_paused()` from `offered`. Update the other callers of `permitted` (grep first).
 2. Unit tests in `native_search.rs`: `auto_and_afk_withhold_it_while_paused` and the existing
    mode tests updated for the new signature; a paused `manual` with an `allow` rule still offers it.
-3. Integration test in `rust/fontaine-sdk/tests/native_search.rs`: build in `Auto` and in `Afk`, trip the
+3. Integration test in `rust/fontaine-sdk/tests/native_search.rs`: build in `Auto` (the unit test covers `Afk`), trip the
    breaker through `state.guardian_denied()` until `auto_paused()`, call `refresh_before_turn`, assert
    `native_search_active()` is false and the next request carries no search tool; then
    `state.resume_auto()`, refresh, and assert it is offered again.
@@ -59,15 +59,17 @@ change).
 
 ## Documentation
 - `docs/permissions.md` (the `websearch` bullet): in `auto` and `afk` it is offered unless auto is paused
-  by the loop breaker; it returns on the next turn after the human approves a call.
+  by the loop breaker; it is withheld from the next turn after the pause (the turn that trips the breaker
+  keeps it until it ends) and returns on the next turn after the human approves a call. `docs/guardian.md`
+  gets the same clause.
 - `docs/tools.md` (Web search, provider's own search): same condition added to the list of withholding
   conditions.
 - `docs/guardian.md` (provider-native search limit): mention the pause as a withholding condition.
 
 ## Testing Strategy
 - Unit: `permitted` truth table including the paused flag for every mode.
-- Integration (mock model, no live API): the breaker-pause regression pins the issue's bug in both `auto`
-  and `afk`, and the resume path.
+- Integration (mock model, no live API): the breaker-pause regression pins the issue's bug in `auto`
+  and the resume path.
 
 ## Open Questions
 None.
