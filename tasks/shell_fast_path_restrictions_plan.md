@@ -47,7 +47,9 @@ vector already built.
    the hook gate is set and `secrets` is empty, the whole secrets/restoration block is skipped and
    the call falls through to the allow rules and mode routing (never index `secrets[0]` on an
    empty vec). The skip is deliberately coarse: any hook naming `read`/`ls`/`grep` takes all shell
-   reads off the `Tier05` fast path, regardless of its specifier. The deny
+   reads off the `Tier05` fast path, regardless of its specifier. Explicit allows (a `read(...)` allow
+   rule restoring a secret operand, a `shell(...)` allow rule, a `shell` hook's allow) are still
+   honored after the skip; it only removes the `Tier05` fast-path allow. The deny
    and ask checks and the new restriction check above still run first. Hooks with no matcher, an
    unparseable matcher, or a `shell` matcher already run on the real call and do not trigger the skip.
 
@@ -59,8 +61,10 @@ vector already built.
 3. Tests (below).
 4. `docs/permissions.md` and `docs/hooks.md` (matcher behavior for shell reads): note that a
    read-only shell command is held to agent-type read restrictions and that a hook matching
-   `read`/`ls`/`grep` takes shell reads off the pre-classifier fast path.
-5. `CHANGELOG.md` entry.
+   `read`/`ls`/`grep` takes shell reads off the pre-classifier fast path. With such a hook, shell
+   reads in `dontAsk` mode need an allow rule (they fall through to the mode instead of `Tier05`),
+   and manual mode prompts.
+5. `CHANGELOG.md` entry, including the `dontAsk` and manual-mode note above.
 
 ## Files to Modify
 
@@ -72,8 +76,7 @@ vector already built.
 
 - Running the hooks on the built calls was rejected: a hook's decision (allow, updated input) has
   no meaning for a shell command, and `updated_input` could not be applied back. Skipping the fast
-  path hands the call to the mode (guardian in `auto`), which is strictly tighter.
-- Skipping the fast path only when a hook names `read`/`ls`/`grep` keeps every other session on the fast path; within such a session the skip is coarse (all shell reads, whatever the hook's specifier).
+  path hands the call to the mode (guardian in `auto`).
 
 ## Testing Strategy
 
@@ -88,9 +91,10 @@ a temp scope; no live APIs):
   `Tier05` (it reaches the mode, e.g. the guardian in `auto`); with matchers `shell`, none, or
   `edit(**)` it still returns `Tier05`.
 - `ls`/`grep` matchers likewise skip the fast path.
-- With such a hook present, a non-covered path like `cat src/a.txt` also loses `Tier05`.
-- Hook gate set, no secret operand, plain command: no panic, and not `Tier05`.
-- Hook gate set with a secret operand: still handled by the secrets block (no panic).
+- Hook gate set, no secret operand, plain non-covered command such as `cat src/a.txt`: no panic, and
+  not `Tier05`.
+- Hook gate set with a secret operand, a `read(secrets/**)` allow rule and a read-naming hook: the
+  call is allowed via the allow rule (`AllowRule`), not `Tier05`.
 - A deny `ls(...)` or `grep(...)` agent-type restriction denies the matching shell command.
 
 ## Open Questions
