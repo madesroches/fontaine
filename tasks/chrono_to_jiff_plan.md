@@ -39,7 +39,7 @@ Tests use the bundled tzdb: `tzdb-bundle-always` as a dev-dependency feature.
 | `NaiveDateTime`/`NaiveDate` | `civil::DateTime`/`civil::Date` |
 | `TimeDelta` | `Span` for calendar units, `SignedDuration` for fixed |
 | `parse_from_rfc3339` | `str::parse::<Timestamp>()` |
-| `parse_from_rfc2822` | `jiff::fmt::rfc2822::parse` → `Zoned`/`Timestamp` → `SystemTime` |
+| `parse_from_rfc2822` | `jiff::fmt::rfc2822::parse(value)` yields a `Zoned`, converted to `SystemTime` via its `Timestamp` |
 | `.format("..")` | `.strftime("..")` (check `%H:%M`, `%Y-%m-%d %H:%M`, `%Y%m%dT%H%M%SZ` render identically; use `Timestamp` for the `Z` form) |
 | `LocalResult::{Single,Ambiguous,None}` | `AmbiguousZoned` |
 | `first_match`/`day_matches` on `NaiveDateTime`/`NaiveDate` | `civil::DateTime`/`civil::Date` with `checked_add`/`Span`, `Date::tomorrow`, `weekday().to_sunday_zero_offset()` |
@@ -58,8 +58,9 @@ combined with a successful zoned conversion; the guard is kept because a saved f
 
 ## Implementation Steps
 
-1. Before migrating, add characterization assertions (see Testing) for fixed-instant formatted strings
-   against chrono, so the same assertions prove identical output after the swap.
+1. Before migrating, in chrono: extract a small pure helper taking an instant and a zone for `local_time` and
+   the `%H:%M` pause clock, and a pure stamp helper taking an instant for `bug_submit`; add characterization
+   tests for them with a fixed instant and zone (see Testing), so the same assertions prove identical output after the swap.
 2. Add `jiff` alongside `chrono` in `rust/Cargo.toml`, `fontaine-sdk/Cargo.toml` and `fontaine-tui/Cargo.toml`.
 3. Migrate `project_env.rs`, `usage_limit.rs`, `kimi_quota.rs`, `usage_pause.rs`, `bug_submit.rs`, `agent.rs`.
 4. Migrate `schedule.rs` including the `Spring` test fake → real-zone gap test (e.g. `Europe/Paris`,
@@ -83,7 +84,8 @@ combined with a successful zoned conversion; the guard is kept because a saved f
 ## Decisions
 
 - jiff 1.0 rejected: second jiff major in the lockfile and `ZonedDateTime` renaming for no benefit now.
-- Bundled tzdb in tests only: production keeps the system tzdb (current chrono behavior via the OS).
+- Bundled tzdb always in tests; in production only where the platform has no system tzdb (Windows).
+- AFK: format characterization covers `local_time`, the pause clock and the bug-submit stamp via pure helpers taking an instant (and zone) extracted before the swap; statusbar labels rely on existing tests, since the system-local zone and inline `Utc::now()` cannot be pinned otherwise.
 
 ## Documentation
 
@@ -91,10 +93,10 @@ No docs page mentions chrono (grep confirmed); `CHANGELOG.md` gets one line noti
 
 ## Testing Strategy
 
+- Existing tests (including `an_http_date_retry_after_is_read` and `bad_ratios_drop_the_entry_and_bad_timestamps_only_the_reset`) must keep passing unchanged.
 - Existing schedule tests (cron search, DST) keep passing on `Zoned`; the spring-forward test uses a real
   zone's real gap with the bundled tzdb; add a fold (autumn) test pinning the earlier-instant choice, and one where `after` is inside the first occurrence so the second fires.
-- Format characterization: unit tests asserting `local_time`, the `%H:%M` pause clock, bug-submit stamp
-  and statusbar labels for a fixed instant in a fixed zone, committed before the swap with chrono and unchanged after.
-- RFC 2822 / RFC 3339 parse tests for `usage_limit`/`kimi_quota` including a malformed input returning `None`.
+- Format characterization: unit tests on the extracted helpers asserting `local_time`, the `%H:%M` pause clock
+  and the bug-submit stamp for a fixed instant in a fixed zone, committed before the swap with chrono and unchanged after.
 - Gate: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check`,
   windows-gnu clippy check.
