@@ -41,6 +41,11 @@ All notable changes are recorded here. The format follows
   `fontaine_sdk::core::project_env::setup_notice`; `fontaine_sdk::core::schedule::Cron::next_after`
   now takes and returns a `jiff::Zoned`.
 
+### Fixed
+
+- Fix the flaky `free_ports_are_loopback_ports_that_can_be_bound` test: it retries with a fresh
+  port when a parallel test takes the first one between the two steps (#700).
+
 ### Removed
 
 - `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what
