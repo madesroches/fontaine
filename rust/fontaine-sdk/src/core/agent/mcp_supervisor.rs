@@ -2100,6 +2100,7 @@ mod tests {
         assert_eq!(rig.script.attempts(), 1);
     }
 
+    #[cfg(unix)]
     fn as_callback<F: rig_core::serve::adapters::ToolCallback + 'static>(
         callback: F,
     ) -> Arc<dyn rig_core::serve::adapters::ToolCallback> {
