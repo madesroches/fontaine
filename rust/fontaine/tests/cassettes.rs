@@ -14,6 +14,8 @@ const UPSTREAM: &str = "https://openrouter.ai/api/v1";
 const KEY_ENV: &str = "OPENROUTER_API_KEY";
 const PROVIDER: &str = "openrouter";
 const MODEL: &str = "openai/gpt-4o-mini";
+/// gpt-4o-mini misapplied the destroy rule to a new file, so the guardian uses a model the evals measured.
+const GUARDIAN_MODEL: &str = "anthropic/claude-haiku-5.5";
 
 /// Request bodies embed the per-run sandbox path, which the cassette scrubber leaves alone
 /// under `/tmp`, so bodies are matched by shape.
@@ -23,7 +25,7 @@ fn spec(scenario: &'static str) -> CassetteSpec {
 
 fn account_config(cassette: &ProviderCassette, extra: &str) -> String {
     format!(
-        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}",
+        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\", \"{GUARDIAN_MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}",
         cassette.base_url()
     )
 }
@@ -78,7 +80,6 @@ async fn manual_mode_reads_a_file_through_the_fast_path() {
 /// Auto mode end to end: tool call, the guardian's verdict, the tool runs, the answer. The agent
 /// and the guardian share the one recorded account.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded: the recorded guardian verdict was deny"]
 async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
     let cassette = ProviderCassette::start(
         &root(),
@@ -90,7 +91,7 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
     let mut s = Sandbox::new();
     s.user_config(&account_config(
         &cassette,
-        &format!("\n[guardian]\nmodel = \"paid/{MODEL}\"\n"),
+        &format!("\n[guardian]\nmodel = \"paid/{GUARDIAN_MODEL}\"\n"),
     ));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
 
@@ -106,20 +107,24 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
         .await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
+    let session = lines[0]["session_id"].as_str().unwrap();
+    let audit = std::fs::read_to_string(s.data.join("audit").join(format!("{session}.jsonl")))
+        .expect("an audit log");
     let decision = lines
         .iter()
         .find(|l| l["type"] == "gate_decision")
         .expect("the shell call was adjudicated");
-    assert_eq!(decision["tier"], "guardian");
-    assert_eq!(decision["decision"], "allow");
-    assert_eq!(decision["rule"], "allow");
-    assert_eq!(decision["guardian_model"], format!("paid/{MODEL}"));
+    let why = format!(
+        "gate_decision: {decision}\naudit: {audit}\nstderr: {}",
+        out.stderr
+    );
+    assert_eq!(decision["tier"], "guardian", "{why}");
+    assert_eq!(decision["decision"], "allow", "{why}");
+    assert_eq!(decision["rule"], "allow", "{why}");
+    assert_eq!(decision["guardian_model"], format!("paid/{GUARDIAN_MODEL}"));
     assert!(s.work.join("hello.txt").exists());
 
     // The audit record carries the verdict.
-    let session = lines[0]["session_id"].as_str().unwrap();
-    let audit = std::fs::read_to_string(s.data.join("audit").join(format!("{session}.jsonl")))
-        .expect("an audit log");
     let record: Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
     assert_eq!(record["tier"], "guardian");
     assert_eq!(record["guardian_verdict"], "allow");
