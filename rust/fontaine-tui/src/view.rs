@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn the_ticket_dialog_picks_the_code_or_the_text_from_the_terminal_height_on_both_paths() {
-        if std::env::var_os("NO_COLOR").is_some() {
+        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return;
         }
         let mut app = App::new(PermissionMode::Manual, "m".into());
