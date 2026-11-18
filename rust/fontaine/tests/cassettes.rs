@@ -119,6 +119,9 @@ async fn manual_mode_reads_a_file_through_the_fast_path() {
     let mut s = Sandbox::new();
     s.user_config(&account_config(&cassette, ""));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
+    // Windows PowerShell is found in System32 without PATH and would add a `powershell` tool the
+    // Linux recordings do not have.
+    s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
     s.add_file("note.txt", "the magic word is plugh\n");
 
     let out = s
@@ -128,7 +131,13 @@ async fn manual_mode_reads_a_file_through_the_fast_path() {
             "Read note.txt and tell me the magic word.",
         ])
         .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        out.stderr,
+        out.stdout
+    );
     let lines = out.lines();
     let decision = lines
         .iter()
@@ -160,6 +169,9 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
         &format!("\n[guardian]\nmodel = \"paid/{GUARDIAN_MODEL}\"\n"),
     ));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
+    // Windows PowerShell is found in System32 without PATH and would add a `powershell` tool the
+    // Linux recordings do not have.
+    s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
 
     let out = s
         .run(&[
@@ -171,7 +183,13 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
             "Use the shell tool to run exactly `echo hello > hello.txt`, then say done.",
         ])
         .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        out.stderr,
+        out.stdout
+    );
     let lines = out.lines();
     let session = lines[0]["session_id"].as_str().unwrap();
     let audit = std::fs::read_to_string(s.data.join("audit").join(format!("{session}.jsonl")))
@@ -221,6 +239,9 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
     let mut s = Sandbox::new();
     s.user_config(&account_config_at(&tap.base_url, ""));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
+    // Windows PowerShell is found in System32 without PATH and would add a `powershell` tool the
+    // Linux recordings do not have.
+    s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
     use base64::Engine;
     let png = base64::engine::general_purpose::STANDARD
         .decode(PNG_B64)
@@ -234,7 +255,13 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
             "Read pixel.png and tell me what you see.",
         ])
         .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        out.stderr,
+        out.stdout
+    );
     cassette.finish().await;
 
     // The request that carried the tool result has the image part on the wire.
@@ -256,12 +283,21 @@ async fn reading_a_pdf_replays_the_text_stub_fallback() {
     let mut s = Sandbox::new();
     s.user_config(&account_config_at(&tap.base_url, ""));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
+    // Windows PowerShell is found in System32 without PATH and would add a `powershell` tool the
+    // Linux recordings do not have.
+    s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
     std::fs::write(s.work.join("notes.pdf"), b"%PDF-1.7\nnot really a pdf").unwrap();
 
     let out = s
         .headless(&["--output-format", "stream-json", "Read notes.pdf."])
         .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        out.stderr,
+        out.stdout
+    );
     cassette.finish().await;
 
     let requests = tap.sent();
