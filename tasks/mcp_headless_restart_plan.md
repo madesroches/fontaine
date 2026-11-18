@@ -55,7 +55,7 @@ from the last attempt's wait) and `BACKGROUND_RETRY_WINDOW = 30 min`, measured f
 connection was lost.
 
 In `reconnect_with_backoff`, when the fifth attempt has failed, the last error is `Transient`, and
-`self.headless`: continue in the same loop with waits `16 s → 32 s → 60 s → 60 s …` until success,
+`self.headless`: continue in the same loop. Each attempt is preceded by a wait of `RECONNECT_BASE * 2^(attempt-1)`, so the fifth attempt has already waited 16 s; the sixth waits 32 s, then 60 s (capped) thereafter. The state is set to `Retrying` once the fifth attempt has failed (it replaces `Reconnecting { attempt }` from the sixth attempt on). The loop runs until success,
 a `Permanent` error, the window elapsing, or the slot being superseded/closed. Extract the
 attempt-and-install body into one helper used by both phases (DRY), so success handling (listing
 pull, `install`, "reconnected" notice, `refresh`) exists once.
@@ -109,41 +109,33 @@ runs once the server connects" within the same turn.
 
 Interactive stays as today: `headless == false` never builds a tombstone.
 
-### Splitting
-
-Part A and Part B are independent. Implement A first as its own commit(s); B follows on the same
-branch. They ship in one PR unless review finds B too large, in which case B moves to a follow-up
-issue and the Decisions line is split accordingly.
-
 ## Implementation Steps
 
 1. `mcp_supervisor.rs`: add `headless` to `Supervisor`; update `Supervisor::new` callers
    (`core/agent/mcp.rs`, tests in `mcp_supervisor.rs`).
 2. Part A: constants, `McpServerState::Retrying`, extended `reconnect_with_backoff` with shared
    attempt helper; update all `McpServerState` matches (TUI `/mcp` rendering, stream-json
-   `mcp_servers`, `ReconnectTarget::AllFailed` stays `Failed`-only).
+   `mcp_servers`, `ReconnectTarget::AllFailed` stays `Failed`-only). In the TUI, `McpState::Pending
+   { attempt }` (`reports.rs`) carries a payload, so `Retrying` needs a new `McpState` variant or a
+   rendering change, and `ui/mcp.rs` maps from it.
 3. Part A tests (below).
 4. Part B: `Tombstone` on `ServerSlot`; recording at loss in `watch`; stand-in tool registration
    (`tools/mcp/register.rs`); `restart_for_call` with single-flight and budget; clearing paths.
 5. Part B tests (below).
-6. Docs and Decisions.
+6. Docs and Decisions. Update the module doc at the top of `mcp_supervisor.rs` (its "stdio server that
+   exits is marked failed" sentence becomes false for headless).
 
 ## Files to Modify
 
 - `rust/fontaine-sdk/src/core/agent/mcp_supervisor.rs` — Supervisor, slot, state, retry loop, restart.
 - `rust/fontaine-sdk/src/core/agent/mcp.rs` — pass `headless`; mcp status rendering.
 - `rust/fontaine-sdk/src/tools/mcp/register.rs`, `servers.rs` — stand-in tools / tool definition capture.
-- TUI `/mcp` view and stream-json status mapping (find with `grep Reconnecting`).
-- `docs/mcp.md`, `docs/headless.md`, `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`.
+- `rust/fontaine-tui/src/reports.rs` — `McpState::Pending { attempt }` (~lines 45, 293); add a `Retrying` variant or change rendering.
+- `rust/fontaine-tui/src/ui/mcp.rs` (~line 24) — maps from `McpState`.
+- Module doc at the top of `mcp_supervisor.rs` — drop the "stdio server that exits is marked failed" claim.
+- Stream-json status mapping (find with `grep Reconnecting`).
+- `docs/mcp.md`, `docs/headless.md`, `docs/tui.md`, `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`.
 - Integration test under `rust/fontaine/tests/` with a stdio test server.
-
-## Trade-offs
-
-- Tombstone vs restart at next turn: the turn-start option is simpler but a call in the same turn
-  still fails, which departs from Claude Code's documented behavior. The tombstone costs changes in
-  tool registration and the choke-point test but keeps parity.
-- `Retrying` variant vs staying `Failed` plus a background task: a distinct state keeps `/mcp`,
-  `AllFailed` and the SDK status honest about a server still being retried.
 
 ## Decisions
 
@@ -151,6 +143,7 @@ issue and the Decisions line is split accordingly.
 - AFK: Retry state is a new `Retrying` variant rather than `Failed`, so a retried server is not reported dead.
 - AFK: Stdio restart budget is 3 per server per run and 1 per call; Claude Code documents no cap.
 - AFK: A and B ship in one PR, with B splittable if review finds it too large.
+- AFK: Stdio restart uses a tombstone (restart within the same turn) rather than restart at the next turn, for parity with Claude Code.
 
 ## Documentation
 
@@ -158,6 +151,7 @@ issue and the Decisions line is split accordingly.
   only, `Retrying` state) and the stdio restart on next call, its budget, and that interactive is
   unchanged.
 - `docs/headless.md` (line ~227): replace the "stays failed" sentence.
+- `docs/tui.md` (~line 820): the `/mcp` pending text "pending (reconnecting, attempt N of 5)"; add the `Retrying` text "pending (retrying in the background)".
 - Replace the master plan Decisions line dated 2026-11-08 (#35) with a dated line recording what
   shipped and the deviations (state naming, restart cap, headless definition).
 - `CHANGELOG.md` entry; update the #35 and #486 checklists on GitHub after merge.
@@ -167,7 +161,7 @@ issue and the Decisions line is split accordingly.
 Unit tests in `mcp_supervisor.rs` using `Script`, the injectable `McpConnector` and
 `tokio::time::pause`:
 
-- headless: five transient failures continue retrying (state `Retrying`, gaps 16, 32, 60, 60 …) and a
+- headless: five transient failures continue retrying (state `Retrying` once the fifth attempt has failed; the gap before the sixth attempt is 32 s, then 60, 60 …) and a
   later success installs and notifies "reconnected".
 - headless: a permanent error during the window ends it as `Failed`.
 - headless: the 30-minute window ends it as `Failed` with one warning.
