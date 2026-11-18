@@ -37,8 +37,14 @@ const MODEL: &str = "openai/gpt-4o-mini";
   `kind = "openrouter"`, `base_url = cassette.base_url()`, `api_key_env = KEY_ENV`,
   `models = [MODEL]`, `[model] model = "paid/<MODEL>"`, plus `extra` (the guardian block for the auto test).
 - The auto test's `guardian_model` assertion becomes `paid/openai/gpt-4o-mini`.
-- Doc comment on the file names `OPENROUTER_API_KEY` and notes the key file is exported only for the
-  recording command, never written anywhere.
+- The module doc comment names `OPENROUTER_API_KEY` and the step-2 recording form (one test at a
+  time, the key exported only into that command's environment, never written anywhere), replacing
+  the current all-`--ignored` command and `OPENAI_API_KEY`.
+- Request bodies embed the per-run sandbox temp path (`Sandbox` uses `tempfile::tempdir()`; the system
+  prompt lists the workspace roots), which rig-cassette does not scrub (it only rewrites `/Users`,
+  `/home`, `/root`), so exact body matching cannot replay. Each test passes
+  `CassetteSpec::new(<scenario>).shape_matched()` instead of the bare scenario name; method, path, query,
+  `model`, `role` and `stream` still match.
 - Fixtures land in `rust/fontaine/tests/cassettes/openrouter/`.
 - The image test needs a vision-capable model; `openai/gpt-4o-mini` is. If OpenRouter rejects the
   image part, the image cassette stays ignored and a follow-up issue is filed (per the issue's handoff).
@@ -51,17 +57,22 @@ const MODEL: &str = "openai/gpt-4o-mini";
 3. Inspect every fixture for secrets, personal paths and hostnames
    (`rg -n "sk-|Authorization|api[_-]?key|Bearer|/home/" rust/fontaine/tests/cassettes/`).
    OpenRouter responses may carry extra headers or ids; scrub or re-record if anything sensitive remains.
-4. Remove `#[ignore]` on each recorded test; run `cargo test -p fontaine --test cassettes` with no key
+4. Confirm replay under a different temp dir: replay each cassette at least twice (fresh `Sandbox`
+   each run, so a new random path) and check the recorded fixtures contain no `/tmp/.tmp*` path that
+   would leak the recording host.
+5. Remove `#[ignore]` on each recorded test; run `cargo test -p fontaine --test cassettes` with no key
    and no mode set.
-5. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
-6. Update the testing design doc line that says the cassettes record against OpenAI.
+6. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
+7. Update the Phase Tracker, then update the testing design doc line that says the cassettes record against OpenAI.
 
 ## Files to Modify
 
 - `rust/fontaine/tests/cassettes.rs`
 - `rust/fontaine/tests/cassettes/openrouter/*.yaml` (new)
 - `tasks/design/testing.md` (provider wording around line 49)
-- `CHANGELOG.md` if the repo lists test-infra changes
+- `tasks/fontaine_harness_plan.md`: tick the two cassette items under #106 in the Phase Tracker
+  (lines 141-142, manual and auto); it does not track the image/PDF cassettes, so nothing else to tick
+- `CHANGELOG.md`: an entry under `[Unreleased]`
 
 ## Trade-offs
 
@@ -74,6 +85,7 @@ const MODEL: &str = "openai/gpt-4o-mini";
 
 - Record through OpenRouter, because the only available key is an OpenRouter one; the issue's
   OpenAI wording is superseded for these four tests.
+- AFK: Use `CassetteSpec::shape_matched()` for all four cassette tests, because request bodies embed the random per-run sandbox temp path that rig-cassette does not scrub.
 
 ## Documentation
 
