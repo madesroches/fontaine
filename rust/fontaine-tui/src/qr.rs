@@ -8,45 +8,70 @@ use ratatui::text::{Line, Span};
 /// light frame drawn here and halves what the margin costs in rows.
 const QUIET_ZONE: usize = 2;
 
-/// The code as text rows, or `None` when it needs more than `max_width` columns or `max_height`
-/// rows. Each row carries two module rows as half blocks, drawn as fixed black on white and never
-/// in theme colors: a theme-inverted code fails on scanners that do not read inverted modules.
+/// An encoded code: the module grid, kept so a redraw does not encode again.
+pub(crate) struct Grid {
+    width: usize,
+    colors: Vec<Module>,
+}
+
+impl Grid {
+    /// `None` when the payload does not fit any QR version.
+    pub(crate) fn encode(payload: &str) -> Option<Grid> {
+        // A screen has no damage to tolerate, so the lowest level gives the smallest code.
+        let code = QrCode::with_error_correction_level(payload, EcLevel::L).ok()?;
+        Some(Grid {
+            width: code.width(),
+            colors: code.to_colors(),
+        })
+    }
+
+    /// Overwrites the modules, for a grid whose payload is a credential.
+    pub(crate) fn clear(&mut self) {
+        self.colors.fill(Module::Light);
+    }
+
+    /// The code as text rows, or `None` when it needs more than `max_width` columns or
+    /// `max_height` rows. Each row carries two module rows as half blocks, drawn as fixed black on
+    /// white and never in theme colors: a theme-inverted code fails on scanners that do not read
+    /// inverted modules.
+    pub(crate) fn render(&self, max_width: usize, max_height: usize) -> Option<Vec<Line<'static>>> {
+        let side = self.width + 2 * QUIET_ZONE;
+        if side > max_width || side.div_ceil(2) > max_height {
+            return None;
+        }
+        let dark = |row: usize, col: usize| -> bool {
+            let inside = |v: usize| v >= QUIET_ZONE && v < QUIET_ZONE + self.width;
+            inside(row)
+                && inside(col)
+                && self.colors[(row - QUIET_ZONE) * self.width + (col - QUIET_ZONE)] == Module::Dark
+        };
+        let style = Style::default().fg(Color::Black).bg(Color::White);
+        let rows = (0..side)
+            .step_by(2)
+            .map(|top| {
+                let spans = (0..side).map(|col| {
+                    let glyph = match (dark(top, col), dark(top + 1, col)) {
+                        (true, true) => "█",
+                        (true, false) => "▀",
+                        (false, true) => "▄",
+                        (false, false) => " ",
+                    };
+                    Span::styled(glyph, style)
+                });
+                Line::from(spans.collect::<Vec<_>>())
+            })
+            .collect();
+        Some(rows)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn render(
     payload: &str,
     max_width: usize,
     max_height: usize,
 ) -> Option<Vec<Line<'static>>> {
-    // A screen has no damage to tolerate, so the lowest level gives the smallest code.
-    let code = QrCode::with_error_correction_level(payload, EcLevel::L).ok()?;
-    let side = code.width() + 2 * QUIET_ZONE;
-    if side > max_width || side.div_ceil(2) > max_height {
-        return None;
-    }
-    let colors = code.to_colors();
-    let dark = |row: usize, col: usize| -> bool {
-        let inside = |v: usize, n: usize| v >= QUIET_ZONE && v < QUIET_ZONE + n;
-        let (r, c) = (row, col);
-        inside(r, code.width())
-            && inside(c, code.width())
-            && colors[(r - QUIET_ZONE) * code.width() + (c - QUIET_ZONE)] == Module::Dark
-    };
-    let style = Style::default().fg(Color::Black).bg(Color::White);
-    let rows = (0..side)
-        .step_by(2)
-        .map(|top| {
-            let spans = (0..side).map(|col| {
-                let glyph = match (dark(top, col), dark(top + 1, col)) {
-                    (true, true) => "█",
-                    (true, false) => "▀",
-                    (false, true) => "▄",
-                    (false, false) => " ",
-                };
-                Span::styled(glyph, style)
-            });
-            Line::from(spans.collect::<Vec<_>>())
-        })
-        .collect();
-    Some(rows)
+    Grid::encode(payload)?.render(max_width, max_height)
 }
 
 #[cfg(test)]

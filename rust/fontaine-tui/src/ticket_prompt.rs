@@ -2,10 +2,13 @@
 //! lives only here: not in the transcript, the ledger, the history or an export. Dismissing the
 //! dialog removes it from the screen and drops the dialog's own copy.
 
+use std::sync::OnceLock;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
+use crate::qr::Grid;
 #[cfg(test)]
 use crate::qr::sample_payload;
 use crate::theme::Theme;
@@ -24,6 +27,8 @@ pub struct TicketPrompt {
     /// What the QR code encodes; the dialog keeps it because `body` cannot reach the `Ticket`.
     qr_payload: String,
     lifetime: String,
+    /// Encoded on the first draw: the payload never changes and encoding costs milliseconds.
+    qr_grid: OnceLock<Option<Grid>>,
 }
 
 impl TicketPrompt {
@@ -33,6 +38,7 @@ impl TicketPrompt {
             ticket,
             qr_payload,
             lifetime,
+            qr_grid: OnceLock::new(),
         }
     }
 
@@ -75,7 +81,11 @@ impl TicketPrompt {
             ));
             let waiting = Line::raw("Waiting for a device to connect; this closes when one does.");
             let text_rows = 2 + validity.to_string().chars().count().div_ceil(width).max(1);
-            match crate::qr::render(&self.qr_payload, width, height.saturating_sub(text_rows)) {
+            let grid = self.qr_grid.get_or_init(|| Grid::encode(&self.qr_payload));
+            match grid
+                .as_ref()
+                .and_then(|g| g.render(width, height.saturating_sub(text_rows)))
+            {
                 Some(code) => {
                     let mut out = vec![heading, validity];
                     out.extend(code);
@@ -118,6 +128,9 @@ impl Drop for TicketPrompt {
         // Best effort: the dialog's buffer should not keep the credential; copies made elsewhere (clipboard, encode) are not reached.
         self.ticket.clear();
         self.qr_payload.clear();
+        if let Some(Some(grid)) = self.qr_grid.get_mut() {
+            grid.clear();
+        }
     }
 }
 
