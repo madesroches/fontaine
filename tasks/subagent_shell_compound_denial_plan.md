@@ -22,22 +22,23 @@ needs its own golden adversarial set and Decisions line.
 
 ## Design
 1. **Denial message.** In `restriction_on`, when the call is `shell` and no limit matched, decide
-   whether the command is *compound-refused*: it does not parse as one simple command (pipe, list,
-   redirect, background, substitution, subshell) but a limit rule matches when evaluated against its
-   first simple command. If so, append a hint to the existing message: "the command is a chain, pipe,
-   redirect or substitution, which is refused; run it as one plain command". The decision only changes
-   text, never the Deny, and does no regex on arguments: reuse the shell pre-classifier's parse result
-   (`preclassify.rs`) and the existing rule matcher (`matches(rule, call, Posture::Allow)`) on a
-   constructed call holding the first simple command. If the parse yields no single leading command
-   (unparseable), keep the current message.
+   whether to hint: the analysis parsed and ANY entry of `analysis.commands` (each rebuilt as command
+   text by joining its `raw` words with spaces) matches a limit rule via
+   `matches(rule, call, Posture::Allow)` on a constructed `shell` call carrying the original call's
+   `cwd` argument. If so, append a hint to the existing message: "the command is a chain, pipe,
+   redirect or substitution, which is refused; run it as one plain command". The hint only changes
+   wording, never the Deny, and does no regex on arguments: reuse the shell pre-classifier's parse
+   result (`preclassify.rs`). This covers `cd <dir> && cargo clippy 2>&1 | tail` and
+   `cargo clippy $(foo)`. If the analysis did not parse (`commands` empty) or the command name is
+   expanded (`$X cargo clippy`), keep the current message.
 2. **`REVIEWER_PROMPT`.** Add: run each command bare, with no pipes, redirects or `2>&1`, and do not
    trim output with `tail`/`head`.
 3. Docs: `docs/agents.md` reviewer section notes the denial now names the cause and that the prompt
    steers the reviewer to bare commands.
 
 ## Implementation Steps
-1. `gate.rs`: add a helper returning the first simple command of a shell call when the call is
-   compound, and use it in `restriction_on` to choose the message suffix.
+1. `gate.rs`: add a helper that reports whether any simple command of a parsed shell call matches a
+   limit rule, and use it in `restriction_on` to choose the message suffix.
 2. `registry.rs`: extend `REVIEWER_PROMPT`.
 3. Unit tests (below). 
 4. `docs/agents.md` update; `CHANGELOG.md` entry.
@@ -45,7 +46,7 @@ needs its own golden adversarial set and Decisions line.
 ## Files to Modify
 - `rust/fontaine-sdk/src/core/gate.rs`
 - `rust/fontaine-sdk/src/agents/registry.rs`
-- `rust/fontaine-sdk/src/tools/preclassify.rs` (only if the first-simple-command accessor needs exposing)
+- `rust/fontaine-sdk/src/tools/preclassify.rs` (only if the analysis accessor needs exposing)
 - `docs/agents.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -68,7 +69,11 @@ Unit tests in `gate.rs` for `restriction_on`:
 - Pipe, `&&` chain, redirect, `$(...)` variants each carry the hint.
 - A bare non-matching command (`rm x`) and an unparseable command keep the original message without the hint.
 - A matching bare command is allowed (no restriction).
-- Compound command whose first simple command does not match any limit gets no hint.
+- `cd <dir> && cargo clippy 2>&1 | tail` against `shell(cargo clippy *)` carries the hint.
+- `cargo clippy $(foo)` carries the hint.
+- The call's `cwd` argument is carried onto the constructed call.
+- `$X cargo clippy` and an unparseable command get no hint.
+- Compound command none of whose simple commands match any limit gets no hint.
 - A test on `REVIEWER_PROMPT` asserting it mentions pipes/redirects.
 No live APIs.
 
