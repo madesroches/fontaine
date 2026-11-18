@@ -6,10 +6,13 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use common::Sandbox;
 use rig_cassette::http::{CassetteSpec, ProviderCassette};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 const UPSTREAM: &str = "https://openrouter.ai/api/v1";
 const KEY_ENV: &str = "OPENROUTER_API_KEY";
@@ -25,19 +28,78 @@ fn spec(scenario: &'static str) -> CassetteSpec {
 }
 
 fn account_config(cassette: &ProviderCassette, extra: &str) -> String {
+    account_config_at(&cassette.base_url(), extra)
+}
+
+fn account_config_at(base_url: &str, extra: &str) -> String {
     format!(
-        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\", \"{GUARDIAN_MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}",
-        cassette.base_url()
+        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{base_url}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\", \"{GUARDIAN_MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}"
     )
 }
 
-/// Every recorded request body, concatenated. Responses are SSE streams, so they are not
-/// parsed as JSON.
-fn recorded_requests(scenario: &str) -> String {
-    rig_cassette::http::recorded_interaction_bodies(&root(), PROVIDER, scenario)
-        .into_iter()
-        .map(|(request, _)| request)
-        .collect()
+/// A byte-for-byte forwarding proxy in front of the cassette server that keeps what the client
+/// sent. Shape matching lets a replayed request differ from the recorded one, so a test that
+/// asserts on the wire reads the bytes the binary actually sent, not the fixture.
+struct Tap {
+    base_url: String,
+    sent: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Tap {
+    async fn start(upstream_base_url: &str) -> Tap {
+        let rest = upstream_base_url
+            .strip_prefix("http://")
+            .expect("the cassette server speaks plain http");
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+        let upstream = authority.to_string();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the tap");
+        let base_url = format!("http://{}/{path}", listener.local_addr().unwrap());
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((client, _)) = listener.accept().await else {
+                    return;
+                };
+                let upstream = upstream.clone();
+                let captured = captured.clone();
+                tokio::spawn(async move {
+                    let Ok(server) = TcpStream::connect(&upstream).await else {
+                        return;
+                    };
+                    let (mut client_read, mut client_write) = client.into_split();
+                    let (mut server_read, mut server_write) = server.into_split();
+                    let up = async {
+                        let mut buf = [0u8; 16 * 1024];
+                        loop {
+                            match client_read.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    captured.lock().unwrap().extend_from_slice(&buf[..n]);
+                                    if server_write.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let _ = server_write.shutdown().await;
+                    };
+                    let down = async {
+                        let _ = tokio::io::copy(&mut server_read, &mut client_write).await;
+                        let _ = client_write.shutdown().await;
+                    };
+                    tokio::join!(up, down);
+                });
+            }
+        });
+        Tap { base_url, sent }
+    }
+
+    fn sent(&self) -> String {
+        String::from_utf8_lossy(&self.sent.lock().unwrap()).into_owned()
+    }
 }
 
 fn root() -> PathBuf {
@@ -146,14 +208,15 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
 const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /// `read` of an image puts the base64 image part on the provider request: this replays a
-/// recorded run against a vision model and inspects the recorded traffic, which unit tests
+/// recorded run against a vision model and inspects the bytes the binary sent, which unit tests
 /// cannot see because they never build a provider request.
 #[tokio::test(flavor = "multi_thread")]
 async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
     let cassette =
         ProviderCassette::start(&root(), PROVIDER, spec("read_png_image_part"), UPSTREAM).await;
+    let tap = Tap::start(&cassette.base_url()).await;
     let mut s = Sandbox::new();
-    s.user_config(&account_config(&cassette, ""));
+    s.user_config(&account_config_at(&tap.base_url, ""));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
     use base64::Engine;
     let png = base64::engine::general_purpose::STANDARD
@@ -171,23 +234,24 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     cassette.finish().await;
 
-    // The recorded request that carried the tool result has the image part on the wire.
-    let requests = recorded_requests("read_png_image_part");
+    // The request that carried the tool result has the image part on the wire.
+    let requests = tap.sent();
     assert!(
         requests.contains(PNG_B64),
         "the base64 image part reaches the provider"
     );
 }
 
-/// `read` of a PDF never sends the file: the recorded run's requests carry the text stub
+/// `read` of a PDF never sends the file: the requests the binary sent carry the text stub
 /// and no document part.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "cassette not recorded: the model called read_mcp_resource, not read"]
 async fn reading_a_pdf_replays_the_text_stub_fallback() {
     let cassette =
         ProviderCassette::start(&root(), PROVIDER, spec("read_pdf_text_stub"), UPSTREAM).await;
+    let tap = Tap::start(&cassette.base_url()).await;
     let mut s = Sandbox::new();
-    s.user_config(&account_config(&cassette, ""));
+    s.user_config(&account_config_at(&tap.base_url, ""));
     s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
     std::fs::write(s.work.join("notes.pdf"), b"%PDF-1.7\nnot really a pdf").unwrap();
 
@@ -197,7 +261,7 @@ async fn reading_a_pdf_replays_the_text_stub_fallback() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     cassette.finish().await;
 
-    let requests = recorded_requests("read_pdf_text_stub");
+    let requests = tap.sent();
     assert!(requests.contains("is a PDF"), "the stub names the file");
     assert!(!requests.contains("JVBER"), "no PDF bytes on the wire");
 }
