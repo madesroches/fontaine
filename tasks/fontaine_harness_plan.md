@@ -140,7 +140,7 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
 - **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes <name>`, adding `-- --ignored` only for a test still carrying `#[ignore]`; #106)
   - [x] Record the Phase 3 manual-mode cassette (through OpenRouter, `openai/gpt-4o-mini`; the image cassette too).
   - [x] Record the Phase 4 auto-mode cassette (agent `openai/gpt-4o-mini`, guardian `anthropic/claude-haiku-5.5`; `gpt-4o-mini` as guardian denied a new-file write).
-  - [ ] Record the PDF text-stub cassette (the model called `read_mcp_resource`, not `read`; test stays `#[ignore]`d).
+  - [x] Record the PDF text-stub cassette.
 - **Manual verification** (`design/testing.md` §Manual Verification)
   - [ ] Item 1: live TUI, manual mode, Anthropic. (#107)
   - [ ] Items 2–3: live guardian denial and `/denied` retry. (#107)

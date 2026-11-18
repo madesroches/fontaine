@@ -1,7 +1,7 @@
 //! Full runs against recorded provider traffic. Replay needs no keys; recording is a human
 //! step, one test at a time, with the key exported into that command only:
 //! `OPENROUTER_API_KEY=... RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes <name>`
-//! (add `-- --ignored` only for a test still carrying `#[ignore]`).
+//! (add `-- --ignored` only for a test carrying `#[ignore]`).
 
 mod common;
 
@@ -275,7 +275,6 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
 /// `read` of a PDF never sends the file: the requests the binary sent carry the text stub
 /// and no document part.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded: the model called read_mcp_resource, not read"]
 async fn reading_a_pdf_replays_the_text_stub_fallback() {
     let cassette =
         ProviderCassette::start(&root(), PROVIDER, spec("read_pdf_text_stub"), UPSTREAM).await;
@@ -289,7 +288,11 @@ async fn reading_a_pdf_replays_the_text_stub_fallback() {
     std::fs::write(s.work.join("notes.pdf"), b"%PDF-1.7\nnot really a pdf").unwrap();
 
     let out = s
-        .headless(&["--output-format", "stream-json", "Read notes.pdf."])
+        .headless(&[
+            "--output-format",
+            "stream-json",
+            "Use the read tool to read notes.pdf in the working directory.",
+        ])
         .await;
     assert_eq!(
         out.code,
