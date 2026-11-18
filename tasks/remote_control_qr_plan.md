@@ -52,7 +52,8 @@ No new audit event: `enabled` and `ticket_minted` already record the mint.
 | `Running` | `mint_remote_ticket(runtime, ttl)`: a new ticket, the previous one revoked, dialog opened |
 | `Starting` | the existing "still starting; try again in a moment" notice |
 
-`/remote on` and `/remote ticket` open the same dialog, so they show the QR too. `/remote-control`
+`/remote on`, `/remote ticket` and `fontaine --remote` (which reaches the same `begin_ticket` path
+through `start_remote`) open the same dialog, so they show the QR too. `/remote-control`
 differs only in always ending at a QR dialog, which makes it the discoverable entry point.
 
 ### QR payload
@@ -76,12 +77,16 @@ in `fontaine-tui` with `.workspace = true`.
 - `qr::render(payload, max_width, max_height) -> Option<Vec<Line<'static>>>` encodes at error
   correction level L (a screen, not print, so no damage to tolerate; smaller code), pads a
   quiet zone of 2 modules (the spec asks 4; 2 scans reliably on a light frame and halves the cost in
-  rows), and packs two module rows per text row with `▀`, `▄`, `█` and space.
+  rows). It builds the text rows with `code.render::<unicode::Dense1x2>().quiet_zone(false)` (one
+  text row per two module rows, `▀`, `▄`, `█` and space), pads the 2-module quiet zone by hand, and
+  styles each row black on white.
 - Every cell is drawn as fixed ANSI black modules on a bright-white background
   (`Color::Black`/`Color::White`), never theme roles, because a theme-inverted code fails on
   scanners that do not handle inverted modules.
 - Returns `None` when `modules + quiet` does not fit `max_width` columns or `ceil(rows / 2)` text
-  rows. The dialog redraws on every resize, so it switches between QR and text with no state.
+  rows. Rows, not width, are the constraint: a ticket's payload grows about 35-40 characters per
+  direct address, so the code needs a terminal of about 80×44 (relay disabled) to about 80×50
+  (relay default with IPv6 addresses). The dialog redraws on every resize, so it switches between QR and text with no state.
 - Nothing is cached: the lines are rebuilt each draw from the ticket the dialog holds, which
   `Drop` already clears, so the code is no longer reachable than the text was.
 
@@ -106,8 +111,10 @@ today:
 
 1. A pairing request that arrives while the ticket dialog is open is held back by `covered()`, so
    the person sees a QR for a device that is already waiting, and the device's 60-second timer
-   runs. In `sync_remote`, when `covered()` is true only because of the ticket dialog
-   (`App.ticket_prompt`; `/remote` runs mid-turn, so it can sit over an approval or question, and
+   runs. In `sync_remote`, when only the ticket dialog covers the screen
+   (`App::covered()` is split into `ticket_prompt.is_some() || self.covered_by_other_than_ticket()`,
+   the latter owning the rest of the field list, and `sync_remote` tests that method; the dialog is
+   `App.ticket_prompt`; `/remote` runs mid-turn, so it can sit over an approval or question, and
    then nothing changes), call `take_pairing()` and, on `Some`, clear `ticket_prompt` (its secret
    was consumed by that first valid use, so it shows a dead code) and `begin_pairing`.
    `take_pairing()` already skips and audits stale requests.
@@ -126,14 +133,15 @@ the status bar changes to `remote: no live ticket` on the next redraw.
    default-features = false }` and dev-dependency `rqrr = { version = "=0.11.0",
    default-features = false }` (decode via `PreparedImage::prepare_from_bitmap`);
    `rust/fontaine-tui/Cargo.toml` uses both with `.workspace = true`. Run `cargo deny check`.
-3. `rust/fontaine-tui/src/qr.rs` (+ `lib.rs` module): `render`.
+3. `rust/fontaine-tui/src/qr.rs` (+ `lib.rs` module): `render`, on qrcode's `Dense1x2` renderer.
 4. `rust/fontaine-tui/src/ticket_prompt.rs`: new `body` signature, QR/text selection, waiting line;
    update `view.rs` call.
 5. `rust/fontaine-tui/src/remote/mod.rs`: `RemoteCommand::Control`, parse, `USAGE`.
 6. `rust/fontaine-tui/src/commands.rs`: add a `remote-control` entry to `BUILTINS` (sorted by name,
    between `remote` and `rename`, hint `[--ttl <duration>]`) and add `control` to the `remote`
    builtin's hint.
-7. `rust/fontaine-tui/src/ui/remote.rs`: `Control` arm; in `sync_remote`, the ticket-dialog drop
+7. `rust/fontaine-tui/src/app.rs`: split `covered()` into `ticket_prompt.is_some() ||
+   covered_by_other_than_ticket()`. `rust/fontaine-tui/src/ui/remote.rs`: `Control` arm; in `sync_remote`, the ticket-dialog drop
    before a pairing confirmation.
 8. Docs, changelog, plan Decisions (below).
 9. Post the payload contract (see Decisions) as a comment on #288: `gh issue comment 288`.
@@ -142,7 +150,7 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 
 - `rust/fontaine-remote/src/ticket.rs`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`, `rust/Cargo.lock`
-- `rust/fontaine-tui/src/{qr.rs (new), lib.rs, ticket_prompt.rs, view.rs, commands.rs, remote/mod.rs, ui/remote.rs}`
+- `rust/fontaine-tui/src/{qr.rs (new), lib.rs, app.rs, ticket_prompt.rs, view.rs, commands.rs, remote/mod.rs, ui/remote.rs}`
 - `docs/remote.md`, `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -161,13 +169,17 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 ## Documentation
 
 - `docs/remote.md`: a "Pair a phone with a QR code" section under the ticket text: the command, that
-  `/remote on` and `/remote ticket` show the code too, the minimum terminal size, the text fallback,
+  `/remote on`, `/remote ticket` and `fontaine --remote` show the code too, the minimum terminal
+  size (measured: about 44 rows for a relay-disabled ticket to about 50 for relay default with IPv6
+  addresses, at any width of 80 or more), the text fallback,
   that the screen-reader renderer prints the text ticket only, and that the confirmation and TTL
   rules are unchanged.
 - `docs/remote.md:8` and its command block (lines 14-22): name `/remote-control` (and
   `/remote control`) among the ways to turn remote control on and the subcommands.
 - `docs/configuration.md:1265`: "only `fontaine --remote` or `/remote on` … enables remote control"
   also names `/remote-control`.
+- `docs/remote.md:24` ("Enter dismisses it for good") and `docs/tui.md:814` ("c copies it, Enter
+  dismisses it"): also say the dialog closes when a device presents the ticket.
 - `docs/tui.md`: a `/remote-control [--ttl <duration>]` row beside `/remote`.
 - `CHANGELOG.md`: `Added` entry.
 - Plan `## Decisions`, in the TUI subsection beside the #664 remote lines: dated line for the
@@ -183,9 +195,11 @@ Unit tests (anything reachable with constructed inputs):
   ticket reports `Retired`; `qr_payload` parses back;
   the payload contains only QR-alphanumeric characters.
 - `qr::render`: returns `None` below the fit threshold on either axis; module count and row count
-  match the version for a known payload; a payload of a relay-default ticket and of a
-  `relay = "disabled"` ticket fit an 80×40 area (this pins the size estimate rather than assuming
-  it).
+  match the version for a known payload; the code fits an 80×50 area for a relay-default ticket
+  carrying 2 IPv4 and 2 IPv6 direct addresses, and does not fit 80×40. Measured (iroh 1.4.1,
+  qrcode 0.14.1, ECC L, alphanumeric): relay disabled with 2 IPv4: 400 chars, version 11, 33 text
+  rows; relay default with 2 IPv4: 477 chars, version 12, 35 rows; relay default with 2 IPv4 and
+  2 IPv6: 639 chars, version 14, 39 rows. The test pins these rows rather than assuming them.
 - **Scannability round trip:** rebuild the bitmap from the rendered cells (half-block mapping and
   quiet zone) and decode it with `rqrr`; the result equals the payload. A wrong half-block mapping
   or inverted polarity gives an unscannable code with no error, so this is the test that earns its
@@ -213,9 +227,9 @@ Integration (`rust/fontaine-tui/tests/remote.rs`, which drives a real `/remote o
 
 Only the optics, which no test reaches:
 
-1. `cargo run -p fontaine`, then `/remote-control` in a tmux pane at 80×40, then at 80×24.
-   Expected: a QR at 80×40; the text ticket and "terminal is too small" line at 80×24.
-2. In the 80×40 pane, scan the code with a phone camera. Expected: the text decodes to the
+1. `cargo run -p fontaine`, then `/remote-control` in a tmux pane at 80×50, then at 80×40 and 80×24.
+   Expected: a QR at 80×50; the text ticket and "terminal is too small" line at 80×40 and 80×24.
+2. In the 80×50 pane, scan the code with a phone camera. Expected: the text decodes to the
    `FONTAINE-ATTACH1…` ticket. Run it in a light and a dark terminal theme: both scan.
 
 Why not automated: whether a phone camera resolves terminal half-blocks, under real fonts, line
