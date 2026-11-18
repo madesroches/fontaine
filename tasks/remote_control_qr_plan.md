@@ -66,7 +66,9 @@ Android app can pass the scanned text straight to the same parser. No URI scheme
 reader, and a scheme can be added later behind a new ticket prefix without breaking this one.
 
 `Ticket::qr_payload(&self) -> String` (in `fontaine-remote`) returns `encode().to_uppercase()`, so
-the format has one owner.
+the format has one owner. `TicketPrompt::new` takes `ticket.qr_payload()` next to `ticket.encode()`
+at both call sites (`ui/remote.rs`), and the prompt keeps it and clears it on `Drop` like the text
+ticket, since `body` cannot reach the `Ticket`.
 
 ### Rendering
 
@@ -83,8 +85,8 @@ in `fontaine-tui` with `.workspace = true`.
 - Every cell is drawn as fixed ANSI black modules on a bright-white background
   (`Color::Black`/`Color::White`), never theme roles, because a theme-inverted code fails on
   scanners that do not handle inverted modules.
-- Returns `None` when `modules + quiet` does not fit `max_width` columns or `ceil(rows / 2)` text
-  rows. Rows, not width, are the constraint: a ticket's payload grows about 35-40 characters per
+- Returns `None` when the code's `modules + 4` columns exceed `max_width`, or its
+  `ceil((modules + 4) / 2)` text rows exceed `max_height`. Rows, not width, are the constraint: a ticket's payload grows about 35-40 characters per
   direct address, so the code needs a terminal of about 80×44 (relay disabled) to about 80×50
   (relay default with IPv6 addresses). The dialog redraws on every resize, so it switches between QR and text with no state.
 - Nothing is cached: the lines are rebuilt each draw from the ticket the dialog holds, which
@@ -96,13 +98,20 @@ in `fontaine-tui` with `.workspace = true`.
 - Otherwise: heading, validity line, the QR when it fits, then "Waiting for a device to connect;
   this closes when one does." The wrapped text ticket is shown **instead of** the QR when it does
   not fit, with one line saying the terminal is too small for the QR. `c` copies the text ticket in
-  both cases.
+  both cases. QR mode drops the existing hint line ("On the other device: FONTAINE_TICKET=<ticket>
+  fontaine attach") and the blank line before it; the text fallback keeps both.
 - The footer is unchanged.
 
 `view::overlay` passes `linear` and a `height` computed with `body_rows(app, width, height,
 footer_len)`, the body's share of the viewport (the overlay's own `height` is the whole viewport,
 and `draw_overlay` scrolls to the tail, which would cut off the top of the QR). `body` passes `qr::render` that budget
 minus the dialog's own text lines (heading, validity, waiting lines) as `max_height`.
+
+`chrome()` and `view::height` call `overlay` with the terminal height, while `draw_widgets` calls it
+with the inline viewport height, which `body_rows` reduces by one more row. So the QR/text choice
+is made from the terminal height both paths share: `overlay` takes the terminal height for the
+ticket dialog's decision, and `body` follows it, so the dialog does not flip between QR and text
+across the two paths.
 
 ### Accepting the connection
 
@@ -115,8 +124,10 @@ today:
    (`App::covered()` is split into `ticket_prompt.is_some() || self.covered_by_other_than_ticket()`,
    the latter owning the rest of the field list, and `sync_remote` tests that method; the dialog is
    `App.ticket_prompt`; `/remote` runs mid-turn, so it can sit over an approval or question, and
-   then nothing changes), call `take_pairing()` and, on `Some`, clear `ticket_prompt` (its secret
-   was consumed by that first valid use, so it shows a dead code) and `begin_pairing`.
+   then nothing changes), call `take_pairing()` and, on `Some`, open the pairing confirmation
+   (`begin_pairing`) and clear `ticket_prompt` only when `!running.server.has_live_ticket()` (the
+   current secret was consumed, so it shows a dead code); a request queued from an earlier ticket
+   leaves a newly minted, still live ticket's dialog up.
    `take_pairing()` already skips and audits stale requests.
 2. The dialog text says it is waiting and closes itself on connect, instead of leaving a stale
    code up. The status bar keeps `remote: ticket live`.
@@ -130,19 +141,20 @@ the status bar changes to `remote: no live ticket` on the next redraw.
    retired-prefix check case-insensitive in the same edit (an uppercase retired ticket reports
    `Retired`, not `NotATicket`; unit-tested); add `Ticket::qr_payload`.
 2. `rust/Cargo.toml` `[workspace.dependencies]`: `qrcode = { version = "=0.14.1",
-   default-features = false }` and dev-dependency `rqrr = { version = "=0.11.0",
-   default-features = false }` (decode via `PreparedImage::prepare_from_bitmap`);
-   `rust/fontaine-tui/Cargo.toml` uses both with `.workspace = true`. Run `cargo deny check`.
+   default-features = false }`; `rust/fontaine-tui/Cargo.toml` uses it with `.workspace = true`.
+   Run `cargo deny check`.
 3. `rust/fontaine-tui/src/qr.rs` (+ `lib.rs` module): `render`, on qrcode's `Dense1x2` renderer.
-4. `rust/fontaine-tui/src/ticket_prompt.rs`: new `body` signature, QR/text selection, waiting line;
-   update `view.rs` call.
-5. `rust/fontaine-tui/src/remote/mod.rs`: `RemoteCommand::Control`, parse, `USAGE`.
+4. `rust/fontaine-tui/src/ticket_prompt.rs`: new `body` signature, QR/text selection, waiting line,
+   `TicketPrompt::new` taking the QR payload; update `view.rs` call.
+5. `rust/fontaine-tui/src/remote/mod.rs`: `RemoteCommand::Control`, parse, and `control [--ttl
+   <duration>]` added to `USAGE`.
 6. `rust/fontaine-tui/src/commands.rs`: add a `remote-control` entry to `BUILTINS` (sorted by name,
-   between `remote` and `rename`, hint `[--ttl <duration>]`) and add `control` to the `remote`
-   builtin's hint.
+   between `remote` and `rename`, hint `[--ttl <duration>]`), add `control` to the `remote`
+   builtin's hint, and add `/remote-control` to the list in
+   `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else`.
 7. `rust/fontaine-tui/src/app.rs`: split `covered()` into `ticket_prompt.is_some() ||
    covered_by_other_than_ticket()`. `rust/fontaine-tui/src/ui/remote.rs`: `Control` arm; in `sync_remote`, the ticket-dialog drop
-   before a pairing confirmation.
+   before a pairing confirmation; both `TicketPrompt::new` call sites pass `ticket.qr_payload()`.
 8. Docs, changelog, plan Decisions (below).
 9. Post the payload contract (see Decisions) as a comment on #288: `gh issue comment 288`.
 
@@ -151,7 +163,7 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 - `rust/fontaine-remote/src/ticket.rs`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`, `rust/Cargo.lock`
 - `rust/fontaine-tui/src/{qr.rs (new), lib.rs, app.rs, ticket_prompt.rs, view.rs, commands.rs, remote/mod.rs, ui/remote.rs}`
-- `docs/remote.md`, `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `docs/remote.md`, `docs/tui.md`, `docs/terminal.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -180,6 +192,11 @@ the status bar changes to `remote: no live ticket` on the next redraw.
   also names `/remote-control`.
 - `docs/remote.md:24` ("Enter dismisses it for good") and `docs/tui.md:814` ("c copies it, Enter
   dismisses it"): also say the dialog closes when a device presents the ticket.
+- `docs/remote.md:90` ("every `/remote` subcommand" refused for a device): also name
+  `/remote-control`; `docs/remote.md:141-142` (devices reattach after "the next `/remote on` or
+  `fontaine --remote`"): `/remote-control` also starts the endpoint.
+- `docs/terminal.md:238`: the `remote:` row says the ticket dialog is removed when dismissed; it
+  also closes when a device pairs.
 - `docs/tui.md`: a `/remote-control [--ttl <duration>]` row beside `/remote`.
 - `CHANGELOG.md`: `Added` entry.
 - Plan `## Decisions`, in the TUI subsection beside the #664 remote lines: dated line for the
@@ -195,23 +212,28 @@ Unit tests (anything reachable with constructed inputs):
   ticket reports `Retired`; `qr_payload` parses back;
   the payload contains only QR-alphanumeric characters.
 - `qr::render`: returns `None` below the fit threshold on either axis; module count and row count
-  match the version for a known payload; the code fits an 80×50 area for a relay-default ticket
-  carrying 2 IPv4 and 2 IPv6 direct addresses, and does not fit 80×40. Measured (iroh 1.4.1,
+  match the version for a known payload; at width 78 (the overlay's inner width at 80 columns) the
+  639-char ticket (relay default, 2 IPv4 and 2 IPv6 direct addresses) fits at `max_height` 39 and
+  not at 38. At the `TicketPrompt`/whole-terminal level that ticket shows the QR at 80×50 and the
+  text fallback at 80×40. Measured (iroh 1.4.1,
   qrcode 0.14.1, ECC L, alphanumeric): relay disabled with 2 IPv4: 400 chars, version 11, 33 text
   rows; relay default with 2 IPv4: 477 chars, version 12, 35 rows; relay default with 2 IPv4 and
   2 IPv6: 639 chars, version 14, 39 rows. The test pins these rows rather than assuming them.
-- **Scannability round trip:** rebuild the bitmap from the rendered cells (half-block mapping and
-  quiet zone) and decode it with `rqrr`; the result equals the payload. A wrong half-block mapping
-  or inverted polarity gives an unscannable code with no error, so this is the test that earns its
-  place.
-- `TicketPrompt::body`: QR present when it fits, text ticket plus the too-small line when it does
-  not, text only when `linear`; the drop clears the ticket. The existing unit test at
-  `ticket_prompt.rs:92` is updated to the new `body` signature.
+- **Cells-to-modules comparison:** rebuild the module grid from the rendered cells (glyph plus
+  fg/bg), offset by the quiet zone with all-light padding, and assert it equals
+  `QrCode::to_colors()`. A wrong half-block mapping or inverted polarity gives an unscannable code
+  with no error.
+- `TicketPrompt::body`: QR present when it fits (and the hint line absent), text ticket plus the
+  too-small line when it does not, text only when `linear`; the drop clears the ticket. The existing
+  unit test at `ticket_prompt.rs:92`, `hint_uses_the_env_form_an_interactive_attach_accepts`, moves
+  to the text-fallback case and is updated to the new `body` signature.
+- View level: `chrome()` and the draw path agree on QR mode for the same app state.
 
 Integration (`rust/fontaine-tui/tests/remote.rs`, which drives a real `/remote on` and a client):
 
-- `/remote-control` from `Off` opens the dialog with a QR and a live endpoint; run again while on,
-  it mints a new ticket and the earlier one is refused (`bad_ticket`-class refusal).
+- `/remote-control` from `Off` opens the dialog (match the "Remote ticket" heading, which both modes
+  show) and a live endpoint; run again while on, it mints a new ticket and the earlier ticket's
+  client fails with `BadTicket` while the host audits a `device_refused` rule.
 - A client pairs while the QR dialog is open: the dialog closes and the confirmation opens at once,
   and answering `y` stores the device. This pins the gap that held the confirmation behind the
   dialog until the device timed out. The `enable()` helper closes the dialog before pairing
@@ -233,5 +255,5 @@ Only the optics, which no test reaches:
    `FONTAINE-ATTACH1…` ticket. Run it in a light and a dark terminal theme: both scan.
 
 Why not automated: whether a phone camera resolves terminal half-blocks, under real fonts, line
-spacing and colour profiles, is a property of the terminal and optics. The `rqrr` round trip covers
+spacing and colour profiles, is a property of the terminal and optics. The cells-to-modules test covers
 the encoding and mapping.
