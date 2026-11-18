@@ -16,6 +16,7 @@ use crate::guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Sett
 use crate::tools::gate::ROOT_AGENT;
 use crate::tools::live::Live;
 use crate::tools::lock::{lock, lock_recovering, read, write};
+use crate::tools::preclassify::analyze;
 use crate::tools::scope::Scope;
 use rig_core::completion::{UnsupportedOption, Usage};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -1841,8 +1842,13 @@ fn restriction_on(restrictions: &ChildRestrictions, call: &CallContext<'_>) -> O
             .iter()
             .any(|rule| matches(rule, call, Posture::Allow))
     {
+        let hint = if compound_of_allowed(&limits, call) {
+            "; the command is a chain, pipe, redirect or substitution, which is refused: run it as one plain command"
+        } else {
+            ""
+        };
         return Some(format!(
-            "this agent type may use `{}` only as {}",
+            "this agent type may use `{}` only as {}{hint}",
             call.tool,
             limits
                 .iter()
@@ -1852,6 +1858,44 @@ fn restriction_on(restrictions: &ChildRestrictions, call: &CallContext<'_>) -> O
         ));
     }
     None
+}
+
+/// Whether a refused `shell` call is refused only for its shape: some simple command inside it,
+/// run alone, would match a limit. Wording only; the decision is already made.
+fn compound_of_allowed(limits: &[&Rule], call: &CallContext<'_>) -> bool {
+    if call.tool != "shell" {
+        return false;
+    }
+    let Some(command) = call.args.get("command").and_then(|c| c.as_str()) else {
+        return false;
+    };
+    let analysis = analyze(command);
+    // Assignments are left out of `words` and a nested command is added to them, so for those the
+    // shape is not what refuses the call and the hint would mislead.
+    if !analysis.parsed || analysis.assignments || analysis.nested_chain {
+        return false;
+    }
+    analysis.commands.iter().any(|simple| {
+        let text = simple
+            .words
+            .iter()
+            .map(|word| word.raw.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut args = serde_json::json!({ "command": text });
+        if let Some(cwd) = call.args.get("cwd") {
+            args["cwd"] = cwd.clone();
+        }
+        let alone = CallContext {
+            tool: call.tool,
+            args: &args,
+            scope: call.scope,
+            home: call.home,
+        };
+        limits
+            .iter()
+            .any(|rule| matches(rule, &alone, Posture::Allow))
+    })
 }
 
 #[cfg(test)]
@@ -1905,6 +1949,63 @@ mod tests {
             effort: None,
             retry: crate::core::retry::RetryPolicy::default(),
         }))
+    }
+
+    const HINT: &str = "chain, pipe, redirect or substitution";
+
+    fn refusal_of(command: &str) -> Option<String> {
+        let restrictions = ChildRestrictions {
+            only: vec![crate::core::permission_rules::parse_rule("shell(cargo clippy *)").unwrap()],
+            deny: Vec::new(),
+        };
+        let scope = Scope::new(PathBuf::from("/home/me/proj"), []);
+        let args = serde_json::json!({ "command": command });
+        let call = CallContext {
+            tool: "shell",
+            args: &args,
+            scope: &scope,
+            home: None,
+        };
+        restriction_on(&restrictions, &call)
+    }
+
+    #[test]
+    fn a_compound_of_an_allowed_command_is_refused_with_the_cause() {
+        for command in [
+            "cargo clippy --all-targets -- -D warnings 2>&1 | tail -60",
+            "cargo clippy | tail",
+            "cargo clippy && echo done",
+            "cargo clippy > out.txt",
+            "cd /home/me/proj && cargo clippy 2>&1 | tail",
+            "$(cargo clippy)",
+            "echo $(cargo clippy)",
+        ] {
+            let message = refusal_of(command).unwrap_or_else(|| panic!("{command} was allowed"));
+            assert!(message.contains(HINT), "{command}: {message}");
+            assert!(message.contains("only as `shell(cargo clippy *)`"));
+        }
+    }
+
+    #[test]
+    fn a_command_that_cannot_be_read_as_an_allowed_one_keeps_the_plain_refusal() {
+        for command in [
+            "rm x",
+            "cargo clippy $(foo)",
+            "$X cargo clippy",
+            "cargo clippy 'unterminated",
+            "rm x | tail",
+            "A=b cargo clippy",
+            "RUST_BACKTRACE=1 cargo clippy",
+        ] {
+            let message = refusal_of(command).unwrap_or_else(|| panic!("{command} was allowed"));
+            assert!(!message.contains(HINT), "{command}: {message}");
+            assert!(message.contains("only as `shell(cargo clippy *)`"));
+        }
+    }
+
+    #[test]
+    fn a_bare_allowed_command_is_not_restricted() {
+        assert_eq!(refusal_of("cargo clippy --all-targets"), None);
     }
 
     #[test]
