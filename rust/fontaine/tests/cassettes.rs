@@ -1,14 +1,41 @@
 //! Full runs against recorded provider traffic. Replay needs no keys; recording is a human
-//! step: `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored`
-//! with the provider key in `OPENAI_API_KEY`.
+//! step, one test at a time, with the key exported into that command only:
+//! `OPENROUTER_API_KEY=... RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored <name>`.
 
 mod common;
 
 use std::path::PathBuf;
 
 use common::Sandbox;
-use rig_cassette::http::ProviderCassette;
+use rig_cassette::http::{CassetteSpec, ProviderCassette};
 use serde_json::{Value, json};
+
+const UPSTREAM: &str = "https://openrouter.ai/api/v1";
+const KEY_ENV: &str = "OPENROUTER_API_KEY";
+const PROVIDER: &str = "openrouter";
+const MODEL: &str = "openai/gpt-4o-mini";
+
+/// Request bodies embed the per-run sandbox path, which the cassette scrubber leaves alone
+/// under `/tmp`, so bodies are matched by shape.
+fn spec(scenario: &'static str) -> CassetteSpec {
+    CassetteSpec::new(scenario).shape_matched()
+}
+
+fn account_config(cassette: &ProviderCassette, extra: &str) -> String {
+    format!(
+        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}",
+        cassette.base_url()
+    )
+}
+
+/// Every recorded request body, concatenated. Responses are SSE streams, so they are not
+/// parsed as JSON.
+fn recorded_requests(scenario: &str) -> String {
+    rig_cassette::http::recorded_interaction_bodies(&root(), PROVIDER, scenario)
+        .into_iter()
+        .map(|(request, _)| request)
+        .collect()
+}
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -18,21 +45,12 @@ fn root() -> PathBuf {
 
 /// Prompt, stream, a read tool call executed on the fast path, result, answer.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded"]
 async fn manual_mode_reads_a_file_through_the_fast_path() {
-    let cassette = ProviderCassette::start(
-        &root(),
-        "openai",
-        "manual_read_round_trip",
-        "https://api.openai.com/v1",
-    )
-    .await;
+    let cassette =
+        ProviderCassette::start(&root(), PROVIDER, spec("manual_read_round_trip"), UPSTREAM).await;
     let mut s = Sandbox::new();
-    s.user_config(&format!(
-        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"OPENAI_API_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n",
-        cassette.base_url()
-    ));
-    s.set_env("OPENAI_API_KEY", &cassette.api_key("OPENAI_API_KEY"));
+    s.user_config(&account_config(&cassette, ""));
+    s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
     s.add_file("note.txt", "the magic word is plugh\n");
 
     let out = s
@@ -60,21 +78,21 @@ async fn manual_mode_reads_a_file_through_the_fast_path() {
 /// Auto mode end to end: tool call, the guardian's verdict, the tool runs, the answer. The agent
 /// and the guardian share the one recorded account.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded"]
+#[ignore = "cassette not recorded: the recorded guardian verdict was deny"]
 async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
     let cassette = ProviderCassette::start(
         &root(),
-        "openai",
-        "auto_guardian_round_trip",
-        "https://api.openai.com/v1",
+        PROVIDER,
+        spec("auto_guardian_round_trip"),
+        UPSTREAM,
     )
     .await;
     let mut s = Sandbox::new();
-    s.user_config(&format!(
-        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"OPENAI_API_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n\n[guardian]\nmodel = \"paid/gpt-4o-mini\"\n",
-        cassette.base_url()
+    s.user_config(&account_config(
+        &cassette,
+        &format!("\n[guardian]\nmodel = \"paid/{MODEL}\"\n"),
     ));
-    s.set_env("OPENAI_API_KEY", &cassette.api_key("OPENAI_API_KEY"));
+    s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
 
     let out = s
         .run(&[
@@ -95,7 +113,7 @@ async fn auto_mode_has_the_guardian_allow_a_harmless_command() {
     assert_eq!(decision["tier"], "guardian");
     assert_eq!(decision["decision"], "allow");
     assert_eq!(decision["rule"], "allow");
-    assert_eq!(decision["guardian_model"], "paid/gpt-4o-mini");
+    assert_eq!(decision["guardian_model"], format!("paid/{MODEL}"));
     assert!(s.work.join("hello.txt").exists());
 
     // The audit record carries the verdict.
@@ -125,21 +143,12 @@ const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
 /// recorded run against a vision model and inspects the recorded traffic, which unit tests
 /// cannot see because they never build a provider request.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded"]
 async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
-    let cassette = ProviderCassette::start(
-        &root(),
-        "openai",
-        "read_png_image_part",
-        "https://api.openai.com/v1",
-    )
-    .await;
+    let cassette =
+        ProviderCassette::start(&root(), PROVIDER, spec("read_png_image_part"), UPSTREAM).await;
     let mut s = Sandbox::new();
-    s.user_config(&format!(
-        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"OPENAI_API_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n",
-        cassette.base_url()
-    ));
-    s.set_env("OPENAI_API_KEY", &cassette.api_key("OPENAI_API_KEY"));
+    s.user_config(&account_config(&cassette, ""));
+    s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
     use base64::Engine;
     let png = base64::engine::general_purpose::STANDARD
         .decode(PNG_B64)
@@ -157,11 +166,7 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
     cassette.finish().await;
 
     // The recorded request that carried the tool result has the image part on the wire.
-    let turns = rig_cassette::http::recorded_json_turns(&root(), "openai", "read_png_image_part");
-    let requests: String = turns
-        .iter()
-        .map(|(request, _)| request.to_string())
-        .collect();
+    let requests = recorded_requests("read_png_image_part");
     assert!(
         requests.contains(PNG_B64),
         "the base64 image part reaches the provider"
@@ -171,21 +176,13 @@ async fn reading_an_image_sends_the_image_part_to_a_vision_model() {
 /// `read` of a PDF never sends the file: the recorded run's requests carry the text stub
 /// and no document part.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cassette not recorded"]
+#[ignore = "cassette not recorded: the model called read_mcp_resource, not read"]
 async fn reading_a_pdf_replays_the_text_stub_fallback() {
-    let cassette = ProviderCassette::start(
-        &root(),
-        "openai",
-        "read_pdf_text_stub",
-        "https://api.openai.com/v1",
-    )
-    .await;
+    let cassette =
+        ProviderCassette::start(&root(), PROVIDER, spec("read_pdf_text_stub"), UPSTREAM).await;
     let mut s = Sandbox::new();
-    s.user_config(&format!(
-        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"OPENAI_API_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n",
-        cassette.base_url()
-    ));
-    s.set_env("OPENAI_API_KEY", &cassette.api_key("OPENAI_API_KEY"));
+    s.user_config(&account_config(&cassette, ""));
+    s.set_env(KEY_ENV, &cassette.api_key(KEY_ENV));
     std::fs::write(s.work.join("notes.pdf"), b"%PDF-1.7\nnot really a pdf").unwrap();
 
     let out = s
@@ -194,11 +191,7 @@ async fn reading_a_pdf_replays_the_text_stub_fallback() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     cassette.finish().await;
 
-    let turns = rig_cassette::http::recorded_json_turns(&root(), "openai", "read_pdf_text_stub");
-    let requests: String = turns
-        .iter()
-        .map(|(request, _)| request.to_string())
-        .collect();
+    let requests = recorded_requests("read_pdf_text_stub");
     assert!(requests.contains("is a PDF"), "the stub names the file");
     assert!(!requests.contains("JVBER"), "no PDF bytes on the wire");
 }

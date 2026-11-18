@@ -22,6 +22,8 @@ All notable changes are recorded here. The format follows
   of it would have matched: the denial names the chain, pipe, redirect or substitution, and the
   `reviewer` prompt tells it to run commands bare, without `2>&1 | tail` (#697). The decision does
   not change.
+- The manual-mode and image cassette tests replay recorded OpenRouter traffic (`openai/gpt-4o-mini`)
+  in CI instead of being `#[ignore]`d. The auto-mode and PDF cassettes are still unrecorded.
 - The shipped `Destroy Pre-existing Files` rule no longer matches writing or editing a path inside
   the workspace roots with new content, whatever the path's status (`pre_existing`, `unindexed` or
   `git_tracked`, marked or not) and by any route (a redirect, `sed -i`, a heredoc, a script or a file
