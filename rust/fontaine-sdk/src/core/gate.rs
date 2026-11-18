@@ -1870,7 +1870,9 @@ fn compound_of_allowed(limits: &[&Rule], call: &CallContext<'_>) -> bool {
         return false;
     };
     let analysis = analyze(command);
-    if !analysis.parsed {
+    // Assignments are left out of `words` and a nested command is added to them, so for those the
+    // shape is not what refuses the call and the hint would mislead.
+    if !analysis.parsed || analysis.assignments || analysis.nested_chain {
         return false;
     }
     analysis.commands.iter().any(|simple| {
@@ -1992,6 +1994,8 @@ mod tests {
             "$X cargo clippy",
             "cargo clippy 'unterminated",
             "rm x | tail",
+            "A=b cargo clippy",
+            "RUST_BACKTRACE=1 cargo clippy",
         ] {
             let message = refusal_of(command).unwrap_or_else(|| panic!("{command} was allowed"));
             assert!(!message.contains(HINT), "{command}: {message}");

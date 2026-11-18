@@ -107,11 +107,11 @@ an error that names the agent and the field. The types survive a plugin reload.
 not read-only. Each command is matched like a `shell` allow rule, so a chain, pipe, redirection or
 substitution is refused (one leading `cd <dir> &&` into the workspace is accepted), as is plain
 `cargo fmt`. The refusal names the cause when a part of the command matches an allowed pattern, and
-the prompt tells the reviewer to run each command bare. Still, `cargo` writes `target/` and runs build scripts and tests, `cargo clippy --fix`
-rewrites source files, and some `git` and `gh` options write files. Because it holds `shell`, a
-`reviewer` spawn has no read-only fast path and is gated like `worker`; every call it makes still
-passes the full permission pipeline. The list is fixed: for another one, define a type of your own
-with `tools = ["shell(...)"]` entries.
+the prompt tells the reviewer to run each command bare. Still, `cargo` writes `target/` and runs
+build scripts and tests, `cargo clippy --fix` rewrites source files, and some `git` and `gh`
+options write files. Because it holds `shell`, a `reviewer` spawn has no read-only fast path and is
+gated like `worker`; every call it makes still passes the full permission pipeline. The list is
+fixed: for another one, define a type of your own with `tools = ["shell(...)"]` entries.
 
 `$main` is the session model, including the entry it has fallen through to. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none; it is opt-in — no built-in type uses it.
