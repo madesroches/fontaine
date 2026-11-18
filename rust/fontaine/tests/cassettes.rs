@@ -31,9 +31,12 @@ fn account_config(cassette: &ProviderCassette, extra: &str) -> String {
     account_config_at(&cassette.base_url(), extra)
 }
 
+/// The `[websearch]` block pins the `websearch` tool into the toolset on every host: the
+/// fixtures were recorded with it, and without a container runtime the default backend would
+/// drop it from the request. No `command` is set, so nothing is launched.
 fn account_config_at(base_url: &str, extra: &str) -> String {
     format!(
-        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{base_url}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\", \"{GUARDIAN_MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n{extra}"
+        "[accounts.paid]\nkind = \"openrouter\"\nbase_url = \"{base_url}\"\napi_key_env = \"{KEY_ENV}\"\nmodels = [\"{MODEL}\", \"{GUARDIAN_MODEL}\"]\n\n[model]\nmodel = \"paid/{MODEL}\"\n\n[websearch]\nbackend = \"searxng\"\nbase_url = \"http://localhost:8080\"\n{extra}"
     )
 }
 
