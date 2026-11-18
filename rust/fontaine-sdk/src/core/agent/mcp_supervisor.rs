@@ -1,10 +1,13 @@
 //! Keeping the session's MCP servers alive: a slot per server the session attempted, a watcher per
 //! live connection, and the reconnect and startup-retry schedules. A remote server that drops is
-//! reconnected with exponential backoff; a stdio server that exits is marked failed, since
-//! starting its process again is a decision for the person.
+//! reconnected with exponential backoff, and in a headless run keeps being retried in the
+//! background after a transient failure. An interactive session marks a stdio server that exits
+//! failed, since starting its process again is a decision for the person; a headless run has no
+//! person to ask, so the exited server's tools stay registered as stand-ins and a call to one
+//! starts the server again.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -12,8 +15,9 @@ use crate::tools::error_chain::chain;
 use crate::tools::lock::{lock, read, read_recovering, write, write_recovering};
 use crate::tools::mcp::McpConnectionHandle as McpConnection;
 use crate::tools::mcp::{
-    CONNECT_TIMEOUT, CallScope, Connected, Listings, McpError, McpErrorKind, McpOptions,
-    McpResourceQueries, ServerSpec, connect as connect_server, pull_listings,
+    CONNECT_TIMEOUT, CallScope, Connected, Listings, LiveTool, McpError, McpErrorKind, McpOptions,
+    McpResourceQueries, RestartFn, ServerSpec, connect as connect_server, pull_listings,
+    stand_in_tools,
 };
 use crate::tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;
@@ -31,6 +35,13 @@ use super::EnvLookup;
 const RECONNECT_BASE: Duration = Duration::from_secs(1);
 /// How many times a lost remote server is started again before it is marked failed.
 pub const RECONNECT_ATTEMPTS: u32 = 5;
+/// A headless run keeps retrying a remote server after a transient failure, no more than this
+/// far apart.
+const BACKGROUND_RETRY_CAP: Duration = Duration::from_secs(60);
+/// How long after the connection was lost a headless run keeps retrying a remote server.
+const BACKGROUND_RETRY_WINDOW: Duration = Duration::from_secs(30 * 60);
+/// How many times a headless run starts a stdio server again for a call, per server.
+pub const MAX_STDIO_RESTARTS: u32 = 3;
 /// How long an unloaded server's in-flight calls may finish before its connection closes. A
 /// call is waited for rather than cancelled, since cancelling can leave a tool's side effect
 /// half done; one still running after the bound ends with the transport error.
@@ -54,6 +65,9 @@ pub enum McpServerState {
     },
     /// Lost, and being started again; `attempt` runs from 1 to 5.
     Reconnecting { attempt: u32 },
+    /// Lost, and the five attempts failed transiently; a headless run goes on trying in the
+    /// background.
+    Retrying,
     /// Not running, with the reason as a rendered error chain.
     Failed(String),
 }
@@ -79,6 +93,47 @@ pub enum ReconnectTarget {
 /// Connects one server. The production connector starts the real thing; tests script outcomes.
 pub(crate) trait McpConnector: Send + Sync {
     fn connect<'a>(&'a self, spec: &'a ServerSpec) -> BoxFuture<'a, Result<Connected, McpError>>;
+
+    /// Keeps the lost server's tools registered as stand-ins that call `restart` first.
+    fn register_tombstone(&self, _spec: &ServerSpec, _tools: Vec<LiveTool>, _restart: RestartFn) {}
+
+    /// Takes the stand-ins of `server` out again, leaving any live tool that has replaced one.
+    fn unregister_tombstone(&self, _server: &str) {}
+}
+
+/// What a tombstone registered, to take it out again.
+struct Stood {
+    /// The stand-ins' liveness: once false, the registry retires them, and never a live tool that
+    /// has since taken their name.
+    standing: Arc<AtomicBool>,
+    deferral: u64,
+    tools: Vec<LiveTool>,
+    restart: RestartFn,
+}
+
+/// Registers the taken-out stand-ins again when dropped, unless the connect succeeded.
+struct RestoreStandIns<'a> {
+    connector: &'a ServerConnector,
+    spec: &'a ServerSpec,
+    stood: Option<Stood>,
+}
+
+impl Drop for RestoreStandIns<'_> {
+    fn drop(&mut self) {
+        // An unregister during the connect (remove, retire, manual reconnect) took the name out
+        // of `connecting`; restoring then would resurrect or overwrite what the session moved on from.
+        let wanted = lock(&self.connector.connecting, "MCP connecting").remove(&self.spec.name);
+        if let Some(stood) = self.stood.take() {
+            self.connector
+                .options
+                .deferral
+                .forget(&self.spec.name, stood.deferral);
+            if wanted {
+                self.connector
+                    .register_tombstone(self.spec, stood.tools, stood.restart);
+            }
+        }
+    }
 }
 
 pub(crate) struct ServerConnector {
@@ -86,21 +141,108 @@ pub(crate) struct ServerConnector {
     pub(crate) tool_server: ToolServerHandle,
     pub(crate) network: Arc<LoadedNetwork>,
     pub(crate) env: EnvLookup,
+    tombstones: Mutex<HashMap<String, Stood>>,
+    /// Servers whose taken-out stand-ins are held by an in-flight connect and still wanted back.
+    connecting: Mutex<HashSet<String>>,
+}
+
+impl ServerConnector {
+    pub(crate) fn new(
+        options: McpOptions,
+        tool_server: ToolServerHandle,
+        network: Arc<LoadedNetwork>,
+        env: EnvLookup,
+    ) -> Self {
+        ServerConnector {
+            options,
+            tool_server,
+            network,
+            env,
+            tombstones: Mutex::default(),
+            connecting: Mutex::default(),
+        }
+    }
 }
 
 impl McpConnector for ServerConnector {
     fn connect<'a>(&'a self, spec: &'a ServerSpec) -> BoxFuture<'a, Result<Connected, McpError>> {
         Box::pin(async move {
             let env = self.env.clone();
-            connect_server(
+            // The registry will not let a new connection's tools take the place of tools it did
+            // not register for that connection, so the stand-ins are retired first and put back
+            // if the server does not come up.
+            let standing = lock(&self.tombstones, "MCP tombstones").remove(&spec.name);
+            if let Some(stood) = &standing {
+                stood.standing.store(false, Ordering::SeqCst);
+                lock(&self.connecting, "MCP connecting").insert(spec.name.clone());
+            }
+            // The call that awaits this restart can be cancelled mid-connect, which drops this
+            // future; the guard puts the stand-ins back then too.
+            let mut restore = RestoreStandIns {
+                connector: self,
+                spec,
+                stood: standing,
+            };
+            let result = connect_server(
                 spec,
                 self.tool_server.clone(),
                 &self.options,
                 &self.network,
                 &move |name| env(name),
             )
-            .await
+            .await;
+            if result.is_ok() {
+                restore.stood = None;
+            }
+            result
         })
+    }
+
+    fn register_tombstone(&self, spec: &ServerSpec, tools: Vec<LiveTool>, restart: RestartFn) {
+        self.unregister_tombstone(&spec.name);
+        let standing = Arc::new(AtomicBool::new(true));
+        let stand_ins = stand_in_tools(&self.options.guard, &tools, &restart, &standing);
+        // The lost connection's registry entry went with it; the stand-ins keep the tools
+        // listed under a token of their own, which a newer live connection outranks.
+        let deferral = self.options.deferral.begin_connection();
+        self.options.deferral.record(
+            &spec.name,
+            deferral,
+            tools.iter().map(|tool| tool.definition.clone()).collect(),
+        );
+        for tool in stand_ins {
+            self.tool_server.add_dynamic_tool(tool);
+        }
+        lock(&self.tombstones, "MCP tombstones").insert(
+            spec.name.clone(),
+            Stood {
+                standing,
+                deferral,
+                tools,
+                restart,
+            },
+        );
+    }
+
+    fn unregister_tombstone(&self, server: &str) {
+        lock(&self.connecting, "MCP connecting").remove(server);
+        let stood = lock(&self.tombstones, "MCP tombstones").remove(server);
+        if let Some(stood) = stood {
+            stood.standing.store(false, Ordering::SeqCst);
+            self.options.deferral.forget(server, stood.deferral);
+        }
+    }
+}
+
+/// A lost stdio server's stand-in tools, taken out of the registry when it drops.
+struct Tombstone {
+    connector: Arc<dyn McpConnector>,
+    server: String,
+}
+
+impl Drop for Tombstone {
+    fn drop(&mut self) {
+        self.connector.unregister_tombstone(&self.server);
     }
 }
 
@@ -116,6 +258,12 @@ pub struct ServerSlot {
     /// Bumped by every manual reconnect, so a connection made for an older generation is
     /// discarded instead of installed next to the new one.
     generation: AtomicU64,
+    /// Set while a headless stdio server that exited mid-session keeps stand-in tools.
+    tombstone: Mutex<Option<Tombstone>>,
+    /// The restarts a call has attempted, against [`MAX_STDIO_RESTARTS`].
+    restarts: AtomicU32,
+    /// Serializes restarts, so concurrent calls to the stand-ins start the server once.
+    restarting: tokio::sync::Mutex<()>,
 }
 
 impl ServerSlot {
@@ -127,6 +275,9 @@ impl ServerSlot {
             watcher: Mutex::new(None),
             closing: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            tombstone: Mutex::new(None),
+            restarts: AtomicU32::new(0),
+            restarting: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -389,6 +540,7 @@ fn retire(slot: &ServerSlot) {
     slot.closing.store(true, Ordering::SeqCst);
     // A reconnect that finishes after this is handed back by `install` instead of reviving the slot.
     slot.supersede();
+    drop(lock(&slot.tombstone, "MCP tombstone").take());
 }
 
 /// Commits what a pull answered into `listings`; a listing the pull could not fetch keeps
@@ -557,6 +709,8 @@ pub(crate) struct Supervisor {
     approver: Arc<dyn Approver>,
     /// Re-derives the toolsets of agents that were built before the server's tools existed.
     refresh: Arc<dyn Fn() + Send + Sync>,
+    /// No person is there to run `/mcp reconnect`, so the supervisor recovers servers itself.
+    headless: bool,
 }
 
 fn disconnected(name: &str) -> String {
@@ -568,11 +722,13 @@ impl Supervisor {
         connector: Arc<dyn McpConnector>,
         approver: Arc<dyn Approver>,
         refresh: Arc<dyn Fn() + Send + Sync>,
+        headless: bool,
     ) -> Arc<Supervisor> {
         Arc::new(Supervisor {
             connector,
             approver,
             refresh,
+            headless,
         })
     }
 
@@ -632,6 +788,9 @@ impl Supervisor {
 
     /// Takes a new connection into `slot` and starts watching it. A connection made for a
     /// generation a manual reconnect has since replaced is handed back, to be closed.
+    // The refused connection is only ever closed, so boxing it would add an allocation to a path
+    // that exists to hand it straight back.
+    #[allow(clippy::result_large_err)]
     fn install(
         self: &Arc<Self>,
         slot: &Arc<ServerSlot>,
@@ -650,6 +809,8 @@ impl Supervisor {
         *lock(&slot.connection, "MCP connection") = Some(connected);
         slot.closing.store(false, Ordering::SeqCst);
         slot.set_state(McpServerState::connected(0));
+        // The live tools have replaced the stand-ins in the registry by now.
+        drop(lock(&slot.tombstone, "MCP tombstone").take());
         let new = tokio::spawn(self.clone().watch(
             slot.clone(),
             connection,
@@ -710,47 +871,176 @@ impl Supervisor {
         if slot.closing.load(Ordering::SeqCst) {
             return;
         }
-        drop(lock(&slot.connection, "MCP connection").take());
+        let lost = lock(&slot.connection, "MCP connection").take();
+        // Read before the drop, which takes the tools out of the deferral registry.
+        let tools = lost.as_ref().map(Connected::live_tools).unwrap_or_default();
+        let stand_ins = self.headless && !slot.is_remote() && !tools.is_empty();
+        if stand_ins
+            && let Some(lost) = &lost
+            && slot.restarts.load(Ordering::SeqCst) < MAX_STDIO_RESTARTS
+        {
+            // The agent's turn pins the tool catalog it started with, so a call it already
+            // holds the lost tools for has to reach the restart too.
+            lost.set_restart(self.restart_fn(&slot));
+        }
+        // The drop removes the lost tools by name, so the stand-ins register after it.
+        drop(lost);
+        if stand_ins {
+            self.leave_tombstone(&slot, tools);
+        }
         // The mention snapshot still lists the lost server's resources; rebuild it.
         (self.refresh)();
         if slot.is_remote() {
             self.reconnect_with_backoff(&slot).await;
-        } else {
+        } else if !stand_ins {
             slot.set_state(McpServerState::Failed("the server exited".to_string()));
             self.approver.warn(&disconnected(slot.name()));
         }
     }
 
-    async fn reconnect_with_backoff(self: &Arc<Self>, slot: &Arc<ServerSlot>) {
-        let mut last = None;
+    /// A headless stdio server exited: its tools stay registered as stand-ins, so the next call
+    /// to one starts the server again, unless it has already been restarted as often as allowed.
+    fn leave_tombstone(self: &Arc<Self>, slot: &Arc<ServerSlot>, tools: Vec<LiveTool>) {
+        if slot.restarts.load(Ordering::SeqCst) >= MAX_STDIO_RESTARTS {
+            slot.set_state(McpServerState::Failed(format!(
+                "exited more than {MAX_STDIO_RESTARTS} times"
+            )));
+            self.approver.warn(&disconnected(slot.name()));
+            return;
+        }
+        self.connector
+            .register_tombstone(&slot.spec, tools, self.restart_fn(slot));
+        *lock(&slot.tombstone, "MCP tombstone") = Some(Tombstone {
+            connector: self.connector.clone(),
+            server: slot.name().to_string(),
+        });
+        slot.set_state(McpServerState::Failed(
+            "the server exited · restarts on next call".to_string(),
+        ));
+        self.approver.warn(&disconnected(slot.name()));
+    }
+
+    fn restart_fn(self: &Arc<Self>, slot: &Arc<ServerSlot>) -> RestartFn {
+        // Weak: the registry holds this closure, and the supervisor holds the registry.
+        let supervisor = Arc::downgrade(self);
+        let weak_slot = Arc::downgrade(slot);
+        let name = slot.name().to_string();
+        Arc::new(move || {
+            let (supervisor, slot, name) = (supervisor.clone(), weak_slot.clone(), name.clone());
+            Box::pin(async move {
+                match (supervisor.upgrade(), slot.upgrade()) {
+                    (Some(supervisor), Some(slot)) => supervisor.restart_for_call(&slot).await,
+                    _ => Err(McpError::new(
+                        &name,
+                        McpErrorKind::Permanent,
+                        "the session no longer runs this server",
+                        None,
+                    )),
+                }
+            })
+        })
+    }
+
+    /// Starts the server of a tombstoned `slot` again from its stored spec, for a call to one of
+    /// its stand-in tools, and answers with the new connection's tools. Callers wait for one
+    /// another, and one that finds the server running again does not start it a second time. A
+    /// failure leaves the tombstone and the slot's state as they were.
+    async fn restart_for_call(
+        self: &Arc<Self>,
+        slot: &Arc<ServerSlot>,
+    ) -> Result<Vec<LiveTool>, McpError> {
+        let _single_flight = slot.restarting.lock().await;
+        if let Some(connected) = lock(&slot.connection, "MCP connection").as_ref() {
+            return Ok(connected.live_tools());
+        }
+        if lock(&slot.tombstone, "MCP tombstone").is_none() {
+            return Err(McpError::new(
+                slot.name(),
+                McpErrorKind::Permanent,
+                "the server was stopped and is no longer restarted",
+                None,
+            ));
+        }
         let generation = slot.generation.load(Ordering::SeqCst);
-        for attempt in 1..=RECONNECT_ATTEMPTS {
-            slot.set_state(McpServerState::Reconnecting { attempt });
-            tokio::time::sleep(RECONNECT_BASE * (1 << (attempt - 1))).await;
-            match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
-                Ok(connected) => {
-                    // The listings ride in with the connection, so the reconnect notice and
-                    // the counts report them together; the pull is bounded like the attempt,
-                    // so an unanswered listing cannot stall the reconnect.
-                    let _ =
-                        tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
-                    if let Err(stale) = self.install(slot, connected, generation) {
-                        stale.connection.close().await;
-                        return;
-                    }
+        match self.connect_and_install(slot, generation).await? {
+            Some(tools) => {
+                slot.restarts.fetch_add(1, Ordering::SeqCst);
+                self.approver
+                    .notice(&format!("MCP server `{}` restarted", slot.name()));
+                (self.refresh)();
+                Ok(tools)
+            }
+            None => Err(McpError::new(
+                slot.name(),
+                McpErrorKind::Permanent,
+                "the server was restarted by hand while this call waited",
+                None,
+            )),
+        }
+    }
+
+    /// One attempt to connect `slot`'s server and take the connection into it. `None` when the
+    /// slot moved to a newer generation meanwhile and the connection was closed instead.
+    async fn connect_and_install(
+        self: &Arc<Self>,
+        slot: &Arc<ServerSlot>,
+        generation: u64,
+    ) -> Result<Option<Vec<LiveTool>>, McpError> {
+        let connected = self.attempt(&slot.spec, CONNECT_TIMEOUT).await?;
+        // The listings ride in with the connection, so the notice and the counts report them
+        // together; the pull is bounded like the attempt, so an unanswered listing cannot stall
+        // the connect.
+        let _ = tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
+        let tools = connected.live_tools();
+        match self.install(slot, connected, generation) {
+            Ok(()) => Ok(Some(tools)),
+            Err(stale) => {
+                stale.connection.close().await;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Five attempts after 1, 2, 4, 8 and 16 seconds. A headless run goes on after a transient
+    /// failure, waiting twice as long each time up to a minute, until the server comes back or
+    /// half an hour has passed since it was lost.
+    async fn reconnect_with_backoff(self: &Arc<Self>, slot: &Arc<ServerSlot>) {
+        let lost_at = Instant::now();
+        let generation = slot.generation.load(Ordering::SeqCst);
+        let mut attempt = 0u32;
+        let last = loop {
+            attempt += 1;
+            slot.set_state(if attempt <= RECONNECT_ATTEMPTS {
+                McpServerState::Reconnecting { attempt }
+            } else {
+                McpServerState::Retrying
+            });
+            let doublings = 1u32.checked_shl(attempt - 1).unwrap_or(u32::MAX);
+            let wait = RECONNECT_BASE
+                .saturating_mul(doublings)
+                .min(BACKGROUND_RETRY_CAP);
+            tokio::time::sleep(wait).await;
+            match self.connect_and_install(slot, generation).await {
+                Ok(Some(_)) => {
                     self.approver
                         .notice(&format!("MCP server `{}` reconnected", slot.name()));
                     (self.refresh)();
                     return;
                 }
-                Err(error) if error.kind == McpErrorKind::Permanent => {
-                    last = Some(error);
-                    break;
+                Ok(None) => return,
+                Err(error) => {
+                    let background = self.headless
+                        && error.kind == McpErrorKind::Transient
+                        && lost_at.elapsed() < BACKGROUND_RETRY_WINDOW;
+                    if error.kind == McpErrorKind::Permanent
+                        || (attempt >= RECONNECT_ATTEMPTS && !background)
+                    {
+                        break error;
+                    }
                 }
-                Err(error) => last = Some(error),
             }
-        }
-        let reason = last.map_or_else(|| "no reason".to_string(), |error| chain(&error));
+        };
+        let reason = chain(&last);
         slot.set_state(McpServerState::Failed(reason));
         self.approver.warn(&disconnected(slot.name()));
         // The loss already dropped the server's mentions; the callback also covers a caller
@@ -766,17 +1056,15 @@ impl Supervisor {
     ) -> Result<(), McpError> {
         let generation = slot.supersede();
         slot.closing.store(true, Ordering::SeqCst);
+        drop(lock(&slot.tombstone, "MCP tombstone").take());
         let old = lock(&slot.connection, "MCP connection").take();
         if let Some(old) = old {
             old.connection.close().await;
         }
-        match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
-            Ok(connected) => {
-                // An unanswered listing cannot stall a manual reconnect either.
-                let _ = tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
-                match self.install(slot, connected, generation) {
-                    Ok(()) => (self.refresh)(),
-                    Err(stale) => stale.connection.close().await,
+        match self.connect_and_install(slot, generation).await {
+            Ok(installed) => {
+                if installed.is_some() {
+                    (self.refresh)();
                 }
                 Ok(())
             }
@@ -793,13 +1081,19 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
 
-    use crate::tools::gate::{CallView, GateDecision, ToolGate};
+    use crate::tools::gate::{AgentId, CallView, GateDecision, ROOT_AGENT, ToolGate};
     use crate::tools::guarded::Guard;
     use crate::tools::mcp::connect_transport;
     use crate::tools::result_pipeline::ResultPipeline;
     use rig_agent::tool::server::ToolServer;
-    use rmcp::model::{ServerCapabilities, ServerConfig};
-    use rmcp::{ServerHandler, ServiceExt};
+    use rig_core::tool::ToolContext;
+    use rmcp::model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    };
+    use rmcp::service::RequestContext;
+    use rmcp::{RoleServer, ServerHandler, ServiceExt};
+    use serde_json::json;
 
     use crate::core::permissions::DenyAll;
 
@@ -823,6 +1117,42 @@ mod tests {
         }
     }
 
+    /// A server with one tool, `echo`.
+    #[derive(Clone)]
+    struct Echoing;
+
+    impl ServerHandler for Echoing {
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            let schema = Arc::new(serde_json::Map::from_iter([(
+                "type".to_string(),
+                json!("object"),
+            )]));
+            Ok(ListToolsResult::with_all_items(vec![Tool::new(
+                "echo", "Echo", schema,
+            )]))
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            let text = format!(
+                "echo {}",
+                serde_json::Value::Object(request.arguments.unwrap_or_default())
+            );
+            Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
+        }
+    }
+
     /// One live in-process server: the connection to it, and the task that serves it, which a
     /// test aborts to make the server go away.
     struct Live {
@@ -831,11 +1161,25 @@ mod tests {
     }
 
     async fn live(name: &str, kind: &'static str) -> Live {
+        serve_live(name, kind, false).await
+    }
+
+    /// A live server that offers the `echo` tool.
+    async fn live_echo(name: &str, kind: &'static str) -> Live {
+        serve_live(name, kind, true).await
+    }
+
+    async fn serve_live(name: &str, kind: &'static str, echoing: bool) -> Live {
         let (c2s, sfc) = tokio::io::duplex(8192);
         let (s2c, cfs) = tokio::io::duplex(8192);
         let server = tokio::spawn(async move {
-            let running = Empty.serve((sfc, s2c)).await.expect("server start");
-            let _ = running.waiting().await;
+            if echoing {
+                let running = Echoing.serve((sfc, s2c)).await.expect("server start");
+                let _ = running.waiting().await;
+            } else {
+                let running = Empty.serve((sfc, s2c)).await.expect("server start");
+                let _ = running.waiting().await;
+            }
         });
         let options = McpOptions::new(
             Guard {
@@ -863,6 +1207,9 @@ mod tests {
         attempts: AtomicUsize,
         servers: Mutex<Vec<JoinHandle<()>>>,
         times: Mutex<Vec<Instant>>,
+        /// What each `register_tombstone` was handed.
+        tombstones: Mutex<Vec<(Vec<LiveTool>, RestartFn)>>,
+        unregistered: AtomicUsize,
     }
 
     impl Script {
@@ -872,7 +1219,33 @@ mod tests {
                 attempts: AtomicUsize::new(0),
                 servers: Mutex::new(Vec::new()),
                 times: Mutex::new(Vec::new()),
+                tombstones: Mutex::new(Vec::new()),
+                unregistered: AtomicUsize::new(0),
             })
+        }
+
+        fn registered(&self) -> usize {
+            self.tombstones.lock().unwrap().len()
+        }
+
+        fn unregistered(&self) -> usize {
+            self.unregistered.load(Ordering::SeqCst)
+        }
+
+        /// The restart the latest tombstone was registered with.
+        fn restart(&self) -> RestartFn {
+            self.tombstones
+                .lock()
+                .unwrap()
+                .last()
+                .expect("a tombstone was registered")
+                .1
+                .clone()
+        }
+
+        /// Ends the server the latest connection is served by.
+        fn kill_server(&self) {
+            self.servers.lock().unwrap().remove(0).abort();
         }
 
         fn attempts(&self) -> usize {
@@ -906,6 +1279,14 @@ mod tests {
                     None => std::future::pending().await,
                 }
             })
+        }
+
+        fn register_tombstone(&self, _: &ServerSpec, tools: Vec<LiveTool>, restart: RestartFn) {
+            self.tombstones.lock().unwrap().push((tools, restart));
+        }
+
+        fn unregister_tombstone(&self, _: &str) {
+            self.unregistered.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -942,6 +1323,10 @@ mod tests {
     }
 
     fn rig(outcomes: Vec<Outcome>) -> Rig {
+        rig_with(outcomes, false)
+    }
+
+    fn rig_with(outcomes: Vec<Outcome>, headless: bool) -> Rig {
         let script = Script::new(outcomes);
         let said = Arc::new(Said::default());
         let refreshed = Arc::new(AtomicUsize::new(0));
@@ -952,6 +1337,7 @@ mod tests {
             Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
+            headless,
         );
         Rig {
             script,
@@ -1004,7 +1390,8 @@ mod tests {
     }
 
     async fn wait_for(slot: &ServerSlot, wanted: McpServerState) {
-        for _ in 0..200 {
+        // Paused time: the background schedule runs for minutes.
+        for _ in 0..2000 {
             if slot.state() == wanted {
                 return;
             }
@@ -1237,6 +1624,7 @@ mod tests {
             slow.clone(),
             Arc::new(Recording(Arc::default())),
             Arc::new(|| {}),
+            false,
         );
         let started = Instant::now();
         let (_, result) = supervisor.start(spec("http")).await;
@@ -1380,5 +1768,463 @@ mod tests {
         assert!(rig.supervisor.install(&slot, late, generation).is_err());
         assert!(slot.closing.load(Ordering::SeqCst));
         assert!(lock(&slot.connection, "test").is_none());
+    }
+
+    const RESTARTS_ON_CALL: &str = "the server exited · restarts on next call";
+
+    fn failed_with_a_tombstone() -> McpServerState {
+        McpServerState::Failed(RESTARTS_ON_CALL.into())
+    }
+
+    fn root() -> ToolContext {
+        let mut context = ToolContext::new();
+        context
+            .insert(AgentId(ROOT_AGENT.to_string()))
+            .expect("a fresh context takes the agent id");
+        context
+    }
+
+    /// Runs `tool` of a restarted server's tools by its registered name.
+    async fn dispatch(tools: &[LiveTool], name: &str, args: serde_json::Value) -> String {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.definition.name == name)
+            .expect("the restarted server offers the tool");
+        let output = (*tool.callback)(&mut root(), args)
+            .await
+            .expect("the call succeeds");
+        output.as_text().expect("plain text").to_string()
+    }
+
+    async fn headless_stdio(outcomes: Vec<Outcome>) -> (Rig, Arc<ServerSlot>) {
+        let rig = rig_with(outcomes, true);
+        let (slot, result) = rig.supervisor.start(spec("stdio")).await;
+        assert!(result.is_ok());
+        (rig, slot)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_remote_server_keeps_retrying_after_five_transient_failures() {
+        let rig = rig_with(
+            vec![
+                Ok(live("srv", "http").await),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                Ok(live("srv", "http").await),
+            ],
+            true,
+        );
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.kill_server();
+        wait_for(&slot, McpServerState::Retrying).await;
+        assert_eq!(rig.script.attempts(), 6, "the fifth attempt has failed");
+        assert!(rig.said.warnings.lock().unwrap().is_empty());
+        wait_for(&slot, McpServerState::connected(0)).await;
+        assert_eq!(rig.script.attempts(), 10);
+        assert_eq!(rig.script.gaps(), [1, 2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(
+            rig.said.notices.lock().unwrap().clone(),
+            ["MCP server `srv` reconnected"]
+        );
+        assert!(rig.said.warnings.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_permanent_error_in_the_window_ends_it_as_failed() {
+        let rig = rig_with(
+            vec![
+                Ok(live("srv", "http").await),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                permanent(),
+                transient(),
+            ],
+            true,
+        );
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.kill_server();
+        wait_for(
+            &slot,
+            McpServerState::Failed("MCP server `srv`: scripted failure".into()),
+        )
+        .await;
+        assert_eq!(rig.script.attempts(), 8);
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        assert_eq!(rig.script.attempts(), 8);
+        assert_eq!(rig.said.warnings.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_the_thirty_minute_window_ends_the_retrying_with_one_warning() {
+        let mut outcomes = vec![Ok(live("srv", "http").await)];
+        outcomes.extend((0..100).map(|_| transient()));
+        let rig = rig_with(outcomes, true);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.kill_server();
+        tokio::time::sleep(Duration::from_secs(25 * 60)).await;
+        assert_eq!(slot.state(), McpServerState::Retrying);
+        assert!(rig.said.warnings.lock().unwrap().is_empty());
+        tokio::time::sleep(Duration::from_secs(6 * 60)).await;
+        assert_eq!(
+            slot.state(),
+            McpServerState::Failed("MCP server `srv`: scripted failure".into())
+        );
+        let attempts = rig.script.attempts();
+        assert!(attempts < 40, "{attempts} attempts in half an hour");
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert_eq!(rig.script.attempts(), attempts, "it stopped trying");
+        assert_eq!(
+            rig.said.warnings.lock().unwrap().clone(),
+            ["MCP server `srv` disconnected · run /mcp reconnect srv"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_manual_reconnect_in_the_window_supersedes_the_retrying() {
+        let rig = rig_with(
+            vec![
+                Ok(live("srv", "http").await),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                Ok(live("srv", "http").await),
+                transient(),
+            ],
+            true,
+        );
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.kill_server();
+        wait_for(&slot, McpServerState::Retrying).await;
+        rig.supervisor.reconnect(&slot).await.expect("reconnects");
+        assert_eq!(slot.state(), McpServerState::connected(0));
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert_eq!(
+            rig.script.attempts(),
+            7,
+            "the retrying consumed nothing more"
+        );
+        assert_eq!(slot.state(), McpServerState::connected(0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn interactive_five_attempts_end_as_failed_with_no_further_attempt() {
+        let mut outcomes = vec![Ok(live("srv", "http").await)];
+        outcomes.extend((0..10).map(|_| transient()));
+        let rig = rig(outcomes);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.kill_server();
+        wait_for(
+            &slot,
+            McpServerState::Failed("MCP server `srv`: scripted failure".into()),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        assert_eq!(rig.script.attempts(), 6);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_remote_server_with_a_permanent_error_never_retries_in_the_background() {
+        let rig = rig_with(vec![permanent()], true);
+        let (slot, result) = rig.supervisor.start(spec("http")).await;
+        assert!(result.is_err());
+        assert!(matches!(slot.state(), McpServerState::Failed(_)));
+        assert_eq!(rig.script.attempts(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn interactive_a_stdio_exit_leaves_no_tombstone() {
+        let rig = rig(vec![Ok(live_echo("srv", "stdio").await)]);
+        let (slot, _) = rig.supervisor.start(spec("stdio")).await;
+        rig.script.kill_server();
+        wait_for(&slot, McpServerState::Failed("the server exited".into())).await;
+        assert_eq!(rig.script.registered(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_stdio_exit_keeps_the_tools_and_a_call_restarts_the_server() {
+        let (rig, slot) = headless_stdio(vec![
+            Ok(live_echo("srv", "stdio").await),
+            Ok(live_echo("srv", "stdio").await),
+        ])
+        .await;
+        rig.script.kill_server();
+        wait_for(&slot, failed_with_a_tombstone()).await;
+        assert_eq!(rig.script.registered(), 1);
+        let stood_in = rig.script.tombstones.lock().unwrap()[0].0.clone();
+        assert_eq!(stood_in.len(), 1);
+        assert_eq!(stood_in[0].definition.name, "mcp__srv__echo");
+        assert_eq!(
+            rig.said.warnings.lock().unwrap().clone(),
+            ["MCP server `srv` disconnected · run /mcp reconnect srv"]
+        );
+        // Nothing starts it again until a call asks.
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        assert_eq!(rig.script.attempts(), 1);
+
+        let restarted = (rig.script.restart())().await.expect("the server restarts");
+        assert_eq!(rig.script.attempts(), 2);
+        assert_eq!(slot.state(), McpServerState::connected(1));
+        assert_eq!(rig.script.unregistered(), 1, "the live tools replaced them");
+        assert_eq!(
+            dispatch(&restarted, "mcp__srv__echo", json!({"a": 1})).await,
+            "echo {\"a\":1}"
+        );
+        assert_eq!(
+            rig.said.notices.lock().unwrap().clone(),
+            ["MCP server `srv` restarted"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_concurrent_calls_to_stand_ins_connect_once() {
+        let (rig, slot) = headless_stdio(vec![
+            Ok(live_echo("srv", "stdio").await),
+            Ok(live_echo("srv", "stdio").await),
+            Ok(live_echo("srv", "stdio").await),
+        ])
+        .await;
+        rig.script.kill_server();
+        wait_for(&slot, failed_with_a_tombstone()).await;
+        let restart = rig.script.restart();
+        let (a, b, c) = tokio::join!(restart(), restart(), restart());
+        assert!(a.is_ok() && b.is_ok() && c.is_ok());
+        assert_eq!(rig.script.attempts(), 2, "one connect for three calls");
+        assert_eq!(slot.restarts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_failed_restart_returns_the_error_and_keeps_the_tombstone() {
+        let (rig, slot) = headless_stdio(vec![
+            Ok(live_echo("srv", "stdio").await),
+            permanent(),
+            Ok(live_echo("srv", "stdio").await),
+        ])
+        .await;
+        rig.script.kill_server();
+        wait_for(&slot, failed_with_a_tombstone()).await;
+        let restart = rig.script.restart();
+        let error = restart().await.err().expect("the server does not start");
+        assert_eq!(error.kind, McpErrorKind::Permanent);
+        assert_eq!(slot.state(), failed_with_a_tombstone());
+        assert_eq!(rig.script.unregistered(), 0);
+        assert!(lock(&slot.tombstone, "test").is_some());
+        assert!(restart().await.is_ok(), "a later call tries again");
+        assert_eq!(slot.state(), McpServerState::connected(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_the_fourth_loss_removes_the_tombstone_and_fails_the_slot() {
+        let mut outcomes = Vec::new();
+        for _ in 0..4 {
+            outcomes.push(Ok(live_echo("srv", "stdio").await));
+        }
+        let (rig, slot) = headless_stdio(outcomes).await;
+        for _ in 0..MAX_STDIO_RESTARTS {
+            rig.script.kill_server();
+            wait_for(&slot, failed_with_a_tombstone()).await;
+            (rig.script.restart())().await.expect("the server restarts");
+        }
+        assert_eq!(rig.script.registered(), 3);
+        rig.script.kill_server();
+        wait_for(
+            &slot,
+            McpServerState::Failed("exited more than 3 times".into()),
+        )
+        .await;
+        assert_eq!(rig.script.registered(), 3, "no fourth tombstone");
+        assert!(lock(&slot.tombstone, "test").is_none());
+        assert_eq!(rig.script.attempts(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_first_connection_failure_creates_no_tombstone() {
+        let (rig, slot) = {
+            let rig = rig_with(vec![permanent()], true);
+            let (slot, result) = rig.supervisor.start(spec("stdio")).await;
+            assert!(result.is_err());
+            (rig, slot)
+        };
+        assert!(matches!(slot.state(), McpServerState::Failed(_)));
+        assert_eq!(rig.script.registered(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_a_manual_reconnect_clears_the_tombstone() {
+        let (rig, slot) = headless_stdio(vec![
+            Ok(live_echo("srv", "stdio").await),
+            Ok(live_echo("srv", "stdio").await),
+        ])
+        .await;
+        rig.script.kill_server();
+        wait_for(&slot, failed_with_a_tombstone()).await;
+        rig.supervisor.reconnect(&slot).await.expect("reconnects");
+        assert_eq!(rig.script.unregistered(), 1);
+        assert!(lock(&slot.tombstone, "test").is_none());
+        assert_eq!(slot.restarts.load(Ordering::SeqCst), 0);
+        // The stale restart no longer starts anything: the server is running.
+        let restart = rig.script.restart();
+        assert!(restart().await.is_ok());
+        assert_eq!(rig.script.attempts(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headless_removing_a_tombstoned_server_takes_the_stand_ins_out() {
+        let (rig, slot) = headless_stdio(vec![Ok(live_echo("srv", "stdio").await)]).await;
+        rig.script.kill_server();
+        wait_for(&slot, failed_with_a_tombstone()).await;
+        let servers = McpServers::default();
+        servers.insert(slot.clone());
+        let tools = ToolServer::new().run();
+        assert_eq!(
+            servers.remove("srv", &tools, MCP_DRAIN_BOUND).await,
+            Some(true)
+        );
+        assert_eq!(rig.script.unregistered(), 1);
+        let error = (rig.script.restart())()
+            .await
+            .err()
+            .expect("a removed server is not restarted");
+        assert!(chain(&error).contains("no longer restarted"));
+        assert_eq!(rig.script.attempts(), 1);
+    }
+
+    #[cfg(unix)]
+    fn as_callback<F: rig_core::serve::adapters::ToolCallback + 'static>(
+        callback: F,
+    ) -> Arc<dyn rig_core::serve::adapters::ToolCallback> {
+        Arc::new(callback)
+    }
+
+    // A server process that never answers keeps the connect pending until the call is dropped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restart_dropped_mid_connect_puts_the_stand_ins_back() {
+        use crate::tools::mcp::Transport;
+        use rig_core::completion::ToolDefinition;
+        use rig_core::message::ToolName;
+        use rig_core::tool::{ToolContext, ToolOutput};
+
+        let options = McpOptions::new(
+            Guard {
+                gate: Arc::new(Allow),
+                results: Arc::new(ResultPipeline::new()),
+                hide_mcp_names: false,
+                pre_images: None,
+                kills: None,
+            },
+            true,
+        );
+        let connector = ServerConnector::new(
+            options,
+            ToolServer::new().run(),
+            Arc::new(Default::default()),
+            Arc::new(|_| None),
+        );
+        let mut spec = spec("stdio");
+        spec.transport = Transport::Stdio {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            env_vars: Vec::new(),
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+        };
+        let tool = LiveTool {
+            definition: ToolDefinition::new(
+                ToolName::new("mcp__srv__echo").unwrap(),
+                "Echo",
+                json!({"type": "object"}),
+            ),
+            requires_user_interaction: false,
+            callback: as_callback(|_: &mut ToolContext, _: serde_json::Value| {
+                Box::pin(async move { Ok(ToolOutput::text("live")) })
+            }),
+        };
+        let restart: RestartFn = Arc::new(|| Box::pin(std::future::pending()));
+        connector.register_tombstone(&spec, vec![tool], restart);
+        let first = lock(&connector.tombstones, "test")
+            .get("srv")
+            .expect("registered")
+            .standing
+            .clone();
+
+        let dropped =
+            tokio::time::timeout(Duration::from_millis(300), connector.connect(&spec)).await;
+        assert!(dropped.is_err(), "the connect never completes");
+
+        assert!(
+            !first.load(Ordering::SeqCst),
+            "the old stand-ins stay retired"
+        );
+        let tombstones = lock(&connector.tombstones, "test");
+        let stood = tombstones.get("srv").expect("the tombstone is back");
+        assert!(stood.standing.load(Ordering::SeqCst));
+        assert_eq!(stood.tools.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unregistering_during_a_connect_keeps_the_stand_ins_gone() {
+        use crate::tools::mcp::Transport;
+        use rig_core::completion::ToolDefinition;
+        use rig_core::message::ToolName;
+        use rig_core::tool::ToolOutput;
+
+        let options = McpOptions::new(
+            Guard {
+                gate: Arc::new(Allow),
+                results: Arc::new(ResultPipeline::new()),
+                hide_mcp_names: false,
+                pre_images: None,
+                kills: None,
+            },
+            true,
+        );
+        let connector = ServerConnector::new(
+            options,
+            ToolServer::new().run(),
+            Arc::new(Default::default()),
+            Arc::new(|_| None),
+        );
+        let mut spec = spec("stdio");
+        spec.transport = Transport::Stdio {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            env_vars: Vec::new(),
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+        };
+        let tool = LiveTool {
+            definition: ToolDefinition::new(
+                ToolName::new("mcp__srv__echo").unwrap(),
+                "Echo",
+                json!({"type": "object"}),
+            ),
+            requires_user_interaction: false,
+            callback: as_callback(|_: &mut ToolContext, _: serde_json::Value| {
+                Box::pin(async move { Ok(ToolOutput::text("live")) })
+            }),
+        };
+        let restart: RestartFn = Arc::new(|| Box::pin(std::future::pending()));
+        connector.register_tombstone(&spec, vec![tool], restart);
+
+        let mut connect = Box::pin(connector.connect(&spec));
+        let polled = tokio::time::timeout(Duration::from_millis(100), &mut connect).await;
+        assert!(polled.is_err(), "the connect is still in flight");
+        connector.unregister_tombstone("srv");
+        drop(connect);
+
+        assert!(lock(&connector.tombstones, "test").get("srv").is_none());
     }
 }

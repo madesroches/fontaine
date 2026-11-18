@@ -336,7 +336,7 @@ impl Control {
                         McpServerState::Connected { tools, .. } => {
                             json!({ "name": name, "status": "connected", "toolCount": tools })
                         }
-                        McpServerState::Reconnecting { .. } => {
+                        McpServerState::Reconnecting { .. } | McpServerState::Retrying => {
                             json!({ "name": name, "status": "pending" })
                         }
                         McpServerState::Failed(error) => {

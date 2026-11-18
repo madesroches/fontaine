@@ -546,7 +546,8 @@ impl EventSink for ClaudeSink {
             .map(|(name, state)| {
                 let status = match state {
                     fontaine_sdk::core::agent::McpServerState::Connected { .. } => "connected",
-                    fontaine_sdk::core::agent::McpServerState::Reconnecting { .. } => "pending",
+                    fontaine_sdk::core::agent::McpServerState::Reconnecting { .. }
+                    | fontaine_sdk::core::agent::McpServerState::Retrying => "pending",
                     fontaine_sdk::core::agent::McpServerState::Failed(_) => "failed",
                 };
                 json!({ "name": name, "status": status })

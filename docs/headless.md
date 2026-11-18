@@ -224,8 +224,10 @@ assumptions." and the run continues.
 An MCP server's request for input (elicitation) is answered `cancel` in a headless run unless an
 [`elicitation` hook](hooks.md#elicitation) answers it, so the call
 carries on without it; see [MCP servers](mcp.md#requests-for-input). A stdio MCP server that exits
-stays failed for the rest of the run and is not started again; a remote one that drops is
-reconnected as in the terminal UI.
+mid-run is started again the next time the model calls one of its tools (at most three times per
+server); a remote one that drops is reconnected as in the terminal UI and, after the five
+attempts fail on a transient error, retried in the background for 30 minutes; see
+[Reconnecting](mcp.md#reconnecting).
 
 ## Denials
 

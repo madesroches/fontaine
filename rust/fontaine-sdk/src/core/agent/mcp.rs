@@ -757,12 +757,12 @@ impl AgentRuntime {
         ));
         let warner = approver.clone();
         options.warn = Arc::new(move |message| warner.warn(message));
-        let connector = ServerConnector {
+        let connector = ServerConnector::new(
             options,
-            tool_server: self.tool_server.clone(),
-            network: self.setup.network.clone(),
+            self.tool_server.clone(),
+            self.setup.network.clone(),
             env,
-        };
+        );
         let state = self.state.clone();
         let types = self.agent_types.clone();
         let slots = self.mcp.slots_handle();
@@ -778,6 +778,7 @@ impl AgentRuntime {
                 state.agents().refresh_rebuilt_toolsets(&types.get());
                 refresh_mentions(&revision, &mentions, &slots);
             }),
+            self.setup.headless,
         );
         self.mcp.supervisor = Some(supervisor.clone());
         supervisor
