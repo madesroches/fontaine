@@ -22,6 +22,10 @@ All notable changes are recorded here. The format follows
   tool for the same change (#666); never for a deletion or a protected target. The denial text and
   the base prompt's denied-call section now accept a call the denial itself names as allowed, so an
   AFK run no longer ends at "blocked" on such a deny.
+- Date and time handling moved from `chrono` to `jiff` (#691). `fontaine_sdk::core::project_env::expire`
+  now takes a `jiff::Timestamp` instead of a `chrono::DateTime<Utc>`, as does
+  `fontaine_sdk::core::project_env::setup_notice`; `fontaine_sdk::core::schedule::Cron::next_after`
+  now takes and returns a `jiff::Zoned`.
 
 ### Removed
 
@@ -474,6 +478,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Date and time handling moved from `chrono` to `jiff` (#691). `fontaine_sdk::core::project_env::expire`
+  now takes a `jiff::Timestamp` instead of a `chrono::DateTime<Utc>`, as does
+  `fontaine_sdk::core::project_env::setup_notice`; `fontaine_sdk::core::schedule::Cron::next_after`
+  now takes and returns a `jiff::Zoned`.
 - Update the pinned Rust toolchain and workspace `rust-version` to 1.100.0 (#668); the testkit's
   test-executable layout detection accepts Cargo 1.100's `build/<pkg>/<hash>/out/` location.
 - Tests that spawn helper binaries built as Cargo examples (`hook_marker`,

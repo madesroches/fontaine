@@ -1046,7 +1046,7 @@ impl AgentRuntime {
         if let Some(warning) = &stored.warning {
             self.approver.warn(warning);
         }
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let record = stored
             .record
             .map(|record| project_env::filter_to_remotes(record, git_remotes));
@@ -1079,7 +1079,7 @@ impl AgentRuntime {
             &remotes,
             self.state.mode(),
             &self.config.auto_mode,
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         )?;
         self.state.mark_setup_warning_shown();
         Some(notice)

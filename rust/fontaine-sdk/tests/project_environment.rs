@@ -95,8 +95,8 @@ fn record(discovered_at: &str, visibility: Visibility, urls: &[&str]) -> Project
 }
 
 fn now_minus_days(days: i64) -> String {
-    let at = chrono::Utc::now() - chrono::TimeDelta::days(days);
-    at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()
+    let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * days);
+    at.strftime("%Y-%m-%dT%H:%M:%S.000Z").to_string()
 }
 
 fn world_with_remote() -> World {

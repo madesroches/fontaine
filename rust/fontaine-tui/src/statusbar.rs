@@ -5,11 +5,9 @@
 //! the script (the embedded default or the user's) turns it into styled runs, and [`render`] draws
 //! the safety badges and then those runs.
 
-use std::fmt::Display;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use chrono::{DateTime, Local, TimeZone, Utc};
 use fontaine_sdk::core::config::PermissionMode;
 use fontaine_sdk::core::goal;
 use fontaine_sdk::core::quota::{AccountUsage, UsageRole};
@@ -17,6 +15,7 @@ use fontaine_sdk::core::statusline::{
     DEFAULT_SCRIPT, Role, StatuslineProgram, StatuslineSnapshot, StatuslineState, StyledText,
     Values, used_percentage,
 };
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -163,16 +162,16 @@ fn percent(ratio: f64) -> u32 {
 /// When `reset` falls, as read on `now`'s calendar: the clock time today, `tomorrow`, the
 /// weekday within the week, the date beyond. Seven days out is today's weekday again, so it gets
 /// the date rather than a weekday that reads as this week.
-fn reset_label<Tz: TimeZone>(reset: &DateTime<Tz>, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: Display,
-{
-    let days = (reset.date_naive() - now.date_naive()).num_days();
+fn reset_label(reset: &Zoned, now: &Zoned) -> String {
+    let days = now
+        .date()
+        .until(reset.date())
+        .map_or(0, |span| span.get_days());
     match days {
-        ..=0 => reset.format("%H:%M").to_string(),
+        ..=0 => reset.strftime("%H:%M").to_string(),
         1 => "tomorrow".to_string(),
-        2..=6 => reset.format("%a").to_string(),
-        _ => reset.format("%b %-d").to_string(),
+        2..=6 => reset.strftime("%a").to_string(),
+        _ => reset.strftime("%b %-d").to_string(),
     }
 }
 
@@ -180,10 +179,7 @@ where
 /// past the warning level. The reset is left out when the provider gives none or it has passed.
 /// The guardian's segment carries a `guardian ` prefix and shows only once a window is running
 /// hot. `None` when there is nothing to show: no data, or no window.
-fn quota_segment<Tz: TimeZone>(usage: &AccountUsage, now: &DateTime<Tz>) -> Option<(String, bool)>
-where
-    Tz::Offset: Display,
-{
+fn quota_segment(usage: &AccountUsage, now: &Zoned) -> Option<(String, bool)> {
     let quota = usage.quota.as_ref()?;
     if quota.windows.is_empty() {
         return None;
@@ -203,7 +199,8 @@ where
         ));
         let reset = window
             .reset_at
-            .map(|at| DateTime::<Utc>::from(at).with_timezone(&now.timezone()))
+            .and_then(|at| Timestamp::try_from(at).ok())
+            .map(|at| at.to_zoned(now.time_zone().clone()))
             .filter(|reset| reset > now);
         if let Some(reset) = reset {
             text.push_str(&format!(" ({})", reset_label(&reset, now)));
@@ -323,7 +320,9 @@ pub(crate) fn hint(app: &App, command_line: Option<&str>, scripted: bool) -> Opt
 /// The quota segment of one role: every account's windows, the warning colour past the warning
 /// level.
 fn quota_runs(app: &App, role: UsageRole) -> Vec<StyledText> {
-    let as_of = DateTime::<Local>::from(app.usage_as_of);
+    let as_of = Timestamp::try_from(app.usage_as_of)
+        .expect("the system clock is within jiff's range")
+        .to_zoned(TimeZone::system());
     let mut runs = Vec::new();
     for usage in app.usage.iter().filter(|usage| usage.role == role) {
         let Some((text, warn)) = quota_segment(usage, &as_of) else {
@@ -608,7 +607,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::SystemTime;
 
-    use chrono::FixedOffset;
     use fontaine_sdk::core::quota::{Quota, QuotaWindow};
 
     use super::*;
@@ -821,19 +819,23 @@ mod tests {
     }
 
     /// Friday 2026-11-06 10:00 UTC.
-    fn friday() -> DateTime<FixedOffset> {
+    fn friday() -> Zoned {
         at("2026-11-06T10:00:00+00:00")
     }
 
-    fn at(rfc3339: &str) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(rfc3339).expect("a valid test instant")
+    // Parsed with the offset as its own zone, because a `Timestamp` would drop it.
+    fn at(rfc3339: &str) -> Zoned {
+        let offset = &rfc3339[rfc3339.len() - 6..];
+        format!("{rfc3339}[{offset}]")
+            .parse()
+            .expect("a valid test instant")
     }
 
     fn window(label: &str, used_ratio: f64, reset: Option<&str>) -> QuotaWindow {
         QuotaWindow {
             label: label.into(),
             used_ratio,
-            reset_at: reset.map(|r| SystemTime::from(at(r))),
+            reset_at: reset.map(|r| SystemTime::from(at(r).timestamp())),
         }
     }
 
