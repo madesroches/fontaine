@@ -36,6 +36,18 @@ async fn enable(ui: &Ui) -> Ticket {
     Ticket::parse(&ticket).expect("the copied text is a ticket")
 }
 
+/// Runs `line`, copies the ticket its dialog shows and leaves the dialog open.
+async fn open_ticket_dialog(ui: &Ui, line: &str) -> Ticket {
+    let seen = ui.clipboard().len();
+    ui.send(line);
+    ui.wait_until("the ticket dialog", |_| ui.live().contains("Remote ticket"))
+        .await;
+    ui.press(KeyCode::Char('c'));
+    ui.wait_until("a copied ticket", |_| ui.clipboard().len() > seen)
+        .await;
+    Ticket::parse(&ui.clipboard().pop().unwrap()).expect("the copied text is a ticket")
+}
+
 fn options() -> AttachOptions {
     AttachOptions {
         relay: Some(RelayMode::Disabled),
@@ -165,9 +177,13 @@ async fn a_paired_device_prompts_the_session_and_the_ticket_is_never_recorded() 
     .unwrap();
     let history = std::fs::read_to_string(w.data.join("history.jsonl")).unwrap_or_default();
     for text in [&audit, &ledger, &history] {
-        assert!(!text.contains("fontaine-attach1"), "{text}");
+        assert!(!text.to_lowercase().contains("fontaine-attach1"), "{text}");
     }
-    assert!(w.requests().iter().all(|r| !r.contains("fontaine-attach1")));
+    assert!(
+        w.requests()
+            .iter()
+            .all(|r| !r.to_lowercase().contains("fontaine-attach1"))
+    );
     let rules = rules(&w);
     for expected in [
         "enabled",
@@ -177,6 +193,63 @@ async fn a_paired_device_prompts_the_session_and_the_ticket_is_never_recorded() 
     ] {
         assert!(rules.iter().any(|r| r == expected), "{rules:?}");
     }
+    let paired = std::fs::read_to_string(w.data.join("paired_devices.json")).unwrap();
+    assert!(paired.contains("test-laptop"), "{paired}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_control_turns_remote_on_and_a_second_run_revokes_the_earlier_ticket() {
+    let w = World::new(Vec::new()).with_config(DIRECT_ONLY);
+    w.run(|ui| async move {
+        let first = open_ticket_dialog(&ui, "/remote-control").await;
+        assert!(ui.live().contains("good for one pairing"), "{}", ui.live());
+        ui.press(KeyCode::Enter);
+        ui.wait_until("the dialog to close", |_| {
+            !ui.live().contains("Remote ticket")
+        })
+        .await;
+        let second = open_ticket_dialog(&ui, "/remote-control --ttl 2h").await;
+        assert_ne!(first, second);
+        ui.press(KeyCode::Enter);
+        let mut stale = Client::start(
+            fontaine_remote::Target::Ticket(Box::new(first)),
+            options(),
+            Arc::new(MemoryClientStore::default()),
+        );
+        let error = failure(&mut stale).await;
+        assert!(
+            error.contains(&format!("{:?}", Reason::BadTicket)),
+            "{error}"
+        );
+        ui.idle().await;
+    })
+    .await;
+    let rules = rules(&w);
+    assert!(rules.iter().any(|r| r == "enabled"), "{rules:?}");
+    assert!(rules.iter().any(|r| r == "ticket_minted"), "{rules:?}");
+    assert!(rules.iter().any(|r| r == "device_refused"), "{rules:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_pairing_while_the_ticket_dialog_is_open_closes_it_and_gets_confirmed() {
+    let w = World::new(Vec::new()).with_config(DIRECT_ONLY);
+    w.run(|ui| async move {
+        let ticket = open_ticket_dialog(&ui, "/remote-control").await;
+        let mut client = Client::start(
+            fontaine_remote::Target::Ticket(Box::new(ticket)),
+            options(),
+            Arc::new(MemoryClientStore::default()),
+        );
+        ui.wait_for_live_prompt("Pair this device?").await;
+        assert!(!ui.live().contains("Remote ticket"), "{}", ui.live());
+        ui.press(KeyCode::Char('y'));
+        until(&mut client, |e| {
+            matches!(e, ClientEvent::Connected).then_some(())
+        })
+        .await;
+        client.stop();
+    })
+    .await;
     let paired = std::fs::read_to_string(w.data.join("paired_devices.json")).unwrap();
     assert!(paired.contains("test-laptop"), "{paired}");
 }
@@ -363,6 +436,7 @@ async fn a_device_cannot_run_guardian_disable_and_the_refusal_is_audited() {
             "/guardian-disable",
             "/guardian-enable",
             "/remote on",
+            "/remote-control",
             "/afk review",
         ] {
             client.send(ClientMsg::Slash {
@@ -393,7 +467,7 @@ async fn a_device_cannot_run_guardian_disable_and_the_refusal_is_audited() {
     .await;
     assert!(w.audit().iter().all(|r| r["rule"] != "guardian_off"));
     let refused = rules(w).iter().filter(|r| *r == "command_refused").count();
-    assert_eq!(refused, 4);
+    assert_eq!(refused, 5);
 }
 
 #[tokio::test(flavor = "multi_thread")]

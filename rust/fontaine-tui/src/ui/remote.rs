@@ -127,6 +127,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 RemoteState::Off => self.start_remote(runtime, ttl),
                 _ => self.show_remote_status(),
             },
+            RemoteCommand::Control(ttl) => match self.remote {
+                RemoteState::Off => self.start_remote(runtime, ttl),
+                _ => self.mint_remote_ticket(runtime, ttl),
+            },
             RemoteCommand::Ticket(ttl) => self.mint_remote_ticket(runtime, ttl),
             RemoteCommand::Devices => self.list_devices(),
             RemoteCommand::Revoke(selector) => self.revoke_device(runtime, &selector),
@@ -328,8 +332,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .notice("remote control is still starting; try again in a moment"),
             RemoteState::Running(running) => match running.server.mint_ticket(ttl) {
                 Ok(ticket) => {
-                    self.app
-                        .begin_ticket(TicketPrompt::new(ticket.encode(), lifetime_text(ttl)));
+                    self.app.begin_ticket(TicketPrompt::new(
+                        ticket.encode(),
+                        ticket.qr_payload(),
+                        lifetime_text(ttl),
+                    ));
                     runtime.state.record_remote_event(
                         "ticket_minted",
                         &format!(
@@ -383,8 +390,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Ok(server) => match server.mint_ticket(ttl) {
                 Ok(ticket) => {
-                    self.app
-                        .begin_ticket(TicketPrompt::new(ticket.encode(), lifetime_text(ttl)));
+                    self.app.begin_ticket(TicketPrompt::new(
+                        ticket.encode(),
+                        ticket.qr_payload(),
+                        lifetime_text(ttl),
+                    ));
                     runtime.state.record_remote_event(
                         "enabled",
                         &format!(
@@ -487,12 +497,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Decision::Deny,
             );
         }
-        // Only when nothing else holds the keyboard, so the confirmation is never answered by a
-        // key meant for another dialog.
+        // A ticket dialog over a consumed ticket shows a dead code, so a pairing request replaces
+        // it; over a live ticket the request waits, since a confirmation opened under the dialog
+        // could not be answered.
+        let replaces_dialog = self.app.ticket_prompt.is_some()
+            && !self.app.covered_by_other_than_ticket()
+            && !running.server.has_live_ticket();
+        // Otherwise only when nothing else holds the keyboard, so the confirmation is never
+        // answered by a key meant for another dialog.
         if running.pairing.is_none()
-            && !self.app.covered()
+            && (replaces_dialog || !self.app.covered())
             && let Some(request) = running.surface.take_pairing()
         {
+            if replaces_dialog {
+                self.app.ticket_prompt = None;
+            }
             self.app.begin_pairing(crate::guardian_prompt::pairing(
                 &fontaine_remote::short_node(&request.node),
                 &request.label,

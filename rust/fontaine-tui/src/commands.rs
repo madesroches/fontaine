@@ -496,10 +496,17 @@ pub const BUILTINS: &[Builtin] = &[
         name: "remote",
         aliases: &[],
         hint: Some(
-            "on [--ttl <dur>] | off | status | ticket [--ttl <dur>] | devices | revoke <device>",
+            "on [--ttl <dur>] | off | status | ticket [--ttl <dur>] | control [--ttl <dur>] | devices | revoke <device>",
         ),
         description: "let paired devices attach to this session with `fontaine attach`",
         command: Command::Remote,
+    },
+    Builtin {
+        name: "remote-control",
+        aliases: &[],
+        hint: Some("[--ttl <duration>]"),
+        description: "turn remote control on and show a QR code a phone can scan to attach",
+        command: |argument| Command::Remote(format!("control {argument}")),
     },
     Builtin {
         name: "rename",
@@ -1241,6 +1248,8 @@ mod tests {
             "/keybindings",
             "/remote status",
             "/remote on --ttl 5m",
+            "/remote-control",
+            "/remote-control --ttl 5m",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");

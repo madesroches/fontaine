@@ -16,6 +16,7 @@ crossterm.workspace = true
 futures.workspace = true
 open.workspace = true
 pulldown-cmark.workspace = true
+qrcode.workspace = true
 ratatui.workspace = true
 rig-core.workspace = true
 rig-tools.workspace = true

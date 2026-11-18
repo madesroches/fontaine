@@ -27,11 +27,12 @@ pub(crate) enum RemoteCommand {
     Off,
     Status,
     Ticket(Duration),
+    Control(Duration),
     Devices,
     Revoke(String),
 }
 
-pub(crate) const USAGE: &str = "usage: /remote on [--ttl <duration>] | off | status | ticket [--ttl <duration>] | devices | revoke <device>";
+pub(crate) const USAGE: &str = "usage: /remote on [--ttl <duration>] | off | status | ticket [--ttl <duration>] | control [--ttl <duration>] | devices | revoke <device>";
 
 fn ttl_of(value: &str) -> Result<Duration, String> {
     let ttl = parse_duration(value)
@@ -57,6 +58,7 @@ pub(crate) fn parse_remote_command(argument: &str) -> Result<RemoteCommand, Stri
     match (verb, rest.as_slice()) {
         ("on", _) => Ok(RemoteCommand::On(ttl()?)),
         ("ticket", _) => Ok(RemoteCommand::Ticket(ttl()?)),
+        ("control", _) => Ok(RemoteCommand::Control(ttl()?)),
         ("off", []) => Ok(RemoteCommand::Off),
         ("status", []) => Ok(RemoteCommand::Status),
         ("devices", []) => Ok(RemoteCommand::Devices),
@@ -83,6 +85,16 @@ mod tests {
             parse_remote_command("ticket --ttl=30m"),
             Ok(RemoteCommand::Ticket(Duration::from_secs(1800)))
         );
+        assert_eq!(
+            parse_remote_command("control"),
+            Ok(RemoteCommand::Control(DEFAULT_TTL))
+        );
+        assert_eq!(
+            parse_remote_command("control --ttl 2h"),
+            Ok(RemoteCommand::Control(Duration::from_secs(7200)))
+        );
+        assert!(parse_remote_command("control --ttl soon").is_err());
+        assert!(parse_remote_command("control extra").is_err());
         assert_eq!(parse_remote_command("off"), Ok(RemoteCommand::Off));
         assert_eq!(parse_remote_command(""), Ok(RemoteCommand::Status));
         assert_eq!(parse_remote_command("status"), Ok(RemoteCommand::Status));

@@ -6,7 +6,7 @@ approvals and questions, interrupt it and run a few commands, while the session 
 where it started.
 
 Nothing enables it but you. You turn it on with `fontaine --remote` or, in a running session,
-`/remote on`. It is off by default, no setting turns it on, a project file cannot turn it on, a
+`/remote on` or `/remote-control`. It is off by default, no setting turns it on, a project file cannot turn it on, a
 headless run cannot turn it on, `--resume` never turns it back on, and the model has no tool for it.
 
 ## Enabling it and pairing a device
@@ -14,6 +14,8 @@ headless run cannot turn it on, `--resume` never turns it back on, and the model
 ```text
 fontaine --remote                       start with remote control on and a ticket shown
 /remote on [--ttl <duration>]           turn it on and show a ticket
+/remote-control [--ttl <duration>]      turn it on, or mint a new ticket, and show it as a QR code
+                                        (`/remote control` does the same)
 /remote ticket [--ttl <duration>]       mint a new ticket (revokes the previous one)
 /remote status                          whether it is on, how many devices are attached, whether a ticket is live
 /remote devices                         list the paired devices
@@ -21,7 +23,8 @@ fontaine --remote                       start with remote control on and a ticke
 /remote off                             turn it off
 ```
 
-The ticket is shown once, in a dialog over the input. `c` copies it and Enter dismisses it for good.
+The ticket is shown once, in a dialog over the input. `c` copies it and Enter dismisses it for good; the dialog also closes
+when a device presents the ticket and the pairing confirmation opens.
 A ticket lives 10 minutes unless you give `--ttl` (for example `--ttl 2h`), and at most 24 hours. The
 status bar says `remote: ticket live`, `remote: no live ticket` or `remote: N device(s)`.
 
@@ -64,6 +67,25 @@ FONTAINE_TICKET="$TICKET" fontaine attach
 printf '%s' "$TICKET" | fontaine attach --ticket-stdin --message "hello"
 ```
 
+## Pair a phone with a QR code
+
+`/remote-control [--ttl <duration>]` turns remote control on, or, when it is already on, mints a new
+ticket and revokes the previous one, and shows the ticket as a QR code in the ticket dialog. A phone
+app scans it instead of you typing the ticket. `/remote on`, `/remote ticket` and `fontaine --remote`
+show the code too; `/remote-control` is the one that always ends at it.
+
+The code carries the same ticket as the text, uppercased (`FONTAINE-ATTACH1…`), which the ticket
+parser reads like the lowercase form. Nothing else changes: the device still pairs through the
+confirmation in the host terminal, the ticket still lives 10 minutes unless you give `--ttl` and is
+good for one pairing, and the ticket and code are never recorded.
+
+The code is large, because a ticket holds the host's addresses. It needs a terminal about 80 columns
+wide and about 44 rows tall for a ticket with relay disabled, up to about 50 rows for the default
+relay with IPv6 addresses. Resizing redraws the dialog. When the terminal is too small the dialog
+shows the text ticket instead, with a line saying so, and `c` copies the text ticket either way. The
+screen-reader renderer and a terminal with `NO_COLOR` set always print the text ticket only: the code
+is drawn in fixed black on white and would not scan without those colors.
+
 ## Revoking a device
 
 `/remote revoke <label|node-prefix>` removes the entry and closes that device's live connection with
@@ -87,7 +109,7 @@ A device sends only a prompt or a slash line:
 - A **slash line** runs only if the command is on the device list: `/btw`, `/cost`, `/recap`,
   `/compact`, `/context`, `/goal`, `/init`, `/rename`, `/help`, `/status` and skills. Every
   other command is refused with a notice to the device, an audit record, and never reaches the
-  dispatcher. That includes `/loop`, `/guardian-disable` and `/guardian-enable`, every `/remote` subcommand,
+  dispatcher. That includes `/loop`, `/guardian-disable` and `/guardian-enable`, every `/remote` subcommand, `/remote-control`,
   `/afk`, `/theme`, `/export`, `/config`, `/clear`, `/resume`, `/branch`, `/rewind`, `/model`,
   `/effort`, `/login`, `/exit`, `/add-dir`, `/plugin`, `/mcp` and every panel, toggle or picker of the
   host.
@@ -138,8 +160,8 @@ from the same device supersedes the first (`superseded`); several different pair
 attached at once.
 
 `/clear`, `/resume`, `/branch` and quitting say goodbye to every device and take the endpoint down.
-Paired devices survive in `paired_devices.json` and reattach after the next `/remote on` or
-`fontaine --remote`. One session at a time is the remote host: a second session's `/remote on` is
+Paired devices survive in `paired_devices.json` and reattach after the next `/remote on`,
+`/remote-control` or `fontaine --remote`. One session at a time is the remote host: a second session's `/remote on` is
 refused while another holds `remote_host.lock`.
 
 ## One message, no screen: `attach --message`

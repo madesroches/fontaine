@@ -1516,8 +1516,12 @@ impl App {
 
     /// Whether an overlay has the keyboard.
     pub fn covered(&self) -> bool {
-        self.ticket_prompt.is_some()
-            || self.approval.is_some()
+        self.ticket_prompt.is_some() || self.covered_by_other_than_ticket()
+    }
+
+    /// Whether an overlay other than the ticket dialog has the keyboard.
+    pub(crate) fn covered_by_other_than_ticket(&self) -> bool {
+        self.approval.is_some()
             || !self.questions.is_empty()
             || !self.elicitations.is_empty()
             || self.denied.is_some()
