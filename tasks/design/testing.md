@@ -46,8 +46,8 @@ Integration tests drive the core through headless `-p` against scripted `wiremoc
 read round-trip: prompt → stream → tool call → fast-path execute → result → answer; `cassettes.rs` asserts the
 tool executed via the fast path, the `gate_decision` tier, and the final answer) and the Phase 4 auto-mode
 cassette (tool call → guardian verdict → execute → answer; `cassettes.rs` asserts the verdict, the
-`gate_decision` tier, and the audit record, plus the final answer). Once a cassette is committed, replay is the CI default and needs no keys; until its fixture is committed a cassette test carries `#[ignore = "cassette not recorded"]`, and the recording commit removes the attribute. Cassettes live in
-`rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth headers, and home-directory paths
+`gate_decision` tier, and the audit record, plus the final answer). Once a cassette is committed, replay is the CI default and needs no keys; until its fixture is committed a cassette test carries `#[ignore = "cassette not recorded"]`, and the recording commit removes the attribute. Cassettes record through OpenRouter (agent `openai/gpt-4o-mini`, auto-mode guardian `anthropic/claude-haiku-5.5` because `gpt-4o-mini` misjudges new-file writes, key in `OPENROUTER_API_KEY`) and match request bodies by shape, because bodies embed the per-run sandbox path. They live in
+`rust/fontaine/tests/cassettes/openrouter/`; recording scrubs API keys, auth headers, and home-directory paths
 through rig-cassette's scrubbing configuration, and runs only via
 `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` with the
 account's `base_url` pointed at the cassette proxy's `base_url()` and the provider key env var set

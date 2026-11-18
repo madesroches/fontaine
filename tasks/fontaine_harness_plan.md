@@ -137,9 +137,10 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
   - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists. (#103)
   - [x] Phase 5 user-hook `allow` in `auto` baseline. (2026-10-23; observed once per variant; Claude Code
         honors a broad hook, which Fontaine deliberately suspends: Decisions 2026-10-23)
-- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored`; #106)
-  - [ ] Record the Phase 3 manual-mode cassette.
-  - [ ] Record the Phase 4 auto-mode cassette.
+- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes <name>`, adding `-- --ignored` only for a test still carrying `#[ignore]`; #106)
+  - [x] Record the Phase 3 manual-mode cassette (through OpenRouter, `openai/gpt-4o-mini`; the image cassette too).
+  - [x] Record the Phase 4 auto-mode cassette (agent `openai/gpt-4o-mini`, guardian `anthropic/claude-haiku-5.5`; `gpt-4o-mini` as guardian denied a new-file write).
+  - [ ] Record the PDF text-stub cassette (the model called `read_mcp_resource`, not `read`; test stays `#[ignore]`d).
 - **Manual verification** (`design/testing.md` §Manual Verification)
   - [ ] Item 1: live TUI, manual mode, Anthropic. (#107)
   - [ ] Items 2–3: live guardian denial and `/denied` retry. (#107)
