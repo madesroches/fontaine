@@ -111,6 +111,26 @@ struct Stood {
     restart: RestartFn,
 }
 
+/// Registers the taken-out stand-ins again when dropped, unless the connect succeeded.
+struct RestoreStandIns<'a> {
+    connector: &'a ServerConnector,
+    spec: &'a ServerSpec,
+    stood: Option<Stood>,
+}
+
+impl Drop for RestoreStandIns<'_> {
+    fn drop(&mut self) {
+        if let Some(stood) = self.stood.take() {
+            self.connector
+                .options
+                .deferral
+                .forget(&self.spec.name, stood.deferral);
+            self.connector
+                .register_tombstone(self.spec, stood.tools, stood.restart);
+        }
+    }
+}
+
 pub(crate) struct ServerConnector {
     pub(crate) options: McpOptions,
     pub(crate) tool_server: ToolServerHandle,
@@ -147,6 +167,13 @@ impl McpConnector for ServerConnector {
             if let Some(stood) = &standing {
                 stood.standing.store(false, Ordering::SeqCst);
             }
+            // The call that awaits this restart can be cancelled mid-connect, which drops this
+            // future; the guard puts the stand-ins back then too.
+            let mut restore = RestoreStandIns {
+                connector: self,
+                spec,
+                stood: standing,
+            };
             let result = connect_server(
                 spec,
                 self.tool_server.clone(),
@@ -155,9 +182,8 @@ impl McpConnector for ServerConnector {
                 &move |name| env(name),
             )
             .await;
-            if let (Err(_), Some(stood)) = (&result, standing) {
-                self.options.deferral.forget(&spec.name, stood.deferral);
-                self.register_tombstone(spec, stood.tools, stood.restart);
+            if result.is_ok() {
+                restore.stood = None;
             }
             result
         })
@@ -2062,5 +2088,77 @@ mod tests {
             .expect("a removed server is not restarted");
         assert!(chain(&error).contains("no longer restarted"));
         assert_eq!(rig.script.attempts(), 1);
+    }
+
+    fn as_callback<F: rig_core::serve::adapters::ToolCallback + 'static>(
+        callback: F,
+    ) -> Arc<dyn rig_core::serve::adapters::ToolCallback> {
+        Arc::new(callback)
+    }
+
+    // A server process that never answers keeps the connect pending until the call is dropped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restart_dropped_mid_connect_puts_the_stand_ins_back() {
+        use crate::tools::mcp::Transport;
+        use rig_core::completion::ToolDefinition;
+        use rig_core::message::ToolName;
+        use rig_core::tool::{ToolContext, ToolOutput};
+
+        let options = McpOptions::new(
+            Guard {
+                gate: Arc::new(Allow),
+                results: Arc::new(ResultPipeline::new()),
+                hide_mcp_names: false,
+                pre_images: None,
+                kills: None,
+            },
+            true,
+        );
+        let connector = ServerConnector::new(
+            options,
+            ToolServer::new().run(),
+            Arc::new(Default::default()),
+            Arc::new(|_| None),
+        );
+        let mut spec = spec("stdio");
+        spec.transport = Transport::Stdio {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            env_vars: Vec::new(),
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+        };
+        let tool = LiveTool {
+            definition: ToolDefinition::new(
+                ToolName::new("mcp__srv__echo").unwrap(),
+                "Echo",
+                json!({"type": "object"}),
+            ),
+            requires_user_interaction: false,
+            callback: as_callback(|_: &mut ToolContext, _: serde_json::Value| {
+                Box::pin(async move { Ok(ToolOutput::text("live")) })
+            }),
+        };
+        let restart: RestartFn = Arc::new(|| Box::pin(std::future::pending()));
+        connector.register_tombstone(&spec, vec![tool], restart);
+        let first = lock(&connector.tombstones, "test")
+            .get("srv")
+            .expect("registered")
+            .standing
+            .clone();
+
+        let dropped =
+            tokio::time::timeout(Duration::from_millis(300), connector.connect(&spec)).await;
+        assert!(dropped.is_err(), "the connect never completes");
+
+        assert!(
+            !first.load(Ordering::SeqCst),
+            "the old stand-ins stay retired"
+        );
+        let tombstones = lock(&connector.tombstones, "test");
+        let stood = tombstones.get("srv").expect("the tombstone is back");
+        assert!(stood.standing.load(Ordering::SeqCst));
+        assert_eq!(stood.tools.len(), 1);
     }
 }
