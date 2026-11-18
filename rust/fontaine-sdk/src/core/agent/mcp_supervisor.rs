@@ -6,7 +6,7 @@
 //! person to ask, so the exited server's tools stay registered as stand-ins and a call to one
 //! starts the server again.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -120,13 +120,18 @@ struct RestoreStandIns<'a> {
 
 impl Drop for RestoreStandIns<'_> {
     fn drop(&mut self) {
+        // An unregister during the connect (remove, retire, manual reconnect) took the name out
+        // of `connecting`; restoring then would resurrect or overwrite what the session moved on from.
+        let wanted = lock(&self.connector.connecting, "MCP connecting").remove(&self.spec.name);
         if let Some(stood) = self.stood.take() {
             self.connector
                 .options
                 .deferral
                 .forget(&self.spec.name, stood.deferral);
-            self.connector
-                .register_tombstone(self.spec, stood.tools, stood.restart);
+            if wanted {
+                self.connector
+                    .register_tombstone(self.spec, stood.tools, stood.restart);
+            }
         }
     }
 }
@@ -137,6 +142,8 @@ pub(crate) struct ServerConnector {
     pub(crate) network: Arc<LoadedNetwork>,
     pub(crate) env: EnvLookup,
     tombstones: Mutex<HashMap<String, Stood>>,
+    /// Servers whose taken-out stand-ins are held by an in-flight connect and still wanted back.
+    connecting: Mutex<HashSet<String>>,
 }
 
 impl ServerConnector {
@@ -152,6 +159,7 @@ impl ServerConnector {
             network,
             env,
             tombstones: Mutex::default(),
+            connecting: Mutex::default(),
         }
     }
 }
@@ -166,6 +174,7 @@ impl McpConnector for ServerConnector {
             let standing = lock(&self.tombstones, "MCP tombstones").remove(&spec.name);
             if let Some(stood) = &standing {
                 stood.standing.store(false, Ordering::SeqCst);
+                lock(&self.connecting, "MCP connecting").insert(spec.name.clone());
             }
             // The call that awaits this restart can be cancelled mid-connect, which drops this
             // future; the guard puts the stand-ins back then too.
@@ -216,6 +225,7 @@ impl McpConnector for ServerConnector {
     }
 
     fn unregister_tombstone(&self, server: &str) {
+        lock(&self.connecting, "MCP connecting").remove(server);
         let stood = lock(&self.tombstones, "MCP tombstones").remove(server);
         if let Some(stood) = stood {
             stood.standing.store(false, Ordering::SeqCst);
@@ -2160,5 +2170,60 @@ mod tests {
         let stood = tombstones.get("srv").expect("the tombstone is back");
         assert!(stood.standing.load(Ordering::SeqCst));
         assert_eq!(stood.tools.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unregistering_during_a_connect_keeps_the_stand_ins_gone() {
+        use crate::tools::mcp::Transport;
+        use rig_core::completion::ToolDefinition;
+        use rig_core::message::ToolName;
+        use rig_core::tool::ToolOutput;
+
+        let options = McpOptions::new(
+            Guard {
+                gate: Arc::new(Allow),
+                results: Arc::new(ResultPipeline::new()),
+                hide_mcp_names: false,
+                pre_images: None,
+                kills: None,
+            },
+            true,
+        );
+        let connector = ServerConnector::new(
+            options,
+            ToolServer::new().run(),
+            Arc::new(Default::default()),
+            Arc::new(|_| None),
+        );
+        let mut spec = spec("stdio");
+        spec.transport = Transport::Stdio {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            env_vars: Vec::new(),
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+        };
+        let tool = LiveTool {
+            definition: ToolDefinition::new(
+                ToolName::new("mcp__srv__echo").unwrap(),
+                "Echo",
+                json!({"type": "object"}),
+            ),
+            requires_user_interaction: false,
+            callback: as_callback(|_: &mut ToolContext, _: serde_json::Value| {
+                Box::pin(async move { Ok(ToolOutput::text("live")) })
+            }),
+        };
+        let restart: RestartFn = Arc::new(|| Box::pin(std::future::pending()));
+        connector.register_tombstone(&spec, vec![tool], restart);
+
+        let mut connect = Box::pin(connector.connect(&spec));
+        let polled = tokio::time::timeout(Duration::from_millis(100), &mut connect).await;
+        assert!(polled.is_err(), "the connect is still in flight");
+        connector.unregister_tombstone("srv");
+        drop(connect);
+
+        assert!(lock(&connector.tombstones, "test").get("srv").is_none());
     }
 }
