@@ -1,6 +1,7 @@
 //! Full runs against recorded provider traffic. Replay needs no keys; recording is a human
 //! step, one test at a time, with the key exported into that command only:
-//! `OPENROUTER_API_KEY=... RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored <name>`.
+//! `OPENROUTER_API_KEY=... RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes <name>`
+//! (add `-- --ignored` only for a test still carrying `#[ignore]`).
 
 mod common;
 

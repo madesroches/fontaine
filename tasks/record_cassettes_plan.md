@@ -58,8 +58,8 @@ const MODEL: &str = "openai/gpt-4o-mini";
    (`rg -n "sk-|Authorization|api[_-]?key|Bearer|/home/" rust/fontaine/tests/cassettes/`).
    OpenRouter responses may carry extra headers or ids; scrub or re-record if anything sensitive remains.
 4. Confirm replay under a different temp dir: replay each cassette at least twice (fresh `Sandbox`
-   each run, so a new random path) and check the recorded fixtures contain no `/tmp/.tmp*` path that
-   would leak the recording host.
+   each run, so a new random path) and expect the recorded fixtures to contain random
+   sandbox `/tmp/.tmp*` paths; they are harmless (shape matching handles them) and leak nothing.
 5. Remove `#[ignore]` on each recorded test; run `cargo test -p fontaine --test cassettes` with no key
    and no mode set.
 6. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
