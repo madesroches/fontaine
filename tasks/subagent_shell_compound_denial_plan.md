@@ -24,12 +24,14 @@ needs its own golden adversarial set and Decisions line.
 1. **Denial message.** In `restriction_on`, when the call is `shell` and no limit matched, decide
    whether to hint: the analysis parsed and ANY entry of `analysis.commands` (each rebuilt as command
    text by joining its `raw` words with spaces) matches a limit rule via
-   `matches(rule, call, Posture::Allow)` on a constructed `shell` call carrying the original call's
-   `cwd` argument. If so, append a hint to the existing message: "the command is a chain, pipe,
+   `matches(rule, call, Posture::Allow)` on a constructed `shell` call. `matches` re-parses the command
+   and, for Allow, accepts only `analysis.simple`/`after_cd`, which need every word literal. If so, append a hint to the existing message: "the command is a chain, pipe,
    redirect or substitution, which is refused; run it as one plain command". The hint only changes
    wording, never the Deny, and does no regex on arguments: reuse the shell pre-classifier's parse
-   result (`preclassify.rs`). This covers `cd <dir> && cargo clippy 2>&1 | tail` and
-   `cargo clippy $(foo)`. If the analysis did not parse (`commands` empty) or the command name is
+   result (`preclassify.rs`). This covers `cd <dir> && cargo clippy 2>&1 | tail` (`analysis.commands` already holds the post-cd
+   command) and a substitution wrapping a whole literal command (`$(cargo clippy)`). A matching command
+   with a non-literal word (`cargo clippy $(foo)`) gets no hint: the rebuilt text never matches, so the
+   original message stays. If the analysis did not parse (`commands` empty) or the command name is
    expanded (`$X cargo clippy`), keep the current message.
 2. **`REVIEWER_PROMPT`.** Add: run each command bare, with no pipes, redirects or `2>&1`, and do not
    trim output with `tail`/`head`.
@@ -70,11 +72,12 @@ Unit tests in `gate.rs` for `restriction_on`:
 - A bare non-matching command (`rm x`) and an unparseable command keep the original message without the hint.
 - A matching bare command is allowed (no restriction).
 - `cd <dir> && cargo clippy 2>&1 | tail` against `shell(cargo clippy *)` carries the hint.
-- `cargo clippy $(foo)` carries the hint.
-- The call's `cwd` argument is carried onto the constructed call.
+- `$(cargo clippy)` and `echo $(cargo clippy)` carry the hint.
+- `cargo clippy $(foo)` gets no hint (non-literal word; original message).
 - `$X cargo clippy` and an unparseable command get no hint.
 - Compound command none of whose simple commands match any limit gets no hint.
-- A test on `REVIEWER_PROMPT` asserting it mentions pipes/redirects.
+- A test on `REVIEWER_PROMPT` asserting it mentions pipes/redirects lives in `registry.rs`.
+The `restriction_on` tests are `gate.rs` unit tests and build `ChildRestrictions`/`CallContext` directly.
 No live APIs.
 
 ## Open Questions
