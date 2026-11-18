@@ -25,7 +25,7 @@ pub use listings::{
 };
 pub use meta::{MAX_RESULT_SIZE_CHARS, REQUIRES_USER_INTERACTION};
 pub use output::OutputLimits;
-pub use register::{GuardedSink, mcp_tool_name};
+pub use register::{GuardedSink, LiveTool, RestartFn, mcp_tool_name, stand_in_tools};
 pub use rig_rmcp::McpConnection as McpConnectionHandle;
 pub use servers::{
     CONNECT_TIMEOUT, CallScope, Connected, McpError, McpErrorKind, McpOptions, SdkTransportFactory,

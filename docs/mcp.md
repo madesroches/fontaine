@@ -480,8 +480,23 @@ last attempt the server is marked failed:
 MCP server `docs` disconnected · run /mcp reconnect docs
 ```
 
-A stdio server that exits is marked failed straight away and its process is not started again, in a
-headless run as well; there is no automatic retry for it.
+In a headless run (`fontaine -p`, including the stream-json surface) a remote server whose five
+attempts failed on a transient error is not given up on: Fontaine keeps retrying in the background,
+waiting 32 seconds and then a minute between attempts, for 30 minutes from the moment the connection
+was lost, and registers the tools again when one connects. `/mcp` shows the server as
+`pending (retrying in the background)` meanwhile, and the stream-json `mcp_servers` status says
+`pending`. A permanent error, or the end of the 30 minutes, marks it failed with the warning above.
+
+An interactive session marks a stdio server that exits failed straight away and does not start its
+process again; `/mcp reconnect` does. A headless run has no one to ask, so a stdio server that
+exited mid-session is started again the next time the model calls one of its tools: its tools stay
+registered, the call goes through the permission gate as usual, and only an allowed call starts the
+server (from the definition it was first started with, never re-read from configuration) and then
+runs on it. Until then `/mcp` lists it as `failed: the server exited · restarts on next call`. A
+server is restarted at most three times per run; after that its tools are withdrawn and it stays
+failed (`exited more than 3 times`). A restart that fails returns the connection error as that
+call's error and leaves the tools in place for a later call. A server that failed to start in the
+first place is not restarted this way.
 
 `/mcp reconnect <name>` restarts one server, connected or not, at once and without waiting;
 `/mcp reconnect all` restarts every failed server. Only servers Fontaine tried to start this

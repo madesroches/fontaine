@@ -6,6 +6,16 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A headless run (`fontaine -p`, the stream-json surface, SDK embedders that set `headless`) recovers
+  MCP servers by itself, as Claude Code's non-interactive sessions do (#538). A remote server whose
+  five reconnect attempts failed on a transient error is retried in the background for 30 minutes
+  from the loss (`/mcp` shows `pending (retrying in the background)`; `McpServerState::Retrying`).
+  A stdio server that exited mid-session keeps its tools as stand-ins behind the same permission
+  gate, and an allowed call starts it again from its stored definition and runs on it, at most three
+  times per server per run (Claude Code documents no cap). Interactive sessions are unchanged.
+
 ### Changed
 
 - A subagent type limited to `shell(...)` allow entries now says why it refused a command when a part

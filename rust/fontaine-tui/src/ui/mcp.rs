@@ -22,6 +22,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     prompts,
                 },
                 McpServerState::Reconnecting { attempt } => McpState::Pending { attempt },
+                McpServerState::Retrying => McpState::Retrying,
                 McpServerState::Failed(error) => McpState::Failed(error),
             };
             (name, state)

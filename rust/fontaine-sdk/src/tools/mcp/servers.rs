@@ -40,7 +40,7 @@ use super::elicitation::{CallGuard, CallTracker, CancelAll, ElicitationTap, Elic
 use super::listings::{Listings, pull_listings};
 use super::meta::{MetaTap, ToolMeta};
 use super::output::OutputLimits;
-use super::register::{GuardedSink, Shared};
+use super::register::{GuardedSink, LiveTool, RestartCell, RestartFn, Shared};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -423,6 +423,8 @@ pub struct Connected {
     pub transport_failed: Arc<Notify>,
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
+    live: Arc<Mutex<Vec<LiveTool>>>,
+    restart: RestartCell,
     /// The resources and prompts the server listed, refreshed on a `list_changed`
     /// notification. Advisory: nothing decides on it, so a poisoned lock is read through.
     listings: Arc<Mutex<Listings>>,
@@ -464,6 +466,22 @@ impl Connected {
     pub fn tool_names(&self) -> Vec<String> {
         // Only read to remove the tools; a poisoned list still holds the last names written.
         lock_recovering(&self.tool_names).clone()
+    }
+
+    /// The tools the server has now, as a stand-in needs them to take their place or to hand a
+    /// call to them.
+    pub fn live_tools(&self) -> Vec<LiveTool> {
+        // Only read to build stand-ins and dispatch; a poisoned list still holds the last tools
+        // written.
+        lock_recovering(&self.live).clone()
+    }
+
+    /// Hands the connection's tools the restart that replaces it, for the calls an agent pinned
+    /// to them before the connection was lost.
+    pub fn set_restart(&self, restart: RestartFn) {
+        // Only read when a call runs on a dead connection; a poisoned cell still holds what was
+        // last written.
+        *lock_recovering(&self.restart) = Some(restart);
     }
 
     /// The server's resource and prompt listings as last pulled.
@@ -754,6 +772,8 @@ impl Wiring {
                 transport_failed: Arc::new(Notify::new()),
                 tool_count: Arc::new(AtomicUsize::new(0)),
                 tool_names: Arc::default(),
+                live: Arc::default(),
+                restart: Arc::default(),
                 muted: Arc::new(AtomicBool::new(false)),
                 listed: Arc::new(Notify::new()),
             },
@@ -836,6 +856,8 @@ where
         transport_failed: wiring.shared.transport_failed,
         tool_count: wiring.shared.tool_count,
         tool_names: wiring.shared.tool_names,
+        live: wiring.shared.live,
+        restart: wiring.shared.restart,
         listings: wiring.listings,
         listings_changed: wiring.listings_changed,
         muted: wiring.shared.muted,

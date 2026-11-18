@@ -43,6 +43,8 @@ pub enum McpState {
     },
     /// Lost, and being reconnected: `attempt` is the one under way.
     Pending { attempt: u32 },
+    /// Lost, and retried in the background after the reconnect attempts failed.
+    Retrying,
     /// The error text, which names the server.
     Failed(String),
     /// The human declined to start it.
@@ -294,6 +296,7 @@ pub fn mcp_with_origins(
                     "pending (reconnecting, attempt {attempt} of {})",
                     fontaine_sdk::core::agent::MCP_RECONNECT_ATTEMPTS
                 ),
+                McpState::Retrying => "pending (retrying in the background)".to_string(),
                 McpState::Failed(error) => format!("failed: {error}"),
                 McpState::LeftOff => "left off".to_string(),
                 McpState::NotTrusted => "not loaded (workspace not trusted)".to_string(),
@@ -1363,6 +1366,7 @@ mod tests {
                 ),
                 ("c".into(), McpState::LeftOff),
                 ("d".into(), McpState::Pending { attempt: 2 }),
+                ("r".into(), McpState::Retrying),
                 ("plugin_p_srv".into(), McpState::NotTrusted),
             ],
             &origins,
@@ -1370,7 +1374,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "a: connected · 2 tools · 3 resources · 1 prompt [user] · auth ok\ne: connected · 1 tool [configured] · auth n/a\nb: failed: MCP server `b` failed: boom [configured] · auth n/a\nc: left off [configured] · auth n/a\nd: pending (reconnecting, attempt 2 of 5) [configured] · auth required\nplugin_p_srv: not loaded (workspace not trusted) [plugin] · auth n/a"
+            "a: connected · 2 tools · 3 resources · 1 prompt [user] · auth ok\ne: connected · 1 tool [configured] · auth n/a\nb: failed: MCP server `b` failed: boom [configured] · auth n/a\nc: left off [configured] · auth n/a\nd: pending (reconnecting, attempt 2 of 5) [configured] · auth required\nr: pending (retrying in the background) [configured] · auth n/a\nplugin_p_srv: not loaded (workspace not trusted) [plugin] · auth n/a"
         );
     }
 
