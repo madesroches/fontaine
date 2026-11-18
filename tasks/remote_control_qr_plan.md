@@ -111,7 +111,9 @@ minus the dialog's own text lines (heading, validity, waiting lines) as `max_hei
 with the inline viewport height, which `body_rows` reduces by one more row. So the QR/text choice
 is made from the terminal height both paths share: `overlay` takes the terminal height for the
 ticket dialog's decision, and `body` follows it, so the dialog does not flip between QR and text
-across the two paths.
+across the two paths. `draw_widgets` sees only the inline viewport, so `view::draw` and
+`draw_widgets` take a `terminal_height` parameter, which `Screen::render` already reads and passes
+down; `draw_widgets` hands it to `overlay`.
 
 ### Accepting the connection
 
@@ -145,7 +147,10 @@ the status bar changes to `remote: no live ticket` on the next redraw.
    Run `cargo deny check`.
 3. `rust/fontaine-tui/src/qr.rs` (+ `lib.rs` module): `render`, on qrcode's `Dense1x2` renderer.
 4. `rust/fontaine-tui/src/ticket_prompt.rs`: new `body` signature, QR/text selection, waiting line,
-   `TicketPrompt::new` taking the QR payload; update `view.rs` call.
+   `TicketPrompt::new` taking the QR payload; update `view.rs` call. `view::draw` and `draw_widgets`
+   take `terminal_height` and pass it to `overlay`; `rust/fontaine-tui/src/screen.rs`:
+   `Screen::render` passes its terminal height to `view::draw`, and the test caller of `view::draw`
+   is updated.
 5. `rust/fontaine-tui/src/remote/mod.rs`: `RemoteCommand::Control`, parse, and `control [--ttl
    <duration>]` added to `USAGE`.
 6. `rust/fontaine-tui/src/commands.rs`: add a `remote-control` entry to `BUILTINS` (sorted by name,
@@ -162,7 +167,7 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 
 - `rust/fontaine-remote/src/ticket.rs`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`, `rust/Cargo.lock`
-- `rust/fontaine-tui/src/{qr.rs (new), lib.rs, app.rs, ticket_prompt.rs, view.rs, commands.rs, remote/mod.rs, ui/remote.rs}`
+- `rust/fontaine-tui/src/{qr.rs (new), lib.rs, app.rs, ticket_prompt.rs, view.rs, screen.rs, commands.rs, remote/mod.rs, ui/remote.rs}`
 - `docs/remote.md`, `docs/tui.md`, `docs/terminal.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
