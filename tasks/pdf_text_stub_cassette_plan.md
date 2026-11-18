@@ -44,8 +44,9 @@ the model replies.
 1. Edit the prompt in `reading_a_pdf_replays_the_text_stub_fallback` (`rust/fontaine/tests/cassettes.rs`).
 2. From `rust/`, record (human-gated key at `~/open_router_key`, exported into this command only):
    `OPENROUTER_API_KEY="$(cat ~/open_router_key)" RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored reading_a_pdf`.
-   Confirm the recorded first assistant turn calls `read` (`rg -n '"name":"read"' ` in the new yaml);
-   if it calls anything else, apply design step 2 and re-record.
+   The recording run must pass the test's own assertions; if `is a PDF` is missing, the model
+   did not call `read`: apply design step 2 and re-record. If recording is impossible (no key or
+   network), report that rather than hand-write a fixture.
 3. Inspect the fixture for credentials and personal paths:
    `rg -n "sk-|Authorization|api[_-]?key|Bearer|/home/" rust/fontaine/tests/cassettes/openrouter/read_pdf_text_stub.yaml`.
    Sandbox `/tmp/.tmp*` paths are harmless (shape matching).
@@ -62,26 +63,20 @@ the model replies.
 - `rust/fontaine/tests/cassettes.rs`
 - `rust/fontaine/tests/cassettes/openrouter/read_pdf_text_stub.yaml` (new)
 - `tasks/fontaine_harness_plan.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
 - Prompt steer vs. changing the model: the other three cassettes share `openai/gpt-4o-mini`; a
   prompt change keeps one recording model. A per-test model is the fallback only.
-- Asserting on the recorded reply instead of the wire would be weaker: shape matching lets a replay
-  differ from the recording, so the `Tap` assertion is what proves the stub is sent.
 
 ## Documentation
 
-None: no `docs/` page covers cassette recording. `CHANGELOG.md` is not needed for a test-only
-change unless the maintainer's convention says otherwise; `pr` decides.
+No `docs/` page covers cassette recording. `CHANGELOG.md` `[Unreleased]` says "The PDF cassette is
+still unrecorded"; extend that entry to include the PDF cassette and drop the sentence.
 
 ## Testing Strategy
 
 The recorded cassette is the test: offline replay with no key must pass, asserting the wire carries
 `is a PDF` and no `JVBER`. Recording is the live-provider check; it catches that the model really
 routes to `read`, which no fake model could show.
-
-## Open Questions
-
-- Recording needs a live OpenRouter key (`~/open_router_key`) and network; if the implementer
-  cannot record, the chain must report that rather than hand-write a fixture.
