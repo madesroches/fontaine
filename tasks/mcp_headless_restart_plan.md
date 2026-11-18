@@ -87,13 +87,36 @@ runs once the server connects" within the same turn.
    wrapping path, so it keeps `RiskClass::Arbitrary`, `ToolSource::Mcp` and the choke-point
    registration — the risk class and gate (floor, hooks, guardian) run **before** the stand-in's
    body, exactly as for a live tool.
-2. The stand-in's body calls `Supervisor::restart_for_call(slot)`: single-flight per slot (an async
+2. The stand-in's body calls an injected **restart callback**, not `Supervisor`: `tools` never
+   imports `core` (test-enforced), so `tools/mcp/register.rs` defines the seam
+   `type RestartFn = Arc<dyn Fn() -> BoxFuture<'static, Result<(), McpError>> + Send + Sync>`
+   and the stand-in awaits it, then dispatches by tool name. Core builds one `RestartFn` per slot
+   as a closure over `Arc<Supervisor>` + slot calling `Supervisor::restart_for_call(slot)`, and
+   passes it through the new `McpConnector` method below. `register.rs` stays free of
+   `Supervisor`. `restart_for_call` is single-flight per slot (an async
    mutex on the slot; a caller that finds the slot already `Connected` skips the restart), bounded
    by `CONNECT_TIMEOUT`, using `Supervisor::reconnect`'s machinery on the **stored** `ServerSpec`.
    It never re-reads config, re-resolves project scope or reruns a helper. On success `install`
    swaps the tombstone for the live tools (reconcile through the existing sink) and the stand-in
    dispatches the call to the new connection by tool name. On failure it returns the connect error
    chain as the tool error and leaves the tombstone in place.
+   State of a tombstoned slot: it stays `Failed("the server exited · restarts on next call")` and the
+   existing loss warning is kept, so `/mcp reconnect all` (`AllFailed`) still selects it.
+   `restart_for_call` bypasses `reconnect`'s `Failed` write on failure (the tombstone and its
+   state text stay as they are); a successful `install` returns the state to `Connected`.
+   Registration seam: `Supervisor` holds only connector, approver and refresh, and the
+   `ToolServerHandle`/`McpOptions`/`GuardedSink` wiring lives inside `ServerConnector`. Add two
+   methods to `McpConnector` with default no-op bodies (so scripted test connectors need no change
+   unless they test Part B): `register_tombstone(&self, spec, tools: Vec<ToolDefinition>, restart:
+   RestartFn)` and `unregister_tombstone(&self, server)`. `ServerConnector` implements them by
+   registering the stand-in `DynamicTool`s through its own `GuardedSink`/tool server. Because
+   `Registration::drop` forgets the deferral entry when the lost `Connected` drops, the tombstone
+   takes a fresh token (`Deferral::begin_connection`) and calls `Deferral::record(server, token,
+   tools)` itself, and `unregister_tombstone` calls `forget` with that token (a newer live
+   connection's token wins, as `record` already ignores older ones). The tool definitions are
+   captured from the deferral registry before the connection is dropped. The scripted test
+   connector overrides both methods to record the calls and the `RestartFn`, and the test invokes
+   the stored `RestartFn` directly, so no tool server is needed.
 3. Budget: per call one restart attempt; per server per run `MAX_STDIO_RESTARTS = 3` restarts. Past
    the budget the tombstone is removed, the slot becomes `Failed("exited more than N times")`, and
    the tools leave the registry. Claude Code documents no cap; this is a deviation recorded in
@@ -129,7 +152,8 @@ Interactive stays as today: `headless == false` never builds a tombstone.
 
 - `rust/fontaine-sdk/src/core/agent/mcp_supervisor.rs` — Supervisor, slot, state, retry loop, restart.
 - `rust/fontaine-sdk/src/core/agent/mcp.rs` — pass `headless`; mcp status rendering.
-- `rust/fontaine-sdk/src/tools/mcp/register.rs`, `servers.rs` — stand-in tools / tool definition capture.
+- `rust/fontaine-sdk/src/tools/mcp/register.rs`, `servers.rs` — stand-in tools, the `RestartFn` type, tool definition capture (no `core` imports).
+- `McpConnector` (in `mcp_supervisor.rs`) — `register_tombstone`/`unregister_tombstone` with default no-ops; `ServerConnector` implements them.
 - `rust/fontaine-tui/src/reports.rs` — `McpState::Pending { attempt }` (~lines 45, 293); add a `Retrying` variant or change rendering.
 - `rust/fontaine-tui/src/ui/mcp.rs` (~line 24) — maps from `McpState`.
 - Module doc at the top of `mcp_supervisor.rs` — drop the "stdio server that exits is marked failed" claim.
@@ -143,6 +167,10 @@ Interactive stays as today: `headless == false` never builds a tombstone.
 - AFK: Retry state is a new `Retrying` variant rather than `Failed`, so a retried server is not reported dead.
 - AFK: Stdio restart budget is 3 per server per run and 1 per call; Claude Code documents no cap.
 - AFK: A and B ship in one PR, with B splittable if review finds it too large.
+- AFK: The stand-in calls an injected `RestartFn` (set by core), never `Supervisor`, so `tools` stays free of `core`.
+- AFK: Tombstones are registered/unregistered through new default-no-op `McpConnector` methods, with a fresh `Deferral::begin_connection` token and `Deferral::record`, since `Registration::drop` forgets the lost connection's entry.
+- AFK: A tombstoned slot stays `Failed("the server exited · restarts on next call")` with its warning kept (so `/mcp reconnect all` selects it); a failed restart keeps it, a successful install returns it to `Connected`.
+- AFK: Same-turn restart, budget 3 and the connect error as the tool error are unobserved assumptions about Claude Code; the maintainer should check them against `claude -p`.
 - AFK: Stdio restart uses a tombstone (restart within the same turn) rather than restart at the next turn, for parity with Claude Code.
 
 ## Documentation
@@ -180,6 +208,4 @@ process spawn is where a silent regression would hide.
 
 ## Open Questions
 
-- Observe `claude -p` against a stdio server that exits mid-run (same-turn restart, restart count,
-  how a failed restart surfaces) and align the budget and error text; AGENTS.md prefers observation
-  to guessing. Human step, requires the CLI.
+None.
