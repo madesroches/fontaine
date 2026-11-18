@@ -265,7 +265,7 @@ const REVIEWER_SHELL: [&str; 11] = [
     "shell(cargo fmt --check *)",
 ];
 
-const REVIEWER_PROMPT: &str = "You are a reviewer. Review the change you were pointed at: read the code, run the allowed commands to check it, and report your findings with file and line. Do not fix anything, and do not try to work around a command that is refused.";
+const REVIEWER_PROMPT: &str = "You are a reviewer. Review the change you were pointed at: read the code, run the allowed commands to check it, and report your findings with file and line. Do not fix anything, and do not try to work around a command that is refused. Run each command bare, with no pipes, redirects or `2>&1`, and do not trim output with `tail` or `head`: a command with any of them is refused.";
 
 /// Tools only the user's session has: it alone drafts bug reports, and a child consulting the
 /// advisor would multiply its spend and what leaves for the second provider.
@@ -407,6 +407,12 @@ impl AgentTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reviewer_is_told_to_run_commands_bare() {
+        assert!(REVIEWER_PROMPT.contains("no pipes, redirects"));
+        assert!(REVIEWER_PROMPT.contains("`tail`"));
+    }
 
     fn names(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
