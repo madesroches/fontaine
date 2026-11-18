@@ -95,6 +95,9 @@ in `fontaine-tui` with `.workspace = true`.
 `TicketPrompt::body` takes `(width, height, linear, theme)`:
 
 - `linear` (screen reader): text ticket only, as today; the QR is never printed.
+- `NO_COLOR` set: crossterm drops the fixed black-on-white colours, so the half-block code could
+  render inverted; show the text ticket with one line saying the QR is off because `NO_COLOR` is
+  set.
 - Otherwise: heading, validity line, the QR when it fits, then "Waiting for a device to connect;
   this closes when one does." The wrapped text ticket is shown **instead of** the QR when it does
   not fit, with one line saying the terminal is too small for the QR. `c` copies the text ticket in
@@ -126,10 +129,13 @@ today:
    (`App::covered()` is split into `ticket_prompt.is_some() || self.covered_by_other_than_ticket()`,
    the latter owning the rest of the field list, and `sync_remote` tests that method; the dialog is
    `App.ticket_prompt`; `/remote` runs mid-turn, so it can sit over an approval or question, and
-   then nothing changes), call `take_pairing()` and, on `Some`, open the pairing confirmation
-   (`begin_pairing`) and clear `ticket_prompt` only when `!running.server.has_live_ticket()` (the
-   current secret was consumed, so it shows a dead code); a request queued from an earlier ticket
-   leaves a newly minted, still live ticket's dialog up.
+   then nothing changes), call `take_pairing()` only when `!running.server.has_live_ticket()` (the
+   current secret was consumed, so the dialog shows a dead code) and, on `Some`, clear
+   `ticket_prompt` and open the pairing confirmation (`begin_pairing`). When a live ticket's dialog
+   stays up, do not call `take_pairing()`: the request stays queued, as today, until the dialog is
+   dismissed and then opens, because `view::overlay` draws `ticket_prompt` first and
+   `App::handle_key` returns early on it, so a confirmation opened under the dialog could not be
+   answered before the device's 60-second timer runs out.
    `take_pairing()` already skips and audits stale requests.
 2. The dialog text says it is waiting and closes itself on connect, instead of leaving a stale
    code up. The status bar keeps `remote: ticket live`.
@@ -174,6 +180,9 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 
 - **QR in the existing dialog vs. a separate QR dialog.** One dialog keeps one owner of the
   ticket's lifetime, Drop-clearing and `c` copy; a second would duplicate all three.
+- **Accept the measured QR minimums vs. shrink the payload.** The large minimum terminal size and
+  its text fallback stay; capping addresses or a shorter encoding is a wire-format change for its
+  own issue.
 - **A shorter ticket encoding** would shrink the code further but changes the wire format #664
   shipped; out of scope here.
 
@@ -182,6 +191,15 @@ the status bar changes to `remote: no live ticket` on the next redraw.
 - 2026-11-18: the QR payload is the raw ticket uppercased, `FONTAINE-ATTACH1<BASE32>`, parsed
   case-insensitively by `Ticket::parse`, no URI scheme; the Android app (#288, not yet built) must
   accept it unchanged.
+- 2026-11-18: AFK: accept the measured QR minimums (versions 11-14, about 80x44 to 80x50) with the
+  text-ticket fallback rather than shrinking the payload, which is a wire-format change; a
+  follow-up issue for a smaller payload should be filed.
+- 2026-11-18: AFK: when `NO_COLOR` is set, show the text ticket with a one-line reason instead of
+  the QR, since the fixed black-on-white colours are dropped and the code could render inverted;
+  documented next to the screen-reader fallback in `docs/remote.md`.
+- 2026-11-18: AFK: over a ticket dialog, call `take_pairing()` only when `!has_live_ticket()`, then
+  clear `ticket_prompt` and open the confirmation; with a live ticket's dialog up the request stays
+  queued until the dialog is dismissed, since the dialog hides and swallows keys for a confirmation.
 
 ## Documentation
 
@@ -189,7 +207,7 @@ the status bar changes to `remote: no live ticket` on the next redraw.
   `/remote on`, `/remote ticket` and `fontaine --remote` show the code too, the minimum terminal
   size (measured: about 44 rows for a relay-disabled ticket to about 50 for relay default with IPv6
   addresses, at any width of 80 or more), the text fallback,
-  that the screen-reader renderer prints the text ticket only, and that the confirmation and TTL
+  that the screen-reader renderer and `NO_COLOR` print the text ticket only, and that the confirmation and TTL
   rules are unchanged.
 - `docs/remote.md:8` and its command block (lines 14-22): name `/remote-control` (and
   `/remote control`) among the ways to turn remote control on and the subcommands.
