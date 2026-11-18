@@ -513,9 +513,20 @@ mod tests {
 
     #[test]
     fn free_ports_are_loopback_ports_that_can_be_bound() {
-        let port = free_port().unwrap();
-        assert!(port > 0);
-        std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        // Parallel tests can take the port between free_port() and the bind, so retry with a fresh one.
+        let mut last_err = None;
+        for _ in 0..5 {
+            let port = free_port().unwrap();
+            assert!(port > 0);
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(_) => return,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        panic!(
+            "no free port could be bound in 5 attempts: {}",
+            last_err.expect("the loop ran at least once")
+        );
     }
 
     #[test]
