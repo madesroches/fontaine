@@ -69,11 +69,11 @@ impl TicketPrompt {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let heading = Line::styled("Remote ticket (shown once)", bold.fg(theme.heading));
         let width = width.max(1);
-        let mut reason = None;
+        let mut reason: Option<String> = None;
         if linear {
             // The screen reader would read the modules aloud; the text ticket is what it gets.
         } else if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
-            reason = Some("The QR code is off because NO_COLOR is set.");
+            reason = Some("The QR code is off because NO_COLOR is set.".into());
         } else {
             let validity = Line::raw(format!(
                 "Valid for {}, good for one pairing; you confirm the device here.",
@@ -82,17 +82,24 @@ impl TicketPrompt {
             let waiting = Line::raw("Waiting for a device to connect; this closes when one does.");
             let text_rows = 2 + validity.to_string().chars().count().div_ceil(width).max(1);
             let grid = self.qr_grid.get_or_init(|| Grid::encode(&self.qr_payload));
-            match grid
-                .as_ref()
-                .and_then(|g| g.render(width, height.saturating_sub(text_rows)))
-            {
-                Some(code) => {
-                    let mut out = vec![heading, validity];
-                    out.extend(code);
-                    out.push(waiting);
-                    return out;
-                }
-                None => reason = Some("The terminal is too small to show the QR code."),
+            let code_rows = height.saturating_sub(text_rows);
+            match grid {
+                Some(g) => match g.render(width, code_rows) {
+                    Some(code) => {
+                        let mut out = vec![heading, validity];
+                        out.extend(code);
+                        out.push(waiting);
+                        return out;
+                    }
+                    None => {
+                        let (cols, rows) = g.size();
+                        reason = Some(too_small_reason(
+                            cols.saturating_sub(width),
+                            (rows + text_rows).saturating_sub(height),
+                        ));
+                    }
+                },
+                None => reason = Some("The ticket is too long for a QR code.".into()),
             }
         }
         let mut out = vec![
@@ -121,6 +128,21 @@ impl TicketPrompt {
             dim,
         )]
     }
+}
+
+fn too_small_reason(more_columns: usize, more_rows: usize) -> String {
+    let mut clauses = Vec::new();
+    if more_rows > 0 {
+        clauses.push(format!(
+            "The terminal is too short for the QR code: it needs {more_rows} more rows."
+        ));
+    }
+    if more_columns > 0 {
+        clauses.push(format!(
+            "The terminal is too narrow for the QR code: it needs {more_columns} more columns."
+        ));
+    }
+    clauses.join(" ")
 }
 
 impl Drop for TicketPrompt {
@@ -164,7 +186,6 @@ mod tests {
                 .any(|l| l == "On the other device: FONTAINE_TICKET=<ticket> fontaine attach")
         );
         assert!(!text.iter().any(|l| l.contains("--ticket-stdin")));
-        assert!(text.iter().any(|l| l.contains("too small")));
         assert!(text.iter().any(|l| l == "fontaine-attach1abc"));
     }
 
@@ -183,7 +204,67 @@ mod tests {
         assert!(text.last().unwrap().starts_with("Waiting for a device"));
         assert_eq!(body.len(), 1 + 1 + 39 + 1);
         let small = prompt(639).body(78, 41, false, &Theme::default());
-        assert!(text_has(&small, "too small"));
+        assert!(text_has(&small, "too short for the QR code"));
+    }
+
+    fn reason_for(len: usize, width: usize, height: usize) -> Option<String> {
+        let body = prompt(len).body(width, height, false, &Theme::default());
+        let lines = text(&body);
+        lines
+            .into_iter()
+            .find(|l| l.starts_with("The ") && l.contains("QR code"))
+    }
+
+    fn skip_no_color() -> bool {
+        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+    }
+
+    #[test]
+    fn a_wide_short_terminal_blames_the_rows_only() {
+        if skip_no_color() {
+            return;
+        }
+        let reason = reason_for(639, 190, 20).expect("a reason");
+        assert!(reason.contains("too short") && reason.contains("more rows"));
+        assert!(!reason.contains("narrow") && !reason.contains("columns"));
+        // 39 code rows + 3 text rows needed, 20 given.
+        assert!(reason.contains("needs 22 more rows"), "{reason}");
+    }
+
+    #[test]
+    fn a_narrow_tall_terminal_blames_the_columns_only() {
+        if skip_no_color() {
+            return;
+        }
+        let reason = reason_for(639, 40, 80).expect("a reason");
+        assert!(reason.contains("too narrow") && reason.contains("more columns"));
+        assert!(!reason.contains("rows"));
+    }
+
+    #[test]
+    fn a_small_terminal_names_both() {
+        if skip_no_color() {
+            return;
+        }
+        let reason = reason_for(639, 40, 20).expect("a reason");
+        assert!(reason.contains("more rows") && reason.contains("more columns"));
+    }
+
+    #[test]
+    fn no_reason_when_the_code_fits() {
+        if skip_no_color() {
+            return;
+        }
+        assert_eq!(reason_for(639, 190, 60), None);
+    }
+
+    #[test]
+    fn a_payload_beyond_qr_capacity_says_the_ticket_is_too_long() {
+        if skip_no_color() {
+            return;
+        }
+        let reason = reason_for(5000, 190, 80).expect("a reason");
+        assert_eq!(reason, "The ticket is too long for a QR code.");
     }
 
     #[test]
