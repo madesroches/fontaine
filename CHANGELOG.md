@@ -11,8 +11,7 @@ All notable changes are recorded here. The format follows
 - `/remote-control [--ttl <duration>]` turns remote control on (or mints a fresh ticket when it is
   on) and shows the attach ticket as a QR code in the ticket dialog, so a phone can scan it
   instead of a person transcribing it (#706). `/remote on`, `/remote ticket` and `fontaine --remote`
-  show the code too. It needs a terminal of about 44 to 50 rows; a smaller one, `NO_COLOR` and the
-  screen-reader renderer show the text ticket. The dialog now closes and the host confirmation opens
+  show the code too. `NO_COLOR` and the screen-reader renderer show the text ticket. The dialog now closes and the host confirmation opens
   as soon as a device presents the ticket. `Ticket::parse` reads the prefix in any case.
 - A headless run (`fontaine -p`, the stream-json surface, SDK embedders that set `headless`) recovers
   MCP servers by itself, as Claude Code's non-interactive sessions do (#538). A remote server whose
@@ -24,9 +23,12 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
-- The remote ticket dialog says which dimension is short when the QR code does not fit, and at least
-  how many more rows or columns it needs, instead of "too small" (#708). A ticket too long to
-  encode says so.
+- The remote ticket is about half the size (#708): it is encoded as binary (ticket version 3, so a
+  ticket from an older build no longer parses), and a host on the default relay carries only its node
+  id, which the device resolves by address lookup. The QR code is about 41 by 21 cells and is always
+  drawn whole; a dialog too short for it says to enlarge the window by at least N rows, and only a
+  terminal too narrow gets the text ticket, with the columns it needs. A ticket too long to encode
+  says so.
 - A subagent type limited to `shell(...)` allow entries now says why it refused a command when a part
   of it would have matched: the denial names the chain, pipe, redirect or substitution, and the
   `reviewer` prompt tells it to run commands bare, without `2>&1 | tail` (#697). The decision does

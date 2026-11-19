@@ -79,14 +79,17 @@ parser reads like the lowercase form. Nothing else changes: the device still pai
 confirmation in the host terminal, the ticket still lives 10 minutes unless you give `--ttl` and is
 good for one pairing, and the ticket and code are never recorded.
 
-The code is large, because a ticket holds the host's addresses. It needs a terminal about 80 columns
-wide and about 44 rows tall for a ticket with relay disabled, up to about 50 rows for the default
-relay with IPv6 addresses. Resizing redraws the dialog. When the terminal is too small the dialog
-shows the text ticket instead, with a line saying at least how many more rows or columns the code
-needs (a minimum, since an expanded todo or agent list can absorb added height), and `c` copies the
-text ticket either way. The screen-reader renderer and a terminal with `NO_COLOR` set always print
-the text ticket only: the code is drawn in fixed black on white and would not scan without those
-colors.
+The ticket is small because it holds little. On the default relay the host publishes its node id to
+iroh's address lookup, so the ticket carries the id and the one-time secret and the device finds the
+host by lookup; the code is about 41 columns wide and 21 rows tall. A custom relay is not published,
+so its ticket also carries the relay URL, and a host with the relay disabled keeps its direct
+addresses, which make the code larger. Resizing redraws the dialog. The code is always drawn whole: if
+the dialog is too short for it, a line above the code says by at least how many rows to enlarge the
+window (a minimum, since an expanded todo or agent list can absorb added height). Only a terminal
+too narrow for the code gets the text ticket, with a line saying at least how many more columns it
+needs. `c` copies the text ticket either way. The screen-reader renderer and a terminal with
+`NO_COLOR` set always print the text ticket only: the code is drawn in fixed black on white and
+would not scan without those colors.
 
 ## Revoking a device
 
@@ -219,8 +222,8 @@ relay = "disabled"
 With `disabled`, nothing is published, the host listens for direct connections only, and a device
 dials the addresses it stored at its last attach and queries no lookup service. Direct-only users
 reattach through those stored addresses; a self-hosted lookup service is not supported. `relay` is
-user-scope only, and a project file that sets it is refused. The first pairing needs no lookup: the
-ticket carries the host's addresses. `fontaine attach` reads only the user-scope `[remote] relay`.
+user-scope only, and a project file that sets it is refused. The first pairing of a host on the default relay finds it by lookup from the ticket's node id; with
+a custom or disabled relay the ticket carries the addresses. `fontaine attach` reads only the user-scope `[remote] relay`.
 
 ## Errors and exit codes
 

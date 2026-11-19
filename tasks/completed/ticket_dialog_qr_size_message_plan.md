@@ -48,5 +48,8 @@ Unit tests in `ticket_prompt.rs` (long ticket, 639 chars, as in the existing tes
 - an oversized payload that does not encode (`sample_payload` far beyond QR capacity): the "too long for a QR code" reason.
 - A unit test in `qr.rs` that `size()` agrees with the `render` boundary (fits at exactly `size`, `None` one row or column below).
 
+## Decisions
+- 2026-11-18: Superseded in part: the ticket became postcard binary (version 3) and, on the default relay, id-only, so the code is about 41x21; the code is drawn whole when too short (notice above it), and only a too-narrow terminal gets the text ticket.
+
 ## Open Questions
 None.
