@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(lines.len(), 1 + 1 + 1 + 39 + 1);
         // 39 code rows + 3 text rows needed, 20 given; the notice comes before the code.
         assert!(
-            lines[1].contains("enlarge the window by at least 22 rows"),
+            lines[1].contains("enlarge the window by at least 22 more rows"),
             "{}",
             lines[1]
         );
