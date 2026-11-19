@@ -22,10 +22,20 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/stage/lib"
 
-(cd "$here/.." && cargo ndk -t arm64-v8a -o "$work/stage/lib" build -p fontaine-android --release)
+# dear-imgui-sys links c++_shared on Android; without the flag libc++_shared.so is not copied next
+# to the library, so it is not packaged and the app fails to load.
+(cd "$here/.." && cargo ndk -t arm64-v8a -o "$work/stage/lib" --link-libcxx-shared build -p fontaine-android --release)
+
+# The version comes from the workspace so it cannot drift from the release tag, which the release
+# workflow checks against it; the code is major*1000000 + minor*1000 + patch so it only grows.
+version="$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' "$here/../Cargo.toml" | head -n 1)"
+[ -n "$version" ] || { echo "build-apk: no version in rust/Cargo.toml" >&2; exit 1; }
+IFS=. read -r major minor patch <<<"$version"
+code=$((major * 1000000 + minor * 1000 + patch))
 
 "$tools/aapt2" link -o "$work/base.apk" --manifest "$here/AndroidManifest.xml" \
-  -I "$platform" --min-sdk-version 26 --target-sdk-version 34
+  -I "$platform" --min-sdk-version 26 --target-sdk-version 34 \
+  --version-name "$version" --version-code "$code"
 (cd "$work/stage" && zip -q -r "$work/base.apk" lib)
 "$tools/zipalign" -p -f 4 "$work/base.apk" "$work/aligned.apk"
 

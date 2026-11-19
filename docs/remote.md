@@ -87,17 +87,17 @@ iroh's address lookup, so the ticket carries the id and the one-time secret and 
 host by lookup; the code is about 41 columns wide and 21 rows tall, the same as before the link
 prefix. A custom relay is not published, so its ticket also carries the relay URL, and a host with
 the relay disabled keeps its direct addresses, which make the code larger (the link prefix adds up
-to 4 columns and 2 rows for such a ticket).
+to 4 columns and 2 rows for such a ticket). Resizing redraws the dialog. The code is always drawn
+whole: if the dialog is too short for it, a line above the code says by at least how many rows to
+enlarge the window (a minimum, since an expanded todo or agent list can absorb added height). Only a
+terminal too narrow for the code gets the text ticket, with a line saying at least how many more
+columns it needs. `c` copies the text ticket either way. The screen-reader renderer and a terminal
+with `NO_COLOR` set always print the text ticket only: the code is drawn in fixed black on white and
+would not scan without those colors.
 
 A link only asks to pair: any app or page can open it, and the ticket in it is a bearer secret. The
 confirmation in the host terminal is what authorizes a device, and the Android app asks "Pair with
-`<host id>`?" before it connects. Resizing redraws the dialog. The code is always drawn whole: if
-the dialog is too short for it, a line above the code says by at least how many rows to enlarge the
-window (a minimum, since an expanded todo or agent list can absorb added height). Only a terminal
-too narrow for the code gets the text ticket, with a line saying at least how many more columns it
-needs. `c` copies the text ticket either way. The screen-reader renderer and a terminal with
-`NO_COLOR` set always print the text ticket only: the code is drawn in fixed black on white and
-would not scan without those colors.
+`<host id>`?" before it connects.
 
 ## The Android app
 

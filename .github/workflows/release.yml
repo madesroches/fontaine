@@ -285,9 +285,9 @@ jobs:
           name: artifacts-build-android
           path: ${{ runner.temp }}/apk/fontaine-android.apk
 
-  # Signs every archive and both installers. The only job in the workflow that names an environment, so the signing
-  # secrets are in scope here and nowhere else; it runs no build tools and no code from the
-  # artifacts it downloads.
+  # Signs every archive, both installers and the APK (Android signature, then minisign). The only job in
+  # the workflow that names an environment, so the signing secrets are in scope here and nowhere else;
+  # apksigner is the one build tool it runs, and it runs no code from the artifacts it downloads.
   sign:
     needs:
       - plan
