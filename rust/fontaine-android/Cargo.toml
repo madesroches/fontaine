@@ -1,0 +1,32 @@
+[package]
+name = "fontaine-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fontaine-remote.workspace = true
+rqrr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity.workspace = true
+android_logger.workspace = true
+dear-imgui-sys.workspace = true
+jni.workspace = true
+khronos-egl.workspace = true
+log.workspace = true
+ndk.workspace = true
+ndk-sys.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+qrcode.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

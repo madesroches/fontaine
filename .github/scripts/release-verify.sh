@@ -2,7 +2,8 @@
 # Usage: release-verify.sh <channel> <dir> <pubkey> <version> <commit>
 # Fails on the first problem; success means every archive in <dir> is signed by <pubkey> with
 # the exact trusted comment binding and matches its checksums. The shell and PowerShell installers
-# are accepted on the release channel only, and there they must carry a valid .minisig too. The kind
+# are accepted on the release channel only, and there they must carry a valid .minisig too, as must
+# fontaine-android.apk, which FONTAINE_REQUIRE_APK=1 makes mandatory. The kind
 # `dev-installer` checks a directory holding exactly both signed dev installers and their .minisig.
 set -euo pipefail
 
@@ -31,6 +32,7 @@ esac
 [ -f "$pubkey" ] || fail "'$pubkey' is not a file"
 
 installers=(fontaine-installer.sh fontaine-installer.ps1)
+apk=fontaine-android.apk
 
 check_installer() { # check_installer <path> <channel>
   local path="$1" name
@@ -77,6 +79,8 @@ for path in "$dir"/* "$dir"/.[!.]*; do
     # Dev tags are `dev-<n>`, but dist bakes a `v<version>` download URL into the installer.
     fontaine-installer.sh | fontaine-installer.sh.minisig | fontaine-installer.ps1 | fontaine-installer.ps1.minisig)
       [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
+    fontaine-android.apk | fontaine-android.apk.minisig)
+      [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
     *) fail "unrecognised asset '$name'" ;;
   esac
 done
@@ -115,5 +119,11 @@ done
 for name in "${installers[@]}"; do
   [ -f "$dir/$name" ] && check_installer "$dir/$name" release
 done
+
+if [ -f "$dir/$apk" ]; then
+  check_installer "$dir/$apk" release
+elif [ "${FONTAINE_REQUIRE_APK:-}" = 1 ]; then
+  fail "$apk is missing"
+fi
 
 echo "release-verify: ${#archives[@]} archives verified for channel $channel"

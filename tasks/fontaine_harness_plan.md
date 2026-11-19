@@ -230,6 +230,7 @@ fontaine/
 │   │                           #   `Session`), `error`; full choke-point tests: `fontaine-sdk/tests/{core,tools}_choke_point.rs`
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
 │   ├── fontaine-remote/        # remote control over iroh (`fontaine attach`, `--remote`, `/remote`): attach protocol, ticket, paired-device data type and store trait, per-device sessions, server, client; core-free, no file I/O, meets the TUI only through the `HostSession` trait
+│   ├── fontaine-android/       # Android remote-control app (cdylib + rlib): portable `link`, `model`, `store`, `scan`, `app` modules host-tested on every OS, and an Android-only layer (NativeActivity, GLES, Dear ImGui, NDK camera, JNI) behind `cfg(target_os = "android")`; depends on `fontaine-remote` only
 │   ├── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
 │   └── fontaine-testkit/       # dev-only test helper crate: builds/locates Cargo example binaries
 │                               #   (`example_bin`) for integration tests
@@ -248,6 +249,7 @@ fontaine (bin+lib)       ─▶ fontaine-sdk, fontaine-tui, fontaine-remote
 fontaine-evals (bin+lib) ─▶ fontaine-sdk
 fontaine-tui          ─▶ fontaine-sdk, fontaine-remote
 fontaine-remote       ─▶ (no Fontaine crates; pulls iroh)
+fontaine-android      ─▶ fontaine-remote (fontaine-tui depends on it in dev only, for the model contract test)
 fontaine-sdk          ─▶ (no Fontaine crates; inside it `core` uses `tools`, `guardian` and `agents`, `agents` uses `tools`, and `tools` and `guardian` never use `core`)
 fontaine-testkit      ─▶ (no Fontaine crates; dev-dependency of fontaine, fontaine-sdk, fontaine-tui)
 ```
@@ -486,6 +488,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-15 (#175, AFK): No api-base override ships in the production binary; gating is tested as a pure predicate and the pass is driven through `Params`; `update-e2e.yml` uses the default GitHub feed (`fontaine update` on every OS) and there is no Windows hidden pass entry point. Reason: an override would move the trust root's feed.
 - 2026-11-15 (#175, AFK): The Windows helper (a separate process that waits, then swaps) is kept instead of an in-process rename-aside. Reason: an in-process swap leaves already-running sessions on a renamed `.old` file and lets the session replace itself, which the issue forbids.
 - 2026-11-15 (#175): update-e2e.yml runs the manual `fontaine update` on every OS and does not drive the TUI background pass; reason: the workspace trust prompt would have to be bypassed in CI.
+- 2026-11-18 (#710): The Android app is the crate `rust/fontaine-android` (cdylib + rlib), with its Android-only layer behind `cfg(target_os = "android")` and its Android-only dependencies under `cfg(target_os = "android")`, so `members = ["*"]` builds, lints and tests its portable part on every OS. Reason: no AGENTS.md layout exception, and the host CI covers everything that needs no phone.
+- 2026-11-18 (#710): The step-1 spike could not run (no NDK or phone on the authoring host), so the choices are made from the crates' documented APIs and are unverified on a device: UI is Dear ImGui through `dear-imgui-sys` 0.22.0 (`backend-shim-android` and `backend-shim-opengl3`, the official Android and GLES3 backends) on `android-activity` 0.6.1 NativeActivity with EGL through `khronos-egl` (dynamic loading), the NDK camera and image reader through `ndk-sys` for frames, `rqrr` 0.11.0 (pure Rust, no `image` feature) for QR decoding, `jni` 0.21.1 for permission, device model and intent data. All are pinned exactly in `[workspace.dependencies]`; `cargo deny check` passes. The Android CI job is where the first real compile happens.
+- 2026-11-18 (#710): The app keeps its own lenient read-only mirror of `Snapshot`, `RemoteEvent`, `Status`, `Dialog` and a simplified `Entry` instead of moving `fontaine-tui`'s types, which pull in the sdk and ratatui; a unit test in `fontaine-tui` decodes real host output with it (`fontaine-android` is a dev-dependency of `fontaine-tui`).
+- 2026-11-18 (#710): The QR payload is the link `fontaine://pair/` plus the uppercased ticket body (the prefix stays lowercase so Android matches the scheme); `Ticket::parse` accepts the link, the prefixed `fontaine-attach1` ticket and the bare body, each in any case, and `fontaine attach` accepts all three. The text ticket shown to users stays the prefixed form. Measured: a ticket with a relay and three addresses grows from 53 by 27 to 57 by 29 cells (the link adds 4 columns and 2 rows; the shorter id-only ticket stays 41 by 21); `docs/tui.md` records it.
+- 2026-11-18 (#710): v1 keeps the device key in the app-private files directory (owner-only) and defers Keystore wrapping, because wrapping adds JNI and Keystore plumbing that pairing and attaching do not need.
+- 2026-11-18 (#710, AFK): The release APK is built unsigned by `build-android`, which feeds the `artifacts-*` set; the `sign` job (environment `release-signing`, the only holder of the keystore) applies the Android signature with `apksigner` and the minisign signature through `release-sign.sh`, and `release-verify.sh` accepts `fontaine-android.apk` on the release channel only and requires it when `FONTAINE_REQUIRE_APK=1` (set in `verify-draft`). The minisign file is the trust anchor; PR builds are debug-signed and never published.
+- 2026-11-18 (#710, AFK): TalkBack and accessibility for the ImGui UI are not required for v1; `docs/android.md` says so, and it is revisited as a separate issue.
 
 ### Config
 

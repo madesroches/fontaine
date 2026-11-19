@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: release-sign.sh <channel> <dir> <pubkey> <version> <commit>
-# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir>, plus fontaine-installer.sh and
-# fontaine-installer.ps1 when present on the release channel, with the secret key in
+# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir>, plus fontaine-installer.sh,
+# fontaine-installer.ps1 and fontaine-android.apk when present on the release channel, with the secret key in
 # MINISIGN_SECRET_KEY (password in MINISIGN_PASSWORD), then runs release-verify.sh over the result.
 # The kind `dev-installer` instead signs both installers, which must be in <dir>, under channel dev.
 set -euo pipefail
@@ -32,6 +32,8 @@ esac
 [ -d "$dir" ] || fail "'$dir' is not a directory"
 
 installers=(fontaine-installer.sh fontaine-installer.ps1)
+# Shipped on the release channel only, like the installers: it has no dist checksum files.
+apk=fontaine-android.apk
 archives=()
 if [ "$channel" = dev-installer ]; then
   for name in "${installers[@]}"; do
@@ -50,6 +52,7 @@ else
     for name in "${installers[@]}"; do
       [ -f "$dir/$name" ] && archives+=("$dir/$name")
     done
+    [ -f "$dir/$apk" ] && archives+=("$dir/$apk")
   fi
   signed_channel="$channel"
 fi

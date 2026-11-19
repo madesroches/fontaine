@@ -1,0 +1,69 @@
+name: Android
+
+# The portable part of fontaine-android is built and tested by ci.yml on every OS; this workflow
+# builds the Android-only layer and the APK, which need the NDK.
+on:
+  pull_request:
+    paths:
+      - "rust/fontaine-android/**"
+      - "rust/fontaine-remote/**"
+      - ".github/workflows/android.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rust/fontaine-android/**"
+      - "rust/fontaine-remote/**"
+      - ".github/workflows/android.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+concurrency:
+  group: android-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Locate the NDK
+        run: echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: Clippy
+        run: cargo ndk -t arm64-v8a clippy -p fontaine-android --all-targets -- -D warnings
+
+      # Debug-signed so it installs for a manual check; never uploaded as a release asset.
+      - name: Build the APK
+        run: fontaine-android/build-apk.sh "$RUNNER_TEMP/fontaine-android-debug.apk" --debug-sign
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fontaine-android-debug-apk
+          path: ${{ runner.temp }}/fontaine-android-debug.apk
+          retention-days: 7

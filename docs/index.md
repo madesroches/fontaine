@@ -30,6 +30,8 @@ describe what the current build does; each page covers one topic.
 - [Remote control](remote.md): `fontaine --remote`, `/remote` and `fontaine attach`, a full terminal UI on
   another machine that drives a live session over iroh, device pairing and revoking, what a device can
   and cannot do, reconnecting, `attach --message`, relay privacy and the exit codes.
+- [Android app](android.md): the sideloaded phone app that scans the host's QR code, pairs through the
+  host confirmation, and drives the session; install, pairing, reattaching and limits.
 - [User hooks](hooks.md): the tool, prompt, turn, subagent, compaction, session and notification
   events, the `command`, `http` and `prompt` handlers, their JSON input and output, and what a
   hook can and cannot decide.

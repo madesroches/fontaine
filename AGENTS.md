@@ -85,8 +85,10 @@ all tests pass:
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-sdk` (the embeddable agent; its
   `core`, `tools`, `agents` and `guardian` modules hold what were four crates, and its crate root
   is the one documented, semver-stable surface), `fontaine-tui`, `fontaine-remote` (iroh transport
-  for `fontaine attach` and `/remote`; core-free), `fontaine-evals`, `fontaine-testkit`
-  (dev-only test helpers).
+  for `fontaine attach` and `/remote`; core-free), `fontaine-android` (the Android remote-control
+  app: a portable part tested on every OS and an Android-only layer behind
+  `cfg(target_os = "android")`; depends on `fontaine-remote` only), `fontaine-evals`,
+  `fontaine-testkit` (dev-only test helpers).
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.
   No custom provider layer; no custom agent loop or history management. Do not adopt rig's
