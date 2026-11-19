@@ -11,8 +11,9 @@ All notable changes are recorded here. The format follows
 - `/remote-control [--ttl <duration>]` turns remote control on (or mints a fresh ticket when it is
   on) and shows the attach ticket as a QR code in the ticket dialog, so a phone can scan it
   instead of a person transcribing it (#706). `/remote on`, `/remote ticket` and `fontaine --remote`
-  show the code too. `NO_COLOR` and the screen-reader renderer show the text ticket. The dialog now closes and the host confirmation opens
-  as soon as a device presents the ticket. `Ticket::parse` reads the prefix in any case.
+  show the code too. `NO_COLOR` and the screen-reader renderer show the text ticket. The dialog now
+  closes and the host confirmation opens as soon as a device presents the ticket. `Ticket::parse`
+  reads the prefix in any case.
 - A headless run (`fontaine -p`, the stream-json surface, SDK embedders that set `headless`) recovers
   MCP servers by itself, as Claude Code's non-interactive sessions do (#538). A remote server whose
   five reconnect attempts failed on a transient error is retried in the background for 30 minutes
