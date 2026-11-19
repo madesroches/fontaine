@@ -25,11 +25,11 @@ pub enum Tap {
     Back,
 }
 
-const WINDOW_FLAGS: i32 = (sys::ImGuiWindowFlags_NoTitleBar
+const WINDOW_FLAGS: i32 = sys::ImGuiWindowFlags_NoTitleBar
     | sys::ImGuiWindowFlags_NoResize
     | sys::ImGuiWindowFlags_NoMove
     | sys::ImGuiWindowFlags_NoCollapse
-    | sys::ImGuiWindowFlags_NoSavedSettings) as i32;
+    | sys::ImGuiWindowFlags_NoSavedSettings;
 
 fn c(text: &str) -> CString {
     CString::new(text.replace('\0', "")).expect("NUL bytes were removed")
@@ -61,7 +61,7 @@ fn colored(rgba: [f32; 4], body: &str) {
         w: rgba[3],
     };
     // SAFETY: a frame is open; the pushed color is popped below.
-    unsafe { sys::igPushStyleColor_Vec4(sys::ImGuiCol_Text as i32, color) };
+    unsafe { sys::igPushStyleColor_Vec4(sys::ImGuiCol_Text, color) };
     wrapped(body);
     // SAFETY: balances the push above.
     unsafe { sys::igPopStyleColor(1) };
@@ -97,8 +97,8 @@ pub fn draw(
     let title = c("fontaine");
     // SAFETY: a frame is open; the window is closed by the `igEnd` below.
     unsafe {
-        sys::igSetNextWindowPos(v2(0.0, 0.0), sys::ImGuiCond_Always as i32, v2(0.0, 0.0));
-        sys::igSetNextWindowSize(v2(display.0, display.1), sys::ImGuiCond_Always as i32);
+        sys::igSetNextWindowPos(v2(0.0, 0.0), sys::ImGuiCond_Always, v2(0.0, 0.0));
+        sys::igSetNextWindowSize(v2(display.0, display.1), sys::ImGuiCond_Always);
         sys::igBegin(title.as_ptr(), std::ptr::null_mut(), WINDOW_FLAGS);
     }
     if let Some(notice) = view.notice {

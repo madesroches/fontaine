@@ -61,7 +61,7 @@ jobs:
         run: echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)" >> "$GITHUB_ENV"
 
       - name: Clippy
-        run: cargo ndk -t arm64-v8a clippy -p fontaine-android --all-targets -- -D warnings
+        run: cargo ndk -t arm64-v8a --platform 26 clippy -p fontaine-android --all-targets -- -D warnings
 
       # Debug-signed so it installs for a manual check; never uploaded as a release asset.
       - name: Build the APK

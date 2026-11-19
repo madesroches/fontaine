@@ -24,7 +24,7 @@ mkdir -p "$work/stage/lib"
 
 # dear-imgui-sys links c++_shared on Android; without the flag libc++_shared.so is not copied next
 # to the library, so it is not packaged and the app fails to load.
-(cd "$here/.." && cargo ndk -t arm64-v8a -o "$work/stage/lib" --link-libcxx-shared build -p fontaine-android --release)
+(cd "$here/.." && cargo ndk -t arm64-v8a --platform 26 -o "$work/stage/lib" --link-libcxx-shared build -p fontaine-android --release)
 
 # The version comes from the workspace so it cannot drift from the release tag, which the release
 # workflow checks against it; the code is major*1000000 + minor*1000 + patch so it only grows. A

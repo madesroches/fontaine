@@ -219,7 +219,7 @@ impl Imgui {
             let io = sys::igGetIO_Nil();
             sys::ImGuiIO_AddMousePosEvent(io, x, y);
             if let Some(down) = down {
-                sys::ImGuiIO_AddMouseButtonEvent(io, sys::ImGuiMouseButton_Left as i32, down);
+                sys::ImGuiIO_AddMouseButtonEvent(io, sys::ImGuiMouseButton_Left, down);
             }
         }
     }
