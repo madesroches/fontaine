@@ -24,6 +24,7 @@ khronos-egl.workspace = true
 log.workspace = true
 ndk.workspace = true
 ndk-sys.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

@@ -17,6 +17,7 @@ use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use dear_imgui_sys as sys;
 use fontaine_remote::{AttachOptions, Client, ClientStore, RelayMode, Target};
 use khronos_egl as egl;
+use sha2::{Digest, Sha256};
 
 use crate::app::{Action, App, Screen};
 use crate::keys::{self, Key};
@@ -234,8 +235,9 @@ struct Activity {
     permission_stale: bool,
     /// A failed start is not retried until the permission is checked again.
     camera_failed: bool,
-    /// The last pairing link taken from the intent, so a resume does not process it twice.
-    last_link: Option<String>,
+    /// Digest of the last pairing link taken from the intent, so a resume does not process it
+    /// twice; a digest because the link carries a bearer secret.
+    last_link: Option<[u8; 32]>,
     label: String,
     scale: f32,
 }
@@ -245,11 +247,12 @@ impl Activity {
         let Some(link) = jni_bridge::intent_link(&self.android).filter(|l| is_pair_link(l)) else {
             return;
         };
-        if self.last_link.as_deref() == Some(link.as_str()) {
+        let digest: [u8; 32] = Sha256::digest(link.as_bytes()).into();
+        if self.last_link == Some(digest) {
             return;
         }
         self.app.submit_link(&link);
-        self.last_link = Some(link);
+        self.last_link = Some(digest);
     }
 
     fn refresh_hosts(&mut self) {
@@ -560,6 +563,8 @@ fn android_main(app: AndroidApp) {
                     }
                     MainEvent::Resume { .. } => {
                         activity.permission_stale = true;
+                        // getIntent() stays the launch intent, so this only catches a launch link
+                        // after the activity was recreated; a link opened while running is not seen.
                         activity.take_intent_link();
                     }
                     MainEvent::Destroy => running = false,

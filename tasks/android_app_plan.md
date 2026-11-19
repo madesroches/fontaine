@@ -185,6 +185,7 @@ Play Store publishing.
 - AFK: Release APK is built by a job feeding `artifacts-*`, minisigned in the existing `sign` job and added to `release-verify.sh`'s expected assets; its Android install signature uses a keystore held only in the `release-signing` environment, never in a build job, and the minisign file is the trust anchor; PR builds are debug-signed and never published.
 - AFK: The link carries the ticket's base32 body only (`fontaine://pair/<body>`) and `Ticket::parse` accepts the bare body, the prefixed `fontaine-attach1` ticket and the link; the QR must fit #709's terminal minimums for the same ticket or the measured growth is recorded in `docs/tui.md`.
 - AFK: TalkBack/accessibility for the ImGui UI is not required for v1; the app ships without it, `docs/android.md` says so, and it is revisited as a separate issue.
+- AFK: 2026-11-18: a system-camera link only starts pairing when it launches the app (cold start); with the app already running, use the in-app scanner or paste, because stock `NativeActivity` does not update `getIntent()` on a new intent and a Java subclass would need a dex build; revisit as a follow-up.
 
 ## Documentation
 
@@ -224,7 +225,7 @@ on a phone:
 
 1. `fontaine --remote` on a desktop; open the app, scan the terminal QR; expected: the app shows the
    host id, the desktop shows the pairing confirmation, `y` pairs, the transcript appears.
-2. Scan the same QR with the system camera; expected: Android offers to open Fontaine and lands on the
+2. With the app not already running, scan the same QR with the system camera; expected: Android offers to open Fontaine and lands on the
    same pairing screen.
 3. Send a prompt, answer an approval from the phone, interrupt; expected: the host ledger records the
    phone's node id.

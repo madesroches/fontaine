@@ -20,7 +20,8 @@ signature is what proves who made the file.
 1. On the host, run `fontaine --remote`, or `/remote-control` or `/remote on` in a session. A QR code
    appears in the ticket dialog.
 2. Open the app and point the camera at the code, or scan it with the system camera: Android offers
-   to open Fontaine and lands on the same screen.
+   to open Fontaine and lands on the same screen. The system camera only works when the app is not
+   already running; a link opened while it runs is ignored, so use the in-app scanner or paste instead.
 3. The app shows "Pair with `<host id>`?". Nothing connects until you agree.
 4. The host terminal asks you to confirm the device. Press `y` there. The app moves on to the session
    when the host says the pairing is done.
