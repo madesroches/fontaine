@@ -47,7 +47,9 @@ can be tested without a phone:
 - `app`: the session state machine (screens: Scan, Pairing, Session, Error), driven by input events and
   `ClientEvent`s, producing a view model; ImGui code only renders it and forwards taps.
 - `store`: `ClientStore` over a directory the activity hands in (the app's private files dir), with
-  the device key kept owner-only and, as a later hardening, wrapped by an Android Keystore key.
+  the device key kept owner-only and, as a later hardening, wrapped by an Android Keystore key. It is
+  a small first-party file store (atomic write, 0600 on unix, a `cfg(unix)` permission assertion in its
+  test), since `fontaine-tui`'s `FileStore` uses sdk helpers this crate cannot import.
 
 The ImGui renderer, camera, IME bridge and activity glue are the thin Android-only layer
 (`android` module). Build tooling is `cargo-ndk`/`cargo-apk`-style with `android-activity`; no
@@ -77,18 +79,23 @@ The app keeps its own lenient, read-only mirror types in `model` (`Snapshot`, `R
 `Status`, `Dialog`, and a simplified `Entry` with the tool, user, assistant, notice and error cases it
 renders; unknown entry kinds decode to a placeholder, unknown fields are ignored). It does not move
 `fontaine-tui`'s types: those depend on the sdk and ratatui, and a phone UI needs a smaller shape. The
-cost is a second definition of a wire shape, so drift is caught by a contract test: a `fontaine-tui`
-test serializes real host `Snapshot` and `RemoteEvent` values and decodes them with
-`fontaine-android`'s `model` (`fontaine-android` as a dev-dependency of `fontaine-tui`; the portable
-part has no cycle because it does not depend on `fontaine-tui`).
+cost is a second definition of a wire shape, so drift is caught by a contract test: a unit test inside
+`rust/fontaine-tui/src/remote/` (the types are `pub(crate)`) serializes real host `Snapshot` and
+`RemoteEvent` values and decodes them with `fontaine-android`'s `model` (`fontaine-android` as a
+dev-dependency of `fontaine-tui`; the portable part has no cycle because it does not depend on
+`fontaine-tui`).
+
+The mirror types also include simplified `Question` and `DiffPreview` shapes. Questions are one option
+per question; multi-select is answered at the host.
 
 ### Interaction
 
 - **Scan**: NDK camera frames, luma plane, decoded by a pure-Rust QR decoder (`rqrr`-class crate,
   chosen in step 1). Permission `CAMERA`, requested at first scan through JNI. A paste field is the
   fallback when the camera is denied.
-- **Pairing**: `Client::start(Target::Ticket, ..)`; `ClientEvent::Paired` stores the host in
-  `attach_hosts.json` form. Device label defaults to the Android device model. Failures map
+- **Pairing**: `Client::start(Target::Ticket, ..)`; the `Client` already stores the host through
+  the `ClientStore` before emitting `ClientEvent::Paired`; the app moves to Session only on that event.
+  Device label defaults to the Android device model. Failures map
   `Reason` to the same messages as `Reason::describe`.
 - **Session**: transcript list, status line, prompt input (soft keyboard through
   `android-activity`'s input-method API), interrupt button, and the approval/question dialog with
@@ -113,11 +120,20 @@ Play Store publishing.
    crate, and confirm `iroh` and `fontaine-remote` build for `aarch64-linux-android` with `tls-ring`.
    Record the choices in `## Decisions`.
 2. **Link format** in `fontaine-remote`: `Ticket::link`, `qr_segments`, link-aware `parse`; update
-   `fontaine-tui/src/qr.rs` and `ticket_prompt.rs` to encode segments; update `fontaine attach`.
+   `fontaine-tui/src/qr.rs` and `ticket_prompt.rs` to encode segments: `Grid::encode` and
+   `TicketPrompt` take segments (via `qrcode::bits::Bits` / `QrCode::with_bits`), and the measured-size
+   tests are re-measured with the 16-byte lowercase prefix segment; `fontaine-tui/src/ui/remote.rs`
+   calls `TicketPrompt::new` with `ticket.qr_payload()` and is updated to match. Update `fontaine
+   attach`: `attach_cmd.rs` routes to `Ticket::parse` only when the text starts with `fontaine-`; the
+   check also accepts `fontaine://pair/`.
 3. **Crate skeleton**: `rust/fontaine-android` with the portable modules, `Cargo.toml` (android-only
-   deps under `cfg(target_os = "android")`), `link`, `model`, `store`.
+   deps under `cfg(target_os = "android")`), `link`, `model`, `store`. Pin new deps exactly in
+   `rust/Cargo.toml` `[workspace.dependencies]`, update `rust/Cargo.lock` and `rust/deny.toml` if
+   needed, add the android target to `rust/rust-toolchain.toml` for the clippy step, and run
+   `cargo deny check`.
 4. **App state machine** (`app`) with the view model and `ClientEvent` handling, host-tested.
-5. **Contract test** between `fontaine-tui` host mirror output and `model`.
+5. **Contract test** (unit test in `rust/fontaine-tui/src/remote/`) between `fontaine-tui` host mirror
+   output and `model`.
 6. **Android layer**: activity loop, GLES context, ImGui renderer, camera + QR scan, IME bridge,
    manifest with the intent filter and `CAMERA` permission.
 7. **Build and release**: `.github/workflows/android.yml` builds the APK on Linux for pull requests
@@ -130,35 +146,27 @@ Play Store publishing.
 ## Files to Modify
 
 - `rust/fontaine-remote/src/ticket.rs`, `rust/fontaine-remote/src/lib.rs`
-- `rust/fontaine-tui/src/qr.rs`, `rust/fontaine-tui/src/ticket_prompt.rs`, `rust/fontaine-tui/Cargo.toml`
-  (dev-dependency), a new test under `rust/fontaine-tui/tests/` or `src/remote/`
+- `rust/fontaine-tui/src/qr.rs`, `rust/fontaine-tui/src/ticket_prompt.rs`,
+  `rust/fontaine-tui/src/ui/remote.rs`, `rust/fontaine-tui/Cargo.toml` (dev-dependency), a new unit
+  test in `rust/fontaine-tui/src/remote/`
 - `rust/fontaine/src/attach_cmd.rs`
 - `rust/fontaine-android/**` (new)
+- `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/deny.toml` (if needed), `rust/rust-toolchain.toml`
 - `.github/workflows/android.yml` (new), `.github/workflows/release.yml`
 - `docs/remote.md`, `docs/installing.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/android.md` (new)
-- `tasks/fontaine_harness_plan.md` (workspace layout, Decisions), `CHANGELOG.md`
-
-## Trade-offs
-
-- **Crate under `rust/` vs. a new root directory**: the crate avoids an AGENTS.md layout exception, and
-  `members = ["*"]` makes host CI cover the portable logic for free. The cost is that the crate must
-  compile on every host, hence the cfg gating.
-- **App-owned mirror types vs. moving `fontaine-tui`'s**: extraction would drag the sdk and ratatui
-  into the phone build or force a large refactor of the TUI; a second lenient definition plus a
-  contract test is smaller and keeps the app tolerant of host additions.
-- **Mixed-segment QR vs. all-lowercase byte mode vs. a bare ticket**: segments keep the code small
-  and the link deep-linkable; a lowercase byte-mode code is simply larger, and a bare ticket cannot
-  open the app from the system camera.
-- **ImGui vs. native widgets**: chosen by the owner; costs are IME, accessibility and text rendering,
-  handled in step 6 (accessibility is an accepted gap at first).
+- `tasks/fontaine_harness_plan.md` (workspace layout, Decisions), `AGENTS.md` (crate list),
+  `CHANGELOG.md`
 
 ## Decisions
 
 - ImGui UI, sideloaded APK, source in this repo, and a custom `fontaine://` scheme were decided on #710
   by the owner.
-- The plan assumes #709 (smaller binary ticket) has merged first; if it has not, step 2 rebases on it
-  rather than re-deriving the encoding.
-- Pairing never trusts the link: the host terminal's confirmation stays the only authorization.
+- The crate lives under `rust/`: it avoids an AGENTS.md layout exception, and `members = ["*"]` gives
+  host CI coverage of the portable part.
+- App-owned lenient mirror types plus a contract test, not moving `fontaine-tui`'s types, which pull in
+  the sdk and ratatui.
+- Mixed-segment QR: a bare ticket cannot open the app from the system camera, and all-lowercase byte
+  mode is a larger code.
 
 ## Documentation
 
@@ -173,9 +181,9 @@ Play Store publishing.
 
 Automated, in host CI, no live services:
 
-- `link`/`Ticket`: round trip of `link()` and `parse`; bare ticket still parses; uppercase and mixed
-  case; retired, malformed, unsupported-version and wrong-scheme inputs are typed errors; the
-  segmented QR payload decodes (via `qrcode`) back to a string that parses.
+- `link`/`Ticket`: `link()` round trip; a link with an uppercase ticket parses; wrong scheme or path is
+  `NotATicket`; the segment list concatenates back to a string that parses, and is the lowercase prefix
+  segment plus the uppercased ticket segment. The existing ticket tests cover the rest.
 - `model`: decoding of unknown entry kinds and extra fields; the contract test against real host
   `Snapshot`/`RemoteEvent` output.
 - `app`: the state machine over scripted `ClientEvent`s, including mid-approval disconnect leaving no
