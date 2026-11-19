@@ -672,6 +672,25 @@ mod tests {
     use super::*;
     use crate::protocol::encode_frame;
 
+    fn ticket_with(addr: EndpointAddr) -> Target {
+        Target::Ticket(Box::new(Ticket::new(addr, [1; 32], 5)))
+    }
+
+    #[test]
+    fn relay_for_looks_up_an_id_only_or_relayed_ticket_and_not_a_direct_one() {
+        let id = SecretKey::from_bytes(&[7; 32]).public();
+        let options = AttachOptions::new("d");
+        let id_only = ticket_with(EndpointAddr::new(id));
+        let relayed = ticket_with(
+            EndpointAddr::new(id).with_relay_url("https://relay.example./".parse().unwrap()),
+        );
+        let direct =
+            ticket_with(EndpointAddr::new(id).with_ip_addr("127.0.0.1:4000".parse().unwrap()));
+        assert!(matches!(relay_for(&id_only, &options), RelayMode::Default));
+        assert!(matches!(relay_for(&relayed, &options), RelayMode::Default));
+        assert!(matches!(relay_for(&direct, &options), RelayMode::Disabled));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_keepalive_and_input_during_a_slow_frame_leave_the_stream_intact() {
         let (device, mut host) = tokio::io::duplex(1024);

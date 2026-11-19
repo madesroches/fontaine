@@ -28,7 +28,8 @@ All notable changes are recorded here. The format follows
   id, which the device resolves by address lookup. The QR code is about 41 by 21 cells and is always
   drawn whole; a dialog too short for it says to enlarge the window by at least N rows, and only a
   terminal too narrow gets the text ticket, with the columns it needs. A ticket too long to encode
-  says so.
+  says so. A device with `[remote] relay = "disabled"` cannot attach with such an id-only ticket,
+  and `fontaine attach` says so.
 - A subagent type limited to `shell(...)` allow entries now says why it refused a command when a part
   of it would have matched: the denial names the chain, pipe, redirect or substitution, and the
   `reviewer` prompt tells it to run commands bare, without `2>&1 | tail` (#697). The decision does

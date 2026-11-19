@@ -224,6 +224,8 @@ dials the addresses it stored at its last attach and queries no lookup service. 
 reattach through those stored addresses; a self-hosted lookup service is not supported. `relay` is
 user-scope only, and a project file that sets it is refused. The first pairing of a host on the default relay finds it by lookup from the ticket's node id; with
 a custom or disabled relay the ticket carries the addresses. `fontaine attach` reads only the user-scope `[remote] relay`.
+A device with `relay = "disabled"` cannot use a default-relay host's ticket, which has no addresses:
+`fontaine attach` refuses it and says to enable the default relay for that first pairing.
 
 ## Errors and exit codes
 
