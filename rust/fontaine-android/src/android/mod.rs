@@ -10,13 +10,16 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use android_activity::input::{InputEvent, MotionAction, TextInputAction, TextInputState};
+use android_activity::input::{
+    InputEvent, KeyAction, KeyMapChar, Keycode, MotionAction, TextInputAction, TextInputState,
+};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use dear_imgui_sys as sys;
-use fontaine_remote::{AttachOptions, Client, ClientStore};
+use fontaine_remote::{AttachOptions, Client, ClientStore, RelayMode, Target};
 use khronos_egl as egl;
 
 use crate::app::{Action, App, Screen};
+use crate::keys::{self, Key};
 use crate::link::is_pair_link;
 use crate::store::DirStore;
 use camera::Camera;
@@ -181,9 +184,10 @@ impl Drop for Imgui {
     }
 }
 
+// `imgui` first: fields drop in declaration order and its backends need the GL context current.
 struct Surface {
-    gl: Gl,
     imgui: Imgui,
+    gl: Gl,
 }
 
 fn render(surface: &Surface, app: &App, field: &str, camera: bool, denied: bool) -> Vec<Tap> {
@@ -225,11 +229,29 @@ struct Activity {
     /// What the soft keyboard has typed into the paste or prompt field.
     field: String,
     camera_denied: bool,
+    camera_granted: bool,
+    /// The permission is asked of Java only when it may have changed, not every frame.
+    permission_stale: bool,
+    /// A failed start is not retried until the permission is checked again.
+    camera_failed: bool,
+    /// The last pairing link taken from the intent, so a resume does not process it twice.
+    last_link: Option<String>,
     label: String,
     scale: f32,
 }
 
 impl Activity {
+    fn take_intent_link(&mut self) {
+        let Some(link) = jni_bridge::intent_link(&self.android).filter(|l| is_pair_link(l)) else {
+            return;
+        };
+        if self.last_link.as_deref() == Some(link.as_str()) {
+            return;
+        }
+        self.app.submit_link(&link);
+        self.last_link = Some(link);
+    }
+
     fn refresh_hosts(&mut self) {
         match self.store.hosts() {
             Ok(hosts) => self.app.set_hosts(hosts.hosts),
@@ -248,11 +270,13 @@ impl Activity {
                 let _enter = self.runtime.enter();
                 let store: Arc<dyn ClientStore> = self.store.clone();
                 self.camera = None;
-                self.client = Some(Client::start(
-                    target,
-                    AttachOptions::new(self.label.clone()),
-                    store,
-                ));
+                let mut options = AttachOptions::new(self.label.clone());
+                // A stored host has no address in hand, so it is found through the relay, as
+                // `fontaine attach` does by default.
+                if matches!(target, Target::Host(_)) {
+                    options.relay = Some(RelayMode::Default);
+                }
+                self.client = Some(Client::start(target, options, store));
             }
             Some(Action::Send(message)) => {
                 if let Some(client) = &self.client {
@@ -302,6 +326,7 @@ impl Activity {
             Tap::GrantCamera => {
                 jni_bridge::request_camera(&self.android);
                 self.camera_denied = false;
+                self.permission_stale = true;
             }
             Tap::ConfirmPairing => {
                 let action = self.app.confirm_pairing();
@@ -338,15 +363,24 @@ impl Activity {
             self.camera = None;
             return;
         }
+        if self.permission_stale {
+            self.permission_stale = false;
+            self.camera_granted = jni_bridge::camera_granted(&self.android);
+            self.camera_failed = false;
+        }
         if self.camera.is_none() {
-            if !jni_bridge::camera_granted(&self.android) {
+            if !self.camera_granted || self.camera_failed {
                 self.camera_denied = true;
                 return;
             }
             match Camera::start() {
-                Ok(camera) => self.camera = Some(camera),
+                Ok(camera) => {
+                    self.camera = Some(camera);
+                    self.camera_denied = false;
+                }
                 Err(e) => {
                     log::warn!("the camera did not start: {e}");
+                    self.camera_failed = true;
                     self.camera_denied = true;
                     return;
                 }
@@ -367,6 +401,7 @@ impl Activity {
         };
         let mut typed: Option<String> = None;
         let mut submitted = false;
+        let mut pressed: Vec<Key> = Vec::new();
         let imgui = self.surface.as_ref().map(|s| &s.imgui);
         while events.next(|event| match event {
             InputEvent::MotionEvent(motion) => {
@@ -381,6 +416,25 @@ impl Activity {
                         _ => imgui.mouse(x, y, None),
                     }
                 }
+                InputStatus::Handled
+            }
+            InputEvent::KeyEvent(key) => {
+                if key.action() != KeyAction::Down {
+                    return InputStatus::Handled;
+                }
+                let code = key.key_code();
+                pressed.push(match code {
+                    Keycode::Enter | Keycode::NumpadEnter => Key::Enter,
+                    Keycode::Del => Key::Backspace,
+                    _ => match self
+                        .android
+                        .device_key_character_map(key.device_id())
+                        .and_then(|map| map.get(code, key.meta_state()))
+                    {
+                        Ok(KeyMapChar::Unicode(c)) => Key::Char(c),
+                        _ => return InputStatus::Unhandled,
+                    },
+                });
                 InputStatus::Handled
             }
             InputEvent::TextEvent(state) => {
@@ -398,6 +452,11 @@ impl Activity {
         }) {}
         if let Some(text) = typed {
             self.field = text;
+        }
+        for key in pressed {
+            if keys::apply(&mut self.field, key) {
+                submitted = true;
+            }
         }
         if submitted && !self.field.is_empty() {
             self.handle_tap(Tap::SubmitField);
@@ -474,13 +533,15 @@ fn android_main(app: AndroidApp) {
         last_scan: Instant::now(),
         field: String::new(),
         camera_denied: false,
+        camera_granted: false,
+        permission_stale: true,
+        camera_failed: false,
+        last_link: None,
         label,
         scale,
     };
     activity.refresh_hosts();
-    if let Some(link) = jni_bridge::intent_link(&app).filter(|l| is_pair_link(l)) {
-        activity.app.submit_link(&link);
-    }
+    activity.take_intent_link();
 
     let mut running = true;
     while running {
@@ -496,6 +557,10 @@ fn android_main(app: AndroidApp) {
                     MainEvent::TerminateWindow { .. } => {
                         activity.camera = None;
                         activity.surface = None;
+                    }
+                    MainEvent::Resume { .. } => {
+                        activity.permission_stale = true;
+                        activity.take_intent_link();
                     }
                     MainEvent::Destroy => running = false,
                     _ => {}

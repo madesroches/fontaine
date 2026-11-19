@@ -4,6 +4,7 @@
 //! GLES and input glue that only runs on a phone.
 
 pub mod app;
+pub mod keys;
 pub mod link;
 pub mod model;
 pub mod scan;

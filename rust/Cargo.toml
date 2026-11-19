@@ -126,7 +126,7 @@ ndk = { version = "=0.9.0", default-features = false }
 jni = "=0.21.1"
 dear-imgui-sys = { version = "=0.22.0", default-features = false, features = ["backend-shim-android", "backend-shim-opengl3"] }
 khronos-egl = { version = "=6.0.0", features = ["dynamic"] }
-ndk-sys = "=0.6.0"
+ndk-sys = { version = "=0.6.0", features = ["media"] }
 android_logger = "=0.15.1"
 log = "=0.4.35"
 

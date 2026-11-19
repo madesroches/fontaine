@@ -19,7 +19,9 @@ fn with_activity<T>(
     let mut env = vm.attach_current_thread().ok()?;
     // SAFETY: `activity_as_ptr` is a live global reference to the activity.
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
-    match body(&mut env, &activity) {
+    // The frame frees the local references `body` makes: a thread attached from native code never
+    // returns to Java, so nothing else would release them.
+    match env.with_local_frame(16, |env| body(env, &activity)) {
         Ok(value) => Some(value),
         Err(_) => {
             // A pending Java exception must be cleared or the next JNI call aborts the process.

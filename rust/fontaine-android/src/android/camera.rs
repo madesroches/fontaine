@@ -9,6 +9,11 @@ use ndk_sys as ffi;
 
 use crate::scan::decode_luma;
 
+// ndk-sys links libmediandk (AImageReader, AImage) with its `media` feature but declares nothing
+// for the ACamera* and ACaptureSession* symbols, which live in libcamera2ndk.
+#[link(name = "camera2ndk")]
+unsafe extern "C" {}
+
 /// Small enough to decode within a frame budget, large enough for a terminal QR code.
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 720;

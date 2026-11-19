@@ -357,6 +357,13 @@ jobs:
         with:
           name: windows-installer
           path: artifacts/fontaine-installer.ps1
+      # Same reason: the unsigned APK from `build-android` is in the `artifacts-*` merge, and the
+      # minisig covers this Android-signed one.
+      - name: Upload the Android-signed APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: artifacts/fontaine-android.apk
 
   # Creates the draft release; nothing is public until `publish`
   host:
@@ -423,6 +430,11 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: windows-installer
+          path: artifacts
+      - name: Use the Android-signed APK
+        uses: actions/download-artifact@v8
+        with:
+          name: android-apk
           path: artifacts
       - name: Cleanup
         working-directory: ${{ github.workspace }}
