@@ -187,7 +187,7 @@ mod tests {
     // so the hint must name the FONTAINE_TICKET form that attach_cmd accepts.
     #[test]
     fn hint_uses_the_env_form_an_interactive_attach_accepts() {
-        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        if skip_no_color() {
             return;
         }
         let body = prompt(639).body(78, 20, false, &Theme::default());
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn the_code_shows_when_it_fits_and_the_hint_goes() {
         // Not asserted under NO_COLOR, which is read from the real environment.
-        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        if skip_no_color() {
             return;
         }
         let body = prompt(639).body(78, 42, false, &Theme::default());
