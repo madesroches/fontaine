@@ -320,6 +320,10 @@ impl App {
                 }
             }
             ClientEvent::Notice { severity, text } => {
+                // The host sends a warning when it refuses an answer, and its dialog stays up.
+                if severity == Level::Warning {
+                    self.answer_sent = false;
+                }
                 self.notice = Some(match severity {
                     Level::Info => text,
                     Level::Warning => format!("host: {text}"),
@@ -789,6 +793,21 @@ mod tests {
             text: "careful".into(),
         });
         assert_eq!(app.view().notice, Some("host: careful"));
+    }
+
+    #[test]
+    fn a_host_warning_after_an_answer_reopens_the_dialog() {
+        let mut app = paired();
+        app.on_client_event(event(json!({
+            "kind": "dialog", "dialog": approval(&["allow once", "deny"]),
+        })));
+        assert!(app.answer_approval("allow once", None).is_some());
+        assert!(app.answer_approval("allow once", None).is_none());
+        app.on_client_event(ClientEvent::Notice {
+            severity: Level::Warning,
+            text: "busy".into(),
+        });
+        assert!(app.answer_approval("allow once", None).is_some());
     }
 
     #[test]
