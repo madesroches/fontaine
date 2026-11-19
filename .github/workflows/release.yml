@@ -24,7 +24,9 @@
 # the PowerShell installer, which dist's stock script lacks, then signs every archive and both
 # installers, `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
 # `publish` make it public. `contents: write` is granted per job, to `host`, `verify-draft` and
-# `publish` only. See docs/verifying-releases.md.
+# `publish` only. The Android APK is built unsigned by `build-android`, joins the `artifacts-*` set,
+# and gets its Android signature (a keystore only `sign` can read) and its minisign signature in
+# `sign`. See docs/verifying-releases.md.
 name: Release
 permissions:
   "contents": "read"
@@ -257,15 +259,42 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             rust/${{ env.BUILD_MANIFEST_NAME }}
-  # Signs every archive and both installers. The only job in the workflow that names an environment, so the signing
-  # secrets are in scope here and nowhere else; it runs no build tools and no code from the
-  # artifacts it downloads.
+  # Builds the APK unsigned: no keystore is in scope here, and `sign` applies the Android signature.
+  build-android:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Locate the NDK
+        run: echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Build the APK
+        run: |
+          mkdir -p "$RUNNER_TEMP/apk"
+          fontaine-android/build-apk.sh "$RUNNER_TEMP/apk/fontaine-android.apk"
+      - name: Upload the unsigned APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-android
+          path: ${{ runner.temp }}/apk/fontaine-android.apk
+
+  # Signs every archive, both installers and the APK (Android signature, then minisign). The only job in
+  # the workflow that names an environment, so the signing secrets are in scope here and nowhere else;
+  # apksigner is the one build tool it runs, and it runs no code from the artifacts it downloads.
   sign:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - build-android
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.build-android.result == 'success' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     runs-on: "ubuntu-22.04"
     environment: release-signing
     permissions:
@@ -288,6 +317,25 @@ jobs:
       # Before signing, so the signature covers the bytes users download.
       - name: Add the archive sha256 check to the PowerShell installer
         run: .github/scripts/windows-installer.sh artifacts/fontaine-installer.ps1 artifacts/fontaine-x86_64-pc-windows-msvc.zip.sha256
+      # The Android install signature. The minisign file below is what users verify; this one only
+      # lets Android install the package.
+      - name: Sign the APK for Android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "::error::ANDROID_KEYSTORE_BASE64 is empty"; exit 1; }
+          keystore="$(umask 077 && mktemp)"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out artifacts/fontaine-android.signed.apk \
+            artifacts/fontaine-android.apk
+          "$tools/apksigner" verify artifacts/fontaine-android.signed.apk
+          mv artifacts/fontaine-android.signed.apk artifacts/fontaine-android.apk
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -309,6 +357,13 @@ jobs:
         with:
           name: windows-installer
           path: artifacts/fontaine-installer.ps1
+      # Same reason: the unsigned APK from `build-android` is in the `artifacts-*` merge, and the
+      # minisig covers this Android-signed one.
+      - name: Upload the Android-signed APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: artifacts/fontaine-android.apk
 
   # Creates the draft release; nothing is public until `publish`
   host:
@@ -316,6 +371,7 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - build-android
       - sign
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is
     # fine). A failed or skipped `sign` never reaches here.
@@ -375,6 +431,11 @@ jobs:
         with:
           name: windows-installer
           path: artifacts
+      - name: Use the Android-signed APK
+        uses: actions/download-artifact@v8
+        with:
+          name: android-apk
+          path: artifacts
       - name: Cleanup
         working-directory: ${{ github.workspace }}
         run: |
@@ -419,6 +480,7 @@ jobs:
         env:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+          FONTAINE_REQUIRE_APK: "1"
         run: .github/scripts/release-verify.sh release draft rust/fontaine/keys/release.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
 
   # The only step that makes the release public.

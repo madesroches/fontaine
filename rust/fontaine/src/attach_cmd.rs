@@ -104,7 +104,7 @@ fn target_of(
             })?,
     };
     let trimmed = text.trim();
-    if trimmed.starts_with("fontaine-") {
+    if Ticket::has_ticket_prefix(trimmed) {
         return match Ticket::parse(trimmed) {
             Ok(ticket) => Ok(Target::Ticket(Box::new(ticket))),
             Err(e) => Err((chain(&e), EXIT_AUTH)),
@@ -118,12 +118,16 @@ fn target_of(
     })?;
     match hosts.find(trimmed) {
         Ok(stored) => Ok(Target::Host(Box::new(stored.clone()))),
-        Err(e) => Err((
-            format!(
-                "`{trimmed}` is not a ticket and names no host this device is paired with ({e}); attach with a ticket first"
-            ),
-            EXIT_AUTH,
-        )),
+        // A bare ticket body: it names no host, and only a body that decodes to a ticket counts.
+        Err(e) => match Ticket::parse(trimmed) {
+            Ok(ticket) => Ok(Target::Ticket(Box::new(ticket))),
+            Err(_) => Err((
+                format!(
+                    "`{trimmed}` is not a ticket and names no host this device is paired with ({e}); attach with a ticket first"
+                ),
+                EXIT_AUTH,
+            )),
+        },
     }
 }
 
@@ -457,6 +461,23 @@ mod tests {
             target_of(&args(Some("work"), false, None), &host(None), &store),
             Ok(Target::Host(_))
         ));
+        let full = Ticket::new(fontaine_remote::EndpointAddr::new(key), [1; 32], 5);
+        for text in [
+            full.link(),
+            full.qr_payload(),
+            full.link()
+                .to_uppercase()
+                .replacen("FONTAINE://PAIR/", "Fontaine://Pair/", 1),
+            full.link()[fontaine_remote::LINK_PREFIX.len()..].to_string(),
+        ] {
+            assert!(
+                matches!(
+                    target_of(&args(Some(&text), false, None), &host(None), &store),
+                    Ok(Target::Ticket(_))
+                ),
+                "{text}"
+            );
+        }
         assert!(matches!(
             target_of(
                 &args(None, false, None),

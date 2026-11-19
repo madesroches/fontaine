@@ -12,6 +12,7 @@
 - [The guardian](guardian.md)
 - [Subagents](agents.md)
 - [Remote control](remote.md)
+- [Android app](android.md)
 - [User hooks](hooks.md)
 - [MCP servers](mcp.md)
 - [Instruction files](instructions.md)

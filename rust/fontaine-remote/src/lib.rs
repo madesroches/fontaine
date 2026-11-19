@@ -25,4 +25,4 @@ pub use protocol::{
 };
 pub use server::{RemoteServer, ServerConfig, ServerError};
 pub use session::{BoxFuture, Handled, HostSession};
-pub use ticket::{Ticket, TicketError};
+pub use ticket::{LINK_PREFIX, PREFIX, Ticket, TicketError};

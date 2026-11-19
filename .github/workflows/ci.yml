@@ -292,6 +292,23 @@ jobs:
             fi
             echo "ok: unsigned release $inst rejected"
           done
+          # The APK is a release-channel asset signed like the installers; the release workflow's
+          # verify-draft step makes it mandatory.
+          apk_fixture="$work/release-apk"
+          make_fixture "$apk_fixture"
+          head -c 4096 /dev/urandom > "$apk_fixture/fontaine-android.apk"
+          sign "$apk_fixture" main release
+          [ -f "$apk_fixture/fontaine-android.apk.minisig" ]
+          verify "$apk_fixture" >/dev/null
+          FONTAINE_REQUIRE_APK=1 verify "$apk_fixture" >/dev/null
+          if FONTAINE_REQUIRE_APK=1 verify "$pristine" >/dev/null 2>&1; then
+            echo "::error::verify passed with the APK required and missing"; exit 1
+          fi
+          echo x >> "$apk_fixture/fontaine-android.apk"
+          if verify "$apk_fixture" >/dev/null 2>&1; then
+            echo "::error::verify passed on a tampered APK"; exit 1
+          fi
+          echo "ok: the APK is signed, required and checked on release"
           dev_fixture="$work/dev-fixture"
           make_fixture "$dev_fixture"
           sign "$dev_fixture" main dev

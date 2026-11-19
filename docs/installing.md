@@ -251,6 +251,14 @@ holds only the installers.) Unpack it and put `fontaine` on your
 has a detached signature; see [Verifying releases](verifying-releases.md). A manual install writes
 no receipt.
 
+## The Android app
+
+The [Android app](android.md) is a sideloaded APK, `fontaine-android.apk`, attached to tagged releases
+(not to `dev` builds). Download it with its `fontaine-android.apk.minisig`, verify the minisign
+signature as described in [Verifying releases](verifying-releases.md#verify-the-android-app), then open the
+file on the phone and allow the install from unknown sources when Android asks. Installing it does
+not touch the `fontaine` binary or its receipt.
+
 ## From source
 
 With the Rust toolchain:

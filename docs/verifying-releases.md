@@ -1,6 +1,6 @@
 # Verifying releases
 
-Every release archive, and each installer (shell and PowerShell) on both channels, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
+Every release archive, each installer (shell and PowerShell) on both channels, and the Android APK of a tagged release, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
 next to it, `<file>.minisig`, made in CI with a key Fontaine owns. A release is published only
 after CI has downloaded the finished draft and verified every archive, and each installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
@@ -83,6 +83,20 @@ this signature themselves; see [Installing Fontaine](installing.md#verification)
 The installers attached to a tagged release are signed the same way: download one and its
 `.minisig` from that release and verify with `release.signing.pub`; the trusted
 comment has `channel=release`, the installer's `file`, and the release's version and commit.
+
+## Verify the Android app
+
+The [Android app](android.md) is released as `fontaine-android.apk` with a `fontaine-android.apk.minisig`, on
+tagged releases only. Verify it like an archive, with `release.signing.pub`:
+
+```
+minisign -Vm fontaine-android.apk -p release.signing.pub
+```
+
+The trusted comment has `channel=release` and `file=fontaine-android.apk`, with the release's version
+and commit. The APK also carries an Android signature made with a keystore that only the release
+signing job can read; Android uses it to accept an install or an update, and it is not the trust
+anchor. The APK has no `.sha256` file.
 
 ## What the signature does not cover
 

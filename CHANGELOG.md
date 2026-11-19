@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- An Android app (#710): a sideloaded APK, built from the new `fontaine-android` crate, that scans the
+  host's QR code (or opens the link from the system camera), pairs through the host-terminal
+  confirmation, and drives the session: transcript, prompts, slash lines, approvals, questions and
+  interrupt, with reattach to paired hosts. The release APK is signed for Android in the signing job
+  and minisigned like the archives. See `docs/android.md`.
 - `/remote-control [--ttl <duration>]` turns remote control on (or mints a fresh ticket when it is
   on) and shows the attach ticket as a QR code in the ticket dialog, so a phone can scan it
   instead of a person transcribing it (#706). `/remote on`, `/remote ticket` and `fontaine --remote`
@@ -24,6 +29,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- The remote QR code now carries a link, `fontaine://pair/<body>`, so a phone's camera can open the
+  app (#710). `Ticket::parse` and `fontaine attach` accept the link, the prefixed `fontaine-attach1`
+  ticket and the bare body in any case; the text ticket in the dialog is unchanged.
 - The remote ticket is about half the size (#708): it is encoded as binary (ticket version 3, so a
   ticket from an older build no longer parses), and a host on the default relay carries only its node
   id, which the device resolves by address lookup. The QR code is about 41 by 21 cells and is always

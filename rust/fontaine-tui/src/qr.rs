@@ -81,9 +81,10 @@ pub(crate) fn render(
 }
 
 #[cfg(test)]
-/// A payload of `len` characters in the QR alphanumeric set, shaped like a ticket.
+/// A payload of `len` characters shaped like a real one: the lowercase link prefix, then a body
+/// of uppercase characters from the QR alphanumeric set.
 pub(crate) fn sample_payload(len: usize) -> String {
-    let mut text = String::from("FONTAINE-ATTACH1");
+    let mut text = String::from("fontaine://pair/");
     let mut state = 7u32;
     while text.len() < len {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);

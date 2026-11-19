@@ -3,6 +3,8 @@ use iroh::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
 pub const PREFIX: &str = "fontaine-attach1";
+/// What the link and the QR code carry before the ticket body.
+pub const LINK_PREFIX: &str = "fontaine://pair/";
 /// The prefix of the one-shot tickets `fontaine send` used to mint; no build reads them now.
 const RETIRED_PREFIX: &str = "fontaine-send1";
 const TICKET_VERSION: u16 = 3;
@@ -53,7 +55,7 @@ fn has_prefix(text: &str, prefix: &str) -> bool {
 
 #[derive(Debug)]
 pub enum TicketError {
-    /// The text does not start with the ticket prefix.
+    /// The text is none of the prefixed ticket, the link or a bare ticket body.
     NotATicket,
     /// A ticket of the removed `fontaine send`.
     Retired,
@@ -65,7 +67,10 @@ pub enum TicketError {
 impl std::fmt::Display for TicketError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TicketError::NotATicket => write!(f, "not a fontaine ticket (expected `{PREFIX}...`)"),
+            TicketError::NotATicket => write!(
+                f,
+                "not a fontaine ticket (expected `{PREFIX}...` or a `{LINK_PREFIX}...` link)"
+            ),
             TicketError::Retired => f.write_str(
                 "this is a ticket of the removed `fontaine send`; ask for a new one and use `fontaine attach`",
             ),
@@ -101,9 +106,9 @@ impl Ticket {
         }
     }
 
-    /// One line, safe to paste: the prefix and lowercase base32 of the compact binary form. The
-    /// binary form (not JSON) keeps the text short enough for a QR code a terminal can show.
-    pub fn encode(&self) -> String {
+    /// The base32 text of the compact binary form, lowercase. The binary form (not JSON) keeps the
+    /// text short enough for a QR code a terminal can show.
+    fn body(&self) -> String {
         let wire = Wire {
             v: self.v,
             node: self.node.clone(),
@@ -111,27 +116,64 @@ impl Ticket {
             expires_at: self.expires_at,
         };
         let bytes = postcard::to_stdvec(&wire).expect("a ticket serializes");
-        format!("{PREFIX}{}", BASE32_NOPAD.encode(&bytes).to_lowercase())
+        BASE32_NOPAD.encode(&bytes).to_lowercase()
     }
 
-    /// What a QR code carries: the ticket uppercased, which stays in the QR alphanumeric set (a
-    /// smaller code than lowercase byte mode) and which `parse` reads back unchanged.
+    /// One line, safe to paste: the prefix and the lowercase base32 body.
+    pub fn encode(&self) -> String {
+        format!("{PREFIX}{}", self.body())
+    }
+
+    /// The deep link a phone opens: the scheme and path say what it is, so the body carries no
+    /// prefix.
+    pub fn link(&self) -> String {
+        format!("{LINK_PREFIX}{}", self.body())
+    }
+
+    /// What a QR code carries: the link with the body uppercased, which `parse` reads back
+    /// unchanged. The scheme stays lowercase so Android matches it, and the uppercase body keeps
+    /// the code smaller than lowercase would, since the QR encoder switches modes per segment.
     pub fn qr_payload(&self) -> String {
-        self.encode().to_uppercase()
+        format!("{LINK_PREFIX}{}", self.body().to_uppercase())
     }
 
+    /// Whether the text starts like a prefixed ticket or a link, in any case, so a caller can tell
+    /// those from a host selector without decoding.
+    pub fn has_ticket_prefix(text: &str) -> bool {
+        let text = text.trim();
+        has_prefix(text, "fontaine-") || has_prefix(text, LINK_PREFIX)
+    }
+
+    /// Reads the prefixed ticket, the link or the bare body, each without regard to case.
     pub fn parse(text: &str) -> Result<Ticket, TicketError> {
         let text = text.trim();
-        // The QR payload is the uppercased ticket, so the prefixes match without regard to case.
         if has_prefix(text, RETIRED_PREFIX) {
             return Err(TicketError::Retired);
         }
-        if !has_prefix(text, PREFIX) {
-            return Err(TicketError::NotATicket);
+        if has_prefix(text, PREFIX) {
+            return Self::from_body(&text[PREFIX.len()..]);
         }
-        let rest = &text[PREFIX.len()..];
+        if has_prefix(text, LINK_PREFIX) {
+            return Self::from_body(&text[LINK_PREFIX.len()..]);
+        }
+        // Bare text is ambiguous (a host selector looks like one), so only a body that decodes
+        // to a ticket counts; anything else is not a ticket.
+        let base32 = !text.is_empty()
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || (b'2'..=b'7').contains(&b));
+        if base32 {
+            match Self::from_body(text) {
+                Err(TicketError::Encoding(_) | TicketError::Binary(_)) => {}
+                other => return other,
+            }
+        }
+        Err(TicketError::NotATicket)
+    }
+
+    fn from_body(body: &str) -> Result<Ticket, TicketError> {
         let bytes = BASE32_NOPAD
-            .decode(rest.to_uppercase().as_bytes())
+            .decode(body.to_uppercase().as_bytes())
             .map_err(TicketError::Encoding)?;
         let wire: Wire = postcard::from_bytes(&bytes).map_err(TicketError::Binary)?;
         if wire.v != TICKET_VERSION {
@@ -167,18 +209,51 @@ mod tests {
     }
 
     #[test]
-    fn the_qr_payload_parses_back_and_is_qr_alphanumeric() {
+    fn the_qr_payload_is_a_link_that_parses_back() {
         let ticket = sample();
         let payload = ticket.qr_payload();
-        assert!(payload.starts_with("FONTAINE-ATTACH1"));
+        let body = payload.strip_prefix(LINK_PREFIX).expect("a link");
         assert!(
-            payload
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+            body.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
         );
         assert_eq!(Ticket::parse(&payload).unwrap(), ticket);
-        let mixed = format!("Fontaine-Attach1{}", &ticket.encode()[PREFIX.len()..]);
+    }
+
+    #[test]
+    fn the_link_the_prefixed_ticket_and_the_bare_body_all_parse() {
+        let ticket = sample();
+        let link = ticket.link();
+        assert!(link.starts_with(LINK_PREFIX) && !link.contains(PREFIX));
+        let body = link.strip_prefix(LINK_PREFIX).unwrap();
+        assert_eq!(Ticket::parse(&link).unwrap(), ticket);
+        assert_eq!(
+            Ticket::parse(&format!("{LINK_PREFIX}{}", body.to_uppercase())).unwrap(),
+            ticket
+        );
+        assert_eq!(Ticket::parse(body).unwrap(), ticket);
+        assert_eq!(Ticket::parse(&body.to_uppercase()).unwrap(), ticket);
+        assert_eq!(Ticket::parse(&ticket.encode()).unwrap(), ticket);
+        let mixed = format!("Fontaine-Attach1{}", body);
         assert_eq!(Ticket::parse(&mixed).unwrap(), ticket);
+        assert_eq!(Ticket::parse(&format!(" {link}\n")).unwrap(), ticket);
+    }
+
+    #[test]
+    fn a_wrong_scheme_or_path_is_not_a_ticket() {
+        let body = sample().link().replace(LINK_PREFIX, "");
+        for text in [
+            format!("https://pair/{body}"),
+            format!("fontaine://other/{body}"),
+            format!("fontaine://{body}"),
+            format!("fontaine:pair/{body}"),
+            String::new(),
+        ] {
+            assert!(
+                matches!(Ticket::parse(&text), Err(TicketError::NotATicket)),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -202,6 +277,11 @@ mod tests {
         assert!(matches!(
             Ticket::parse("hello"),
             Err(TicketError::NotATicket)
+        ));
+        assert!(TicketError::NotATicket.to_string().contains(LINK_PREFIX));
+        assert!(matches!(
+            Ticket::parse(&format!("{LINK_PREFIX}!!!")),
+            Err(TicketError::Encoding(_))
         ));
         assert!(matches!(
             Ticket::parse("fontaine-send1mfrggzdf"),

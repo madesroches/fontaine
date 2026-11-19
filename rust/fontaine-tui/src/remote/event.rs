@@ -332,6 +332,7 @@ mod tests {
     use fontaine_sdk::core::config::PermissionMode;
     use fontaine_sdk::core::turn::SessionEvent;
     use serde_json::json;
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::theme::Theme;
@@ -401,6 +402,191 @@ mod tests {
         host.transcript.touch();
         step(&mut host, &mut client, &mut tracker);
         assert_eq!(client.transcript.entries.len(), 2);
+    }
+
+    // The Android app decodes what the host publishes with its own lenient mirror; this fails when
+    // a host change would leave the app unable to read what it renders.
+    #[test]
+    fn the_android_mirror_decodes_what_the_host_publishes() {
+        use fontaine_android::model as app;
+        use fontaine_sdk::core::permissions::{ApprovalRequest, Offers};
+        use fontaine_sdk::core::tier::Tier;
+        use fontaine_sdk::tools::ask_user::{Question, QuestionOption};
+
+        let mut host = host();
+        let mut tracker = MirrorTracker::new(false);
+        host.transcript.user("make a note".into());
+        host.on_event(SessionEvent::AssistantDelta("Sure".into()));
+        host.on_event(SessionEvent::ToolCall {
+            id: "c1".into(),
+            tool: "write".into(),
+            args: json!({ "path": "notes.txt", "content": "hello" }),
+        });
+        host.on_event(SessionEvent::ToolResult {
+            id: "c1".into(),
+            tool: "write".into(),
+            success: false,
+            text: "denied by the floor".into(),
+        });
+        host.on_event(SessionEvent::ToolCall {
+            id: "c2".into(),
+            tool: "shell".into(),
+            args: json!({ "command": "ls" }),
+        });
+        host.on_event(SessionEvent::Reasoning("thought about it".into()));
+        host.transcript.error("a failure");
+        host.transcript.notice("a note");
+        host.transcript
+            .shell("ls".into(), "a\n[exit 0]".into(), Some(0));
+        host.running = true;
+        let (reply, _answer) = oneshot::channel();
+        host.begin_approval(
+            ApprovalRequest {
+                tool: "write".into(),
+                agent: String::new(),
+                agent_name: "helper".into(),
+                tool_use_id: None,
+                args: serde_json::Value::Null,
+                summary: "notes.txt".into(),
+                tier: Tier::Human,
+                reason: "it writes".into(),
+                offers: Offers {
+                    session: true,
+                    always: true,
+                },
+                proposed_rule: None,
+                preview: None,
+            },
+            reply,
+        );
+        tracker.diff(&host);
+
+        let snapshot = tracker.snapshot();
+        let wire = serde_json::to_string(&snapshot).expect("a snapshot serializes");
+        let mirrored = app::Snapshot::parse(&wire).expect("the app decodes a host snapshot");
+        assert_eq!(mirrored.entries.len(), snapshot.entries.len());
+        assert!(mirrored.entries.iter().all(
+            |e| !matches!(e, app::Entry::Other(kind) if kind != "Reasoning" && kind != "Shell")
+        ));
+        assert_eq!(mirrored.entries[0], app::Entry::User("make a note".into()));
+        assert!(matches!(
+            &mirrored.entries[1],
+            app::Entry::Assistant { text, .. } if text == "Sure"
+        ));
+        let failed = mirrored.entries.iter().find_map(|e| match e {
+            app::Entry::Tool {
+                tool,
+                status,
+                output,
+                ..
+            } if tool == "write" => Some((status.clone(), output.clone())),
+            _ => None,
+        });
+        let (status, output) = failed.expect("the write call is mirrored");
+        assert!(matches!(status, app::ToolStatus::Failed(_)), "{status:?}");
+        assert_eq!(output.as_deref(), Some("denied by the floor"));
+        assert!(mirrored.entries.iter().any(|e| matches!(
+            e,
+            app::Entry::Tool { tool, status: app::ToolStatus::Pending, .. } if tool == "shell"
+        )));
+        assert!(
+            mirrored
+                .entries
+                .iter()
+                .any(|e| matches!(e, app::Entry::Error(t) if t == "a failure"))
+        );
+        assert!(
+            mirrored
+                .entries
+                .iter()
+                .any(|e| matches!(e, app::Entry::Notice { headline, .. } if headline == "a note"))
+        );
+        let status = mirrored.status.expect("a status");
+        assert!(status.running);
+        assert_eq!(status.model, "m");
+        let Some(app::Dialog::Approval {
+            id,
+            choices,
+            agent_name,
+            ..
+        }) = mirrored.dialog
+        else {
+            panic!("the approval is mirrored");
+        };
+        assert_ne!(id, 0);
+        assert_eq!(agent_name, "helper");
+        assert!(
+            choices.iter().any(|c| c == "allow once")
+                && !choices.iter().any(|c| c == "always allow")
+        );
+
+        // Every event kind the host sends, through the same encoding the wire uses.
+        let events = [
+            RemoteEvent::Set {
+                at: 0,
+                entry: Entry::User("x".into()),
+            },
+            RemoteEvent::Append {
+                at: 1,
+                text: "more".into(),
+                streaming: true,
+            },
+            RemoteEvent::Truncate { len: 2 },
+            RemoteEvent::Status {
+                status: Box::new(Status::of(&host)),
+            },
+            RemoteEvent::Dialog { dialog: None },
+            RemoteEvent::Dialog {
+                dialog: Some(Dialog::HostOnly {
+                    what: "a device pairing".into(),
+                }),
+            },
+            RemoteEvent::Dialog {
+                dialog: Some(Dialog::Question {
+                    id: 2,
+                    agent: String::new(),
+                    index: 0,
+                    questions: vec![Question {
+                        question: "which?".into(),
+                        header: "h".into(),
+                        options: vec![QuestionOption {
+                            label: "a".into(),
+                            description: "d".into(),
+                        }],
+                        multi_select: false,
+                    }],
+                }),
+            },
+        ];
+        for event in events {
+            let value = serde_json::to_value(&event).expect("an event serializes");
+            let mirrored = app::RemoteEvent::parse(value).expect("the app decodes a host event");
+            assert_ne!(mirrored, app::RemoteEvent::Unknown, "{event:?}");
+        }
+        let value = serde_json::to_value(RemoteEvent::Dialog {
+            dialog: Some(Dialog::Question {
+                id: 2,
+                agent: String::new(),
+                index: 0,
+                questions: vec![Question {
+                    question: "which?".into(),
+                    header: "h".into(),
+                    options: vec![QuestionOption {
+                        label: "a".into(),
+                        description: "d".into(),
+                    }],
+                    multi_select: true,
+                }],
+            }),
+        })
+        .unwrap();
+        let Ok(app::RemoteEvent::Dialog {
+            dialog: Some(app::Dialog::Question { questions, .. }),
+        }) = app::RemoteEvent::parse(value)
+        else {
+            panic!("the question is mirrored");
+        };
+        assert!(questions[0].multi_select);
     }
 
     fn host_like() -> App {

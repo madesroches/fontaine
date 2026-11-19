@@ -74,22 +74,36 @@ ticket and revokes the previous one, and shows the ticket as a QR code in the ti
 app scans it instead of you typing the ticket. `/remote on`, `/remote ticket` and `fontaine --remote`
 show the code too; `/remote-control` is the one that always ends at it.
 
-The code carries the same ticket as the text, uppercased (`FONTAINE-ATTACH1…`), which the ticket
-parser reads like the lowercase form. Nothing else changes: the device still pairs through the
+The code carries a link, `fontaine://pair/<body>`, where `<body>` is the ticket's base32 text without
+the `fontaine-attach1` prefix, uppercased so the code stays small. The system camera can open the
+link in the [Android app](android.md), which also scans the code itself. `fontaine attach` accepts the
+link, the prefixed ticket (the text the dialog shows) and the bare body, in any case, so a link pasted
+from a phone works. Nothing else changes: the device still pairs through the
 confirmation in the host terminal, the ticket still lives 10 minutes unless you give `--ttl` and is
 good for one pairing, and the ticket and code are never recorded.
 
 The ticket is small because it holds little. On the default relay the host publishes its node id to
 iroh's address lookup, so the ticket carries the id and the one-time secret and the device finds the
-host by lookup; the code is about 41 columns wide and 21 rows tall. A custom relay is not published,
-so its ticket also carries the relay URL, and a host with the relay disabled keeps its direct
-addresses, which make the code larger. Resizing redraws the dialog. The code is always drawn whole: if
-the dialog is too short for it, a line above the code says by at least how many rows to enlarge the
-window (a minimum, since an expanded todo or agent list can absorb added height). Only a terminal
-too narrow for the code gets the text ticket, with a line saying at least how many more columns it
-needs. `c` copies the text ticket either way. The screen-reader renderer and a terminal with
-`NO_COLOR` set always print the text ticket only: the code is drawn in fixed black on white and
+host by lookup; the code is about 41 columns wide and 21 rows tall. A custom relay is not published, so its ticket
+also carries the relay URL, and a host with the relay disabled keeps its direct addresses, which make
+the code larger (for example 57 columns by 29 rows for a relay and three addresses). Resizing redraws the dialog. The code is always drawn
+whole: if the dialog is too short for it, a line above the code says by at least how many rows to
+enlarge the window (a minimum, since an expanded todo or agent list can absorb added height). Only a
+terminal too narrow for the code gets the text ticket, with a line saying at least how many more
+columns it needs. `c` copies the text ticket either way. The screen-reader renderer and a terminal
+with `NO_COLOR` set always print the text ticket only: the code is drawn in fixed black on white and
 would not scan without those colors.
+
+A link only asks to pair: any app or page can open it, and the ticket in it is a bearer secret. The
+confirmation in the host terminal is what authorizes a device, and the Android app asks "Pair with
+`<host id>`?" before it connects.
+
+## The Android app
+
+The [Android app](android.md) is a device like `fontaine attach`: it sends the same prompts, slash
+lines, approval and question answers and interrupts, subject to the same device command list, and is
+attributed by its node id. It scans the code, pairs through the host confirmation and reattaches to a
+paired host without a new ticket.
 
 ## Revoking a device
 
