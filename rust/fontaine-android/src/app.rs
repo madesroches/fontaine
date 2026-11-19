@@ -117,6 +117,11 @@ impl App {
         self.hosts = hosts;
     }
 
+    /// For a failure outside the app's own state, such as the paired-host list not reading.
+    pub fn set_notice(&mut self, notice: String) {
+        self.notice = Some(notice);
+    }
+
     /// Reads scanned or pasted text. A link only asks to pair, so this connects to nothing: it
     /// moves to the confirmation, and the text itself is not kept.
     pub fn submit_link(&mut self, text: &str) {
@@ -571,6 +576,13 @@ mod tests {
         app.confirm_pairing();
         app.submit_link(&ticket().link());
         assert!(matches!(app.screen(), Screen::Pairing { .. }));
+    }
+
+    #[test]
+    fn a_set_notice_reaches_the_view() {
+        let mut app = App::new();
+        app.set_notice("cannot read the paired hosts".to_string());
+        assert_eq!(app.view().notice, Some("cannot read the paired hosts"));
     }
 
     #[test]

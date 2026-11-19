@@ -3,6 +3,7 @@
 //! input into the app, client events into the app, and the app's view onto the screen.
 
 mod camera;
+mod error;
 mod jni_bridge;
 mod ui;
 
@@ -24,6 +25,7 @@ use crate::keys::{self, Key};
 use crate::link::is_pair_link;
 use crate::store::DirStore;
 use camera::Camera;
+use error::{Context, Error, chain};
 use ui::Tap;
 
 /// How often a camera frame is decoded: a QR decode costs more than a frame's budget.
@@ -45,14 +47,14 @@ struct Gl {
 }
 
 impl Gl {
-    fn new(window: &ndk::native_window::NativeWindow) -> Result<Gl, String> {
+    fn new(window: &ndk::native_window::NativeWindow) -> Result<Gl, Error> {
         // SAFETY: loading the system's EGL library; its symbols are used only through `egl`.
         let egl = unsafe { EglInstance::load_required_from_filename("libEGL.so") }
-            .map_err(|e| format!("cannot load EGL: {e}"))?;
+            .context("cannot load EGL")?;
         // SAFETY: the default display needs no native handle.
-        let display =
-            unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.ok_or("EGL has no display")?;
-        egl.initialize(display).map_err(|e| e.to_string())?;
+        let display = unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }
+            .ok_or_else(|| Error::new("EGL has no display"))?;
+        egl.initialize(display).context("cannot initialize EGL")?;
         match Self::with_display(&egl, display, window) {
             Ok((context, surface, clear_color, clear)) => Ok(Gl {
                 egl,
@@ -75,7 +77,7 @@ impl Gl {
         egl: &EglInstance,
         display: egl::Display,
         window: &ndk::native_window::NativeWindow,
-    ) -> Result<Made, String> {
+    ) -> Result<Made, Error> {
         let config = egl
             .choose_first_config(
                 display,
@@ -93,10 +95,10 @@ impl Gl {
                     egl::NONE,
                 ],
             )
-            .map_err(|e| e.to_string())?
-            .ok_or("no EGL config supports GLES 3")?;
+            .context("cannot choose an EGL config")?
+            .ok_or_else(|| Error::new("no EGL config supports GLES 3"))?;
         egl.bind_api(egl::OPENGL_ES_API)
-            .map_err(|e| e.to_string())?;
+            .context("cannot bind the GLES API")?;
         let context = egl
             .create_context(
                 display,
@@ -104,7 +106,7 @@ impl Gl {
                 None,
                 &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
             )
-            .map_err(|e| e.to_string())?;
+            .context("cannot create the EGL context")?;
         match Self::with_context(egl, display, config, context, window) {
             Ok((surface, clear_color, clear)) => Ok((context, surface, clear_color, clear)),
             Err(e) => {
@@ -120,7 +122,7 @@ impl Gl {
         config: egl::Config,
         context: egl::Context,
         window: &ndk::native_window::NativeWindow,
-    ) -> Result<(egl::Surface, GlClearColor, GlClear), String> {
+    ) -> Result<(egl::Surface, GlClearColor, GlClear), Error> {
         // SAFETY: the pointer is the live ANativeWindow, which outlives the surface because the
         // surface is destroyed before the window is terminated.
         let surface = unsafe {
@@ -131,13 +133,13 @@ impl Gl {
                 None,
             )
         }
-        .map_err(|e| e.to_string())?;
-        let loaded = (|| {
+        .context("cannot create the EGL surface")?;
+        let loaded = (|| -> Result<_, Error> {
             egl.make_current(display, Some(surface), Some(surface), Some(context))
-                .map_err(|e| e.to_string())?;
+                .context("cannot make the EGL context current")?;
             let proc = |name: &str| {
                 egl.get_proc_address(name)
-                    .ok_or_else(|| format!("GLES has no {name}"))
+                    .ok_or_else(|| Error::new(format!("GLES has no {name}")))
             };
             Ok((proc("glClearColor")?, proc("glClear")?))
         })();
@@ -177,7 +179,7 @@ struct Imgui {
 }
 
 impl Imgui {
-    fn new(window: &ndk::native_window::NativeWindow, scale: f32) -> Result<Imgui, String> {
+    fn new(window: &ndk::native_window::NativeWindow, scale: f32) -> Result<Imgui, Error> {
         // SAFETY: called on the one UI thread with a current GLES context and a live window; the
         // shutdown pairs are in `Drop`, which runs before the surface and window go away.
         unsafe {
@@ -192,14 +194,14 @@ impl Imgui {
                 window.ptr().as_ptr().cast(),
             ) {
                 sys::igDestroyContext(context);
-                return Err("the Android backend did not start".to_string());
+                return Err(Error::new("the Android backend did not start"));
             }
             if !sys::backend_shim::opengl3::dear_imgui_backend_opengl3_init(
                 c"#version 300 es".as_ptr(),
             ) {
                 sys::backend_shim::android::dear_imgui_backend_android_shutdown();
                 sys::igDestroyContext(context);
-                return Err("the GLES backend did not start".to_string());
+                return Err(Error::new("the GLES backend did not start"));
             }
             Ok(Imgui { context })
         }
@@ -309,7 +311,11 @@ impl Activity {
     fn refresh_hosts(&mut self) {
         match self.store.hosts() {
             Ok(hosts) => self.app.set_hosts(hosts.hosts),
-            Err(e) => log::warn!("cannot read the paired hosts: {e}"),
+            Err(e) => {
+                log::warn!("cannot read the paired hosts: {}", chain(&e));
+                self.app
+                    .set_notice(format!("cannot read the paired hosts: {}", chain(&e)));
+            }
         }
     }
 
@@ -443,7 +449,7 @@ impl Activity {
                     self.camera_denied = false;
                 }
                 Err(e) => {
-                    log::warn!("the camera did not start: {e}");
+                    log::warn!("the camera did not start: {}", chain(&e));
                     self.camera_failed = true;
                     self.camera_denied = true;
                     return;
@@ -554,7 +560,7 @@ impl Activity {
             .and_then(|gl| Imgui::new(&window, self.scale).map(|imgui| (gl, imgui)));
         match built {
             Ok((gl, imgui)) => self.surface = Some(Surface { gl, imgui }),
-            Err(e) => log::error!("the screen could not start: {e}"),
+            Err(e) => log::error!("the screen could not start: {}", chain(&e)),
         }
     }
 }

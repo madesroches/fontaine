@@ -104,7 +104,7 @@ fn target_of(
             })?,
     };
     let trimmed = text.trim();
-    if trimmed.starts_with("fontaine-") || trimmed.starts_with(fontaine_remote::LINK_PREFIX) {
+    if Ticket::has_ticket_prefix(trimmed) {
         return match Ticket::parse(trimmed) {
             Ok(ticket) => Ok(Target::Ticket(Box::new(ticket))),
             Err(e) => Err((chain(&e), EXIT_AUTH)),
@@ -465,6 +465,9 @@ mod tests {
         for text in [
             full.link(),
             full.qr_payload(),
+            full.link()
+                .to_uppercase()
+                .replacen("FONTAINE://PAIR/", "Fontaine://Pair/", 1),
             full.link()[fontaine_remote::LINK_PREFIX.len()..].to_string(),
         ] {
             assert!(

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ndk_sys as ffi;
 
+use super::error::{CameraStatus, Error};
 use crate::scan::decode_luma;
 
 // ndk-sys links libmediandk (AImageReader, AImage) with its `media` feature but declares nothing
@@ -45,17 +46,20 @@ unsafe extern "C" fn on_error(context: *mut c_void, _: *mut ffi::ACameraDevice, 
 }
 unsafe extern "C" fn on_session(_: *mut c_void, _: *mut ffi::ACameraCaptureSession) {}
 
-fn ok(status: ffi::camera_status_t) -> Result<(), String> {
+fn ok(status: ffi::camera_status_t) -> Result<(), Error> {
     if status == ffi::camera_status_t::ACAMERA_OK {
         Ok(())
     } else {
-        Err(format!("camera error {}", status.0))
+        Err(Error::with_source(
+            "camera call failed",
+            CameraStatus(status.0),
+        ))
     }
 }
 
 impl Camera {
     /// Opens the back camera and starts streaming, or says why it could not.
-    pub fn start() -> Result<Camera, String> {
+    pub fn start() -> Result<Camera, Error> {
         let mut camera = Camera {
             manager: ptr::null_mut(),
             device: ptr::null_mut(),
@@ -93,13 +97,13 @@ impl Camera {
                 &mut camera.reader,
             ) != ffi::media_status_t::AMEDIA_OK
             {
-                return Err("the image reader could not start".to_string());
+                return Err(Error::new("the image reader could not start"));
             }
             let mut window = ptr::null_mut();
             if ffi::AImageReader_getWindow(camera.reader, &mut window)
                 != ffi::media_status_t::AMEDIA_OK
             {
-                return Err("the image reader has no surface".to_string());
+                return Err(Error::new("the image reader has no surface"));
             }
             ok(ffi::ACaptureSessionOutputContainer_create(
                 &mut camera.container,
@@ -149,7 +153,7 @@ impl Camera {
     ///
     /// # Safety
     /// `self.manager` must be a live camera manager.
-    unsafe fn back_camera_id(&self) -> Result<std::ffi::CString, String> {
+    unsafe fn back_camera_id(&self) -> Result<std::ffi::CString, Error> {
         // SAFETY: the caller guarantees the manager; the id list is freed before returning and
         // the chosen id is copied out first.
         unsafe {
@@ -184,7 +188,7 @@ impl Camera {
                 chosen.get_or_insert(owned);
             }
             ffi::ACameraManager_deleteCameraIdList(list);
-            chosen.ok_or_else(|| "this phone reports no camera".to_string())
+            chosen.ok_or_else(|| Error::new("this phone reports no camera"))
         }
     }
 

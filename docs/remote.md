@@ -84,10 +84,9 @@ good for one pairing, and the ticket and code are never recorded.
 
 The ticket is small because it holds little. On the default relay the host publishes its node id to
 iroh's address lookup, so the ticket carries the id and the one-time secret and the device finds the
-host by lookup; the code is about 41 columns wide and 21 rows tall, the same as before the link
-prefix. A custom relay is not published, so its ticket also carries the relay URL, and a host with
-the relay disabled keeps its direct addresses, which make the code larger (the link prefix adds up
-to 4 columns and 2 rows for such a ticket). Resizing redraws the dialog. The code is always drawn
+host by lookup; the code is about 41 columns wide and 21 rows tall. A custom relay is not published, so its ticket
+also carries the relay URL, and a host with the relay disabled keeps its direct addresses, which make
+the code larger (for example 57 columns by 29 rows for a relay and three addresses). Resizing redraws the dialog. The code is always drawn
 whole: if the dialog is too short for it, a line above the code says by at least how many rows to
 enlarge the window (a minimum, since an expanded todo or agent list can absorb added height). Only a
 terminal too narrow for the code gets the text ticket, with a line saying at least how many more

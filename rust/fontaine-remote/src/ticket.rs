@@ -137,6 +137,13 @@ impl Ticket {
         format!("{LINK_PREFIX}{}", self.body().to_uppercase())
     }
 
+    /// Whether the text starts like a prefixed ticket or a link, in any case, so a caller can tell
+    /// those from a host selector without decoding.
+    pub fn has_ticket_prefix(text: &str) -> bool {
+        let text = text.trim();
+        has_prefix(text, "fontaine-") || has_prefix(text, LINK_PREFIX)
+    }
+
     /// Reads the prefixed ticket, the link or the bare body, each without regard to case.
     pub fn parse(text: &str) -> Result<Ticket, TicketError> {
         let text = text.trim();
