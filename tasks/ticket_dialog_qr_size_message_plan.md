@@ -14,9 +14,9 @@ The remote ticket dialog says "The terminal is too small to show the QR code." f
 ## Design
 1. `qr.rs`: add `Grid::size(&self) -> (usize, usize)` returning `(columns, rows)` the rendered code needs: `(side, side.div_ceil(2))`. `render` uses it for its fit check, so the two cannot disagree.
 2. `ticket_prompt.rs`: when a grid exists but `render` returns `None`, build the reason from `Grid::size` and the rows/columns the body was given, naming only the dimension(s) that fall short. `needed_rows` is `size().1 + text_rows`:
-   - height short: "The terminal is too short for the QR code: it needs N more rows."
-   - width short: "The terminal is too narrow for the QR code: it needs N more columns."
-   - both: the two clauses joined in one line. `N` is the shortfall, so the user knows how much to enlarge the window regardless of the chrome the dialog shares the screen with. The reason becomes an owned `String`; the `NO_COLOR` reason stays as is.
+   - height short: "The terminal is too short for the QR code: it needs at least N more rows."
+   - width short: "The terminal is too narrow for the QR code: it needs at least N more columns."
+   - both: the two clauses joined in one line. `N` is the shortfall, a minimum: an expanded todo or agent list can absorb added terminal height. "1 more row" and "1 more column" are singular. The reason becomes an owned `String`; the `NO_COLOR` reason stays as is.
 3. When the payload does not encode at all (`grid` is `None`), the reason is "The ticket is too long for a QR code." (before, it shared the "too small" message).
 4. Not changed: quiet zone, error-correction level, glyphs, `body_rows`.
 

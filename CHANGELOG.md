@@ -24,8 +24,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
-- The remote ticket dialog says which dimension is short when the QR code does not fit, and how many
-  more rows or columns it needs, instead of "too small" (#708). A ticket too long to encode says so.
+- The remote ticket dialog says which dimension is short when the QR code does not fit, and at least
+  how many more rows or columns it needs, instead of "too small" (#708). A ticket too long to
+  encode says so.
 - A subagent type limited to `shell(...)` allow entries now says why it refused a command when a part
   of it would have matched: the denial names the chain, pipe, redirect or substitution, and the
   `reviewer` prompt tells it to run commands bare, without `2>&1 | tail` (#697). The decision does

@@ -130,16 +130,27 @@ impl TicketPrompt {
     }
 }
 
+fn plural(n: usize, unit: &str) -> String {
+    if n == 1 {
+        format!("1 more {unit}")
+    } else {
+        format!("{n} more {unit}s")
+    }
+}
+
+// The figures are minimums: an expanded todo or agent list can absorb added height.
 fn too_small_reason(more_columns: usize, more_rows: usize) -> String {
     let mut clauses = Vec::new();
     if more_rows > 0 {
         clauses.push(format!(
-            "The terminal is too short for the QR code: it needs {more_rows} more rows."
+            "The terminal is too short for the QR code: it needs at least {}.",
+            plural(more_rows, "row")
         ));
     }
     if more_columns > 0 {
         clauses.push(format!(
-            "The terminal is too narrow for the QR code: it needs {more_columns} more columns."
+            "The terminal is too narrow for the QR code: it needs at least {}.",
+            plural(more_columns, "column")
         ));
     }
     clauses.join(" ")
@@ -228,7 +239,7 @@ mod tests {
         assert!(reason.contains("too short") && reason.contains("more rows"));
         assert!(!reason.contains("narrow") && !reason.contains("columns"));
         // 39 code rows + 3 text rows needed, 20 given.
-        assert!(reason.contains("needs 22 more rows"), "{reason}");
+        assert!(reason.contains("needs at least 22 more rows"), "{reason}");
     }
 
     #[test]

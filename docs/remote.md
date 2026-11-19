@@ -82,9 +82,11 @@ good for one pairing, and the ticket and code are never recorded.
 The code is large, because a ticket holds the host's addresses. It needs a terminal about 80 columns
 wide and about 44 rows tall for a ticket with relay disabled, up to about 50 rows for the default
 relay with IPv6 addresses. Resizing redraws the dialog. When the terminal is too small the dialog
-shows the text ticket instead, with a line saying how many more rows or columns the code needs, and `c` copies the text ticket either way. The
-screen-reader renderer and a terminal with `NO_COLOR` set always print the text ticket only: the code
-is drawn in fixed black on white and would not scan without those colors.
+shows the text ticket instead, with a line saying at least how many more rows or columns the code
+needs (a minimum, since an expanded todo or agent list can absorb added height), and `c` copies the
+text ticket either way. The screen-reader renderer and a terminal with `NO_COLOR` set always print
+the text ticket only: the code is drawn in fixed black on white and would not scan without those
+colors.
 
 ## Revoking a device
 
