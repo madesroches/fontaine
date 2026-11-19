@@ -11,6 +11,7 @@ data-encoding.workspace = true
 iroh.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+postcard.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true

@@ -30,13 +30,19 @@ impl Grid {
         self.colors.fill(Module::Light);
     }
 
+    /// The columns and rows the rendered code needs.
+    pub(crate) fn size(&self) -> (usize, usize) {
+        let side = self.width + 2 * QUIET_ZONE;
+        (side, side.div_ceil(2))
+    }
+
     /// The code as text rows, or `None` when it needs more than `max_width` columns or
     /// `max_height` rows. Each row carries two module rows as half blocks, drawn as fixed black on
     /// white and never in theme colors: a theme-inverted code fails on scanners that do not read
     /// inverted modules.
     pub(crate) fn render(&self, max_width: usize, max_height: usize) -> Option<Vec<Line<'static>>> {
-        let side = self.width + 2 * QUIET_ZONE;
-        if side > max_width || side.div_ceil(2) > max_height {
+        let (side, rows_needed) = self.size();
+        if side > max_width || rows_needed > max_height {
             return None;
         }
         let dark = |row: usize, col: usize| -> bool {
@@ -108,6 +114,15 @@ mod tests {
         assert!(render(&text, 78, 38).is_none());
         assert!(render(&text, 72, 60).is_none());
         assert!(render(&text, 73 + 4, 60).is_some());
+    }
+
+    #[test]
+    fn size_agrees_with_the_render_boundary() {
+        let grid = Grid::encode(&sample_payload(639)).unwrap();
+        let (cols, rows) = grid.size();
+        assert!(grid.render(cols, rows).is_some());
+        assert!(grid.render(cols - 1, rows).is_none());
+        assert!(grid.render(cols, rows - 1).is_none());
     }
 
     #[test]

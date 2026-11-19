@@ -221,7 +221,17 @@ pub fn run(args: &AttachArgs, host: &Host) -> ExitCode {
             return ExitCode::from(crate::EXIT_CONFIG);
         }
     };
-    // A ticket carries the host's addresses and relay; a stored host follows the user's setting.
+    if let (Target::Ticket(ticket), RelayMode::Disabled) = (&target, &user_relay)
+        && ticket.node.addrs.is_empty()
+    {
+        eprintln!(
+            "fontaine: this ticket carries no addresses, so the host is found by address lookup; \
+             set `[remote] relay = \"default\"` to use it"
+        );
+        return ExitCode::from(crate::EXIT_CONFIG);
+    }
+    // A ticket from a default-relay host carries only its id and is resolved by lookup; other
+    // tickets carry addresses. A stored host follows the user's setting.
     let relay = match (&target, user_relay) {
         (Target::Host(_), relay) => Some(relay),
         (Target::Ticket(_), RelayMode::Disabled) => Some(RelayMode::Disabled),

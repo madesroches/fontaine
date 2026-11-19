@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_dialog_picks_the_code_or_the_text_from_the_terminal_height_on_both_paths() {
+    fn the_ticket_dialog_draws_the_whole_code_at_any_height_on_both_paths() {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return;
         }
@@ -906,8 +906,9 @@ mod tests {
         // `chrome` sees the whole terminal; the draw path sees a viewport one row shorter.
         assert!(has_code(overlay(&app, 78, 50, false)));
         assert!(has_code(overlay_in(&app, 78, 49, 50, false)));
-        assert!(!has_code(overlay(&app, 78, 40, false)));
-        assert!(!has_code(overlay_in(&app, 78, 39, 40, false)));
+        assert!(has_code(overlay(&app, 78, 40, false)));
+        assert!(has_code(overlay_in(&app, 78, 39, 40, false)));
+        assert!(!has_code(overlay(&app, 30, 50, false)));
     }
 
     fn down(app: &mut App, times: usize) {

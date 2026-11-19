@@ -100,6 +100,7 @@ struct Shared {
 pub struct RemoteServer {
     endpoint: Endpoint,
     shared: Arc<Shared>,
+    relay: RelayMode,
     closing: watch::Sender<bool>,
     accept_loop: JoinHandle<()>,
 }
@@ -108,6 +109,7 @@ impl RemoteServer {
     pub async fn start(config: ServerConfig) -> Result<RemoteServer, ServerError> {
         let key = SecretKey::from_bytes(&config.store.host_key().map_err(ServerError::Key)?);
         let relayed = !matches!(config.relay, RelayMode::Disabled);
+        let relay = config.relay.clone();
         // Only the default relay mode publishes the host's node id and home relay to iroh's
         // address-lookup service, which is what lets a paired device find it again.
         let builder = match config.relay {
@@ -135,6 +137,7 @@ impl RemoteServer {
         let accept_loop = tokio::spawn(accept_loop(endpoint.clone(), shared.clone(), closed));
         Ok(RemoteServer {
             endpoint,
+            relay,
             shared,
             closing,
             accept_loop,
@@ -148,11 +151,12 @@ impl RemoteServer {
     /// Mints a ticket for the current addresses, revoking the previous one.
     pub fn mint_ticket(&self, ttl: Duration) -> Result<Ticket, MintError> {
         let minted = self.shared.pairing.mint(ttl)?;
-        Ok(Ticket::new(
-            self.endpoint.addr(),
-            minted.secret,
-            minted.expires_at,
-        ))
+        let mut addr = self.endpoint.addr();
+        // Every address in the ticket costs QR rows. The default relay publishes the host to
+        // address lookup, which the device queries, so the id alone finds it; another relay is
+        // not published, so its URL stays and the direct addresses go.
+        trim_addrs(&mut addr, &self.relay);
+        Ok(Ticket::new(addr, minted.secret, minted.expires_at))
     }
 
     pub fn has_live_ticket(&self) -> bool {
@@ -183,6 +187,14 @@ impl RemoteServer {
         let _ = self.closing.send(true);
         self.accept_loop.abort();
         self.endpoint.close().await;
+    }
+}
+
+fn trim_addrs(addr: &mut iroh::EndpointAddr, relay: &RelayMode) {
+    match relay {
+        RelayMode::Default => addr.addrs.clear(),
+        RelayMode::Disabled => {}
+        _ => addr.addrs.retain(|a| a.is_relay()),
     }
 }
 
@@ -523,4 +535,39 @@ fn dispatch(
         registration,
         shared.session.client_message(from, label, message),
     );
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use iroh::EndpointAddr;
+
+    use super::*;
+
+    fn full() -> EndpointAddr {
+        EndpointAddr::new(SecretKey::from_bytes(&[7; 32]).public())
+            .with_relay_url("https://relay.example./".parse().unwrap())
+            .with_ip_addr("192.168.1.20:51234".parse().unwrap())
+    }
+
+    #[test]
+    fn the_default_relay_keeps_only_the_id() {
+        let mut addr = full();
+        trim_addrs(&mut addr, &RelayMode::Default);
+        assert!(addr.addrs.is_empty());
+    }
+
+    #[test]
+    fn a_disabled_relay_keeps_the_direct_addresses() {
+        let mut addr = full();
+        trim_addrs(&mut addr, &RelayMode::Disabled);
+        assert_eq!(addr.addrs.len(), 2);
+    }
+
+    #[test]
+    fn a_custom_relay_keeps_only_its_url() {
+        let mut addr = full();
+        trim_addrs(&mut addr, &RelayMode::Staging);
+        assert_eq!(addr.addrs.len(), 1);
+        assert!(addr.addrs.iter().all(|a| a.is_relay()));
+    }
 }

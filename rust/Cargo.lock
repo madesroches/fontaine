@@ -1988,6 +1988,7 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "iroh",
+ "postcard",
  "serde",
  "serde_json",
  "sha2 0.11.1",
