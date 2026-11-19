@@ -61,12 +61,13 @@ The QR payload becomes a URI, `fontaine://pair/<ticket>`, so the system camera c
 in-app scanner parses the same text. The app declares an intent filter for the `fontaine` scheme.
 
 - Android matches the scheme case-sensitively and lowercase, but the all-uppercase alphanumeric QR mode
-  is what keeps the code small enough for a terminal. Resolution: encode the lowercase
-  `fontaine://pair/` prefix and the uppercase ticket as separate QR segments (byte then alphanumeric).
-  `Ticket::parse` already reads uppercase base32. A scanner returns the concatenated text.
+  is what keeps the code small enough for a terminal. Resolution: `qr_payload()` is `fontaine://pair/`
+  plus the uppercased ticket; the `qrcode` crate's automatic mode selection already encodes the
+  lowercase prefix as bytes and the uppercase ticket as alphanumeric. `Ticket::parse` already reads
+  uppercase base32.
 - `fontaine-remote` gains `Ticket::link()` (`fontaine://pair/<ticket>`, the ticket text in the
-  current lowercase form) and `Ticket::qr_segments()` (the prefix and uppercased ticket); `parse`
-  accepts a bare ticket or the link. The terminal QR uses the segments. `fontaine attach` accepts both
+  current lowercase form); `qr_payload()` returns the link with the uppercased ticket; `parse`
+  accepts a bare ticket or the link. `fontaine attach` accepts both
   forms, so a link pasted from the phone works. The shown text ticket stays the bare form.
 - Pairing never trusts the link: any app or page can open it. The link only carries a ticket, which is
   still a bearer secret that merely asks to pair; the host-terminal `y` is what authorizes. The app
@@ -119,10 +120,12 @@ Play Store publishing.
    product code): pick the ImGui binding that supports a GLES3 NativeActivity backend, the QR decoder
    crate, and confirm `iroh` and `fontaine-remote` build for `aarch64-linux-android` with `tls-ring`.
    Record the choices in `## Decisions`.
-2. **Link format** in `fontaine-remote`: `Ticket::link`, `qr_segments`, link-aware `parse`; update
-   `fontaine-tui/src/qr.rs` and `ticket_prompt.rs` to encode segments: `Grid::encode` and
-   `TicketPrompt` take segments (via `qrcode::bits::Bits` / `QrCode::with_bits`), and the measured-size
-   tests are re-measured with the 16-byte lowercase prefix segment; `fontaine-tui/src/ui/remote.rs`
+2. **Link format** in `fontaine-remote`: `Ticket::link`, the new `qr_payload()`, link-aware `parse`;
+   update `TicketError::NotATicket`'s Display (it says "expected `fontaine-attach1...`") to mention the
+   link form, and its matching tests. `Grid::encode` keeps taking a `&str`. The `ticket_prompt.rs` and
+   `qr.rs` tests and `qr::sample_payload` are re-measured against the longer payload (e.g. the
+   `body.len()` and the 41/42-row fit boundary), as is the `crate::qr::sample_payload(639)` use in
+   `fontaine-tui/src/view.rs`; `fontaine-tui/src/ui/remote.rs`
    calls `TicketPrompt::new` with `ticket.qr_payload()` and is updated to match. Update `fontaine
    attach`: `attach_cmd.rs` routes to `Ticket::parse` only when the text starts with `fontaine-`; the
    check also accepts `fontaine://pair/`.
@@ -147,13 +150,13 @@ Play Store publishing.
 
 - `rust/fontaine-remote/src/ticket.rs`, `rust/fontaine-remote/src/lib.rs`
 - `rust/fontaine-tui/src/qr.rs`, `rust/fontaine-tui/src/ticket_prompt.rs`,
-  `rust/fontaine-tui/src/ui/remote.rs`, `rust/fontaine-tui/Cargo.toml` (dev-dependency), a new unit
+  `rust/fontaine-tui/src/view.rs`, `rust/fontaine-tui/src/ui/remote.rs`, `rust/fontaine-tui/Cargo.toml` (dev-dependency), a new unit
   test in `rust/fontaine-tui/src/remote/`
 - `rust/fontaine/src/attach_cmd.rs`
 - `rust/fontaine-android/**` (new)
 - `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/deny.toml` (if needed), `rust/rust-toolchain.toml`
 - `.github/workflows/android.yml` (new), `.github/workflows/release.yml`
-- `docs/remote.md`, `docs/installing.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/android.md` (new)
+- `docs/remote.md`, `docs/tui.md`, `docs/terminal.md` (check), `docs/installing.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/android.md` (new)
 - `tasks/fontaine_harness_plan.md` (workspace layout, Decisions), `AGENTS.md` (crate list),
   `CHANGELOG.md`
 
@@ -165,8 +168,8 @@ Play Store publishing.
   host CI coverage of the portable part.
 - App-owned lenient mirror types plus a contract test, not moving `fontaine-tui`'s types, which pull in
   the sdk and ratatui.
-- Mixed-segment QR: a bare ticket cannot open the app from the system camera, and all-lowercase byte
-  mode is a larger code.
+- QR payload: the link prefix stays lowercase and the ticket uppercase, so the scheme matches on
+  Android and the code stays small.
 
 ## Documentation
 
@@ -174,6 +177,8 @@ Play Store publishing.
   `docs/SUMMARY.md` and `docs/index.md`.
 - `docs/remote.md`: the QR carries `fontaine://pair/...`, `fontaine attach` accepts it, and the
   Android app as a device.
+- `docs/tui.md`: the QR terminal-size figures, re-measured for the longer payload; check
+  `docs/terminal.md` for the same.
 - `docs/installing.md`: sideloading, and verifying the APK signature.
 - `CHANGELOG.md`, and the plan's Decisions and workspace-layout entry on landing.
 
@@ -182,8 +187,7 @@ Play Store publishing.
 Automated, in host CI, no live services:
 
 - `link`/`Ticket`: `link()` round trip; a link with an uppercase ticket parses; wrong scheme or path is
-  `NotATicket`; the segment list concatenates back to a string that parses, and is the lowercase prefix
-  segment plus the uppercased ticket segment. The existing ticket tests cover the rest.
+  `NotATicket`; `qr_payload()` parses back via `Ticket::parse`. The existing ticket tests cover the rest.
 - `model`: decoding of unknown entry kinds and extra fields; the contract test against real host
   `Snapshot`/`RemoteEvent` output.
 - `app`: the state machine over scripted `ClientEvent`s, including mid-approval disconnect leaving no
