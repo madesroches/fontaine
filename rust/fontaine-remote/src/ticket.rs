@@ -36,6 +36,11 @@ mod secret_text {
     }
 }
 
+fn has_prefix(text: &str, prefix: &str) -> bool {
+    text.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
 #[derive(Debug)]
 pub enum TicketError {
     /// The text does not start with the ticket prefix.
@@ -92,12 +97,22 @@ impl Ticket {
         format!("{PREFIX}{}", BASE32_NOPAD.encode(&json).to_lowercase())
     }
 
+    /// What a QR code carries: the ticket uppercased, which stays in the QR alphanumeric set (a
+    /// smaller code than lowercase byte mode) and which `parse` reads back unchanged.
+    pub fn qr_payload(&self) -> String {
+        self.encode().to_uppercase()
+    }
+
     pub fn parse(text: &str) -> Result<Ticket, TicketError> {
         let text = text.trim();
-        if text.starts_with(RETIRED_PREFIX) {
+        // The QR payload is the uppercased ticket, so the prefixes match without regard to case.
+        if has_prefix(text, RETIRED_PREFIX) {
             return Err(TicketError::Retired);
         }
-        let rest = text.strip_prefix(PREFIX).ok_or(TicketError::NotATicket)?;
+        if !has_prefix(text, PREFIX) {
+            return Err(TicketError::NotATicket);
+        }
+        let rest = &text[PREFIX.len()..];
         let bytes = BASE32_NOPAD
             .decode(rest.to_uppercase().as_bytes())
             .map_err(TicketError::Encoding)?;
@@ -127,6 +142,29 @@ mod tests {
         assert!(text.starts_with(PREFIX) && !text.contains(char::is_whitespace));
         assert_eq!(Ticket::parse(&text).unwrap(), ticket);
         assert_eq!(Ticket::parse(&format!("  {text}\n")).unwrap(), ticket);
+    }
+
+    #[test]
+    fn the_qr_payload_parses_back_and_is_qr_alphanumeric() {
+        let ticket = sample();
+        let payload = ticket.qr_payload();
+        assert!(payload.starts_with("FONTAINE-ATTACH1"));
+        assert!(
+            payload
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        );
+        assert_eq!(Ticket::parse(&payload).unwrap(), ticket);
+        let mixed = format!("Fontaine-Attach1{}", &ticket.encode()[PREFIX.len()..]);
+        assert_eq!(Ticket::parse(&mixed).unwrap(), ticket);
+    }
+
+    #[test]
+    fn an_uppercase_retired_ticket_is_retired() {
+        assert!(matches!(
+            Ticket::parse("FONTAINE-SEND1MFRGGZDF"),
+            Err(TicketError::Retired)
+        ));
     }
 
     #[test]

@@ -29,6 +29,7 @@ mod paste_burst;
 pub mod picker;
 pub mod plugin_prompt;
 pub mod provider_dialog;
+pub(crate) mod qr;
 pub mod question;
 pub mod recent;
 pub mod remote;

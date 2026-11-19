@@ -550,7 +550,8 @@ impl<B: Backend + Anchor> Screen<B> {
             // "\u{1}" is not usable: ratatui panics in `cell_width` on it.
             self.set_previous(Cell::new("\u{E000}"));
         }
-        self.terminal.draw(|frame| view::draw(frame, app))?;
+        self.terminal
+            .draw(|frame| view::draw(frame, app, terminal_height))?;
         Ok(())
     }
 
@@ -1528,7 +1529,9 @@ mod tests {
             fn model(&mut self, app: &App) -> Vec<String> {
                 let area = self.screen.area();
                 let mut drawn = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-                drawn.draw(|frame| view::draw(frame, app)).unwrap();
+                drawn
+                    .draw(|frame| view::draw(frame, app, area.height + area.top()))
+                    .unwrap();
                 let mut all = vec![String::new(); usize::from(area.top())];
                 all.extend(
                     rows(drawn.backend().buffer())

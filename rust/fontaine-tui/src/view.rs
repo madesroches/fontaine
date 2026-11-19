@@ -133,14 +133,14 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     u16::try_from(total).unwrap_or(u16::MAX).min(max_height)
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
-    draw_widgets(frame, app);
+pub fn draw(frame: &mut Frame, app: &App, terminal_height: u16) {
+    draw_widgets(frame, app, terminal_height);
     let area = frame.area();
     app.links
         .apply(frame.buffer_mut(), area, link_style(&app.theme));
 }
 
-fn draw_widgets(frame: &mut Frame, app: &App) {
+fn draw_widgets(frame: &mut Frame, app: &App, terminal_height: u16) {
     let area = frame.area();
     let inner_width = usize::from(area.width.saturating_sub(2)).max(1);
     let Overlay {
@@ -149,7 +149,7 @@ fn draw_widgets(frame: &mut Frame, app: &App) {
         footer,
         approval: is_approval,
         ..
-    } = overlay(app, inner_width, area.height, false);
+    } = overlay_in(app, inner_width, area.height, terminal_height, false);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + view.chip_rows as u16 + 2;
     let queued = queued_lines(app, inner_width);
@@ -395,11 +395,26 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
 /// the `/` menu (at most `MAX_MENU_ROWS` rows and a key-help footer), in that order of
 /// precedence, which is the order `App::handle_key` routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
+    overlay_in(app, width, height, height, linear)
+}
+
+/// `overlay` for a viewport shorter than the terminal. The ticket dialog sizes its QR code from
+/// `terminal_height`, which `chrome` and the draw path share, so it never flips between the code
+/// and the text across the two.
+pub(crate) fn overlay_in(
+    app: &App,
+    width: usize,
+    height: u16,
+    terminal_height: u16,
+    linear: bool,
+) -> Overlay {
     let theme = &app.theme;
     if let Some(prompt) = &app.ticket_prompt {
+        let footer = prompt.footer();
+        let rows = body_rows(app, width, terminal_height, footer.len());
         return Overlay {
             instance: Some(prompt.id),
-            ..Overlay::new("remote", prompt.body(width, theme), prompt.footer())
+            ..Overlay::new("remote", prompt.body(width, rows, linear, theme), footer)
         };
     }
     if let Some(list) = &app.denied {
@@ -876,6 +891,25 @@ mod tests {
         app
     }
 
+    #[test]
+    fn the_ticket_dialog_picks_the_code_or_the_text_from_the_terminal_height_on_both_paths() {
+        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+            return;
+        }
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.begin_ticket(crate::ticket_prompt::TicketPrompt::new(
+            "fontaine-attach1abc".into(),
+            crate::qr::sample_payload(639),
+            "10m".into(),
+        ));
+        let has_code = |o: Overlay| o.body.iter().any(|l| l.to_string().contains('█'));
+        // `chrome` sees the whole terminal; the draw path sees a viewport one row shorter.
+        assert!(has_code(overlay(&app, 78, 50, false)));
+        assert!(has_code(overlay_in(&app, 78, 49, 50, false)));
+        assert!(!has_code(overlay(&app, 78, 40, false)));
+        assert!(!has_code(overlay_in(&app, 78, 39, 40, false)));
+    }
+
     fn down(app: &mut App, times: usize) {
         for _ in 0..times {
             app.handle_input(Input::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
@@ -1001,7 +1035,7 @@ mod tests {
     fn drawn(app: &App, width: u16, height: u16) -> Vec<String> {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.draw(|frame| draw(frame, app, height)).unwrap();
         let buffer = terminal.backend().buffer();
         buffer
             .content()
@@ -1269,7 +1303,7 @@ mod tests {
             app.links.enabled = enabled;
             app.on_event(SessionEvent::AssistantDelta("see https://a.io/x ok".into()));
             let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
-            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 12)).unwrap();
             terminal
                 .backend()
                 .buffer()
@@ -1289,7 +1323,7 @@ mod tests {
     fn drawn_cells(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.draw(|frame| draw(frame, app, height)).unwrap();
         terminal.backend().buffer().clone()
     }
 
