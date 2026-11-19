@@ -72,6 +72,60 @@ pub fn device_model(app: &AndroidApp) -> String {
     .unwrap_or_else(|| "Android phone".to_string())
 }
 
+/// The clipboard's first item as text. Android 10+ only serves it while the app has focus, which
+/// holds when the user has just tapped the button that asks.
+pub fn clipboard_text(app: &AndroidApp) -> Option<String> {
+    with_activity(app, |env, activity| {
+        let name = env.new_string("clipboard")?;
+        let manager = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Ok(None);
+        }
+        let clip = env
+            .call_method(
+                &manager,
+                "getPrimaryClip",
+                "()Landroid/content/ClipData;",
+                &[],
+            )?
+            .l()?;
+        if clip.is_null() {
+            return Ok(None);
+        }
+        let count = env.call_method(&clip, "getItemCount", "()I", &[])?.i()?;
+        if count < 1 {
+            return Ok(None);
+        }
+        let item = env
+            .call_method(
+                &clip,
+                "getItemAt",
+                "(I)Landroid/content/ClipData$Item;",
+                &[JValue::Int(0)],
+            )?
+            .l()?;
+        let text = env
+            .call_method(&item, "getText", "()Ljava/lang/CharSequence;", &[])?
+            .l()?;
+        if text.is_null() {
+            return Ok(None);
+        }
+        let text = env
+            .call_method(&text, "toString", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let text: String = env.get_string(&JString::from(text))?.into();
+        Ok(Some(text))
+    })
+    .flatten()
+}
+
 /// The data string of the launching intent, when the activity was opened by a link.
 pub fn intent_link(app: &AndroidApp) -> Option<String> {
     with_activity(app, |env, activity| {

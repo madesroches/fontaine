@@ -465,7 +465,7 @@ mod tests {
         for text in [
             full.link(),
             full.qr_payload(),
-            full.link()[16..].to_string(),
+            full.link()[fontaine_remote::LINK_PREFIX.len()..].to_string(),
         ] {
             assert!(
                 matches!(

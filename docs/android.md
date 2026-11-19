@@ -31,8 +31,8 @@ it, and the ticket inside is a secret. Only the confirmation in the host termina
 phone, so decline a pairing prompt you did not start. The app does not keep the link after reading it.
 The phone's name on the confirmation line is its model name.
 
-If the camera is off or denied, paste the link, the prefixed ticket or the bare ticket text into the
-field on the scan screen. The camera permission is requested when you tap "Allow camera" on the scan screen.
+If the camera is off or denied, copy the link, the prefixed ticket or the bare ticket text and tap
+"Paste" on the scan screen, then "Use this". The camera permission is requested when you tap "Allow camera" on the scan screen.
 
 ## Reattach
 

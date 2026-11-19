@@ -4,6 +4,7 @@
 
 use std::ffi::{CStr, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ndk_sys as ffi;
 
@@ -27,10 +28,21 @@ pub struct Camera {
     target: *mut ffi::ACameraOutputTarget,
     output: *mut ffi::ACaptureSessionOutput,
     container: *mut ffi::ACaptureSessionOutputContainer,
+    /// Set by the device callbacks, which run on a camera thread; boxed so the address handed to
+    /// them as context stays put when `Camera` moves. Declared last so it outlives the device that
+    /// `Drop` closes.
+    dead: Box<AtomicBool>,
 }
 
-unsafe extern "C" fn on_disconnected(_: *mut c_void, _: *mut ffi::ACameraDevice) {}
-unsafe extern "C" fn on_error(_: *mut c_void, _: *mut ffi::ACameraDevice, _: i32) {}
+unsafe extern "C" fn on_disconnected(context: *mut c_void, _: *mut ffi::ACameraDevice) {
+    // SAFETY: the context is the `dead` flag of the owning `Camera`, which closes the device
+    // before the flag is freed.
+    unsafe { (*context.cast::<AtomicBool>()).store(true, Ordering::Relaxed) };
+}
+unsafe extern "C" fn on_error(context: *mut c_void, _: *mut ffi::ACameraDevice, _: i32) {
+    // SAFETY: as in `on_disconnected`.
+    unsafe { (*context.cast::<AtomicBool>()).store(true, Ordering::Relaxed) };
+}
 unsafe extern "C" fn on_session(_: *mut c_void, _: *mut ffi::ACameraCaptureSession) {}
 
 fn ok(status: ffi::camera_status_t) -> Result<(), String> {
@@ -53,6 +65,7 @@ impl Camera {
             target: ptr::null_mut(),
             output: ptr::null_mut(),
             container: ptr::null_mut(),
+            dead: Box::new(AtomicBool::new(false)),
         };
         // SAFETY: each NDK object is created once, stored in `camera` the moment it exists, and
         // released by `Drop` in reverse order, so an early return frees what was made so far.
@@ -60,7 +73,9 @@ impl Camera {
             camera.manager = ffi::ACameraManager_create();
             let id = camera.back_camera_id()?;
             let mut callbacks = ffi::ACameraDevice_StateCallbacks {
-                context: ptr::null_mut(),
+                context: std::ptr::from_ref::<AtomicBool>(&camera.dead)
+                    .cast_mut()
+                    .cast::<c_void>(),
                 onDisconnected: Some(on_disconnected),
                 onError: Some(on_error),
             };
@@ -171,6 +186,11 @@ impl Camera {
             ffi::ACameraManager_deleteCameraIdList(list);
             chosen.ok_or_else(|| "this phone reports no camera".to_string())
         }
+    }
+
+    /// Whether the system took the camera away or it failed; the owner must drop and reopen it.
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
     }
 
     /// Decodes the newest frame, if one is ready and holds a QR code.

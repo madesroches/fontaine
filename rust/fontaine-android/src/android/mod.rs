@@ -31,13 +31,17 @@ const SCAN_INTERVAL: Duration = Duration::from_millis(150);
 
 type EglInstance = egl::DynamicInstance<egl::EGL1_4>;
 
+type GlClearColor = unsafe extern "system" fn(f32, f32, f32, f32);
+type GlClear = unsafe extern "system" fn(u32);
+type Made = (egl::Context, egl::Surface, GlClearColor, GlClear);
+
 struct Gl {
     egl: EglInstance,
     display: egl::Display,
     surface: egl::Surface,
     context: egl::Context,
-    clear_color: unsafe extern "system" fn(f32, f32, f32, f32),
-    clear: unsafe extern "system" fn(u32),
+    clear_color: GlClearColor,
+    clear: GlClear,
 }
 
 impl Gl {
@@ -49,6 +53,29 @@ impl Gl {
         let display =
             unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.ok_or("EGL has no display")?;
         egl.initialize(display).map_err(|e| e.to_string())?;
+        match Self::with_display(&egl, display, window) {
+            Ok((context, surface, clear_color, clear)) => Ok(Gl {
+                egl,
+                display,
+                surface,
+                context,
+                clear_color,
+                clear,
+            }),
+            Err(e) => {
+                let _ = egl.terminate(display);
+                Err(e)
+            }
+        }
+    }
+
+    /// Everything after `initialize`; the caller terminates the display when this fails, so each
+    /// path here releases only what it made itself.
+    fn with_display(
+        egl: &EglInstance,
+        display: egl::Display,
+        window: &ndk::native_window::NativeWindow,
+    ) -> Result<Made, String> {
         let config = egl
             .choose_first_config(
                 display,
@@ -78,6 +105,22 @@ impl Gl {
                 &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
             )
             .map_err(|e| e.to_string())?;
+        match Self::with_context(egl, display, config, context, window) {
+            Ok((surface, clear_color, clear)) => Ok((context, surface, clear_color, clear)),
+            Err(e) => {
+                let _ = egl.destroy_context(display, context);
+                Err(e)
+            }
+        }
+    }
+
+    fn with_context(
+        egl: &EglInstance,
+        display: egl::Display,
+        config: egl::Config,
+        context: egl::Context,
+        window: &ndk::native_window::NativeWindow,
+    ) -> Result<(egl::Surface, GlClearColor, GlClear), String> {
         // SAFETY: the pointer is the live ANativeWindow, which outlives the surface because the
         // surface is destroyed before the window is terminated.
         let surface = unsafe {
@@ -89,23 +132,29 @@ impl Gl {
             )
         }
         .map_err(|e| e.to_string())?;
-        egl.make_current(display, Some(surface), Some(surface), Some(context))
-            .map_err(|e| e.to_string())?;
-        let proc = |name: &str| {
-            egl.get_proc_address(name)
-                .ok_or_else(|| format!("GLES has no {name}"))
+        let loaded = (|| {
+            egl.make_current(display, Some(surface), Some(surface), Some(context))
+                .map_err(|e| e.to_string())?;
+            let proc = |name: &str| {
+                egl.get_proc_address(name)
+                    .ok_or_else(|| format!("GLES has no {name}"))
+            };
+            Ok((proc("glClearColor")?, proc("glClear")?))
+        })();
+        let (clear_color, clear) = match loaded {
+            Ok(procs) => procs,
+            Err(e) => {
+                let _ = egl.make_current(display, None, None, None);
+                let _ = egl.destroy_surface(display, surface);
+                return Err(e);
+            }
         };
-        let clear_color = proc("glClearColor")?;
-        let clear = proc("glClear")?;
-        Ok(Gl {
-            // SAFETY: both are the GLES entry points of those names, whose signatures these are.
-            clear_color: unsafe { std::mem::transmute::<extern "system" fn(), _>(clear_color) },
-            clear: unsafe { std::mem::transmute::<extern "system" fn(), _>(clear) },
-            egl,
-            display,
+        Ok((
             surface,
-            context,
-        })
+            // SAFETY: both are the GLES entry points of those names, whose signatures these are.
+            unsafe { std::mem::transmute::<extern "system" fn(), GlClearColor>(clear_color) },
+            unsafe { std::mem::transmute::<extern "system" fn(), GlClear>(clear) },
+        ))
     }
 
     fn swap(&self) {
@@ -235,6 +284,8 @@ struct Activity {
     permission_stale: bool,
     /// A failed start is not retried until the permission is checked again.
     camera_failed: bool,
+    /// The camera is held only while the activity is in the foreground.
+    resumed: bool,
     /// Digest of the last pairing link taken from the intent, so a resume does not process it
     /// twice; a digest because the link carries a bearer secret.
     last_link: Option<[u8; 32]>,
@@ -314,6 +365,12 @@ impl Activity {
     fn handle_tap(&mut self, tap: Tap) {
         match tap {
             Tap::FocusField => self.android.show_soft_input(true),
+            Tap::PasteField => {
+                if let Some(text) = jni_bridge::clipboard_text(&self.android) {
+                    self.field = text.trim().to_string();
+                    self.android.set_text_input_state(TextInputState::default());
+                }
+            }
             Tap::SubmitField => {
                 let text = std::mem::take(&mut self.field);
                 let action = if *self.app.screen() == Screen::Session {
@@ -361,10 +418,14 @@ impl Activity {
     }
 
     fn scan(&mut self) {
-        let want_camera = *self.app.screen() == Screen::Scan;
+        let want_camera =
+            *self.app.screen() == Screen::Scan && self.surface.is_some() && self.resumed;
         if !want_camera {
             self.camera = None;
             return;
+        }
+        if self.camera.as_ref().is_some_and(Camera::is_dead) {
+            self.camera = None;
         }
         if self.permission_stale {
             self.permission_stale = false;
@@ -539,6 +600,7 @@ fn android_main(app: AndroidApp) {
         camera_granted: false,
         permission_stale: true,
         camera_failed: false,
+        resumed: false,
         last_link: None,
         label,
         scale,
@@ -561,7 +623,14 @@ fn android_main(app: AndroidApp) {
                         activity.camera = None;
                         activity.surface = None;
                     }
+                    MainEvent::Pause => {
+                        activity.resumed = false;
+                        activity.camera = None;
+                    }
                     MainEvent::Resume { .. } => {
+                        activity.resumed = true;
+                        activity.camera = None;
+                        activity.camera_failed = false;
                         activity.permission_stale = true;
                         // getIntent() stays the launch intent, so this only catches a launch link
                         // after the activity was recreated; a link opened while running is not seen.

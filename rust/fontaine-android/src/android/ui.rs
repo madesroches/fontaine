@@ -14,6 +14,7 @@ pub enum Tap {
     /// Open the keyboard for the prompt or paste field.
     FocusField,
     SubmitField,
+    PasteField,
     GrantCamera,
     ConfirmPairing,
     DeclinePairing,
@@ -169,14 +170,19 @@ fn scan(
     if camera_ready {
         wrapped("Point the camera at the code in the terminal.");
     } else if camera_denied {
-        wrapped("Camera access is off. Paste the pairing link instead, or allow the camera.");
+        wrapped(
+            "Camera access is off. Tap Paste to use a copied pairing link instead, or allow the camera.",
+        );
     }
     if !camera_ready && button("Allow camera", avail_width()) {
         taps.push(Tap::GrantCamera);
     }
     separator();
     text("Or paste a pairing link or ticket");
-    field_box(field, "tap to paste", taps);
+    field_box(field, "tap Paste or type here", taps);
+    if button("Paste", avail_width()) {
+        taps.push(Tap::PasteField);
+    }
     if !field.is_empty() && button("Use this", avail_width()) {
         taps.push(Tap::SubmitField);
     }
@@ -240,9 +246,14 @@ fn session(
         separator();
     }
     field_box(field, "message the session", taps);
-    let half = avail_width() * 0.5;
-    if button("Send", half) {
+    let third = avail_width() / 3.0;
+    if button("Send", third) {
         taps.push(Tap::SubmitField);
+    }
+    // SAFETY: a frame is open.
+    unsafe { sys::igSameLine(0.0, -1.0) };
+    if button("Paste", third) {
+        taps.push(Tap::PasteField);
     }
     // SAFETY: a frame is open.
     unsafe { sys::igSameLine(0.0, -1.0) };
