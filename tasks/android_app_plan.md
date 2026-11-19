@@ -36,8 +36,7 @@ lives in this repo.
 
 ### Where the code lives
 
-A new crate `rust/fontaine-android` (a `cdylib` + `rlib`), so no new root directory and no AGENTS.md
-layout change. Everything Android-specific is behind `#[cfg(target_os = "android")]` and
+A new crate `rust/fontaine-android` (a `cdylib` + `rlib`). Everything Android-specific is behind `#[cfg(target_os = "android")]` and
 `cfg(target_os = "android")` dependencies, so on Linux, macOS and Windows the crate compiles to its
 portable part only and its tests run in the existing host CI. The portable part holds everything that
 can be tested without a phone:
@@ -47,7 +46,7 @@ can be tested without a phone:
 - `app`: the session state machine (screens: Scan, Pairing, Session, Error), driven by input events and
   `ClientEvent`s, producing a view model; ImGui code only renders it and forwards taps.
 - `store`: `ClientStore` over a directory the activity hands in (the app's private files dir), with
-  the device key kept owner-only and, as a later hardening, wrapped by an Android Keystore key. It is
+  the device key kept owner-only. It is
   a small first-party file store (atomic write, 0600 on unix, a `cfg(unix)` permission assertion in its
   test), since `fontaine-tui`'s `FileStore` uses sdk helpers this crate cannot import.
 
@@ -60,13 +59,8 @@ Gradle project. The `AndroidManifest.xml` and APK metadata sit in the crate.
 The QR payload becomes a URI, `fontaine://pair/<ticket>`, so the system camera can open the app and the
 in-app scanner parses the same text. The app declares an intent filter for the `fontaine` scheme.
 
-- Android matches the scheme case-sensitively and lowercase, but the all-uppercase alphanumeric QR mode
-  is what keeps the code small enough for a terminal. Resolution: `qr_payload()` is `fontaine://pair/`
-  plus the uppercased ticket; the `qrcode` crate's automatic mode selection already encodes the
-  lowercase prefix as bytes and the uppercase ticket as alphanumeric. `Ticket::parse` already reads
-  uppercase base32.
 - `fontaine-remote` gains `Ticket::link()` (`fontaine://pair/<ticket>`, the ticket text in the
-  current lowercase form); `qr_payload()` returns the link with the uppercased ticket; `parse`
+  current lowercase form); `qr_payload()` returns `fontaine://pair/` plus the uppercased ticket; `parse`
   accepts a bare ticket or the link. `fontaine attach` accepts both
   forms, so a link pasted from the phone works. The shown text ticket stays the bare form.
 - Pairing never trusts the link: any app or page can open it. The link only carries a ticket, which is
@@ -78,9 +72,10 @@ in-app scanner parses the same text. The app declares an intent filter for the `
 
 The app keeps its own lenient, read-only mirror types in `model` (`Snapshot`, `RemoteEvent`,
 `Status`, `Dialog`, and a simplified `Entry` with the tool, user, assistant, notice and error cases it
-renders; unknown entry kinds decode to a placeholder, unknown fields are ignored). It does not move
-`fontaine-tui`'s types: those depend on the sdk and ratatui, and a phone UI needs a smaller shape. The
-cost is a second definition of a wire shape, so drift is caught by a contract test: a unit test inside
+renders; unknown entry kinds decode to a placeholder, unknown fields are ignored). The host `Entry` is an
+externally tagged serde enum, so `#[serde(other)]` cannot absorb unknown kinds: the mirror `Entry`
+needs a hand-written `Deserialize` (or decoding entries as `serde_json::Value` and mapping the known
+kinds). Drift is caught by a contract test: a unit test inside
 `rust/fontaine-tui/src/remote/` (the types are `pub(crate)`) serializes real host `Snapshot` and
 `RemoteEvent` values and decodes them with `fontaine-android`'s `model` (`fontaine-android` as a
 dev-dependency of `fontaine-tui`; the portable part has no cycle because it does not depend on
@@ -118,7 +113,8 @@ Play Store publishing.
 
 1. **Spike and choices** (`rust/fontaine-android/examples` or a scratch branch, not committed as
    product code): pick the ImGui binding that supports a GLES3 NativeActivity backend, the QR decoder
-   crate, and confirm `iroh` and `fontaine-remote` build for `aarch64-linux-android` with `tls-ring`.
+   crate, and confirm `iroh` and `fontaine-remote` build for `aarch64-linux-android` with `tls-ring` (locally via
+   `rustup target add aarch64-linux-android`; the `rust-toolchain.toml` edit stays in step 3).
    Record the choices in `## Decisions`.
 2. **Link format** in `fontaine-remote`: `Ticket::link`, the new `qr_payload()`, link-aware `parse`;
    update `TicketError::NotATicket`'s Display (it says "expected `fontaine-attach1...`") to mention the
@@ -170,6 +166,8 @@ Play Store publishing.
   the sdk and ratatui.
 - QR payload: the link prefix stays lowercase and the ticket uppercase, so the scheme matches on
   Android and the code stays small.
+- v1 keeps the device key in the app-private files dir (owner-only) and defers Keystore wrapping,
+  because wrapping adds JNI/Keystore plumbing that the first version does not need to pair and attach.
 
 ## Documentation
 
@@ -188,10 +186,12 @@ Automated, in host CI, no live services:
 
 - `link`/`Ticket`: `link()` round trip; a link with an uppercase ticket parses; wrong scheme or path is
   `NotATicket`; `qr_payload()` parses back via `Ticket::parse`. The existing ticket tests cover the rest.
-- `model`: decoding of unknown entry kinds and extra fields; the contract test against real host
+- `model`: decoding of unknown entry kinds and extra fields, with the other entries in the same
+  snapshot still decoding; the contract test against real host
   `Snapshot`/`RemoteEvent` output.
 - `app`: the state machine over scripted `ClientEvent`s, including mid-approval disconnect leaving no
-  answer sent, "always allow" never offered, a rejected pairing reason surfaced, replayed link
+  answer sent, "always allow" never offered, a rejected pairing reason surfaced, revoked and not-paired rejections after pairing showing the
+  `Reason::describe` text, replayed link
   after a consumed secret, and reconnect.
 - `store`: device key persisted owner-only and stable across reopen; hosts file round trip.
 - Loopback pairing and approval through `fontaine_remote::Client` against a `RemoteServer` already
@@ -214,5 +214,4 @@ on a phone:
 
 ## Open Questions
 
-- Keystore wrapping of the device key: when to do it, and whether to wrap or generate in the Keystore.
 - Accessibility (TalkBack) coverage for the ImGui UI, and when it becomes a requirement.
