@@ -56,13 +56,18 @@ Gradle project. The `AndroidManifest.xml` and APK metadata sit in the crate.
 
 ### Deep link and QR payload
 
-The QR payload becomes a URI, `fontaine://pair/<ticket>`, so the system camera can open the app and the
+The QR payload becomes a URI, `fontaine://pair/<body>`, so the system camera can open the app and the
 in-app scanner parses the same text. The app declares an intent filter for the `fontaine` scheme.
 
-- `fontaine-remote` gains `Ticket::link()` (`fontaine://pair/<ticket>`, the ticket text in the
-  current lowercase form); `qr_payload()` returns `fontaine://pair/` plus the uppercased ticket; `parse`
-  accepts a bare ticket or the link. `fontaine attach` accepts both
-  forms, so a link pasted from the phone works. The shown text ticket stays the bare form.
+- Terms: the *prefixed ticket* is the text form shown to users, `fontaine-attach1` followed by the
+  base32 encoding of the ticket bytes; the *body* is that base32 text alone, without the prefix. The
+  link drops the prefix because the scheme and path already say what it is, and the prefix would add
+  16 characters to a QR that #709 just shrank.
+- `fontaine-remote` gains `Ticket::link()` (`fontaine://pair/<body>`, the body in lowercase);
+  `qr_payload()` returns `fontaine://pair/` plus the uppercased body; `Ticket::parse` accepts the bare
+  body, the prefixed ticket and the link (body case-insensitive in all three). `fontaine attach`
+  accepts all three forms, so a link pasted from the phone works. The shown text ticket stays the
+  prefixed form.
 - Pairing never trusts the link: any app or page can open it. The link only carries a ticket, which is
   still a bearer secret that merely asks to pair; the host-terminal `y` is what authorizes. The app
   therefore shows "Pair with `<host short id>`?" before connecting, and discards the link text from
@@ -119,12 +124,16 @@ Play Store publishing.
 2. **Link format** in `fontaine-remote`: `Ticket::link`, the new `qr_payload()`, link-aware `parse`;
    update `TicketError::NotATicket`'s Display (it says "expected `fontaine-attach1...`") to mention the
    link form, and its matching tests. `Grid::encode` keeps taking a `&str`. The `ticket_prompt.rs` and
-   `qr.rs` tests and `qr::sample_payload` are re-measured against the longer payload (e.g. the
+   `qr.rs` tests and `qr::sample_payload` are re-measured against the new payload (e.g. the
    `body.len()` and the 41/42-row fit boundary), as is the `crate::qr::sample_payload(639)` use in
    `fontaine-tui/src/view.rs`; `fontaine-tui/src/ui/remote.rs`
    calls `TicketPrompt::new` with `ticket.qr_payload()` and is updated to match. Update `fontaine
    attach`: `attach_cmd.rs` routes to `Ticket::parse` only when the text starts with `fontaine-`; the
-   check also accepts `fontaine://pair/`.
+   check also accepts `fontaine://pair/`, and a bare body is accepted by trying `Ticket::parse` when no
+   other form matches.
+   Size target: the QR for a given ticket, with the link prefix, must still fit what #709 reported for
+   the same ticket within the terminal minimums documented in `docs/remote.md` and `docs/tui.md` after
+   #709; if it does not, the step records the measured growth in `docs/tui.md`.
 3. **Crate skeleton**: `rust/fontaine-android` with the portable modules, `Cargo.toml` (android-only
    deps under `cfg(target_os = "android")`), `link`, `model`, `store`. Pin new deps exactly in
    `rust/Cargo.toml` `[workspace.dependencies]`, update `rust/Cargo.lock` and `rust/deny.toml` if
@@ -137,9 +146,13 @@ Play Store publishing.
    manifest with the intent filter and `CAMERA` permission.
 7. **Build and release**: `.github/workflows/android.yml` builds the APK on Linux for pull requests
    that touch `rust/fontaine-android`, `rust/fontaine-remote` or the workflow (cargo-ndk, Android NDK
-   from the runner image, `cargo clippy --target aarch64-linux-android`). Release signing and
-   attaching to GitHub Releases is a separate step in `release.yml`, using a signing key stored as a
-   repository secret; the debug-signed APK from PRs is not published.
+   from the runner image, `cargo clippy --target aarch64-linux-android`). Release: `release.yml`
+   gets a build job that feeds the APK into the `artifacts-*` set like every other artifact, so the
+   existing `sign` job (environment `release-signing`) minisigns it through `release-sign.sh`, and
+   `release-verify.sh` gains the APK among its expected assets (with its `.minisig`, sha256 entries and
+   trusted-comment check). The APK also needs an Android signature to install: it is applied with
+   `apksigner` using a keystore held only in the `release-signing` environment, never in a build job.
+   The minisign file is the trust anchor users verify. PR builds are debug-signed and never published.
 8. **Docs and changelog** (below).
 
 ## Files to Modify
@@ -151,7 +164,8 @@ Play Store publishing.
 - `rust/fontaine/src/attach_cmd.rs`
 - `rust/fontaine-android/**` (new)
 - `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/deny.toml` (if needed), `rust/rust-toolchain.toml`
-- `.github/workflows/android.yml` (new), `.github/workflows/release.yml`
+- `.github/workflows/android.yml` (new), `.github/workflows/release.yml`,
+  `.github/scripts/release-sign.sh`, `.github/scripts/release-verify.sh`, `docs/verifying-releases.md` (check)
 - `docs/remote.md`, `docs/tui.md`, `docs/terminal.md` (check), `docs/installing.md`, `docs/SUMMARY.md`, `docs/index.md`, `docs/android.md` (new)
 - `tasks/fontaine_harness_plan.md` (workspace layout, Decisions), `AGENTS.md` (crate list),
   `CHANGELOG.md`
@@ -168,23 +182,28 @@ Play Store publishing.
   Android and the code stays small.
 - v1 keeps the device key in the app-private files dir (owner-only) and defers Keystore wrapping,
   because wrapping adds JNI/Keystore plumbing that the first version does not need to pair and attach.
+- AFK: Release APK is built by a job feeding `artifacts-*`, minisigned in the existing `sign` job and added to `release-verify.sh`'s expected assets; its Android install signature uses a keystore held only in the `release-signing` environment, never in a build job, and the minisign file is the trust anchor; PR builds are debug-signed and never published.
+- AFK: The link carries the ticket's base32 body only (`fontaine://pair/<body>`) and `Ticket::parse` accepts the bare body, the prefixed `fontaine-attach1` ticket and the link; the QR must fit #709's terminal minimums for the same ticket or the measured growth is recorded in `docs/tui.md`.
+- AFK: TalkBack/accessibility for the ImGui UI is not required for v1; the app ships without it, `docs/android.md` says so, and it is revisited as a separate issue.
 
 ## Documentation
 
 - `docs/android.md`: install the APK, scan, pair, reattach, permissions, limits; linked from
   `docs/SUMMARY.md` and `docs/index.md`.
-- `docs/remote.md`: the QR carries `fontaine://pair/...`, `fontaine attach` accepts it, and the
+- `docs/remote.md`: the QR carries `fontaine://pair/<body>`, `fontaine attach` accepts it, and the
   Android app as a device.
-- `docs/tui.md`: the QR terminal-size figures, re-measured for the longer payload; check
+- `docs/tui.md`: the QR terminal-size figures, re-measured for the new payload; check
   `docs/terminal.md` for the same.
-- `docs/installing.md`: sideloading, and verifying the APK signature.
+- `docs/installing.md`: sideloading, and verifying the APK's minisign signature as documented in
+  `docs/verifying-releases.md`.
+- `docs/android.md` also states that the app ships without TalkBack/accessibility support.
 - `CHANGELOG.md`, and the plan's Decisions and workspace-layout entry on landing.
 
 ## Testing Strategy
 
 Automated, in host CI, no live services:
 
-- `link`/`Ticket`: `link()` round trip; a link with an uppercase ticket parses; wrong scheme or path is
+- `link`/`Ticket`: `link()` round trip; a link with an uppercase body parses, and the bare body and prefixed ticket parse; wrong scheme or path is
   `NotATicket`; `qr_payload()` parses back via `Ticket::parse`. The existing ticket tests cover the rest.
 - `model`: decoding of unknown entry kinds and extra fields, with the other entries in the same
   snapshot still decoding; the contract test against real host
@@ -211,7 +230,3 @@ on a phone:
    phone's node id.
 4. Toggle wifi to cellular mid-session; expected: the session resumes without a re-pair.
 5. `/remote revoke` on the host; expected: the phone is closed with `revoked`.
-
-## Open Questions
-
-- Accessibility (TalkBack) coverage for the ImGui UI, and when it becomes a requirement.
