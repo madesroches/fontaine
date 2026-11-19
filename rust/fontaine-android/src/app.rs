@@ -120,6 +120,12 @@ impl App {
     /// Reads scanned or pasted text. A link only asks to pair, so this connects to nothing: it
     /// moves to the confirmation, and the text itself is not kept.
     pub fn submit_link(&mut self, text: &str) {
+        if !matches!(
+            self.screen,
+            Screen::Scan | Screen::Confirm { .. } | Screen::Error { .. }
+        ) {
+            return;
+        }
         match link::parse(text) {
             Ok(parsed) => {
                 self.notice = None;
@@ -556,6 +562,15 @@ mod tests {
         assert!(matches!(app.screen(), Screen::Pairing { .. }));
         app.on_client_event(ClientEvent::Paired);
         assert_eq!(*app.screen(), Screen::Session);
+    }
+
+    #[test]
+    fn a_link_submitted_while_pairing_is_ignored() {
+        let mut app = App::new();
+        app.submit_link(&ticket().link());
+        app.confirm_pairing();
+        app.submit_link(&ticket().link());
+        assert!(matches!(app.screen(), Screen::Pairing { .. }));
     }
 
     #[test]
