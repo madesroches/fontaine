@@ -58,7 +58,8 @@ impl TicketPrompt {
     }
 
     /// `height` is the rows the body may use. The screen-reader renderer (`linear`) and `NO_COLOR`
-    /// get the text ticket only; so does a terminal too small for the code.
+    /// get the text ticket only; so does a terminal too narrow for the code. A code too tall for
+    /// `height` is drawn whole, with a notice, since the window can be enlarged.
     pub fn body(
         &self,
         width: usize,
@@ -82,23 +83,26 @@ impl TicketPrompt {
             let waiting = Line::raw("Waiting for a device to connect; this closes when one does.");
             let text_rows = 2 + validity.to_string().chars().count().div_ceil(width).max(1);
             let grid = self.qr_grid.get_or_init(|| Grid::encode(&self.qr_payload));
-            let code_rows = height.saturating_sub(text_rows);
             match grid {
-                Some(g) => match g.render(width, code_rows) {
-                    Some(code) => {
-                        let mut out = vec![heading, validity];
-                        out.extend(code);
+                Some(g) => {
+                    let (cols, rows) = g.size();
+                    if cols > width {
+                        reason = Some(too_narrow_reason(cols - width));
+                    } else {
+                        // A code taller than the dialog is still drawn whole: the window can be
+                        // enlarged, and the notice sits above the code so a clipped bottom
+                        // does not hide it.
+                        let short = (rows + text_rows).saturating_sub(height);
+                        let mut out = vec![heading];
+                        if short > 0 {
+                            out.push(Line::raw(too_short_notice(short)));
+                        }
+                        out.push(validity);
+                        out.extend(g.render(width, usize::MAX).expect("the width was checked"));
                         out.push(waiting);
                         return out;
                     }
-                    None => {
-                        let (cols, rows) = g.size();
-                        reason = Some(too_small_reason(
-                            cols.saturating_sub(width),
-                            (rows + text_rows).saturating_sub(height),
-                        ));
-                    }
-                },
+                }
                 None => reason = Some("The ticket is too long for a QR code.".into()),
             }
         }
@@ -138,22 +142,19 @@ fn plural(n: usize, unit: &str) -> String {
     }
 }
 
-// The figures are minimums: an expanded todo or agent list can absorb added height.
-fn too_small_reason(more_columns: usize, more_rows: usize) -> String {
-    let mut clauses = Vec::new();
-    if more_rows > 0 {
-        clauses.push(format!(
-            "The terminal is too short for the QR code: it needs at least {}.",
-            plural(more_rows, "row")
-        ));
-    }
-    if more_columns > 0 {
-        clauses.push(format!(
-            "The terminal is too narrow for the QR code: it needs at least {}.",
-            plural(more_columns, "column")
-        ));
-    }
-    clauses.join(" ")
+// The figure is a minimum: an expanded todo or agent list can absorb added height.
+fn too_short_notice(more_rows: usize) -> String {
+    format!(
+        "Part of the QR code is cut off: enlarge the window by at least {} to scan it.",
+        plural(more_rows, "row")
+    )
+}
+
+fn too_narrow_reason(more_columns: usize) -> String {
+    format!(
+        "The terminal is too narrow for the QR code: it needs at least {}.",
+        plural(more_columns, "column")
+    )
 }
 
 impl Drop for TicketPrompt {
@@ -190,7 +191,7 @@ mod tests {
         if skip_no_color() {
             return;
         }
-        let body = prompt(639).body(78, 20, false, &Theme::default());
+        let body = prompt(639).body(40, 20, false, &Theme::default());
         let text = text(&body);
         assert!(
             text.iter()
@@ -202,7 +203,6 @@ mod tests {
 
     #[test]
     fn the_code_shows_when_it_fits_and_the_hint_goes() {
-        // Not asserted under NO_COLOR, which is read from the real environment.
         if skip_no_color() {
             return;
         }
@@ -214,59 +214,41 @@ mod tests {
         assert!(!text.iter().any(|l| l.contains("fontaine-attach1abc")));
         assert!(text.last().unwrap().starts_with("Waiting for a device"));
         assert_eq!(body.len(), 1 + 1 + 39 + 1);
-        let small = prompt(639).body(78, 41, false, &Theme::default());
-        assert!(text_has(&small, "too short for the QR code"));
+        assert!(!text_has(&body, "cut off"));
     }
 
-    fn reason_for(len: usize, width: usize, height: usize) -> Option<String> {
-        let body = prompt(len).body(width, height, false, &Theme::default());
+    // The reported bug: a wide but short terminal got the text ticket and a "too small" line.
+    #[test]
+    fn a_wide_short_terminal_still_gets_the_whole_code_and_a_notice() {
+        if skip_no_color() {
+            return;
+        }
+        let body = prompt(639).body(190, 20, false, &Theme::default());
         let lines = text(&body);
-        lines
-            .into_iter()
-            .find(|l| l.starts_with("The ") && l.contains("QR code"))
-    }
-
-    fn skip_no_color() -> bool {
-        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
-    }
-
-    #[test]
-    fn a_wide_short_terminal_blames_the_rows_only() {
-        if skip_no_color() {
-            return;
-        }
-        let reason = reason_for(639, 190, 20).expect("a reason");
-        assert!(reason.contains("too short") && reason.contains("more rows"));
-        assert!(!reason.contains("narrow") && !reason.contains("columns"));
-        // 39 code rows + 3 text rows needed, 20 given.
-        assert!(reason.contains("needs at least 22 more rows"), "{reason}");
+        assert_eq!(lines.len(), 1 + 1 + 1 + 39 + 1);
+        // 39 code rows + 3 text rows needed, 20 given; the notice comes before the code.
+        assert!(
+            lines[1].contains("enlarge the window by at least 22 rows"),
+            "{}",
+            lines[1]
+        );
+        assert!(!lines.iter().any(|l| l.contains("fontaine-attach1abc")));
     }
 
     #[test]
-    fn a_narrow_tall_terminal_blames_the_columns_only() {
+    fn a_narrow_terminal_falls_back_to_the_text_ticket_and_says_why() {
         if skip_no_color() {
             return;
         }
-        let reason = reason_for(639, 40, 80).expect("a reason");
-        assert!(reason.contains("too narrow") && reason.contains("more columns"));
-        assert!(!reason.contains("rows"));
-    }
-
-    #[test]
-    fn a_small_terminal_names_both() {
-        if skip_no_color() {
-            return;
-        }
-        let reason = reason_for(639, 40, 20).expect("a reason");
-        assert!(reason.contains("more rows") && reason.contains("more columns"));
-    }
-
-    #[test]
-    fn no_reason_when_the_code_fits() {
-        if skip_no_color() {
-            return;
-        }
-        assert_eq!(reason_for(639, 190, 60), None);
+        let body = prompt(639).body(40, 80, false, &Theme::default());
+        let lines = text(&body);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("too narrow") && l.contains("more columns"))
+        );
+        assert!(!lines.iter().any(|l| l.contains('█')));
+        assert!(lines.iter().any(|l| l == "fontaine-attach1abc"));
     }
 
     #[test]
@@ -274,8 +256,12 @@ mod tests {
         if skip_no_color() {
             return;
         }
-        let reason = reason_for(5000, 190, 80).expect("a reason");
-        assert_eq!(reason, "The ticket is too long for a QR code.");
+        let body = prompt(5000).body(190, 80, false, &Theme::default());
+        assert!(text_has(&body, "The ticket is too long for a QR code."));
+    }
+
+    fn skip_no_color() -> bool {
+        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
     }
 
     #[test]

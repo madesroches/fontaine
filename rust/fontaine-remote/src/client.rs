@@ -447,7 +447,10 @@ fn relay_for(target: &Target, options: &AttachOptions) -> RelayMode {
         return relay.clone();
     }
     match target {
-        Target::Ticket(ticket) if ticket.node.addrs.iter().any(|a| a.is_relay()) => {
+        // A ticket without addresses is a relayed host's: the device finds it by lookup.
+        Target::Ticket(ticket)
+            if ticket.node.addrs.is_empty() || ticket.node.addrs.iter().any(|a| a.is_relay()) =>
+        {
             RelayMode::Default
         }
         _ => RelayMode::Disabled,

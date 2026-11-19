@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const PREFIX: &str = "fontaine-attach1";
 /// The prefix of the one-shot tickets `fontaine send` used to mint; no build reads them now.
 const RETIRED_PREFIX: &str = "fontaine-send1";
-const TICKET_VERSION: u16 = 2;
+const TICKET_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ticket {
@@ -36,6 +36,16 @@ mod secret_text {
     }
 }
 
+/// The ticket as it is laid out in bytes; the secret stays raw here, where `Ticket`'s own serde
+/// form writes it as text.
+#[derive(Serialize, Deserialize)]
+struct Wire {
+    v: u16,
+    node: EndpointAddr,
+    secret: [u8; 32],
+    expires_at: u64,
+}
+
 fn has_prefix(text: &str, prefix: &str) -> bool {
     text.get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
@@ -48,7 +58,7 @@ pub enum TicketError {
     /// A ticket of the removed `fontaine send`.
     Retired,
     Encoding(data_encoding::DecodeError),
-    Json(serde_json::Error),
+    Binary(postcard::Error),
     UnsupportedVersion(u16),
 }
 
@@ -60,7 +70,7 @@ impl std::fmt::Display for TicketError {
                 "this is a ticket of the removed `fontaine send`; ask for a new one and use `fontaine attach`",
             ),
             TicketError::Encoding(_) => f.write_str("the ticket text is corrupted"),
-            TicketError::Json(_) => f.write_str("the ticket contents are malformed"),
+            TicketError::Binary(_) => f.write_str("the ticket contents are malformed"),
             TicketError::UnsupportedVersion(v) => {
                 write!(
                     f,
@@ -75,7 +85,7 @@ impl std::error::Error for TicketError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             TicketError::Encoding(e) => Some(e),
-            TicketError::Json(e) => Some(e),
+            TicketError::Binary(e) => Some(e),
             _ => None,
         }
     }
@@ -91,10 +101,17 @@ impl Ticket {
         }
     }
 
-    /// One line, safe to paste: the prefix and lowercase base32 of the JSON.
+    /// One line, safe to paste: the prefix and lowercase base32 of the compact binary form. The
+    /// binary form (not JSON) keeps the text short enough for a QR code a terminal can show.
     pub fn encode(&self) -> String {
-        let json = serde_json::to_vec(self).expect("a ticket serializes");
-        format!("{PREFIX}{}", BASE32_NOPAD.encode(&json).to_lowercase())
+        let wire = Wire {
+            v: self.v,
+            node: self.node.clone(),
+            secret: self.secret,
+            expires_at: self.expires_at,
+        };
+        let bytes = postcard::to_stdvec(&wire).expect("a ticket serializes");
+        format!("{PREFIX}{}", BASE32_NOPAD.encode(&bytes).to_lowercase())
     }
 
     /// What a QR code carries: the ticket uppercased, which stays in the QR alphanumeric set (a
@@ -116,11 +133,16 @@ impl Ticket {
         let bytes = BASE32_NOPAD
             .decode(rest.to_uppercase().as_bytes())
             .map_err(TicketError::Encoding)?;
-        let ticket: Ticket = serde_json::from_slice(&bytes).map_err(TicketError::Json)?;
-        if ticket.v != TICKET_VERSION {
-            return Err(TicketError::UnsupportedVersion(ticket.v));
+        let wire: Wire = postcard::from_bytes(&bytes).map_err(TicketError::Binary)?;
+        if wire.v != TICKET_VERSION {
+            return Err(TicketError::UnsupportedVersion(wire.v));
         }
-        Ok(ticket)
+        Ok(Ticket {
+            v: wire.v,
+            node: wire.node,
+            secret: wire.secret,
+            expires_at: wire.expires_at,
+        })
     }
 }
 
@@ -168,6 +190,14 @@ mod tests {
     }
 
     #[test]
+    fn an_id_only_ticket_round_trips_and_stays_short() {
+        let key = SecretKey::from_bytes(&[7; 32]);
+        let ticket = Ticket::new(EndpointAddr::new(key.public()), [9; 32], 1_700_000_000);
+        assert_eq!(Ticket::parse(&ticket.encode()).unwrap(), ticket);
+        assert!(ticket.encode().len() <= 140, "{}", ticket.encode().len());
+    }
+
+    #[test]
     fn malformed_tickets_are_typed() {
         assert!(matches!(
             Ticket::parse("hello"),
@@ -182,12 +212,36 @@ mod tests {
             Err(TicketError::Encoding(_))
         ));
         let junk = format!("{PREFIX}{}", BASE32_NOPAD.encode(b"{}").to_lowercase());
-        assert!(matches!(Ticket::parse(&junk), Err(TicketError::Json(_))));
+        assert!(matches!(Ticket::parse(&junk), Err(TicketError::Binary(_))));
         let mut ticket = sample();
         ticket.v = 9;
         assert!(matches!(
             Ticket::parse(&ticket.encode()),
             Err(TicketError::UnsupportedVersion(9))
         ));
+    }
+
+    // #708: the JSON form of a ticket with a relay and three addresses was ~590 characters, a QR
+    // code of 39 rows that did not fit an ordinary terminal.
+    #[test]
+    fn a_ticket_with_a_relay_and_three_addresses_stays_small() {
+        let key = SecretKey::from_bytes(&[7; 32]);
+        let addr = EndpointAddr::new(key.public())
+            .with_relay_url(
+                "https://use1-1.relay.n0.iroh-canary.iroh.link./"
+                    .parse()
+                    .unwrap(),
+            )
+            .with_ip_addr("192.168.1.20:51234".parse().unwrap())
+            .with_ip_addr(
+                "[2607:fea8:1234:5678:aaaa:bbbb:cccc:dddd]:51234"
+                    .parse()
+                    .unwrap(),
+            )
+            .with_ip_addr("172.17.0.1:51234".parse().unwrap());
+        let ticket = Ticket::new(addr, [9; 32], 1_700_000_000);
+        let text = ticket.encode();
+        assert!(text.len() < 300, "{} characters", text.len());
+        assert_eq!(Ticket::parse(&text).unwrap(), ticket);
     }
 }
