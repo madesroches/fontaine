@@ -53,6 +53,22 @@ Paired hosts are listed on the scan screen. Tap one to connect without scanning 
 has remote control on. A host that revoked the phone, or no longer knows it, shows the reason (`this
 device was revoked and must pair again`); pair again with a new ticket.
 
+## Editing the message field
+
+The paste field on the scan screen and the message field in a session are edited in place:
+
+- Tap the text to put the cursor there; typing and Backspace act at the cursor, and the left and right
+  D-pad keys of a hardware keyboard move it, and Delete deletes forward.
+- Hold a word to select it, or hold and then drag to select a range; the selection follows your
+  finger across wrapped lines. Typing replaces the selection.
+- Releasing a hold opens a menu: **Cut** and **Copy** when something is selected, **Paste** and
+  **Select all** always. Paste in a session inserts the clipboard text at the cursor, over the
+  selection; in the scan screen's paste field it replaces the whole field with the trimmed text.
+  Cut and Copy put the selection on the system clipboard.
+
+Swipe typing and dragging the spacebar to move the cursor are not supported: the app has no Java
+input-method connection, so the keyboard delivers key presses only.
+
 ## In a session
 
 - The transcript follows the host, and the status line shows the model, mode and branch.

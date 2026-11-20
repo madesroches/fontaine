@@ -1,19 +1,25 @@
 //! Draws a `View` with Dear ImGui and reports what was tapped. The state lives in `App`; this
 //! only renders it and forwards taps, so no session logic sits behind the unsafe FFI calls.
 
-use std::ffi::CString;
+use std::ffi::{CString, c_char};
 
 use dear_imgui_sys as sys;
 use sys::{ImVec2_c, ImVec4_c};
 
 use crate::app::{DialogView, Screen, View};
+use crate::field::Field;
 use crate::layout::{self, Insets};
 use crate::model::{DiffKind, Entry, ToolStatus};
 
 /// What the person did this frame.
 pub enum Tap {
-    /// Open the keyboard for the prompt or paste field.
-    FocusField,
+    /// Put the cursor at this byte offset of the field and open the keyboard.
+    MoveCursor(usize),
+    /// Select from the first offset to the second, which is the moving end.
+    SelectRange(usize, usize),
+    Cut,
+    Copy,
+    SelectAll,
     SubmitField,
     PasteField,
     GrantCamera,
@@ -90,8 +96,9 @@ const NEUTRAL: [[f32; 4]; 3] = [
 ];
 const BRIGHT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DIM: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
-/// Held this long without moving, a press on the field opens its Paste popup.
+/// Held this long without moving, a press on the field starts a selection.
 const LONG_PRESS_SECS: f32 = 0.5;
+const SELECTION: [f32; 4] = [0.23, 0.50, 0.92, 0.45];
 const HEADING_SCALE: f32 = 1.4;
 
 /// Per-frame state that outlives a frame and is not the app's.
@@ -100,6 +107,14 @@ pub struct UiState {
     /// Height of everything the session screen draws below the transcript, measured last frame;
     /// zero until a frame has been measured.
     footer_px: f32,
+    /// A long press on the field that is still held, whether or not it has been dragged.
+    selecting: Option<Selecting>,
+}
+
+#[derive(Clone, Copy)]
+struct Selecting {
+    anchor: usize,
+    moved: bool,
 }
 
 /// The camera image as a GL texture and the UV of each card corner (top-left, top-right,
@@ -115,8 +130,8 @@ pub struct Frame<'a> {
     pub display: (f32, f32),
     pub insets: Insets,
     pub margin: f32,
-    /// The text the soft keyboard has typed so far.
-    pub field: &'a str,
+    /// The text typed so far, with its cursor and selection.
+    pub field: &'a Field,
     /// Whether the scan screen can show the camera.
     pub camera_ready: bool,
     pub camera_denied: bool,
@@ -233,7 +248,7 @@ pub fn draw(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState) -> Vec<Tap>
         state.footer_px = 0.0;
     }
     match view.screen {
-        Screen::Scan => scan(view, frame, &mut taps),
+        Screen::Scan => scan(view, frame, state, &mut taps),
         Screen::Confirm { host } => {
             heading(&format!("Pair with {host}?"));
             caption(
@@ -298,39 +313,207 @@ fn mouse_clicked_in(min: ImVec2_c, max: ImVec2_c) -> bool {
     at.x >= min.x && at.x <= max.x && at.y >= min.y && at.y <= max.y
 }
 
+/// One visual line of wrapped text: the bytes drawn on it, without the blanks the wrap skipped or
+/// the newline that ended it.
+struct Line {
+    start: usize,
+    end: usize,
+}
+
+/// The wrapped layout ImGui gives `text` at one width, and the maps between byte offsets and
+/// points. Drawing and hit-testing both go through it so they cannot disagree.
+struct Layout {
+    text: String,
+    body: CString,
+    font: *mut sys::ImFont,
+    size: f32,
+    wrap: f32,
+    lines: Vec<Line>,
+}
+
+impl Layout {
+    /// Follows the line loop of `ImFont::RenderText`, which `ImDrawList_AddText_FontPtr` runs, so
+    /// the lines are the ones it draws.
+    fn new(text: &str, wrap: f32) -> Self {
+        let body = c(text);
+        // SAFETY: a frame is open.
+        let (font, size) = unsafe { (sys::igGetFont(), sys::igGetFontSize()) };
+        let mut layout = Layout {
+            text: text.replace('\0', ""),
+            body,
+            font,
+            size,
+            wrap,
+            lines: Vec::new(),
+        };
+        layout.wrap_lines();
+        layout
+    }
+
+    fn at(&self, offset: usize) -> *const c_char {
+        // SAFETY: callers pass offsets within the text, so the pointer stays inside `body`.
+        unsafe { self.body.as_ptr().add(offset) }
+    }
+
+    fn offset_of(&self, pointer: *const c_char) -> usize {
+        pointer as usize - self.body.as_ptr() as usize
+    }
+
+    fn wrap_lines(&mut self) {
+        let len = self.text.len();
+        let mut line_start = 0;
+        let mut s = 0;
+        let mut wrap_end: Option<usize> = None;
+        while s < len {
+            let end = *wrap_end.get_or_insert_with(|| {
+                // SAFETY: `s` is within the text and `len` is its end; the font belongs to the
+                // current context.
+                let found = unsafe {
+                    sys::ImFont_CalcWordWrapPosition(
+                        self.font,
+                        self.size,
+                        self.at(s),
+                        self.at(len),
+                        self.wrap,
+                    )
+                };
+                self.offset_of(found)
+            });
+            if s >= end {
+                self.lines.push(Line {
+                    start: line_start,
+                    end: s,
+                });
+                // SAFETY: both pointers lie within the text; the call only reads between them.
+                let next =
+                    unsafe { sys::igImTextCalcWordWrapNextLineStart(self.at(s), self.at(len), 0) };
+                // A wrap width too small for one char would not advance: take the char.
+                s = self.offset_of(next).max(s + 1).min(len);
+                line_start = s;
+                wrap_end = None;
+                continue;
+            }
+            let c = self.text[s..].chars().next().expect("s is inside the text");
+            s += c.len_utf8();
+            if c == '\n' {
+                self.lines.push(Line {
+                    start: line_start,
+                    end: s - 1,
+                });
+                line_start = s;
+            }
+        }
+        if line_start < len || self.lines.is_empty() || self.text.ends_with('\n') {
+            self.lines.push(Line {
+                start: line_start,
+                end: len,
+            });
+        }
+    }
+
+    fn height(&self) -> f32 {
+        self.lines.len() as f32 * self.size
+    }
+
+    fn width(&self, from: usize, to: usize) -> f32 {
+        // SAFETY: both offsets are within the text; unrounded widths, as the draw uses.
+        unsafe {
+            sys::ImFont_CalcTextSizeA(
+                self.font,
+                self.size,
+                f32::MAX,
+                0.0,
+                self.at(from),
+                self.at(to),
+                std::ptr::null_mut(),
+            )
+        }
+        .x
+    }
+
+    fn line_of(&self, idx: usize) -> usize {
+        self.lines
+            .iter()
+            .rposition(|line| line.start <= idx)
+            .unwrap_or(0)
+    }
+
+    /// Offset from the text origin of the top of the caret at byte `idx`.
+    fn caret(&self, idx: usize) -> (f32, f32) {
+        let row = self.line_of(idx);
+        let line = &self.lines[row];
+        (
+            self.width(line.start, idx.min(line.end)),
+            row as f32 * self.size,
+        )
+    }
+
+    /// The boxes behind the selected range, as offsets from the text origin.
+    fn selection_boxes(&self, range: std::ops::Range<usize>) -> Vec<(f32, f32, f32, f32)> {
+        let mut boxes = Vec::new();
+        for (row, line) in self.lines.iter().enumerate() {
+            let limit = self
+                .lines
+                .get(row + 1)
+                .map_or(self.text.len(), |next| next.start);
+            if range.start >= limit.max(line.end) || range.end <= line.start {
+                continue;
+            }
+            let from = range.start.max(line.start);
+            let to = range.end.min(line.end).max(from);
+            let left = self.width(line.start, from);
+            let mut right = self.width(line.start, to);
+            if range.end > line.end && line.end < limit {
+                // Text between this line's end and the next line's start is a newline or skipped
+                // blank; a soft wrap has none, so it gets no sliver.
+                right += self.size * 0.25;
+            }
+            let top = row as f32 * self.size;
+            boxes.push((left, top, right, top + self.size));
+        }
+        boxes
+    }
+
+    /// The byte offset nearest the point, given as an offset from the text origin.
+    fn hit(&self, dx: f32, dy: f32) -> usize {
+        let row = ((dy / self.size).floor().max(0.0) as usize).min(self.lines.len() - 1);
+        let line = &self.lines[row];
+        let mut previous = 0.0;
+        for (at, c) in self.text[line.start..line.end].char_indices() {
+            let next = self.width(line.start, line.start + at + c.len_utf8());
+            if dx < (previous + next) * 0.5 {
+                return line.start + at;
+            }
+            previous = next;
+        }
+        line.end
+    }
+}
+
 /// A framed, wrapped text area standing in for a text input: the soft keyboard types into
-/// `field` outside ImGui. A tap opens the keyboard; holding it offers Paste.
-fn field_frame(id: &str, field: &str, hint: &str, taps: &mut Vec<Tap>) {
-    let (shown, tint) = if field.is_empty() {
-        (hint, [0.55, 0.55, 0.55, 1.0])
-    } else {
-        (field, BRIGHT)
-    };
+/// `field` outside ImGui. A tap places the cursor and opens the keyboard; holding it selects a
+/// word, or dragging after the hold selects a range, and either opens the edit menu.
+fn field_frame(id: &str, field: &Field, hint: &str, state: &mut UiState, taps: &mut Vec<Tap>) {
     let (pad_x, pad_y) = style_pair(|s| s.FramePadding);
     // SAFETY: the style lives as long as the context.
     let border = unsafe { (*sys::igGetStyle()).FrameBorderSize };
     let width = avail_width();
-    let body = c(shown);
-    // SAFETY: a frame is open and `body` is NUL-terminated.
-    let (text_h, line_h) = unsafe {
-        (
-            sys::igCalcTextSize(
-                body.as_ptr(),
-                std::ptr::null(),
-                false,
-                (width - 2.0 * pad_x).max(1.0),
-            )
-            .y,
-            sys::igGetTextLineHeight(),
-        )
-    };
-    let height = text_h.max(line_h) + 2.0 * pad_y + 2.0 * border;
+    // Whole pixels, so the wrap is the same at every use; valid while the padding is at least the
+    // frame border.
+    let wrap = (width.floor() - 2.0 * pad_x).max(1.0);
+    let layout = Layout::new(field.as_str(), wrap);
+    let hint_layout = field.is_empty().then(|| Layout::new(hint, wrap));
+    let shown = hint_layout.as_ref().unwrap_or(&layout);
+    // SAFETY: a frame is open.
+    let line_h = unsafe { sys::igGetTextLineHeight() };
+    let height = shown.height().max(line_h) + 2.0 * pad_y + 2.0 * border;
     // SAFETY: a frame is open.
     let min = unsafe { sys::igGetCursorScreenPos() };
     let max = ImVec2_c {
         x: min.x + width,
         y: min.y + height,
     };
+    let mut origin = v2(min.x + pad_x, min.y + pad_y);
     let child = c(id);
     // SAFETY: a frame is open; the child is ended below whether or not it is visible.
     let open = unsafe {
@@ -342,43 +525,136 @@ fn field_frame(id: &str, field: &str, hint: &str, taps: &mut Vec<Tap>) {
         )
     };
     if open {
-        colored(tint, shown);
+        // SAFETY: a frame is open and this child is its current window; `shown.body` is
+        // NUL-terminated and outlives the draw calls. The wrap is the layout's, so the text breaks
+        // where the layout says.
+        unsafe {
+            let at = sys::igGetCursorScreenPos();
+            origin = v2(at.x.trunc(), at.y.trunc());
+            let list = sys::igGetWindowDrawList();
+            if let Some(range) = field.selection() {
+                let color = sys::igGetColorU32_Vec4(rgba(SELECTION));
+                for (left, top, right, bottom) in layout.selection_boxes(range) {
+                    sys::ImDrawList_AddRectFilled(
+                        list,
+                        v2(origin.x + left, origin.y + top),
+                        v2(origin.x + right, origin.y + bottom),
+                        color,
+                        0.0,
+                        0,
+                    );
+                }
+            }
+            let tint = if field.is_empty() {
+                [0.55, 0.55, 0.55, 1.0]
+            } else {
+                BRIGHT
+            };
+            sys::ImDrawList_AddText_FontPtr(
+                list,
+                shown.font,
+                shown.size,
+                origin,
+                sys::igGetColorU32_Vec4(rgba(tint)),
+                shown.body.as_ptr(),
+                std::ptr::null(),
+                shown.wrap,
+                std::ptr::null(),
+            );
+            let (x, y) = layout.caret(field.cursor());
+            sys::ImDrawList_AddLine(
+                list,
+                v2(origin.x + x, origin.y + y),
+                v2(origin.x + x, origin.y + y + layout.size),
+                sys::igGetColorU32_Vec4(rgba(BRIGHT)),
+                1.5,
+                0,
+            );
+            sys::igDummy(v2(wrap, shown.height().max(line_h)));
+        }
     }
     // SAFETY: balances `igBeginChild_Str`, which requires an end call even when it returned false.
     unsafe { sys::igEndChild() };
 
     let menu = c(&format!("{id}-menu"));
+    let index_at = |at: ImVec2_c| layout.hit(at.x - origin.x, at.y - origin.y);
     // SAFETY: a frame is open; these only read input state and open or draw a popup of this window.
     unsafe {
         let io = sys::igGetIO_Nil();
         let popup_open = sys::igIsPopupOpen_Str(menu.as_ptr(), 0);
         let press_here = mouse_clicked_in(min, max);
+        let down = sys::igIsMouseDown_Nil(0);
+        let released = sys::igIsMouseReleased_Nil(0);
         let held = (*io).MouseDownDuration[0];
+        if !down && !released {
+            state.selecting = None;
+        }
         if press_here
             && !popup_open
-            && sys::igIsMouseDown_Nil(0)
+            && state.selecting.is_none()
+            && down
             && held >= LONG_PRESS_SECS
             && !sys::igIsMouseDragging(0, -1.0)
         {
+            state.selecting = Some(Selecting {
+                anchor: index_at((*io).MouseClickedPos[0]),
+                moved: false,
+            });
+        }
+        if let Some(selecting) = state.selecting.as_mut()
+            && down
+            && sys::igIsMouseDragging(0, -1.0)
+        {
+            selecting.moved = true;
+            taps.push(Tap::SelectRange(
+                selecting.anchor,
+                index_at(sys::igGetMousePos()),
+            ));
+        }
+        if released && let Some(selecting) = state.selecting.take() {
+            if !selecting.moved {
+                let anchor = selecting.anchor;
+                let inside = field
+                    .selection()
+                    .is_some_and(|range| range.start <= anchor && anchor <= range.end);
+                if !inside {
+                    let word = field.word_range_at(anchor);
+                    taps.push(Tap::SelectRange(word.start, word.end));
+                }
+            }
             sys::igOpenPopup_Str(menu.as_ptr(), 0);
         }
         // `igIsMouseDragging` is false once the button is up, so the release frame asks whether
         // the finger ever moved past the threshold instead.
         if press_here
             && !popup_open
-            && sys::igIsMouseReleased_Nil(0)
+            && released
             && (*io).MouseDownDurationPrev[0] < LONG_PRESS_SECS
             && !sys::igIsMouseDragPastThreshold(0, -1.0)
         {
-            taps.push(Tap::FocusField);
+            taps.push(Tap::MoveCursor(index_at(sys::igGetMousePos())));
         }
         // The popup is drawn after the release check above, so a tap on its entry, which sits over
         // the field, still sees it open and does not also count as a tap on the field.
         if sys::igBeginPopup(menu.as_ptr(), 0) {
-            // A button, not a selectable: the release that ends the long press cannot trigger it,
-            // only a fresh tap can.
+            // Buttons, not selectables: the release that ends the long press cannot trigger
+            // them, only a fresh tap can.
+            if field.selection().is_some() {
+                if primary_button_sized("Cut", 0.0) {
+                    taps.push(Tap::Cut);
+                    sys::igCloseCurrentPopup();
+                }
+                if primary_button_sized("Copy", 0.0) {
+                    taps.push(Tap::Copy);
+                    sys::igCloseCurrentPopup();
+                }
+            }
             if primary_button_sized("Paste", 0.0) {
                 taps.push(Tap::PasteField);
+                sys::igCloseCurrentPopup();
+            }
+            if primary_button_sized("Select all", 0.0) {
+                taps.push(Tap::SelectAll);
                 sys::igCloseCurrentPopup();
             }
             sys::igEndPopup();
@@ -386,7 +662,7 @@ fn field_frame(id: &str, field: &str, hint: &str, taps: &mut Vec<Tap>) {
     }
 }
 
-fn scan(view: &View<'_>, frame: &Frame<'_>, taps: &mut Vec<Tap>) {
+fn scan(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut Vec<Tap>) {
     heading("Connect to a Fontaine host");
     caption("Scan the QR code the host shows, or paste a pairing link.");
     gap(half_line());
@@ -401,7 +677,7 @@ fn scan(view: &View<'_>, frame: &Frame<'_>, taps: &mut Vec<Tap>) {
     scan_card(frame, side, avail_w, taps);
 
     caption("Or paste a pairing link or ticket");
-    field_frame("field", frame.field, "type here", taps);
+    field_frame("field", frame.field, "type here", state, taps);
     if !frame.field.is_empty() && primary_button("Use this") {
         taps.push(Tap::SubmitField);
     }
@@ -649,7 +925,7 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
         dialog_panel(dialog, taps);
         separator();
     }
-    field_frame("prompt", frame.field, "message the session", taps);
+    field_frame("prompt", frame.field, "message the session", state, taps);
     let (spacing_x, _) = style_pair(|s| s.ItemSpacing);
     let half = (avail_width() - spacing_x) * 0.5;
     if primary_button_sized("Send", half) {
