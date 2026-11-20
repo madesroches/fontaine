@@ -67,9 +67,17 @@ All notable changes are recorded here. The format follows
 - The Android workflow (NDK clippy and the debug APK) now runs on every pull request and every
   push to `main`, not only when Android, remote or toolchain paths change, so a change elsewhere
   in the workspace can no longer break the Android build unseen (#712).
+- `claude-subscription` names the shape of a `user` event it refuses (no content, a block that is
+  not a tool result, an unannounced id, and so on) instead of one message for all of them, so the
+  rejection can be diagnosed; acceptance is unchanged (#714).
+- `claude-subscription` ends the turn with an error saying Anthropic's safety classifier stopped the
+  response when the CLI reports one (a synthetic `user` event with a `refused_message_id`), instead
+  of refusing it as a native tool request; it is not retried (#714).
 
 ### Fixed
 
+- `claude-subscription` accepts and ignores the `system/informational` notice CLI 2.1.329 emits in
+  some turns, which failed the turn with a request error (#714).
 - Fix the flaky `free_ports_are_loopback_ports_that_can_be_bound` test: it retries with a fresh
   port when a parallel test takes the first one between the two steps (#700).
 

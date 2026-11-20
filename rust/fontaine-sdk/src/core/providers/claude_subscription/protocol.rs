@@ -22,6 +22,24 @@ use super::context::CacheUsage;
 use super::usage::{Usage, parse_rate_limit};
 use super::{ClaudeError, ErrorKind, LimitForm, claude_error};
 
+/// The synthetic notice the CLI sends when the classifier withholds a reply. Matched on its
+/// structured fields only, never its text, which is the classifier's to reword.
+fn is_classifier_refusal(value: &Value) -> bool {
+    let Some([block]) = value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    else {
+        return false;
+    };
+    value.get("isSynthetic").and_then(Value::as_bool) == Some(true)
+        && block.get("type").and_then(Value::as_str) == Some("text")
+        && value
+            .get("refused_message_id")
+            .is_some_and(Value::is_string)
+}
+
 /// What the CLI calls a tool of the `fontaine` MCP server.
 pub const TOOL_PREFIX: &str = "mcp__fontaine__";
 
@@ -955,6 +973,8 @@ impl Reader {
                 Ok(Event::Nothing)
             }
             Some("status") => Ok(Event::Nothing),
+            // A human-facing notice (e.g. a usage warning); its payload is never read.
+            Some("informational") => Ok(Event::Nothing),
             Some("api_retry") => Err(protocol("the Claude CLI retried the request on its own")),
             Some("permission_denied") => self.permission_denied(value),
             Some("thinking_tokens") => {
@@ -1251,22 +1271,44 @@ impl Reader {
     /// The tool results a denied call leaves in the output: tolerated only as errors answering
     /// calls this response announced, once each. Anything else is native tool execution.
     fn denial_echo(&mut self, value: &Value) -> Result<Event, Failure> {
-        let refused = || protocol("the Claude CLI executed a native tool or permission request");
-        let blocks = value
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-            .filter(|blocks| !blocks.is_empty())
-            .ok_or_else(refused)?;
+        if is_classifier_refusal(value) {
+            return Err(ClaudeError::new(
+                ErrorKind::Protocol,
+                "the Claude safety classifier stopped the response; the rest of it was withheld \
+                 and nothing ran, so repeating the request would be refused again",
+            )
+            .boxed());
+        }
+        let refused = |reason: &str| {
+            protocol(&format!(
+                "the Claude CLI executed a native tool or permission request: {reason}"
+            ))
+        };
+        let content = value.get("message").and_then(|m| m.get("content"));
+        let blocks = match content.and_then(Value::as_array) {
+            Some(blocks) if !blocks.is_empty() => blocks,
+            Some(_) => return Err(refused("no content")),
+            None if content.is_none() => return Err(refused("no content")),
+            None => return Err(refused("content that is not a list of blocks")),
+        };
         let mut ids = BTreeSet::new();
         for block in blocks {
-            let answers = block.get("type").and_then(Value::as_str) == Some("tool_result")
-                && block.get("is_error").and_then(Value::as_bool) == Some(true);
-            let id = block.get("tool_use_id").and_then(Value::as_str);
-            match id.filter(|_| answers) {
-                Some(id)
-                    if self.calls.get(id).is_some_and(|call| !call.echoed) && ids.insert(id) => {}
-                _ => return Err(refused()),
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                return Err(refused("a block that is not a tool result"));
+            }
+            if block.get("is_error").and_then(Value::as_bool) != Some(true) {
+                return Err(refused("a tool result that is not an error"));
+            }
+            let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                return Err(refused("a tool result without an id"));
+            };
+            match self.calls.get(id) {
+                None => return Err(refused("an id this response did not announce")),
+                Some(call) if call.echoed => return Err(refused("a call already answered")),
+                Some(_) => {}
+            }
+            if !ids.insert(id) {
+                return Err(refused("a tool result repeated"));
             }
         }
         for id in ids {

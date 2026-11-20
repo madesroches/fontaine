@@ -178,6 +178,7 @@ reports without a rejected window, and a billing failure, are not waited for.
 | CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried. A protocol failure names the rejected event, such as `(event: system/notification)` |
 | Billing error, or a rate limit with no spent window, from the CLI | the same, after the run began; it also moves a [model list](configuration.md#falling-through-to-the-next-entry) on to its next entry |
 | Plan limit with the usage window spent | not retried; a model list moves on to its next entry, a subagent whose list is spent tries the `fallback` role, and a spent list pauses the run until the reset (see [usage windows](headless.md#usage-windows)) |
+| Anthropic's safety classifier withholds the reply | not retried, since the same request would be refused again: the turn ends with an error saying the classifier stopped the response. Nothing ran, and the [guardian](guardian.md) cannot observe a call the classifier withholds |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried with backoff, like any provider (see [`[retry]`](configuration.md#retry)) |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
 
@@ -189,6 +190,11 @@ undefined name still fails the request. With `--debug-file`, a protocol failure 
 rejected line (cut to 4 KiB) and the events accepted before it to the debug file. A failed request
 is recorded in the session ledger as `request_failed`, with the same text.
 
+A `user` event the adapter refuses fails with `the Claude CLI executed a native tool or permission
+request` followed by the shape it refused (for example `content that is not a list of blocks`). To
+capture the line for a report, rerun the same request with `--debug-file <path>`: the rejected
+line is written there, cut to 4 KiB, and it may contain tool output, so read it before sharing.
+
 A guardian on this account fails closed like any other: a verdict that cannot be read is a denial.
 Pressing Esc or ending a headless run stops the CLI and its descendants and removes the temporary
 directory.
@@ -199,7 +205,8 @@ The minimum is **2.1.318**. The gate is a minimum only: newer versions are accep
 protocol shape the adapter does not know still fails closed. The cache layout below is a separate
 matter, with its own threshold at 2.1.319. The order 2.1.319 uses to report a
 denied call, inside the response before its stop, is supported alongside the earlier order after
-the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
+the stop. The `system/informational` notice 2.1.329 emits in some turns is accepted and ignored.
+Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
 
 Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 ms per replayed
 user message.

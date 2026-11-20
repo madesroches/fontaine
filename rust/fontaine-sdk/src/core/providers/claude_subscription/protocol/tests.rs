@@ -1053,15 +1053,66 @@ fn a_denial_is_matched_to_a_call_the_response_made() {
 fn an_echo_must_answer_an_unanswered_call_with_an_error() {
     let mut r = started(&["read_file"]);
     tool_start(&mut r, 0, "toolu_A", READ).unwrap();
-    assert!(feed(&mut r, echo(&["toolu_other"])).is_err());
-    assert!(feed(&mut r, echo(&[])).is_err());
-    let mixed = json!({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
-        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": false},
-    ]}});
-    assert!(feed(&mut r, mixed).is_err());
+    let user = |content: Value| json!({"type": "user", "message": {"content": content}});
+    let block = |kind: &str, id: Option<&str>, is_error: Option<bool>| {
+        let mut b = json!({"type": kind, "secret": "PAYLOAD_MARKER"});
+        if let Some(id) = id {
+            b["tool_use_id"] = json!(id);
+        }
+        if let Some(e) = is_error {
+            b["is_error"] = json!(e);
+        }
+        b
+    };
+    let cases = [
+        (json!({"type": "user", "message": {}}), "no content"),
+        (user(json!([])), "no content"),
+        (
+            user(json!("PAYLOAD_MARKER")),
+            "content that is not a list of blocks",
+        ),
+        (
+            user(json!([block("text", Some("toolu_A"), Some(true))])),
+            "a block that is not a tool result",
+        ),
+        (
+            user(json!([block("tool_result", Some("toolu_A"), Some(false))])),
+            "a tool result that is not an error",
+        ),
+        (
+            user(json!([block("tool_result", Some("toolu_A"), None)])),
+            "a tool result that is not an error",
+        ),
+        (
+            user(json!([block("tool_result", None, Some(true))])),
+            "a tool result without an id",
+        ),
+        (
+            user(json!([block(
+                "tool_result",
+                Some("toolu_other"),
+                Some(true)
+            )])),
+            "an id this response did not announce",
+        ),
+        (
+            json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
+                {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
+            ]}}),
+            "a tool result repeated",
+        ),
+    ];
+    for (event, reason) in cases {
+        let error = failure(feed(&mut r, event));
+        assert!(error.contains(reason), "{reason}: {error}");
+        assert!(error.contains("(event: user)"), "{error}");
+        assert!(!error.contains("PAYLOAD_MARKER"), "{error}");
+        assert!(!error.contains("toolu_"), "{error}");
+    }
     assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
-    assert!(feed(&mut r, echo(&["toolu_A"])).is_err());
+    let error = failure(feed(&mut r, echo(&["toolu_A"])));
+    assert!(error.contains("a call already answered"), "{error}");
 }
 
 #[test]
@@ -1124,6 +1175,67 @@ fn thinking_estimates_are_accepted_in_a_response_only() {
     r.expect_ack();
     feed(&mut r, init()).unwrap();
     assert!(feed(&mut r, estimate).is_err());
+}
+
+#[test]
+fn informational_system_events_are_ignored_before_and_after_init() {
+    let notice = json!({"type": "system", "subtype": "informational",
+                        "level": "warning", "message": "usage at 98%"});
+    let mut r = reader(&[]);
+    assert!(matches!(feed(&mut r, notice.clone()), Ok(Event::Nothing)));
+    feed(&mut r, init()).unwrap();
+    assert!(matches!(feed(&mut r, notice), Ok(Event::Nothing)));
+}
+
+const REFUSAL_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u","isSynthetic":true,"is_virtual":true,"refused_message_id":"msg_X"}"#;
+
+#[test]
+fn a_classifier_refusal_ends_the_turn_without_echoing_its_payload() {
+    let mut r = started(&[]);
+    let error = r.accept(REFUSAL_LINE.as_bytes()).expect_err("a failure");
+    let text = error.to_string();
+    assert!(text.contains("safety classifier"), "{text}");
+    assert!(
+        !text.contains("msg_X") && !text.contains("reworded"),
+        "{text}"
+    );
+    assert!(!text.contains("native tool"), "{text}");
+    let typed = claude_error(&error).expect("a typed error");
+    assert_eq!(typed.kind, ErrorKind::Protocol);
+    assert!(matches!(*error, ProviderError::Request(_)));
+}
+
+#[test]
+fn near_misses_of_the_classifier_refusal_stay_refused_as_native_requests() {
+    let base: Value = serde_json::from_str(REFUSAL_LINE).unwrap();
+    let mut not_synthetic = base.clone();
+    not_synthetic["isSynthetic"] = json!(false);
+    let mut extra_block = base.clone();
+    extra_block["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "text", "text": "more"}));
+    let mut with_result = base.clone();
+    with_result["message"]["content"] = json!([{"type": "tool_result", "tool_use_id": "t",
+                                                "is_error": true, "content": "x"}]);
+    let mut no_id = base.clone();
+    no_id.as_object_mut().unwrap().remove("refused_message_id");
+    let mut numeric_id = base;
+    numeric_id["refused_message_id"] = json!(7);
+    for (name, event) in [
+        ("not synthetic", not_synthetic),
+        ("extra block", extra_block),
+        ("tool_result mixed in", with_result),
+        ("no refused_message_id", no_id),
+        ("non-string refused_message_id", numeric_id),
+    ] {
+        let mut r = started(&[]);
+        let error = failure(feed(&mut r, event));
+        assert!(
+            error.contains("executed a native tool or permission request"),
+            "{name}: {error}"
+        );
+    }
 }
 
 #[test]
