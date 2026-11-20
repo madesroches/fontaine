@@ -502,6 +502,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-20 (#721): The Android app reads the window insets over JNI (system bars, cutout and, on API 30+, the keyboard) every 500 ms and on resize, content-rect change and resume, with the activity's content rect as fallback. Reason: `NativeActivity`'s surface does not shrink under `adjustResize` and the activity has no Java code to apply `fitsSystemWindows`.
 - 2026-11-20 (#721): Opposing insets are capped at 80 % of their axis so the window never collapses to a zero (auto-fit) size; touch overflow relies on the widened scrollbar only, with no drag-to-scroll. Reason: the app feeds ImGui the pointer and left button only, and a smaller design surface.
 - 2026-11-20 (#721): The Android paste field has no Paste button; holding the field opens a Paste popup. Reason: the button took a full-width row on a small screen and long-press is the platform idiom.
+- 2026-11-20 (#728): Amends the (#721) scan-card line above: the scan card now shows a grayscale, in-memory preview drawn from the decoder's luma plane (uploaded as a `GL_R8` texture each UI frame and kept upright from the sensor orientation and the display rotation read over JNI), still never stored or written to disk. Reason: the user could not aim the camera at the host's QR code; the luma plane needs no external-OES shader or second capture target.
 
 ### Config
 

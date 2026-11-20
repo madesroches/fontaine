@@ -1,6 +1,6 @@
 //! NDK camera: the back camera streams YUV frames into an image reader, and the luma plane of the
-//! newest frame is handed to the QR decoder. Nothing is shown or stored; a frame lives only for
-//! the decode.
+//! newest frame is handed out for the QR decoder and for the scan card's grayscale preview. The
+//! frame is held in memory only until the next one replaces it; nothing is stored.
 
 use std::ffi::{CStr, c_void};
 use std::ptr;
@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ndk_sys as ffi;
 
 use super::error::{CameraStatus, Error};
-use crate::scan::decode_luma;
 
 // ndk-sys links libmediandk (AImageReader, AImage) with its `media` feature but declares nothing
 // for the ACamera* and ACaptureSession* symbols, which live in libcamera2ndk.
@@ -20,7 +19,16 @@ unsafe extern "C" {}
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 720;
 
+/// The luma plane of one frame, rows packed without the driver's stride padding.
+pub struct Luma {
+    pub width: usize,
+    pub height: usize,
+    pub data: Vec<u8>,
+}
+
 pub struct Camera {
+    /// Degrees the sensor image is turned clockwise from the device's natural orientation.
+    sensor_orientation: i32,
     manager: *mut ffi::ACameraManager,
     device: *mut ffi::ACameraDevice,
     reader: *mut ffi::AImageReader,
@@ -61,6 +69,7 @@ impl Camera {
     /// Opens the back camera and starts streaming, or says why it could not.
     pub fn start() -> Result<Camera, Error> {
         let mut camera = Camera {
+            sensor_orientation: 0,
             manager: ptr::null_mut(),
             device: ptr::null_mut(),
             reader: ptr::null_mut(),
@@ -75,7 +84,8 @@ impl Camera {
         // released by `Drop` in reverse order, so an early return frees what was made so far.
         unsafe {
             camera.manager = ffi::ACameraManager_create();
-            let id = camera.back_camera_id()?;
+            let (id, sensor_orientation) = camera.back_camera_id()?;
+            camera.sensor_orientation = sensor_orientation;
             let mut callbacks = ffi::ACameraDevice_StateCallbacks {
                 context: std::ptr::from_ref::<AtomicBool>(&camera.dead)
                     .cast_mut()
@@ -149,18 +159,19 @@ impl Camera {
         Ok(camera)
     }
 
-    /// The id of the first back-facing camera, else the first camera there is.
+    /// The id and sensor orientation of the first back-facing camera, else of the first camera
+    /// there is.
     ///
     /// # Safety
     /// `self.manager` must be a live camera manager.
-    unsafe fn back_camera_id(&self) -> Result<std::ffi::CString, Error> {
+    unsafe fn back_camera_id(&self) -> Result<(std::ffi::CString, i32), Error> {
         // SAFETY: the caller guarantees the manager; the id list is freed before returning and
         // the chosen id is copied out first.
         unsafe {
             let mut list = ptr::null_mut();
             ok(ffi::ACameraManager_getCameraIdList(self.manager, &mut list))?;
             let count = (*list).numCameras;
-            let mut chosen: Option<std::ffi::CString> = None;
+            let mut chosen: Option<(std::ffi::CString, i32)> = None;
             for i in 0..count {
                 let id = *(*list).cameraIds.add(i as usize);
                 let mut metadata = ptr::null_mut();
@@ -179,8 +190,20 @@ impl Camera {
                     && u32::from(*entry.data.u8_)
                         == ffi::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK
                             .0;
+                // A missing entry leaves the preview unrotated rather than failing the camera.
+                let orientation = if ffi::ACameraMetadata_getConstEntry(
+                    metadata,
+                    ffi::acamera_metadata_tag::ACAMERA_SENSOR_ORIENTATION.0,
+                    &mut entry,
+                ) == ffi::camera_status_t::ACAMERA_OK
+                    && entry.count > 0
+                {
+                    *entry.data.i32_
+                } else {
+                    0
+                };
                 ffi::ACameraMetadata_free(metadata);
-                let owned = CStr::from_ptr(id).to_owned();
+                let owned = (CStr::from_ptr(id).to_owned(), orientation);
                 if facing {
                     chosen = Some(owned);
                     break;
@@ -197,10 +220,14 @@ impl Camera {
         self.dead.load(Ordering::Relaxed)
     }
 
-    /// Decodes the newest frame, if one is ready and holds a QR code.
-    pub fn poll(&mut self) -> Option<String> {
+    pub fn sensor_orientation(&self) -> i32 {
+        self.sensor_orientation
+    }
+
+    /// The newest frame's luma plane, if one arrived since the last call.
+    pub fn latest_luma(&mut self) -> Option<Luma> {
         // SAFETY: `reader` is live while `self` is; the image is deleted before returning, and the
-        // luma plane is copied row by row so the decoder never sees the driver's stride padding.
+        // luma plane is copied row by row so no one sees the driver's stride padding.
         unsafe {
             let mut image = ptr::null_mut();
             if ffi::AImageReader_acquireLatestImage(self.reader, &mut image)
@@ -216,7 +243,7 @@ impl Camera {
             ffi::AImage_getPlaneRowStride(image, 0, &mut stride);
             let got = ffi::AImage_getPlaneData(image, 0, &mut data, &mut len)
                 == ffi::media_status_t::AMEDIA_OK;
-            let decoded = if got && !data.is_null() && width > 0 && height > 0 && stride >= width {
+            let luma = if got && !data.is_null() && width > 0 && height > 0 && stride >= width {
                 let plane = std::slice::from_raw_parts(data, len as usize);
                 let (w, h, s) = (width as usize, height as usize, stride as usize);
                 let mut luma = Vec::with_capacity(w * h);
@@ -226,14 +253,16 @@ impl Camera {
                         None => break,
                     }
                 }
-                (luma.len() == w * h)
-                    .then(|| decode_luma(w, h, &luma))
-                    .flatten()
+                (luma.len() == w * h).then_some(Luma {
+                    width: w,
+                    height: h,
+                    data: luma,
+                })
             } else {
                 None
             };
             ffi::AImage_delete(image);
-            decoded
+            luma
         }
     }
 }

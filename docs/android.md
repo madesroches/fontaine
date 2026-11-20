@@ -38,9 +38,11 @@ phone, so decline a pairing prompt you did not start. The app does not keep the 
 The phone's name on the confirmation line is its model name.
 
 The scan screen keeps clear of the status bar, the display cutout and the keyboard. It shows a card
-that reads "Scanning" while the camera is live and "Camera access is off" with an "Allow camera"
-button when it is not, then a paste field and, when the phone is already paired, the list of paired
-hosts. The card shows no camera image.
+with the live camera image behind a "Scanning" label while the camera is live, and "Camera access
+is off" with an "Allow camera" button when it is not, then a paste field and, when the phone is
+already paired, the list of paired hosts. The image is grayscale, taken from the same frames the QR
+decoder reads, kept upright when the phone rotates, and cropped to fill the square. Frames are held
+in memory only until the next one replaces them; nothing is stored.
 
 If the camera is off or denied, copy the link, the prefixed ticket or the bare ticket text, hold the
 field on the scan screen and tap Paste, then "Use this". The camera permission is requested when you tap "Allow camera" on the scan screen.
