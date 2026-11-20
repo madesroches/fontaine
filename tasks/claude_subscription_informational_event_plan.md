@@ -24,9 +24,9 @@ usage warning may precede or follow init, and ignoring it is harmless either way
 2. `protocol/tests.rs`: add a test that `system/informational` (with a free-form `message`/`level`
    payload) yields `Event::Nothing` both before and after init, and keep
    `other_system_events_are_refused_by_name` on `model_fallback`/`notification`.
-3. `docs/claude-subscription.md`: record the qualification decision where the accepted system
-   events are described (CLI 2.1.329).
-4. `CHANGELOG.md`: entry under Unreleased.
+3. `docs/claude-subscription.md`: add one sentence to "Supported CLI versions" saying the 2.1.329
+   `system/informational` notice is accepted and ignored.
+4. `CHANGELOG.md`: a `### Fixed` entry under `[Unreleased]` citing #714.
 
 ## Files to Modify
 `protocol.rs`, `protocol/tests.rs`, `docs/claude-subscription.md`, `CHANGELOG.md`.
@@ -37,8 +37,14 @@ rule guards events that could change what runs), and failing makes the account u
 the CLI shows a notice.
 
 ## Decisions
-- 2026-11-19: ignore the event without reading the payload, since it was not captured; if a later
-  capture shows it carries a tool or permission signal, revisit.
+- 2026-11-19: this supersedes the 2026-11-06 decision (claude_cli_denial_events plan) that
+  `informational` stays refused until a capture, and is a deliberate exception to the master plan's
+  fail-closed rule for unqualified protocol shapes. A `--debug-file` capture is possible since #448
+  but the event depends on account state (seen at 7d 98% usage) and cannot be reproduced on demand,
+  while refusing it blocks every turn on an affected account. The payload is never read, so the
+  exception grants nothing; if a later capture shows a tool or permission signal, revisit.
+- AFK: accepted without a capture (the most conservative option that unblocks the issue); the
+  open question of capturing first is resolved this way.
 
 ## Documentation
 `docs/claude-subscription.md` as above.
