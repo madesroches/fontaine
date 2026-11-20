@@ -84,6 +84,9 @@ All notable changes are recorded here. The format follows
 
 - `claude-subscription` accepts and ignores the `system/informational` notice CLI 2.1.329 emits in
   some turns, which failed the turn with a request error (#714).
+- The error for a tool call the Claude CLI makes on a name Fontaine did not define (such as
+  `job_cancel_placeholder`, #717) now says plainly that the model named a tool that is not in the
+  request. The call is still refused and never run.
 - Fix the flaky `free_ports_are_loopback_ports_that_can_be_bound` test: it retries with a fresh
   port when a parallel test takes the first one between the two steps (#700).
 
