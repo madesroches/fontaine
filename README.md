@@ -36,6 +36,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontai
 Archives, source builds, signature verification, proxies and updating are in
 [Installing Fontaine](docs/installing.md).
 
+On an Android phone, get the [Android app](https://github.com/madesroches/fontaine/blob/main/docs/android.md)
+(a sideloaded APK) from the [releases page](https://github.com/madesroches/fontaine/releases); it
+pairs with a host through its QR code.
+
 ## Quickstart
 
 With [Ollama](https://ollama.com) running and a model pulled (`ollama pull qwen3:4b`), create
