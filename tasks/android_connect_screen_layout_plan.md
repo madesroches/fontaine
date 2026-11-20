@@ -48,11 +48,13 @@ Reading the insets, in `jni_bridge.rs`:
   null (not attached yet) returns `None`. On API 30+ call `getInsets(systemBars() | displayCutout())`
   with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. When the soft
   keyboard is up, `adjustResize` already shrinks the surface, so the bottom inset stays the
-  navigation bar only (the IME type is deliberately not requested).
-- `Activity` keeps `insets: Insets` and refreshes it each frame at most every 500 ms and on every
+  navigation bar only.
+- `Activity` keeps `insets: Insets` and `insets_read: Instant` and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
-  Until the first successful read, fall back to `android.content_rect()` (`left/top` as the inset,
-  display minus `right/bottom` as the opposite insets).
+  Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
+  `layout.rs` (`left/top` as the inset, display minus `right/bottom` as the opposite insets). An empty
+  rect (`right == 0` or `bottom == 0`, which is what `android-activity` reports before the first
+  `onContentRectChanged`) gives `Insets::ZERO`, not the whole display.
 - `ui::draw` takes the `Insets` and `margin`; it positions the window at the safe rect and sets
   `WindowPadding = (margin, margin)` for the frame, so everything inside is inset from the bars and
   the screen edge. The clear color still fills the whole surface, so the bars sit on the app
@@ -84,15 +86,17 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
    (`card_side(avail_width, avail_height)`). Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
-   - camera off, not denied: "Camera is off", and a `primary_button("Allow camera")` inside the
-     card;
-   - denied: "Camera access is off" and the existing denied wording, with the same button.
-   This makes the scan state and its one action visible at the top of the screen. No camera image
-   is drawn (Decisions).
+   - not live (`Activity::scan` sets `camera_denied` whenever permission is missing or the camera
+     failed to start): "Camera access is off" and the existing denied wording, with a
+     `primary_button("Allow camera")` inside the card.
+   No camera image is drawn (Decisions).
 4. `caption("Or paste a pairing link or ticket")` as the section label.
-5. `field_frame`: a bordered, rounded, full-width frame (`igBeginChild` with border, height of one
-   line plus frame padding) holding the typed text or the dim hint "tap Paste or type here"; a tap
-   inside it pushes `Tap::FocusField` as today. Session's prompt field uses `field_frame` too
+5. `field_frame`: a full-width frame drawn with `igBeginChild` using `ImGuiChildFlags_FrameStyle`
+   (applies `FrameBg`, `FrameRounding`, `FrameBorderSize` and `FramePadding`) and
+   `ImGuiWindowFlags_NoScrollbar`. It holds the typed text, wrapped, or the dim hint "tap Paste or
+   type here", and its height is `igCalcTextSize` of the text at the wrap width plus
+   `2 * FramePadding.y`, so a pasted pairing link (~130-300 characters) or a multi-line session
+   prompt is fully visible. A tap inside it pushes `Tap::FocusField` as today. Session's prompt field uses `field_frame` too
    (`field_box` is removed).
 6. `secondary_button("Paste")`, and `primary_button("Use this")` only when the field is non-empty.
    Both full width, with `ItemSpacing` between.
@@ -103,28 +107,25 @@ The main window scrolls when the content overflows.
 Other screens (Confirm, Pairing, Error, Session) get the safe rect and margin for free; Confirm and
 Pairing use `heading` for their first line and `primary_button`/`secondary_button`. The session
 transcript child is sized as `igGetContentRegionAvail().y` minus a footer counted with
-`igGetFrameHeightWithSpacing()` for each field (the framed prompt field) and button row, including
-the dialog's buttons, so the footer stays on screen with the larger padding.
-
-### Where the testable logic lives
-
-`layout.rs` holds only arithmetic (clamping, safe rect, margin, card side length
-`card_side(avail_width, avail_height)`), so it is host-tested; `ui.rs` and `jni_bridge.rs` stay thin
-wrappers over unsafe calls with no logic worth a test.
+`igGetFrameHeightWithSpacing()` for each button row, including the dialog's buttons, plus the
+prompt `field_frame`'s computed (wrapped, variable) height and `ItemSpacing.y`, so the footer stays on screen with the larger padding.
 
 ## Implementation Steps
 
 1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `safe_rect`, `margin`, `card_side` and
    unit tests; declare `pub mod layout;` in `lib.rs`.
 2. Add `system_insets` to `jni_bridge.rs`.
-3. In `mod.rs`: add `insets` to `Activity`, refresh it per the cadence above, pass it to `render`
+3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) to `Activity`, refresh it per the cadence above, pass it to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
    with the card and framed field; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
    size the session transcript as `igGetContentRegionAvail().y` minus a footer counted with
-   `igGetFrameHeightWithSpacing()` per field and button row (including the dialog's buttons).
-5. Update `docs/android.md` (Pair section and the scan-screen description).
-6. Add the Decisions lines to `tasks/fontaine_harness_plan.md` and a `CHANGELOG.md` entry.
+   `igGetFrameHeightWithSpacing()` per button row (including the dialog's buttons) plus the prompt
+   `field_frame`'s wrapped height.
+5. In `docs/android.md`, add a scan-screen description to the Pair section.
+6. Add the two Decisions as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
+   subsection of `tasks/fontaine_harness_plan.md` Decisions (where the Android lines live), plus a
+   `CHANGELOG.md` `[Unreleased]` "Fixed" entry.
 7. Run the Android NDK clippy as CI does (`.github/workflows/android.yml`) plus the host checks.
 
 ## Files to Modify
@@ -135,9 +136,6 @@ wrappers over unsafe calls with no logic worth a test.
 
 ## Trade-offs
 
-- Insets via `getRootWindowInsets` vs. `AndroidApp::content_rect()` alone: `content_rect` is the
-  fallback only because on some devices and API levels it reports the full window when the surface
-  is drawn behind the bars, which is the reported bug.
 - Insets via `AndroidManifest`/theme (`fitsSystemWindows`) vs. in-app: the activity has no Java code
   (`hasCode=false`), so a theme cannot be authored without a resource build step.
 
@@ -160,8 +158,9 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
   the axis; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
-  both the width and the remaining height and never negative on a tiny display. The status-bar bug in
-  the issue is pinned by the `safe_rect` case.
+  both the width and the remaining height and never negative on a tiny display;
+  `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
+  left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
 
 ## Manual Verification
@@ -169,7 +168,7 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
 1. Install the PR's debug APK (`android.yml` artifact) on a phone with a status-bar cutout, open
    the app: the heading sits fully below the clock and icons, with equal side margins; expected
    because the safe rect is applied. Not automated: it needs a device and a real window.
-2. With the camera permission off: the card shows "Camera is off" and "Allow camera"; the paste
+2. With the camera permission off: the card shows "Camera access is off" and "Allow camera"; the paste
    field has an outline and the Paste button has margin. Rotate to landscape: content scrolls.
 3. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
 
