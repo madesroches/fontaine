@@ -48,7 +48,7 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
 Reading the insets, in `jni_bridge.rs`:
 
 - `system_insets(app) -> Option<Insets>`: `activity.getWindow().getDecorView().getRootWindowInsets()`;
-  null (not attached yet) returns `None`. On API 30+ call `getInsets(systemBars() | displayCutout())`
+  null (not attached yet) returns `None`. The API level comes from `AndroidApp::sdk_version()` (no new JNI call). On API 30+ call `getInsets(systemBars() | displayCutout())`
   with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. When the soft
   keyboard is up, `adjustResize` already shrinks the surface, so the bottom inset stays the
   navigation bar only.
@@ -89,8 +89,9 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
    `avail_width()` capped at the height remaining after the notice, heading and caption minus the
    height of the paste section (`below_px`, computed from style metrics: caption line height + one-line
    `field_frame` height + `primary_button` height + 3 * `ItemSpacing.y`), with
-   a minimum side of 8 text line heights (`card_side(avail_width, avail_height, below_px)`), so the paste section stays on
-   screen in landscape. Inside, centered:
+   a minimum side of 8 text line heights (`card_side(avail_width, avail_height, below_px, min_side)`; the caller passes
+   `8 * igGetTextLineHeight()` as `min_side`; the side is `min(avail_width, max(min_side, avail_height - below_px))`, floored at 0),
+   so the paste section stays on screen in landscape. Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
    - not live (keyed on `!camera_ready`, the camera not running): when `camera_denied` is set,
@@ -124,10 +125,15 @@ rows); it is measured as the cursor Y delta across drawing it and kept in a smal
 that the `Activity` holds and passes to `ui::draw`. `footer_px == 0.0` marks the first frame
 and triggers a one-line-per-row estimate. The dialog is not moved into a capped child.
 
+## Mockups
+
+- `tasks/android_connect_screen_layout_mockups/scan-screen.html`: scan screen with the camera live and the long-press Paste popup, and with the camera denied and a wrapped pasted link.
+- `tasks/android_connect_screen_layout_mockups/session-screen.html`: session screen idle, with an approval showing a diff, and reconnecting with a wrapped message.
+
 ## Implementation Steps
 
-1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::clamped`, `safe_rect`, `margin`, `card_side` and
-   unit tests; declare `pub mod layout;` in `lib.rs`.
+1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::ZERO`, `Insets::clamped`, `Insets::from_content_rect`, `safe_rect`, `margin`, `card_side`
+   (with its `min_side` parameter) and unit tests; declare `pub mod layout;` in `lib.rs`.
 2. Add `system_insets` to `jni_bridge.rs`.
 3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
@@ -138,7 +144,7 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
    footer height (everything drawn after the transcript) measured on the previous frame; update
    `footer_px` from the cursor Y before and after drawing the footer.
 5. In `docs/android.md`, add a scan-screen description to the Pair section.
-6. Add the two Decisions as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
+6. Add the Decisions lines as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
    subsection of `tasks/fontaine_harness_plan.md` Decisions (where the Android lines live), plus a
    `CHANGELOG.md` `[Unreleased]` "Fixed" entry.
 7. Run the Android NDK clippy as CI does (`.github/workflows/android.yml`) plus the host checks.
@@ -173,7 +179,7 @@ section, and change the "tap Paste" instructions (Pair, fallback) to "hold the f
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis; `card_side` tests use the 8-line-height minimum side; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side`; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
   both the width and the remaining height, in landscape leaves `below_px` for the paste section
   (or the minimum side when that is not possible), and is never negative on a tiny display;
@@ -190,7 +196,7 @@ section, and change the "tap Paste" instructions (Pair, fallback) to "hold the f
    field has an outline. Long-press it: a "Paste" popup appears at the finger and pastes the clipboard text; a short tap
    opens the keyboard. Rotate to landscape: the paste field is visible without scrolling.
 3. With the soft keyboard up, type in the session prompt field: the transcript and footer stay inside
-   the visible area. IME behaviour is unverified on a device.
+   the visible area.
 4. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
 
 ## Open Questions
