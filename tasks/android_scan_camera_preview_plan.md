@@ -47,6 +47,9 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
   `Luma { width, height, data }`) and keep decoding in the caller through the existing
   `decode_luma`. The frame is acquired every UI frame instead of every 150 ms; decoding stays
   throttled by `SCAN_INTERVAL` and runs on the newest `Luma` held.
+- `Activity` keeps that frame as `latest: Option<Luma>`, overwritten every frame in `scan()` and
+  cleared together with `self.camera` (when the camera is dropped or the scan screen is left); the
+  texture upload and its dropping depend on it.
 - Update the module doc: the newest frame is shown on the scan card and kept in memory only until
   the next one replaces it; nothing is stored.
 
@@ -54,8 +57,9 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 - `Gl` loads `glGenTextures`, `glBindTexture`, `glTexImage2D`, `glTexSubImage2D`,
   `glTexParameteri`, `glPixelStorei`, `glDeleteTextures` the same way as the two it has.
-- New `Preview` owned by `Surface`, which declares `preview` before `gl` so the texture is deleted
-  while the GL context is still current; `Preview` uses the function pointers loaded on `Gl`. A single `GL_R8`
+- New `Preview` owned by `Surface`, whose fields are declared in the order `imgui, preview, gl`:
+  `imgui` first because its backends need the GL context current, `preview` before `gl` so the
+  texture is deleted while the GL context is still current; `Preview` uses the function pointers loaded on `Gl`. A single `GL_R8`
   texture, (re)allocated with `glTexImage2D` when the frame size changes and updated with
   `glTexSubImage2D` otherwise, `GL_LINEAR` filtering, `GL_CLAMP_TO_EDGE`, `GL_UNPACK_ALIGNMENT` 1.
   Sampling `GL_R8` gives `(r, 0, 0)`, so the texture swizzles to `(R, R, R, 1)` via
