@@ -47,8 +47,9 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 
 `Cli::learn_reminder(&self, email, version) -> Learned` runs a probe launch:
 
-- Bind `127.0.0.1:0` (tokio `TcpListener`). Launch the CLI through the same `fixed_args`/`launch`
-  path as `initialize`, with `ANTHROPIC_BASE_URL` added for this launch only (a `command` variant
+- Bind `127.0.0.1:0` (tokio `TcpListener`) and draw a random 128-bit path nonce (distinct from the
+  prompt nonce). Launch the CLI through the same `fixed_args`/`launch`
+  path as `initialize`, with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/<path nonce>` added for this launch only (a `command` variant
   taking extra env; `CONFLICTING_ENV` still refuses an inherited value). Write one user frame
   (a fresh random nonce per probe, uuid v4) and close stdin. The probe launch removes every proxy
   variable (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, both cases) that `PASSTHROUGH_ENV`
@@ -58,12 +59,16 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 - The listener keeps accepting connections and requests (keep-alive included) until the probe ends.
   Each request is parsed as HTTP/1.1 (request line, `content-length` body; capped at 8 MiB). It
   answers every non-matching request 404 and hands off only the first POST to the exact
-  `/v1/messages` path (not `count_tokens`) whose last user text is the probe nonce, over a oneshot,
+  `/<path nonce>/v1/messages` path (not `count_tokens`; any other path, including one without the
+  nonce, is 404) whose last user text is the probe nonce, over a oneshot,
   answering it with the canned SSE body. It never forwards, never logs a body, and reads only the
   content-length header and drops the rest, including the bearer token, without storing or logging
   them.
-- The probe ends when the matching body arrives (child stopped), the child exits, or the discovery
-  timeout elapses.
+- The probe ends when the matching body arrives (child stopped), the child exits, or the probe
+  deadline elapses. The deadline is a new `Timeouts::probe` field (default 10 s, capped by
+  `discovery`, overridable in tests), not the 120 s discovery timeout. The probe is exempt from the
+  login-first rule: it can only reach the loopback listener, never upstream, so it runs inside
+  `prepare` concurrently with the login check and its result is used only once the login passes.
 
 ### 2. Parse and validate (pure, unit-tested)
 
@@ -85,6 +90,8 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 
 ### 3. Memoize
 
+The memo's entry point is `get_or_learn(key, probe: impl FnOnce() -> BoxFuture<Outcome>)`;
+`Cli::learn_reminder` passes the real launch (as `quota.rs` does), so tests inject a counting fake.
 A process-wide store beside `Verdicts` (same `STORES` pattern, keyed by data dir) maps
 `(version, sha256(email))` to the outcome: `Learned(Reminder)` or `Unusable` (deterministic: parsed
 `None`), both kept for the process lifetime. A transient failure (could not start, timeout, no
@@ -137,11 +144,14 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
 3. `transport.rs::prepare`: call `learn_reminder` after the `initialize` answer when the version
    and email gate passes, pass the result to `layout`/`apply`/`Sent`; the warning text names the
    wording.
-4. `rust/fontaine-sdk/examples/claude_cli_double.rs` (the `fontaine` example only wraps it): new scenario key `reminder` (the text it
-   sends as the first message's reminder block). A launch with `ANTHROPIC_BASE_URL` set is a probe:
+4. `rust/fontaine-sdk/examples/claude_cli_double.rs` (the `fontaine` example only wraps it): new scenario keys, both listed in the double's module doc key list: `reminder` (the text it
+   sends as the first message's reminder block; `"reminder": null` means no POST, read through the
+   `Value::Null` pattern at `claude_cli_double.rs:176-180`) and `reminder_probe` (`"malformed"` posts a
+   body that is not valid JSON, `"exit"` exits before posting), which express the "posts nothing /
+   malformed body / exits before posting" integration cases. A launch with `ANTHROPIC_BASE_URL` set is a probe:
    it never calls `next_run()` or reads `responses`, reads its user frame from stdin and, only if
    `reminder` is set, POSTs `messages:[{role:user, content:[{type:text,text:"<reminder>\n"},
-   {type:text,text:<frame text>}]}]` to `$ANTHROPIC_BASE_URL/v1/messages` over a plain
+   {type:text,text:<frame text>}]}]` to `$ANTHROPIC_BASE_URL/v1/messages` (the base URL carries the path nonce) over a plain
    `std::net::TcpStream` (echoing the frame's nonce; reads and ignores the reply), answers a fixed
    plain turn, never applies the hang/descendant/exit keys, still logs its usual `invocation` entry
    (with env), and logs only its frames under a kind other than `"frame"`: `frames()`,
@@ -188,6 +198,11 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   listener never forwards. Accepted: the token never leaves the machine (the probe launch strips all
   proxy variables, so the request cannot detour through a proxy) and the listener only binds
   `127.0.0.1`.
+
+- 2026-11-20: AFK: The listener is guarded by a random 128-bit nonce in the base URL path and accepts only `POST /<nonce>/v1/messages` (404 else); measured on CLI 2.1.329: with a path in the base URL the CLI posts to `/<nonce>/v1/messages?beta=true`.
+- 2026-11-20: AFK: The probe gets its own `Timeouts::probe` bound (10 s, capped by `discovery`, test-overridable) instead of the 120 s discovery timeout, and is exempt from the login-first rule because it cannot reach upstream; it runs concurrently with the login check and is used only after login passes.
+- 2026-11-20: AFK: The memo is `get_or_learn(key, probe: impl FnOnce() -> BoxFuture<Outcome>)` with `learn_reminder` passing the real launch (as `quota.rs`), so tests inject a counting fake.
+- 2026-11-20: AFK: The double expresses probe failure cases with `"reminder": null` (no POST) and `reminder_probe: "malformed" | "exit"`, both documented in its module doc key list.
 
 ## Documentation
 
@@ -238,7 +253,7 @@ Unit (`reminder/tests.rs`, `context/tests.rs`):
   one. `apply` replays the learned text, not a constant (existing placement tests switch to the
   fixture).
 - Capture server: given a raw request (content-length body, split across reads, oversized body,
-  non-POST path) it returns the body or 404 and the canned SSE, over a real loopback socket.
+  non-POST, wrong or missing nonce path) it returns the body or 404 and the canned SSE, over a real loopback socket.
 - Memo: concurrent callers for one key run one probe; a transient failure is retried only after
   5 minutes (a fake probe injected under `start_paused`, as in `quota.rs:10`, `:426`); `Unusable`
   is kept.
