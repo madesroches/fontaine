@@ -110,9 +110,11 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 6. Docs: `docs/android.md`, README link, and the stale lines of:
    - `CONTRIBUTING.md` lines ~117-118 (signing keys table: `dev-signing` holds only the minisign
      secrets; add the three `ANDROID_*` secrets naming the dev keystore, a separate key from the
-     release one) and ~149-154 ("Enabling the dev channel" lists only the installers; add the APK
+     release one; the `release-signing` row also lacks the same three `ANDROID_*` secrets, which
+     release.yml's `sign` job already reads for the release keystore) and ~149-154 ("Enabling the dev channel" lists only the installers; add the APK
      and its `.minisig`, and the three secrets to create).
-   - `tasks/design/platforms.md` line ~49 (`dev` "holds only the installers") and lines ~71-80
+   - `tasks/design/platforms.md` line ~51 (private keys exist only as the `release-signing` and
+     `dev-signing` secrets: mention the Android keystore alongside the minisign keys), line ~49 (`dev` "holds only the installers") and lines ~71-80
      (signer "requires both" installers, "replaces the four assets": now the APK too, six assets).
    - `docs/verifying-releases.md` lines 7-9 ("holds only `fontaine-installer.sh` and ...").
    - `docs/verifying-releases.md` line 3 ("Android APK of a tagged release"), lines ~89-99 (APK
@@ -158,8 +160,6 @@ update each other.
 
 - `ci.yml` fixture tests (steps above) exercise `release-sign.sh` and `release-verify.sh` for the
   dev-installer kind with the APK: signed, required, tampered, wrong channel.
-- `actionlint`-style syntax check of `dev.yml` if the repo already uses one; otherwise the existing
-  `.github/scripts` checks.
 
 ## Manual Verification
 
