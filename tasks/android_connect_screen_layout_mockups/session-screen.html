@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fontaine Android session screen: mockup</title>
+<style>
+  :root {
+    --bg: #0f0f14;
+    --text: #e8e8ec;
+    --dim: #8c8c96;
+    --frame-bg: #1d2230;
+    --border: #4a5063;
+    --accent: #3b6fd4;
+    --neutral: #2c3347;
+    --warn: #ffcc4d;
+    --user: #80ccff;
+    --ok: #80e68c;
+    --bad: #ff7366;
+    --status: #99b3cc;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: #222; color: #ccc; font: 14px system-ui, sans-serif; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  p.note { margin: 0 0 20px; color: #999; max-width: 900px; }
+  .row { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { margin-top: 8px; color: #aaa; font-size: 13px; max-width: 360px; }
+  .phone { width: 360px; height: 800px; background: var(--bg); border-radius: 24px; border: 2px solid #444; position: relative; overflow: hidden;
+           font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; color: var(--text); }
+  .status { height: 40px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; font: 13px system-ui, sans-serif; color: #ddd; }
+  .hatch { position: absolute; left: 0; right: 0; background: repeating-linear-gradient(45deg, rgba(255,80,80,.18) 0 6px, transparent 6px 12px); pointer-events: none; }
+  .content { position: absolute; top: 40px; bottom: 24px; left: 0; right: 0; padding: 16px; display: flex; flex-direction: column; }
+  .nav { bottom: 0; height: 24px; }
+  .sline { font-size: 14px; color: var(--status); margin-bottom: 8px; }
+  .sline.warn { color: var(--warn); }
+  .transcript { flex: 1 1 0; min-height: 0; overflow: hidden; border-top: 1px solid var(--border); padding-top: 10px; font-size: 14px; line-height: 1.4; display: flex; flex-direction: column; gap: 10px; justify-content: flex-end; }
+  .u { color: var(--user); }
+  .t { color: var(--ok); }
+  .t.fail { color: var(--bad); }
+  .out { color: var(--dim); white-space: pre; overflow: hidden; }
+  .footer { flex: none; border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
+  .dialog { border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.4; }
+  .dialog .title { color: var(--warn); font-weight: 700; margin-bottom: 4px; }
+  .diff-add { color: var(--ok); } .diff-del { color: var(--bad); } .diff-ctx { color: var(--dim); }
+  .field { border: 1px solid var(--border); border-radius: 8px; background: var(--frame-bg); padding: 10px 14px; font-size: 16px; line-height: 1.3; min-height: 44px; }
+  .field.hint { color: #7a7a84; }
+  .btns { display: flex; gap: 8px; margin-top: 8px; }
+  .btn { flex: 1; border: 0; border-radius: 8px; padding: 10px 8px; font: inherit; font-size: 16px; color: var(--text); background: var(--neutral); text-align: center; }
+  .btn.primary { background: var(--accent); }
+  .btn.full { display: block; width: 100%; margin-top: 8px; }
+  .btn.danger { background: #4a2b2b; }
+</style>
+</head>
+<body>
+<h1>Session screen: proposed layout (360 x 800 dp phone)</h1>
+<p class="note">Same insets, margin and frame styling as the scan screen. The transcript takes whatever height the footer leaves
+  (measured on the previous frame), so the prompt field and buttons never leave the screen, including while an approval is open.
+  Red hatching marks the system-bar insets. Open this file in a browser.</p>
+
+<div class="row">
+  <figure>
+    <div class="phone">
+      <div class="status"><span>12 h 15</span><span>LTE ▂▄▆ 82%</span></div>
+      <div class="hatch" style="top:0;height:40px"></div>
+      <div class="content">
+        <div class="sline">sonnet-5-5 · auto · main</div>
+        <div class="transcript">
+          <div class="u">&gt; fix the flaky retry test</div>
+          <div>I'll look at the retry test and its timing.</div>
+          <div class="t">[read_file] tests/retry.rs - ok</div>
+          <div class="t">[edit_file] tests/retry.rs - ok</div>
+          <div class="t">[shell] cargo test retry - ok</div>
+          <div class="out">test retry_backoff ... ok
+test retry_gives_up ... ok
+2 passed; 0 failed</div>
+          <div>The test slept on wall-clock time; it now uses a paused clock, so it no longer depends on scheduling.</div>
+        </div>
+        <div class="footer">
+          <div class="field hint">message the session</div>
+          <div class="btns"><div class="btn primary">Send</div><div class="btn danger">Interrupt</div></div>
+          <div class="btn full">Leave session</div>
+        </div>
+      </div>
+      <div class="hatch nav"></div>
+    </div>
+    <figcaption>Idle session after a finished turn.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="status"><span>12 h 15</span><span>LTE ▂▄▆ 82%</span></div>
+      <div class="hatch" style="top:0;height:40px"></div>
+      <div class="content">
+        <div class="sline">sonnet-5-5 · manual · main</div>
+        <div class="transcript">
+          <div class="u">&gt; rename Connect to Pair in the docs</div>
+          <div class="t">[grep] "Connect" docs/ - ok</div>
+        </div>
+        <div class="footer">
+          <div class="dialog">
+            <div class="title">Edit docs/android.md</div>
+            <div>The agent wants to edit this file.</div>
+            <div class="diff-ctx">docs/android.md (+1 -1)</div>
+            <div class="diff-del">- ## Connect</div>
+            <div class="diff-add">+ ## Pair</div>
+            <div class="btns"><div class="btn primary">Allow once</div><div class="btn">Allow for session</div></div>
+            <div class="btn full">Deny</div>
+          </div>
+          <div class="field hint">message the session</div>
+          <div class="btns"><div class="btn primary">Send</div><div class="btn danger">Interrupt</div></div>
+          <div class="btn full">Leave session</div>
+        </div>
+      </div>
+      <div class="hatch nav"></div>
+    </div>
+    <figcaption>An approval with a diff open: the dialog grows the footer and the transcript shrinks to make room.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="status"><span>12 h 15</span><span>LTE ▂▄▆ 82%</span></div>
+      <div class="hatch" style="top:0;height:40px"></div>
+      <div class="content">
+        <div class="sline">sonnet-5-5 · auto · main</div>
+        <div class="sline warn">Reconnecting in 3.5s</div>
+        <div class="transcript">
+          <div class="u">&gt; run the full test suite</div>
+          <div class="t">[shell] cargo test - ...</div>
+        </div>
+        <div class="footer">
+          <div class="field">and then summarize any failures in two sentences so I can read them on my phone before the meeting</div>
+          <div class="btns"><div class="btn primary">Send</div><div class="btn danger">Interrupt</div></div>
+          <div class="btn full">Leave session</div>
+        </div>
+      </div>
+      <div class="hatch nav"></div>
+    </div>
+    <figcaption>Connection dropped while a long message is typed: the field wraps and grows, and the footer stays on screen.</figcaption>
+  </figure>
+</div>
+</body>
+</html>

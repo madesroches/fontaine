@@ -88,7 +88,7 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, width
    `avail_width()` capped at the height remaining after the notice, heading and caption minus the
    height of the paste section (`below_px`, computed from style metrics: caption line height + one-line
-   `field_frame` height + Paste button height + 3 * `ItemSpacing.y`), with
+   `field_frame` height + `primary_button` height + 3 * `ItemSpacing.y`), with
    a minimum side of 8 text line heights (`card_side(avail_width, avail_height, below_px)`), so the paste section stays on
    screen in landscape. Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
@@ -101,13 +101,14 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 4. `caption("Or paste a pairing link or ticket")` as the section label.
 5. `field_frame`: a full-width frame drawn with `igBeginChild` using `ImGuiChildFlags_FrameStyle`
    (applies `FrameBg`, `FrameRounding`, `FrameBorderSize` and `FramePadding`) and
-   `ImGuiWindowFlags_NoScrollbar`. It holds the typed text, wrapped, or the dim hint "tap Paste or
-   type here", and its height is `igCalcTextSize` of the text at the wrap width plus
+   `ImGuiWindowFlags_NoScrollbar`. It holds the typed text, wrapped, or the dim hint "type here", and its height is `igCalcTextSize` of the text at the wrap width plus
    `2 * FramePadding.y`, so a pasted pairing link (~130-300 characters) or a multi-line session
-   prompt is fully visible. A tap inside it pushes `Tap::FocusField` as today. Session's prompt field uses `field_frame` too
+   prompt is fully visible. A tap inside it pushes `Tap::FocusField` as today. Holding it (primary pointer down on the
+   frame for 0.5 s without dragging, detected once per press from `igIsItemActive()` and the io's `MouseDownDuration`) opens a
+   popup at the press point with a single "Paste" entry, like other Android apps; choosing it pushes `Tap::PasteField`, and a tap
+   anywhere else dismisses it. There is no separate Paste button on either screen. Session's prompt field uses `field_frame` too
    (`field_box` is removed).
-6. `secondary_button("Paste")`, and `primary_button("Use this")` only when the field is non-empty.
-   Both full width, with `ItemSpacing` between.
+6. `primary_button("Use this")`, shown only when the field is non-empty, full width.
 7. When paired hosts exist: `caption("Paired hosts")` and one `secondary_button` per host.
 
 The main window scrolls when the content overflows.
@@ -167,7 +168,7 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 ## Documentation
 
 `docs/android.md`: describe the scan screen (scan card, paste field, paired hosts) in the Pair
-section. No new page, so `SUMMARY.md` and `index.md` do not change.
+section, and change the "tap Paste" instructions (Pair, fallback) to "hold the field and tap Paste". No new page, so `SUMMARY.md` and `index.md` do not change.
 
 ## Testing Strategy
 
@@ -186,7 +187,8 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
    the app: the heading sits fully below the clock and icons, with equal side margins; expected
    because the safe rect is applied. Not automated: it needs a device and a real window.
 2. With the camera permission off: the card shows "Camera access is off" and "Allow camera"; the paste
-   field has an outline and the Paste button has margin. Rotate to landscape: the paste field and Paste button are visible without scrolling.
+   field has an outline. Long-press it: a "Paste" popup appears at the finger and pastes the clipboard text; a short tap
+   opens the keyboard. Rotate to landscape: the paste field is visible without scrolling.
 3. With the soft keyboard up, type in the session prompt field: the transcript and footer stay inside
    the visible area. IME behaviour is unverified on a device.
 4. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
