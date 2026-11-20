@@ -46,10 +46,10 @@ section. A tag without that section fails in the `plan` job.
 
 Every archive is signed. Fontaine owns one minisign key per channel: `release` (tagged releases)
 and `dev` (the latest CI-passing build of `main`, published by `.github/workflows/dev.yml` as the
-prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`; the long-lived prerelease `dev` holds only the installers and their signatures, see below).
+prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`; the long-lived prerelease `dev` holds only the installers, the Android APK and their signatures, see below).
 The public keys are in `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use (no self-update yet); the private keys exist
 only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
-GitHub Environments, which only the `sign` jobs name. The signed trusted comment binds channel,
+GitHub Environments, which only the `sign` jobs name; each also holds that channel's Android keystore, a separate one per channel. The signed trusted comment binds channel,
 asset name, version and commit. Publication is draft, verify, publish: `sign` signs after the
 build jobs, `host` creates a draft release, `verify-draft` downloads it and checks it with
 `.github/scripts/release-verify.sh`, and only then does `publish` make it public, so a failure
@@ -58,8 +58,8 @@ leaves nothing public. The `fontaine` crate's `release_signature` module is the 
 pinned and checksum-verified, and an ignored test proves the two agree on the CLI's output.
 Key bootstrap, rotation and recovery are in `CONTRIBUTING.md`.
 
-The dev channel has one stable address per installer, `releases/download/dev/fontaine-installer.sh`
-and `.../fontaine-installer.ps1`, assets of the long-lived prerelease `dev` (tag created once, never
+The dev channel has one stable address per installer and for the APK, `releases/download/dev/fontaine-installer.sh`,
+`.../fontaine-installer.ps1` and `.../fontaine-android.apk`, assets of the long-lived prerelease `dev` (tag created once, never
 moved). `dev-<n>` is immutable and has no installer. In `sign`, `.github/scripts/dev-installer.sh`
 rewrites each of dist's installers (the mode follows the extension) to fetch the archives of its own
 `dev-<n>` and to carry the dev version (`<base>-dev.<n>+<sha7>`) in `APP_VERSION` / `$app_version`, the
@@ -67,10 +67,12 @@ receipt and the usage text, failing on any text it does not recognise. The Power
 goes through `.github/scripts/windows-installer.sh`, which inserts `Assert-ArchiveSha256`
 (`.github/scripts/windows-installer-sha256.ps1`) and a call to it after the archive download, with
 the digest from the archive's `.sha256` file; the anchors are matched with exact counts. The
-results are signed with the dev key (`release-sign.sh dev-installer`, which requires both) and uploaded as the
-`dev-installer` artifact, which `host` and `verify-draft` never see. After `publish`, the
+results are signed with the dev key (`release-sign.sh dev-installer`, which requires both installers and the APK) and uploaded as the
+`dev-installer` artifact, which `host` and `verify-draft` never see. The APK is built unsigned by
+`build-android` (`android-unsigned-apk`, versionCode the dev run number) and given its Android
+signature in `sign` from the dev keystore, which is not the release one. After `publish`, the
 `stable-installer` job verifies them, parses the `.ps1`, skips unless its `dev-<n>` is the highest
-published, replaces the four assets and byte-compares what users would download. On the release
+published, replaces the six assets and byte-compares what users would download. On the release
 channel `sign` runs the same patch before signing and uploads the patched `.ps1` as the
 `windows-installer` artifact, which `host` copies over dist's stock one before creating the draft.
 

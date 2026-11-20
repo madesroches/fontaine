@@ -37,7 +37,8 @@ Archives, source builds, signature verification, proxies and updating are in
 [Installing Fontaine](docs/installing.md).
 
 On an Android phone, get the [Android app](https://github.com/madesroches/fontaine/blob/main/docs/android.md)
-(a sideloaded APK) from the [releases page](https://github.com/madesroches/fontaine/releases); it
+(a sideloaded APK) from the [releases page](https://github.com/madesroches/fontaine/releases), or the latest dev build
+at <https://github.com/madesroches/fontaine/releases/download/dev/fontaine-android.apk>; it
 pairs with a host through its QR code.
 
 ## Quickstart

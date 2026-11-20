@@ -323,6 +323,14 @@ jobs:
             fi
             echo "ok: $inst rejected on dev"
           done
+          # The dev APK travels with the installers (kind dev-installer), never with the archives.
+          d="$work/dev-with-apk"
+          cp -r "$dev_fixture" "$d"
+          head -c 4096 /dev/urandom > "$d/fontaine-android.apk"
+          if verify "$d" dev >/dev/null 2>&1; then
+            echo "::error::verify passed on the APK in the dev archive set"; exit 1
+          fi
+          echo "ok: the APK is rejected in the dev archive set"
 
           # The sha256 check that patches dist's PowerShell installer is the code users run, so it is
           # exercised here under pwsh, which GitHub's Ubuntu runners ship.
@@ -420,6 +428,7 @@ jobs:
           }
           FIXTURE
           }
+          add_apk() { head -c 4096 /dev/urandom > "$1/fontaine-android.apk"; }
           make_installer() { # make_installer <dir>: the text dist 0.32.0 writes, minus what is irrelevant here
             mkdir -p "$1"
             sed 's/^          //' > "$1/fontaine-installer.sh" <<'FIXTURE'
@@ -583,9 +592,11 @@ jobs:
           rewrite "$signed_installer/fontaine-installer.ps1"
           patch_win "$signed_installer"
           ps_parse "$signed_installer/fontaine-installer.ps1"
+          add_apk "$signed_installer"
           sign "$signed_installer" main dev-installer
           verify "$signed_installer" dev-installer >/dev/null
-          echo "ok: dev installers signed and verified"
+          FONTAINE_REQUIRE_APK=1 verify "$signed_installer" dev-installer >/dev/null
+          echo "ok: dev installers and APK signed and verified"
           expect_installer_fail() { # expect_installer_fail <name> <mutation function> [verify version commit]
             local name="$1" mutate="$2"
             shift 2
@@ -604,6 +615,25 @@ jobs:
           m_i_no_installer() { rm "${1:?}/$inst" "${1:?}/$inst.minisig"; }
           m_i_extra() { echo x > "$1/notes.txt"; }
           m_i_same() { true; }
+          apk=fontaine-android.apk
+          m_a_tampered() { echo x >> "$1/$apk"; }
+          m_a_renamed() { mv "$1/$apk" "$1/fontaine-other.apk"; mv "$1/$apk.minisig" "$1/fontaine-other.apk.minisig"; }
+          m_a_no_sig() { rm "${1:?}/$apk.minisig"; }
+          m_a_orphan_sig() { rm "${1:?}/$apk"; }
+          m_a_missing() { rm "${1:?}/$apk" "${1:?}/$apk.minisig"; }
+          expect_installer_fail apk-tampered m_a_tampered
+          expect_installer_fail apk-renamed m_a_renamed
+          expect_installer_fail apk-no-signature m_a_no_sig
+          expect_installer_fail apk-signature-without-apk m_a_orphan_sig
+          # Only the signer demands the APK; the verifier does so under FONTAINE_REQUIRE_APK=1.
+          no_apk="$work/inst-apk-missing"
+          cp -r "$signed_installer" "$no_apk"
+          m_a_missing "$no_apk"
+          verify "$no_apk" dev-installer >/dev/null
+          if FONTAINE_REQUIRE_APK=1 verify "$no_apk" dev-installer >/dev/null 2>&1; then
+            echo "::error::verify passed with the APK required and missing"; exit 1
+          fi
+          echo "ok: the APK is required under FONTAINE_REQUIRE_APK=1"
           for inst in $installers; do
             expect_installer_fail "$inst-tampered" m_i_tampered
             expect_installer_fail "$inst-renamed" m_i_renamed
@@ -625,8 +655,18 @@ jobs:
             fi
             echo "ok: $inst signed under the release channel rejected"
           done
+          apk_release_signed="$work/installer-apk-release-channel"
+          cp -r "$signed_installer" "$apk_release_signed"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/main.key" \
+            -m "$apk_release_signed/$apk" -x "$apk_release_signed/$apk.minisig" \
+            -t "fontaine-signature v1 channel=release file=$apk version=$version commit=$commit" >/dev/null
+          if verify "$apk_release_signed" dev-installer >/dev/null 2>&1; then
+            echo "::error::verify passed on the APK signed under the release channel"; exit 1
+          fi
+          echo "ok: the APK signed under the release channel rejected"
           other_signed="$work/installer-other-key"
           make_installer "$other_signed"
+          add_apk "$other_signed"
           if sign "$other_signed" other dev-installer 2>/dev/null; then
             echo "::error::installers signed with the wrong key passed"; exit 1
           fi
@@ -635,11 +675,32 @@ jobs:
           for inst in $installers; do
             one_missing="$work/signer-missing-$inst"
             make_installer "$one_missing"
+            add_apk "$one_missing"
             rm "${one_missing:?}/${inst:?}"
             if sign "$one_missing" main dev-installer 2>/dev/null; then
               echo "::error::signing passed without $inst"; exit 1
             fi
           done
+          # ... and the APK.
+          apk_missing="$work/signer-missing-apk"
+          make_installer "$apk_missing"
+          if sign "$apk_missing" main dev-installer 2>/dev/null; then
+            echo "::error::signing passed without the APK"; exit 1
+          fi
+
+          # The version code needs no NDK: the derivation lives in a sourceable script, run here on a
+          # fixture Cargo.toml so a version bump cannot turn the check red.
+          printf '[workspace.package]\nversion = "1.2.3"\n' > "$work/Cargo.toml"
+          vc() { (unset FONTAINE_APK_VERSION_CODE FONTAINE_APK_VERSION_NAME; "$@" bash -c '. "$0"; apk_version "$1" && echo "$code $name"' "$scripts/../../rust/fontaine-android/version-code.sh" "$work/Cargo.toml"); }
+          [ "$(vc env)" = "1002003 1.2.3" ]
+          [ "$(vc env FONTAINE_APK_VERSION_CODE=42 FONTAINE_APK_VERSION_NAME=1.2.3-dev.42+abc)" = "42 1.2.3-dev.42+abc" ]
+          [ "$(vc env FONTAINE_APK_VERSION_CODE=2099999999)" = "2099999999 1.2.3" ]
+          for bad in 0 abc 2100000000 -5 007 99999999999; do
+            if vc env FONTAINE_APK_VERSION_CODE="$bad" >/dev/null 2>&1; then
+              echo "::error::version code '$bad' accepted"; exit 1
+            fi
+          done
+          echo "ok: APK version code derived and validated"
 
           # The signer with zero archives must fail too.
           mkdir "$work/none"

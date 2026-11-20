@@ -6,8 +6,10 @@
 # because `main` may have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
 # the separate long-lived prerelease `dev` holds only dist's shell and PowerShell installers rewritten
 # to fetch from the `dev-<n>` of its run (the PowerShell one also patched with a sha256 check of the
-# archive), signed in `sign`, and replaced by `stable-installer` after `publish`, so
-# one URL always installs the latest dev build. See docs/verifying-releases.md.
+# archive) and the Android APK, all signed in `sign`, and replaced by `stable-installer` after
+# `publish`, so one URL always installs the latest dev build. The APK is built unsigned by
+# `build-android` and gets its Android signature, from a dev keystore distinct from the release
+# one, in `sign`. See docs/verifying-releases.md.
 name: Dev channel
 permissions:
   contents: read
@@ -202,13 +204,47 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             rust/${{ env.BUILD_MANIFEST_NAME }}
 
+  # Builds the APK unsigned: no keystore is in scope here, and `sign` applies the Android signature.
+  # Not named `artifacts-*`, so it never lands in the archives set that `dev` verification rejects it from.
+  build-android:
+    needs:
+      - plan
+    runs-on: "ubuntu-22.04"
+    env:
+      # The Cargo version is shared by every dev build between bumps, so the code is the run number,
+      # which only grows; the name is the installers' receipt version.
+      FONTAINE_APK_VERSION_CODE: ${{ github.run_number }}
+      FONTAINE_APK_VERSION_NAME: ${{ needs.plan.outputs.sign-version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Locate the NDK
+        run: echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Build the APK
+        run: |
+          mkdir -p "$RUNNER_TEMP/apk"
+          fontaine-android/build-apk.sh "$RUNNER_TEMP/apk/fontaine-android.apk"
+      - name: Upload the unsigned APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-unsigned-apk
+          path: ${{ runner.temp }}/apk/fontaine-android.apk
+
   # The only job that names an environment, so the dev signing secrets are in scope here and
-  # nowhere else. It runs no build tools and no code from the artifacts it downloads.
+  # nowhere else. apksigner is the one build tool it runs, and it runs no code from the artifacts
+  # it downloads.
   sign:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - build-android
     runs-on: "ubuntu-22.04"
     environment: dev-signing
     permissions:
@@ -234,6 +270,11 @@ jobs:
           mkdir dev-installer
           mv artifacts/fontaine-installer.sh artifacts/fontaine-installer.ps1 dev-installer/
           rm -f artifacts/*-dist-manifest.json
+      - name: Fetch the unsigned APK
+        uses: actions/download-artifact@v8
+        with:
+          name: android-unsigned-apk
+          path: dev-installer
       - name: Rewrite the installers for this dev tag
         env:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
@@ -244,6 +285,27 @@ jobs:
       # Last, so the signature covers the bytes users download.
       - name: Add the archive sha256 check to the PowerShell installer
         run: .github/scripts/windows-installer.sh dev-installer/fontaine-installer.ps1 artifacts/fontaine-x86_64-pc-windows-msvc.zip.sha256
+      # The Android install signature. The minisign file below is what users verify; this one only
+      # lets Android install the package, and keeps the dev key stable so dev builds update in place.
+      - name: Sign the APK for Android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "::error::ANDROID_KEYSTORE_BASE64 is empty"; exit 1; }
+          keystore="$(umask 077 && mktemp)"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          # No v4 .idsig sidecar: release-verify.sh rejects unrecognised files in the asset dir.
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --v4-signing-enabled false \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out dev-installer/fontaine-android.signed.apk \
+            dev-installer/fontaine-android.apk
+          "$tools/apksigner" verify dev-installer/fontaine-android.signed.apk
+          mv dev-installer/fontaine-android.signed.apk dev-installer/fontaine-android.apk
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -261,7 +323,7 @@ jobs:
           name: artifacts-signatures
           path: artifacts/*.minisig
       # Not named `artifacts-*`, so `host` and `verify-draft` never pick it up.
-      - name: Upload the signed installer
+      - name: Upload the signed installers and APK
         uses: actions/upload-artifact@v7
         with:
           name: dev-installer
@@ -349,7 +411,7 @@ jobs:
       - name: Publish the draft
         run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
 
-  # Replaces the installers at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
+  # Replaces the installers and the APK at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
   # is created once and never moved; it only anchors the release.
   stable-installer:
     needs:
@@ -370,15 +432,16 @@ jobs:
           persist-credentials: false
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
-      - name: Download the signed installers
+      - name: Download the signed installers and APK
         uses: actions/download-artifact@v8
         with:
           name: dev-installer
           path: artifacts
-      - name: Verify the installers before any upload
+      - name: Verify the installers and APK before any upload
         env:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+          FONTAINE_REQUIRE_APK: "1"
         run: |
           .github/scripts/release-verify.sh dev-installer artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
           sh -n artifacts/fontaine-installer.sh
@@ -407,18 +470,18 @@ jobs:
             cat "$RUNNER_TEMP/view.err" >&2
             exit 1
           fi
-          printf 'Stable address of the latest dev installer. The tag only anchors this release and is never moved; the archives are on the immutable `dev-<n>` releases.\n\nSee docs/verifying-releases.md.\n' > "$RUNNER_TEMP/notes.txt"
+          printf 'Stable address of the latest dev installers and Android APK. The tag only anchors this release and is never moved; the archives are on the immutable `dev-<n>` releases.\n\nSee docs/verifying-releases.md.\n' > "$RUNNER_TEMP/notes.txt"
           gh release create dev --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --target "$HEAD_SHA" --title "Dev installer" --notes-file "$RUNNER_TEMP/notes.txt"
       # `--clobber` deletes the old asset before uploading, so the URL can 404 briefly, and a failed
       # upload leaves none; the byte-compare below fails the job and the next run restores it.
-      - name: Replace the installers
+      - name: Replace the installers and the APK
         if: steps.guard.outputs.skip != 'true'
-        run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig artifacts/fontaine-installer.ps1 artifacts/fontaine-installer.ps1.minisig --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig artifacts/fontaine-installer.ps1 artifacts/fontaine-installer.ps1.minisig artifacts/fontaine-android.apk artifacts/fontaine-android.apk.minisig --clobber --repo "$GITHUB_REPOSITORY"
       - name: Check what users download
         if: steps.guard.outputs.skip != 'true'
         run: |
           mkdir fetched
-          for f in fontaine-installer.sh fontaine-installer.sh.minisig fontaine-installer.ps1 fontaine-installer.ps1.minisig; do
+          for f in fontaine-installer.sh fontaine-installer.sh.minisig fontaine-installer.ps1 fontaine-installer.ps1.minisig fontaine-android.apk fontaine-android.apk.minisig; do
             curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSL -o "fetched/$f" "https://github.com/$GITHUB_REPOSITORY/releases/download/dev/$f"
             cmp "artifacts/$f" "fetched/$f"
           done

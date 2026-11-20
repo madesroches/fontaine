@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The Android APK is published on the dev channel (#716): `fontaine-android.apk` and its `.minisig`
+  sit on the `dev` release beside the dev installers, at
+  `releases/download/dev/fontaine-android.apk`, minisigned with the dev key and signed for Android
+  with a dedicated dev keystore, so dev and release APKs cannot update each other. Each dev build
+  uses the run number as its version code, so dev builds update in place. `build-apk.sh` accepts
+  `FONTAINE_APK_VERSION_CODE` and `FONTAINE_APK_VERSION_NAME`.
 - An Android app (#710): a sideloaded APK, built from the new `fontaine-android` crate, that scans the
   host's QR code (or opens the link from the system camera), pairs through the host-terminal
   confirmation, and drives the session: transcript, prompts, slash lines, approvals, questions and
