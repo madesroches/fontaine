@@ -37,8 +37,8 @@ traffic.** Running the installed CLI (2.1.329) with the adapter's fixed flags, w
 the `POST /v1/messages?beta=true` body and answers it with a six-event canned SSE message
 (`message_start` ... `message_stop`), the CLI completed its turn and exited cleanly. The recorded
 body's `messages[0]` is `role: user` with two text blocks: the reminder plus `"\n"` (rule 1 of the
-placement rules), then the prompt text. No other endpoint was needed (everything else 404s
-harmlessly), no model was called, and no usage was spent. The captured wording confirms the drift
+placement rules), then the prompt text. The CLI also sent other requests, which 404'd
+harmlessly and did not stop the turn; no model was called, and no usage was spent. The captured wording confirms the drift
 above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the research README.
 
 ## Design
@@ -50,13 +50,17 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 - Bind `127.0.0.1:0` (tokio `TcpListener`). Launch the CLI through the same `fixed_args`/`launch`
   path as `initialize`, with `ANTHROPIC_BASE_URL` added for this launch only (a `command` variant
   taking extra env; `CONFLICTING_ENV` still refuses an inherited value). Write one user frame
-  (`"ok"`) and close stdin.
-- The listener parses one HTTP/1.1 request (request line, `content-length` body; capped at 8 MiB),
-  hands the body to the prober over a oneshot, and answers `POST /v1/messages*` with the canned SSE
-  body, anything else with 404. It never forwards, never logs a body, and discards headers
+  (`"ok"`) and close stdin. `launch` gains an extra-env parameter (or a `launch_with_env` variant)
+  and `ChildFiles::empty` becomes `pub(crate)`, or the launch part of `learn_reminder` stays in
+  `cli.rs`.
+- The listener keeps accepting connections and requests (keep-alive included) until the probe ends.
+  Each request is parsed as HTTP/1.1 (request line, `content-length` body; capped at 8 MiB). It
+  answers every non-matching request 404 and hands off only the first POST to the exact
+  `/v1/messages` path (not `count_tokens`) whose last user text is the probe text, over a oneshot,
+  answering it with the canned SSE body. It never forwards, never logs a body, and discards headers
   (the CLI's bearer token arrives here and is dropped unread). Local-only by binding.
-- The probe ends when the body arrives (child stopped), the child exits, or the discovery timeout
-  elapses.
+- The probe ends when the matching body arrives (child stopped), the child exits, or the discovery
+  timeout elapses.
 
 ### 2. Parse and validate (pure, unit-tested)
 
@@ -68,7 +72,9 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
   the rest of the adapter assumes was not observed.
 - The reminder contains the email exactly once and holds no section other than `# userEmail`
   (a `gitStatus`/`attachedProject` section makes it cwd- or env-dependent, so one capture cannot be
-  replayed). Else `None`.
+  replayed). Else `None`. The probe runs in `data_dir/claude-cli-cwd` under
+  `GIT_CEILING_DIRECTORIES` (`cli.rs`), where the research measured no `gitStatus`; if a section
+  appears anyway the reminder is `Unusable` and the layout is Legacy.
 - `Reminder { template: String, wording: String }`: `template` is the block (minus the trailing
   `"\n"`) with the email replaced by `{email}`; `wording` is the lowercase hex SHA-256 of the
   template (`sha2` is already a dependency; `DefaultHasher` is not stable across releases and the
@@ -88,8 +94,7 @@ mutex), so a burst of subagents starts one capture.
 - `layout(context, learned, verdicts)`: Native needs an email, `version >= TEMPLATE_SINCE`, a
   `Learned` reminder, and no unexpired verdict for `(version, wording)`. Everything else, including
   a probe that failed or was unusable, is Legacy: **Legacy is the baseline; Native is earned by an
-  observed reminder.** `TEMPLATE_SINCE` stays: the placement rules were measured from 2.1.319 on.
-- `apply` takes the learned template instead of `REMINDER_TEMPLATE`. `place` is untouched and keeps
+  observed reminder.**- `apply` takes the learned template instead of `REMINDER_TEMPLATE`. `place` is untouched and keeps
   failing soft on shape drift.
 - `Sent` carries the `wording`; `Verdicts` keys `broken`, `struck` and the persisted entries by
   `(version, wording)`. `finished`/`mark`/`strike`/`contains` take the pair. A persisted entry gains
@@ -148,14 +153,10 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
 - **Capture via a local fake server vs. a forwarding proxy** (`proxy.py`): the fake needs no
   upstream, no credentials handling, no inference, and cannot alter a real request; a forwarding
   proxy would carry the user's bearer token to Anthropic through our code for no gain.
-- **Capture via a real probe call vs. parsing the stream-json**: the latter does not expose the
-  text (measured), so it is not an option.
 - **Probe once per process vs. per request**: the reminder is a function of CLI version and account;
   per-request would add 0.4 s to every call.
 - **Persisting the learned wording across restarts**: rejected; re-learning costs one CLI start per
   process and avoids a stale-wording file.
-- **Keeping `REMINDER_TEMPLATE` as a fallback**: rejected. A template that no longer matches the
-  CLI is exactly the failure being removed; Legacy is the safe fallback.
 
 ## Decisions
 
@@ -173,10 +174,16 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   CLI at the first request per process (one extra CLI start, no model call), that an unobservable or
   unrecognized reminder falls back to the earlier layout, and that the verdict is keyed to CLI
   version and reminder wording (replace "retired earlier when a Fontaine update changes the
-  reminder template").
+  reminder template"). Specific spots:
+  - `:13-14`, `:94-96`, `:264-266`: the per-process probe launch with a loopback
+    `ANTHROPIC_BASE_URL`; the listener receives the bearer token and email, discards headers
+    unread, and never forwards.
+  - `:227-230`: the `(version, wording)` keying, the new shortfall cause and its warning.
+  - `:235`: add "or when the reminder could not be learned" to the fallback list.
+  - `:100` and `:211`: the extra probe CLI start per process.
 - `docs/configuration.md`: the `claude-cache-verdicts.json` row mentions the wording key.
 - `research/claude-subscription-cli-context/README.md`: the capture finding (local fake server,
-  canned SSE), and the 2.1.329 wording.
+  canned SSE), the list of requests the CLI was observed to send, and the 2.1.329 wording.
 - `CHANGELOG.md`: entry.
 
 ## Testing Strategy
@@ -201,12 +208,12 @@ Unit (`reminder/tests.rs`, `context/tests.rs`):
 Integration (headless-surface tests against `claude_cli_double`, no live API):
 
 - A double that posts a drifted reminder: the next request replays the **learned** text (the
-  double's logged frames carry it) and uses the Native marker layout.
+  double's logged frames carry the 2.1.329 wording, not the 2.1.319 one) and uses the Native marker
+  layout.
 - A double that posts nothing / a malformed body / exits before posting: Legacy layout, no warning
-  storm, and the next request after 5 minutes of paused time re-probes.
-- Regression for the bug as seen (#725, 2.1.329 wording differing from the template): with the
-  drifted wording, no cache-verdict warning fires and no verdict is persisted, where before two
-  requests were needed to disable the layout.
+  storm.
+- Two requests in one process produce exactly one double invocation whose env contains
+  `ANTHROPIC_BASE_URL` (via `Claude::invocations()`).
 
 ## Manual Verification
 
@@ -214,14 +221,3 @@ Integration (headless-surface tests against `claude_cli_double`, no live API):
    steps read from the cache with native layout and the run records no verdict. Not automated: it
    needs the live API and a subscription account; the unit and double tests cover the logic, this
    checks the real CLI's reminder end to end.
-2. With a debug build, start a `claude-subscription` session and confirm the first request logs
-   nothing extra and a second request in the same process does not start another probe (observe
-   with `ps`/strace-free: the double's invocation count, or `pgrep claude` during the second
-   request). Not automated against the real binary per the repo's test rule.
-
-## Open Questions
-
-- Does a CLI ever send the reminder on the very first probe message in a different place when the
-  working directory is a git repository (`gitStatus`)? The probe runs in the adapter's stable
-  workdir under `GIT_CEILING_DIRECTORIES`, where the research found no `gitStatus`; if one appears
-  the reminder is `Unusable` and the layout is Legacy, which is the safe outcome.
