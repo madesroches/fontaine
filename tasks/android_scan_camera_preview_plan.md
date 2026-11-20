@@ -25,21 +25,28 @@ card. The pairing flow, `App` state machine and QR decoding do not change.
 ## Design
 
 Show the luma plane the decoder already receives as a grayscale preview. This reuses the existing
-reader and needs no new camera output, no JNI and no external-OES shader (ImGui cannot draw
+reader and needs no new camera output and no external-OES shader (one small JNI read, the display rotation, keeps it upright) (ImGui cannot draw
 `GL_TEXTURE_EXTERNAL_OES` textures). A QR code needs no colour to be aimed.
 
 ### Portable layout (host-tested): `rust/fontaine-android/src/layout.rs`
 
+- `preview_rotation(sensor: i32, display_quadrant: i32) -> u16`: `(sensor - 90 * display_quadrant)`
+  mod 360 for the back camera, where `display_quadrant` is `Display.getRotation()` (0..=3);
+  out-of-range input is treated as 0.
 - `fit_cover(src: (u32, u32), dst_side: f32, rotation: u16) -> [(f32, f32); 4]`: the UV corners that
   fill a square card with the rotated, centre-cropped frame (cover, not letterbox, so the card
-  stays full). `rotation` is the sensor orientation in {0, 90, 180, 270}; anything else is treated
-  as 0.
-- Unit tests: each rotation, a landscape source into a square, a square source, a bad rotation.
+  stays full). `rotation` is the `preview_rotation` result in {0, 90, 180, 270}; anything else is
+  treated as 0.
+- Unit tests: each rotation, a landscape source into a square, a square source, a bad rotation,
+  and `preview_rotation` for every sensor (90, 270) x display quadrant combination plus bad input.
 
 ### Camera (`camera.rs`)
 
 - Read `ACAMERA_SENSOR_ORIENTATION` for the chosen camera in `back_camera_id` (the same metadata
-  entry pattern as `ACAMERA_LENS_FACING`), store it as `rotation` on `Camera`, and expose it.
+  entry pattern as `ACAMERA_LENS_FACING`), store it as `sensor_orientation` on `Camera`, and expose it.
+  The manifest sets `configChanges` without a `screenOrientation` lock, so the phone can rotate
+  and the display rotation is read as well (see `jni_bridge.rs` below); the app is not locked to
+  portrait because that would change the whole app's behaviour for a preview fix.
   `back_camera_id` returns the id together with the i32 sensor orientation, read from
   `entry.data.i32_` for the camera it picks (including the fallback camera) before the metadata is
   freed.
@@ -52,6 +59,15 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
   texture upload and its dropping depend on it.
 - Update the module doc: the newest frame is shown on the scan card and kept in memory only until
   the next one replaces it; nothing is stored.
+
+### Display rotation (`jni_bridge.rs`, `mod.rs`)
+
+- `jni_bridge::display_rotation(app: &AndroidApp) -> Option<i32>`, next to `system_insets` and
+  built the same way: `activity.getWindowManager().getDefaultDisplay().getRotation()` (available
+  on every API level), `None` on any JNI failure (then 0 is used).
+- `Activity` keeps it as `display_quadrant`, refreshed in `refresh_insets` (same
+  `INSETS_INTERVAL` and the same `insets_stale` config-change trigger), and computes
+  `layout::preview_rotation(camera.sensor_orientation, display_quadrant)` for the `PreviewView` UVs.
 
 ### GL texture (`mod.rs`)
 
@@ -82,7 +98,8 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 ## Implementation Steps
 
-1. `layout.rs`: `fit_cover` with tests.
+1. `layout.rs`: `preview_rotation` and `fit_cover` with tests.
+1a. `jni_bridge.rs`: `display_rotation`; `mod.rs` refreshes it with the insets.
 2. `camera.rs`: sensor orientation, `Luma`, `latest_luma`; `Activity::scan` decodes from it.
 3. `mod.rs`: GL function loading, `Preview` texture, upload in `frame()`, plumb `PreviewView`.
 4. `ui.rs`: draw the image and the legibility strip in `scan_card`.
@@ -94,6 +111,7 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 - `rust/fontaine-android/src/layout.rs`
 - `rust/fontaine-android/src/android/camera.rs`
+- `rust/fontaine-android/src/android/jni_bridge.rs`
 - `rust/fontaine-android/src/android/mod.rs`
 - `rust/fontaine-android/src/android/ui.rs`
 - `docs/android.md`
@@ -105,6 +123,7 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 - Preview is grayscale and in-memory only; nothing is written to disk.
 - Luma texture over a `SurfaceTexture` camera output because it needs no OES shader or second capture target.
 - Texture upload per UI frame rather than per 150 ms decode, which would look like ~7 fps video.
+- AFK: the activity is not locked to portrait and the preview is not portrait-only; the display rotation is read over JNI next to the insets code and `(sensor - display) mod 360` feeds the unit-tested `fit_cover`, the least invasive way to stay upright since the manifest allows rotation and the layout already adapts to display size.
 
 ## Documentation
 
@@ -115,8 +134,8 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 ## Testing Strategy
 
-- Unit tests for `fit_cover` (host-run; covers the rotation and crop maths, the part that can be
-  silently wrong).
+- Unit tests for `preview_rotation` and `fit_cover` (host-run; cover the rotation, sensor-minus-display
+  and crop maths, the part that can be silently wrong). The JNI read itself is device-only.
 - The NDK clippy job (`cargo clippy --target aarch64-linux-android`) compiles `mod.rs`, `ui.rs` and
   `camera.rs`.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `rust/`.
@@ -125,6 +144,6 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 On a phone with the dev APK (`rust/fontaine-android/build-apk.sh`): open the app on the scan screen,
 grant the camera, and confirm the card shows the live, upright image filling the square with the
-"Scanning" label legible; rotate the phone and confirm it stays upright; scan a host's QR code and
+"Scanning" label legible; rotate the phone to landscape (both ways) and back and confirm it stays upright; scan a host's QR code and
 confirm pairing still starts; deny the camera and confirm the card shows the "Camera access is off"
 state. Orientation and GL output cannot be reached by a host test.
