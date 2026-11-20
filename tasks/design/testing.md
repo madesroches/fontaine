@@ -113,8 +113,9 @@ routing or billing: `FONTAINE_CLAUDE_READ_IDLE_MS` (the silence deadline) and
 `FONTAINE_CLAUDE_PROBE_MS` (the version, login and discovery bounds). The double is located
 through `fontaine-testkit`'s `example_bin`, which builds the example on first use (a no-op
 under CI's workspace `cargo test`, which builds every member's examples already, and under
-`cargo nextest run -p fontaine-tui`, whose `build-examples` setup script in
-`rust/.config/nextest.toml` builds them once before any test process starts; without it each
+`cargo nextest run -p fontaine-tui`, whose two per-package setup scripts (`build-examples-tui`, `build-examples-fontaine`) in
+`rust/.config/nextest.toml` build them once before any test process starts (one combined
+`-p a -p b` build would unify features and not match the nested single-package build); without it each
 test process runs its own nested `cargo build` and they queue on cargo's build-directory lock
 behind the first compile). Concurrent
 first calls for the same example are serialized per example, so the build and the copy happen

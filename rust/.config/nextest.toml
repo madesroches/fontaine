@@ -6,11 +6,15 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 # Every test runs in its own process, and each one that calls `fontaine_testkit::example_bin`
 # would otherwise run its own nested `cargo build`, queuing on cargo's build-directory lock
 # behind the first compile. Building the examples once up front leaves those nested builds as
-# no-op freshness checks. Default features and no workspace-wide build keep the fingerprints
-# equal to the nested build's.
-[scripts.setup.build-examples]
-command = "cargo build --profile test -p fontaine-tui -p fontaine --example touch_marker --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double"
+# no-op freshness checks. One script per package: a combined `-p a -p b` build unifies features
+# across the two packages, so the nested single-package build would fingerprint differently and
+# recompile.
+[scripts.setup.build-examples-tui]
+command = "cargo build --profile test -p fontaine-tui --example touch_marker"
+
+[scripts.setup.build-examples-fontaine]
+command = "cargo build --profile test -p fontaine --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double"
 
 [[profile.default.scripts]]
 filter = 'package(fontaine-tui)'
-setup = "build-examples"
+setup = ["build-examples-tui", "build-examples-fontaine"]

@@ -33,13 +33,13 @@ leaking.
 Build the example binaries once, before any test process starts, instead of once per test
 process.
 
-1. Add a nextest setup script in `rust/.config/nextest.toml`. A script is a single command and CI
-   runs on Linux, macOS and Windows, so it is one cross-platform cargo invocation (verified: one
-   cargo command takes several `-p` and `--example` flags and builds each example from the package
-   that has it):
-   `cargo build --profile test -p fontaine-tui -p fontaine --example touch_marker --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double`.
-   Default features and no workspace-wide build, because feature
-   unification could make the fingerprints differ from the nested build's. Non-default profiles
+1. Add two nextest setup scripts in `rust/.config/nextest.toml`, one per package, each a single
+   cross-platform cargo invocation (CI runs on Linux, macOS and Windows):
+   `cargo build --profile test -p fontaine-tui --example touch_marker` and
+   `cargo build --profile test -p fontaine --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double`.
+   Not one combined `-p a -p b` build: it unifies features across the packages (`fontaine`'s
+   dev-dependencies), so the nested single-package build would still recompile (verified).
+   Default features and no workspace-wide build keep the fingerprints equal to the nested build's. Non-default profiles
    and targets (`--cargo-profile`, `--target`) are out of scope: the script only covers the
    default `cargo nextest run`; otherwise the nested build still works, just slower. Attach the
    script with the filter `package(fontaine-tui)` only. After it, each test's nested `cargo build` in
@@ -60,8 +60,8 @@ process.
 1. Reproduce on a cold build: touch a source file in `fontaine-sdk` (or remove the example
    artifacts from `rust/target/debug/examples`), run `cargo nextest run -p fontaine-tui`, record
    the SLOW and LEAK lines and which tests they name.
-2. Add the nextest setup script to `rust/.config/nextest.toml`: the single `cargo build --profile
-   test -p fontaine-tui -p fontaine --example ...` command from Design 1, attached with filter
+2. Add the nextest setup scripts to `rust/.config/nextest.toml`: the two per-package `cargo build
+   --profile test` commands from Design 1, both attached (`setup = ["a", "b"]`) with filter
    `package(fontaine-tui)` only. The config shape (nextest 0.9.146) is a `[scripts.setup.<name>]`
    definition with `command` plus a `[[profile.default.scripts]]` entry with
    `filter = 'package(fontaine-tui)'` and `setup = "<name>"`.
@@ -103,14 +103,17 @@ the nextest setup script (implementation step 6).
 
 - AFK: the setup script is attached with filter `package(fontaine-tui)` only; reason: narrowest
   scope that satisfies the issue, other crates have the same pattern and can follow.
-- AFK: the setup script is one `cargo build --profile test` command with multiple `-p` and
-  `--example` flags (verified to work), since a nextest script is a single command and CI spans
-  three OSes; `--profile test` matches `example_bin`; `--cargo-profile`/`--target` runs are out
+- AFK: two setup scripts, one `cargo build --profile test -p <pkg> --example ...` per package
+  (`fontaine-tui`, `fontaine`), not one combined `-p a -p b` command: the combined build unifies
+  features, so the nested single-package build in `example_bin` still recompiled (verified); a
+  nextest script is a single command and CI spans three OSes; `--profile test` matches `example_bin`; `--cargo-profile`/`--target` runs are out
   of scope (nested build still works, slower).
 - AFK: which tests leak is settled during implementation by the step 1 cold-run reproduction: if no LEAK reproduces, the leak half is closed as not reproducible (no invented fix); if one does, its cause is fixed in the test or code, never by silencing nextest's leak detection; reason: most conservative reading of the issue, whose leak output was never captured.
 - AFK: the leak half is closed as not reproducible; reason: two cold runs of `cargo nextest run
   -p fontaine-tui` (examples removed, `fontaine-sdk` touched) printed no LEAK and no SLOW line (the
   four tests took 2.5-10 s on this machine, whose nested compile is short).
+- AFK: the setup scripts also run in CI's full-workspace `cargo nextest run` (the filter matches
+  the `fontaine-tui` tests), costing some extra per-package build time; accepted.
 - AFK: the nextest config enables the `setup-scripts` experimental feature
   (`experimental = ["setup-scripts"]`); reason: nextest 0.9.146 rejects a setup script otherwise.
 
