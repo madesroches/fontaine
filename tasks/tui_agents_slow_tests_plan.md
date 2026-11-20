@@ -25,8 +25,9 @@ leaking.
 - Measured on a warm tree: run together, three of the four took about 10 s each (lock queueing
   behind a nested build); run alone, one took 0.9 s; the whole `agents` binary takes 4.7 s and
   the whole crate 42 s with no SLOW and no LEAK lines. The >60 s in the issue needs a cold or
-  stale target dir, which is where the nested compile is long. The slow set is exactly the set
-  of tests that call `example_bin`, which is the evidence for this cause.
+  stale target dir, which is where the nested compile is long. Every test that calls
+  `example_bin` (nine in `agents.rs`, plus `hooks.rs` and `common/mod.rs`) queues on cargo's lock;
+  which four exceed 60 s depends on timing.
 - `rust/.config/nextest.toml` sets only `slow-timeout`; there is no setup script.
 - The leak output was never captured. The first implementation step is to reproduce it.
 
@@ -35,9 +36,13 @@ leaking.
 Build the example binaries once, before any test process starts, instead of once per test
 process.
 
-1. Add a nextest setup script in `rust/.config/nextest.toml` that runs
-   `cargo build --workspace --examples` (or the specific examples the tests need) and attach it
-   to the default profile for all tests. After it, each test's nested `cargo build` in
+1. Add a nextest setup script in `rust/.config/nextest.toml` that runs one
+   `cargo build -p <pkg> --example <name>` per example the `fontaine-tui` tests use, in the same
+   form `example_bin` uses (`build_and_copy` in `rust/fontaine-testkit/src/lib.rs`): `touch_marker`
+   (`fontaine-tui`), and `repo_mcp_server`, `hook_marker`, `fontaine_claude_cli_double`
+   (`fontaine`). Default features and no workspace-wide build, because feature unification could
+   make the fingerprints differ from the nested build's. Attach the script with the filter
+   `package(fontaine-tui)` only. After it, each test's nested `cargo build` in
    `example_bin` is a no-op freshness check and no longer queues behind a compile.
 2. Keep `example_bin` as is: it still covers plain `cargo test` and per-package runs, where no
    setup script runs.
@@ -53,15 +58,24 @@ process.
 1. Reproduce on a cold build: touch a source file in `fontaine-sdk` (or remove the example
    artifacts from `rust/target/debug/examples`), run `cargo nextest run -p fontaine-tui`, record
    the SLOW and LEAK lines and which tests they name.
-2. Add the nextest setup script and its filter to `rust/.config/nextest.toml`.
-3. Re-run the reproduction; confirm the four tests finish in a few seconds and no SLOW remains.
+2. Add the nextest setup script to `rust/.config/nextest.toml`: one `cargo build -p <pkg>
+   --example <name>` per example listed in Design 1, attached with filter `package(fontaine-tui)`
+   only.
+3. Re-run the reproduction; confirm the four tests finish in a few seconds and no SLOW remains,
+   and that the nested build is a no-op (`cargo build -v -p <pkg> --example <name>` shows
+   `Fresh`, no `Compiling`).
 4. Diagnose each LEAK from step 1 and fix its cause in the test or in the code it exercises.
 5. Re-run the full `cargo nextest run -p fontaine-tui` and `cargo test` (plain, no setup script)
    to confirm both paths still pass.
+6. Update the `example_bin` paragraph in `tasks/design/testing.md` ("no-op under CI's workspace
+   `cargo test`", "tests never prebuild") to describe the nextest setup script.
+7. Add a `CHANGELOG.md` `[Unreleased]` / Fixed entry citing #723.
 
 ## Files to Modify
 
 - `rust/.config/nextest.toml`
+- `tasks/design/testing.md`
+- `CHANGELOG.md`
 - Whatever the leak diagnosis points at (likely `rust/fontaine-tui/tests/agents.rs`,
   `rust/fontaine-tui/tests/common/mod.rs`)
 
@@ -74,8 +88,13 @@ process.
 
 ## Documentation
 
-If `CONTRIBUTING.md` or `tasks/design/testing.md` describe how to run the tests, note the setup
-script there.
+Update the `example_bin` paragraph in `tasks/design/testing.md` (about lines 113-118) to describe
+the nextest setup script (implementation step 6).
+
+## Decisions
+
+- AFK: the setup script is attached with filter `package(fontaine-tui)` only; reason: narrowest
+  scope that satisfies the issue, other crates have the same pattern and can follow.
 
 ## Testing Strategy
 
