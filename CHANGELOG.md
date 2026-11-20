@@ -67,6 +67,9 @@ All notable changes are recorded here. The format follows
 - The Android workflow (NDK clippy and the debug APK) now runs on every pull request and every
   push to `main`, not only when Android, remote or toolchain paths change, so a change elsewhere
   in the workspace can no longer break the Android build unseen (#712).
+- `claude-subscription` names the shape of a `user` event it refuses (no content, a block that is
+  not a tool result, an unannounced id, and so on) instead of one message for all of them, so the
+  rejection can be diagnosed; acceptance is unchanged (#714).
 
 ### Fixed
 

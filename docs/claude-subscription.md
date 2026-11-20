@@ -189,6 +189,11 @@ undefined name still fails the request. With `--debug-file`, a protocol failure 
 rejected line (cut to 4 KiB) and the events accepted before it to the debug file. A failed request
 is recorded in the session ledger as `request_failed`, with the same text.
 
+A `user` event the adapter refuses fails with `the Claude CLI executed a native tool or permission
+request` followed by the shape it refused (for example `content that is not a list of blocks`). To
+capture the line for a report, rerun the same request with `--debug-file <path>`: the rejected
+line is written there, cut to 4 KiB, and it may contain tool output, so read it before sharing.
+
 A guardian on this account fails closed like any other: a verdict that cannot be read is a denial.
 Pressing Esc or ending a headless run stops the CLI and its descendants and removes the temporary
 directory.

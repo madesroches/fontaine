@@ -1053,15 +1053,66 @@ fn a_denial_is_matched_to_a_call_the_response_made() {
 fn an_echo_must_answer_an_unanswered_call_with_an_error() {
     let mut r = started(&["read_file"]);
     tool_start(&mut r, 0, "toolu_A", READ).unwrap();
-    assert!(feed(&mut r, echo(&["toolu_other"])).is_err());
-    assert!(feed(&mut r, echo(&[])).is_err());
-    let mixed = json!({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
-        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": false},
-    ]}});
-    assert!(feed(&mut r, mixed).is_err());
+    let user = |content: Value| json!({"type": "user", "message": {"content": content}});
+    let block = |kind: &str, id: Option<&str>, is_error: Option<bool>| {
+        let mut b = json!({"type": kind, "secret": "PAYLOAD_MARKER"});
+        if let Some(id) = id {
+            b["tool_use_id"] = json!(id);
+        }
+        if let Some(e) = is_error {
+            b["is_error"] = json!(e);
+        }
+        b
+    };
+    let cases = [
+        (json!({"type": "user", "message": {}}), "no content"),
+        (user(json!([])), "no content"),
+        (
+            user(json!("PAYLOAD_MARKER")),
+            "content that is not a list of blocks",
+        ),
+        (
+            user(json!([block("text", Some("toolu_A"), Some(true))])),
+            "a block that is not a tool result",
+        ),
+        (
+            user(json!([block("tool_result", Some("toolu_A"), Some(false))])),
+            "a tool result that is not an error",
+        ),
+        (
+            user(json!([block("tool_result", Some("toolu_A"), None)])),
+            "a tool result that is not an error",
+        ),
+        (
+            user(json!([block("tool_result", None, Some(true))])),
+            "a tool result without an id",
+        ),
+        (
+            user(json!([block(
+                "tool_result",
+                Some("toolu_other"),
+                Some(true)
+            )])),
+            "an id this response did not announce",
+        ),
+        (
+            json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
+                {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
+            ]}}),
+            "a tool result repeated",
+        ),
+    ];
+    for (event, reason) in cases {
+        let error = failure(feed(&mut r, event));
+        assert!(error.contains(reason), "{reason}: {error}");
+        assert!(error.contains("(event: user)"), "{error}");
+        assert!(!error.contains("PAYLOAD_MARKER"), "{error}");
+        assert!(!error.contains("toolu_"), "{error}");
+    }
     assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
-    assert!(feed(&mut r, echo(&["toolu_A"])).is_err());
+    let error = failure(feed(&mut r, echo(&["toolu_A"])));
+    assert!(error.contains("a call already answered"), "{error}");
 }
 
 #[test]
