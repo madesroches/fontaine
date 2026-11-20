@@ -35,10 +35,10 @@ change.
 
 New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
 
-- `Insets { top, left, right, bottom }` in physical pixels, plus `Insets::ZERO`.
-- `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each axis is capped
-  at 40 % of the display on that axis so a bad value from the platform never collapses the window.
-- `Insets::to_logical(self)` is not needed: ImGui coordinates here are physical pixels already.
+- `Insets { top, left, right, bottom }` in physical pixels (the unit of ImGui coordinates here),
+  plus `Insets::ZERO`.
+- `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset is capped
+  at 40 % of the display on its axis so a bad value from the platform never collapses the window.
 - `safe_rect(display, insets) -> (pos, size)`: the window rectangle the UI draws into.
 - `margin(scale) -> f32`: the outer content margin, `16.0 * scale`.
 
@@ -61,11 +61,11 @@ Reading the insets, in `jni_bridge.rs`:
 ### Style and hierarchy
 
 In `Imgui::new` (`mod.rs`), after `igStyleColorsDark`, set once, before `ScaleAllSizes`:
-`FrameRounding = 8`, `WindowRounding = 0`, `FramePadding = (14, 12)`, `ItemSpacing = (10, 12)`,
+`FrameRounding = 8`, `FramePadding = (14, 12)`, `ItemSpacing = (10, 12)`,
 `FrameBorderSize = 1`, a visible `Border` color for the field outline, and a distinct
 `Button`/`ButtonHovered`/`ButtonActive` accent. `ScaleAllSizes(scale)` then scales them. Also set
-the font size through `FontSizeBase` (the field `FontScaleDpi` already uses) so body text is not
-tiny; headings use `FontSizeBase * 1.4` pushed with `igPushFont(null, size)` in `ui.rs`.
+`FontSizeBase = 18.0` (the field `FontScaleDpi` already uses; dp, since `FontScaleDpi` applies the
+density) so body text is not tiny; headings use `FontSizeBase * 1.4` pushed with `igPushFont(null, size)` in `ui.rs`.
 The monospace look is the bundled ImGui default font and stays.
 
 In `ui.rs`, small helpers keep the screen code declarative: `heading(text)` (larger, bright),
@@ -80,7 +80,8 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 1. Notice, when present (unchanged colors), with a `gap`.
 2. `heading("Connect to a Fontaine host")`, then a `caption` line with the one-sentence action.
 3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, width
-   `avail_width()` capped at 75 % of the safe height. Inside, centered:
+   `avail_width()` capped at the height remaining after the notice, heading and caption
+   (`card_side(avail_width, avail_height)`). Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
    - camera off, not denied: "Camera is off", and a `primary_button("Allow camera")` inside the
@@ -91,17 +92,19 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 4. `caption("Or paste a pairing link or ticket")` as the section label.
 5. `field_frame`: a bordered, rounded, full-width frame (`igBeginChild` with border, height of one
    line plus frame padding) holding the typed text or the dim hint "tap Paste or type here"; a tap
-   inside it pushes `Tap::FocusField` as today.
+   inside it pushes `Tap::FocusField` as today. Session's prompt field uses `field_frame` too
+   (`field_box` is removed).
 6. `secondary_button("Paste")`, and `primary_button("Use this")` only when the field is non-empty.
    Both full width, with `ItemSpacing` between.
 7. When paired hosts exist: `caption("Paired hosts")` and one `secondary_button` per host.
 
-The scrollable content is wrapped in a child window sized to the remaining height so a short or
-landscape display scrolls instead of clipping.
+The main window scrolls when the content overflows.
 
 Other screens (Confirm, Pairing, Error, Session) get the safe rect and margin for free; Confirm and
 Pairing use `heading` for their first line and `primary_button`/`secondary_button`. The session
-layout's `display.1 - footer - …` height math uses the safe height, not the raw display height.
+transcript child is sized as `igGetContentRegionAvail().y` minus a footer counted with
+`igGetFrameHeightWithSpacing()` for each field (the framed prompt field) and button row, including
+the dialog's buttons, so the footer stays on screen with the larger padding.
 
 ### Where the testable logic lives
 
@@ -117,8 +120,9 @@ wrappers over unsafe calls with no logic worth a test.
 3. In `mod.rs`: add `insets` to `Activity`, refresh it per the cadence above, pass it to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
-   with the card and framed field; use `heading` and the button helpers on Confirm, Pairing, Error;
-   switch the session height math to the safe height.
+   with the card and framed field; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
+   size the session transcript as `igGetContentRegionAvail().y` minus a footer counted with
+   `igGetFrameHeightWithSpacing()` per field and button row (including the dialog's buttons).
 5. Update `docs/android.md` (Pair section and the scan-screen description).
 6. Add the Decisions lines to `tasks/fontaine_harness_plan.md` and a `CHANGELOG.md` entry.
 7. Run the Android NDK clippy as CI does (`.github/workflows/android.yml`) plus the host checks.
@@ -136,7 +140,6 @@ wrappers over unsafe calls with no logic worth a test.
   is drawn behind the bars, which is the reported bug.
 - Insets via `AndroidManifest`/theme (`fitsSystemWindows`) vs. in-app: the activity has no Java code
   (`hasCode=false`), so a theme cannot be authored without a resource build step.
-- Live viewfinder vs. a status card: see Decisions.
 
 ## Decisions
 
@@ -157,7 +160,7 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
   the axis; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
-  both the width and 75 % of the height and never negative on a tiny display. The status-bar bug in
+  both the width and the remaining height and never negative on a tiny display. The status-bar bug in
   the issue is pinned by the `safe_rect` case.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
 
