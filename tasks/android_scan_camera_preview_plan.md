@@ -40,6 +40,9 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 - Read `ACAMERA_SENSOR_ORIENTATION` for the chosen camera in `back_camera_id` (the same metadata
   entry pattern as `ACAMERA_LENS_FACING`), store it as `rotation` on `Camera`, and expose it.
+  `back_camera_id` returns the id together with the i32 sensor orientation, read from
+  `entry.data.i32_` for the camera it picks (including the fallback camera) before the metadata is
+  freed.
 - Split `poll` into `latest_luma(&mut self) -> Option<Luma>` (acquire, copy rows, delete image;
   `Luma { width, height, data }`) and keep decoding in the caller through the existing
   `decode_luma`. The frame is acquired every UI frame instead of every 150 ms; decoding stays
@@ -79,7 +82,9 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 2. `camera.rs`: sensor orientation, `Luma`, `latest_luma`; `Activity::scan` decodes from it.
 3. `mod.rs`: GL function loading, `Preview` texture, upload in `frame()`, plumb `PreviewView`.
 4. `ui.rs`: draw the image and the legibility strip in `scan_card`.
-5. `docs/android.md` and `CHANGELOG.md`.
+5. `docs/android.md`, `CHANGELOG.md`, and `tasks/fontaine_harness_plan.md`: a dated (2026-11-20) line
+   at the end of the Android lines in `## Decisions` > Build and release that amends the #721 line:
+   the scan card now shows a grayscale, in-memory preview from the decoder's luma plane.
 
 ## Files to Modify
 
@@ -89,17 +94,13 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 - `rust/fontaine-android/src/android/ui.rs`
 - `docs/android.md`
 - `CHANGELOG.md`
-
-## Trade-offs
-
-- **Luma texture (chosen)** vs. a `SurfaceTexture`/`ASurfaceTexture` camera output: the latter gives
-  colour at display rate but needs an OES shader outside ImGui's draw path, a second capture target
-  and API 28+. Grayscale is enough to aim at a QR code and keeps the one reader.
-- **Upload per UI frame** vs. per decode (150 ms): per decode would look like ~7 fps video.
+- `tasks/fontaine_harness_plan.md`
 
 ## Decisions
 
 - Preview is grayscale and in-memory only; nothing is written to disk.
+- Luma texture over a `SurfaceTexture` camera output because it needs no OES shader or second capture target.
+- Texture upload per UI frame rather than per 150 ms decode, which would look like ~7 fps video.
 
 ## Documentation
 
