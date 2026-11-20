@@ -39,6 +39,9 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
   plus `Insets::ZERO`.
 - `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset is capped
   at 40 % of the display on its axis so a bad value from the platform never collapses the window.
+- `Insets::from_content_rect(left, top, right, bottom, display)`: takes plain `i32` values and the
+  display size; `mod.rs` converts from `AndroidApp::content_rect()` so `layout.rs` imports no
+  android-activity types.
 - `safe_rect(display, insets) -> (pos, size)`: the window rectangle the UI draws into.
 - `margin(scale) -> f32`: the outer content margin, `16.0 * scale`.
 
@@ -49,7 +52,8 @@ Reading the insets, in `jni_bridge.rs`:
   with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. When the soft
   keyboard is up, `adjustResize` already shrinks the surface, so the bottom inset stays the
   navigation bar only.
-- `Activity` keeps `insets: Insets` and `insets_read: Instant` and refreshes it each frame at most every 500 ms and on every
+- `Activity` keeps `insets: Insets` and `insets_read: Instant`, applies `Insets::clamped` in the single
+  place it stores them, and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
   Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
   `layout.rs` (`left/top` as the inset, display minus `right/bottom` as the opposite insets). An empty
@@ -83,8 +87,9 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 2. `heading("Connect to a Fontaine host")`, then a `caption` line with the one-sentence action.
 3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, width
    `avail_width()` capped at the height remaining after the notice, heading and caption minus the
-   measured height of the paste section (item 4 caption, one-line `field_frame`, Paste button), with
-   a minimum side (`card_side(avail_width, avail_height, below_px)`), so the paste section stays on
+   height of the paste section (`below_px`, computed from style metrics: caption line height + one-line
+   `field_frame` height + Paste button height + 3 * `ItemSpacing.y`), with
+   a minimum side of 8 text line heights (`card_side(avail_width, avail_height, below_px)`), so the paste section stays on
    screen in landscape. Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
@@ -110,22 +115,25 @@ The main window scrolls when the content overflows.
 Other screens (Confirm, Pairing, Error, Session) get the safe rect and margin for free; Confirm and
 Pairing use `heading` for their first line and `primary_button`/`secondary_button`. The session
 transcript child height is the content-region height minus the footer height measured on the
-previous frame. The footer is everything `session` draws after the transcript child (separator,
+previous frame, clamped to a minimum of 3 text line heights (ImGui treats height 0 as fill-remaining
+and negative as remaining minus |h|, which would push the footer off screen); the window scrolls
+when the footer then overflows. The footer is everything `session` draws after the transcript child (separator,
 `dialog_panel` with its wrapped text, diff lines and buttons, separator, prompt field and button
 rows); it is measured as the cursor Y delta across drawing it and kept in a small `UiState { footer_px: f32 }`
-that the `Activity` holds and passes to `ui::draw`. The first frame uses a one-line-per-row
-estimate. The dialog is not moved into a capped child.
+that the `Activity` holds and passes to `ui::draw`. `footer_px == 0.0` marks the first frame
+and triggers a one-line-per-row estimate. The dialog is not moved into a capped child.
 
 ## Implementation Steps
 
-1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `safe_rect`, `margin`, `card_side` and
+1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::clamped`, `safe_rect`, `margin`, `card_side` and
    unit tests; declare `pub mod layout;` in `lib.rs`.
 2. Add `system_insets` to `jni_bridge.rs`.
 3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
    with the card and framed field; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
-   size the session transcript child as the content-region height minus `UiState.footer_px`, the
+   size the session transcript child as the content-region height minus `UiState.footer_px` (clamped to at least 3 text line heights;
+   `footer_px == 0.0` means first frame, use the one-line-per-row estimate), the
    footer height (everything drawn after the transcript) measured on the previous frame; update
    `footer_px` from the cursor Y before and after drawing the footer.
 5. In `docs/android.md`, add a scan-screen description to the Pair section.
@@ -153,6 +161,8 @@ estimate. The dialog is not moved into a capped child.
   alternative; the viewfinder stays a follow-up.
 - Insets are re-read on resume, resize and every 500 ms rather than every frame, and the IME inset is
   not requested because `adjustResize` already shrinks the surface.
+- JNI window insets are primary and `content_rect` the fallback; if a device shows `content_rect`
+  alone is correct, drop the JNI path in a follow-up.
 
 ## Documentation
 
@@ -162,7 +172,7 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  the axis; `card_side` tests use the 8-line-height minimum side; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
   both the width and the remaining height, in landscape leaves `below_px` for the paste section
   (or the minimum side when that is not possible), and is never negative on a tiny display;
@@ -177,7 +187,9 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
    because the safe rect is applied. Not automated: it needs a device and a real window.
 2. With the camera permission off: the card shows "Camera access is off" and "Allow camera"; the paste
    field has an outline and the Paste button has margin. Rotate to landscape: the paste field and Paste button are visible without scrolling.
-3. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
+3. With the soft keyboard up, type in the session prompt field: the transcript and footer stay inside
+   the visible area. IME behaviour is unverified on a device.
+4. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
 
 ## Open Questions
 
