@@ -71,18 +71,24 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 
 ## Implementation Steps
 
-0. `rust/fontaine-android/build-apk.sh`: honor optional `FONTAINE_APK_VERSION_CODE` (must be a
-   positive integer below 2100000000, else exit 1) and `FONTAINE_APK_VERSION_NAME`, overriding the
-   Cargo-derived `code` and `name`; unset keeps today's values; update the header comment.
+0. `rust/fontaine-android/version-code.sh` (new, sourceable, no side effects on source): a shell
+   function that derives `code`/`name` from `rust/Cargo.toml` and applies the optional
+   `FONTAINE_APK_VERSION_CODE` (must be a positive integer below 2100000000, else return 1) and
+   `FONTAINE_APK_VERSION_NAME` overrides; unset keeps today's values. `build-apk.sh` sources it
+   (today its derivation runs after `cargo ndk`, so CI could not run it without the NDK) and its
+   header comment is updated; no new flag.
 1. `.github/scripts/release-sign.sh`: in the `dev-installer` branch require and sign
    `$dir/fontaine-android.apk` (`fail "no $apk in '$dir'"` if missing, like the installers); update
    the comments (the "release channel only" comment goes).
 2. `.github/scripts/release-verify.sh`: in the `dev-installer` branch accept the APK and its
    `.minisig`, check it with `check_installer ... dev` when present, require it under
-   `FONTAINE_REQUIRE_APK=1`; update headers.
+   `FONTAINE_REQUIRE_APK=1`; fail if `fontaine-android.apk.minisig` exists without the APK (mirror
+   the release kind's "has no archive" check); update headers.
 3. `.github/workflows/dev.yml`: add `build-android` (sets the two version env vars); extend `sign`
    (needs, download, apksigner step, `dev-installer` dir); extend `stable-installer` (require APK, upload, byte compare); update the
-   top-of-file comment.
+   top-of-file comment, the `sign` job comment ("runs no build tools..." is false once `apksigner`
+   runs there), the stable-installer "Replace the installers" step name and the dev release notes
+   text ("latest dev installer"), which now also cover the APK.
 4. `.github/workflows/ci.yml` (dev-installer fixtures, about lines 578-650): the signer now requires
    the APK, so the existing dev-installer sign fixtures (`signed_installer`, `other_signed`,
    `one_missing`) get a fixture APK added. APK-less fixtures stay valid for the verifier when
@@ -90,15 +96,22 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
    set: tampered, missing `.minisig`, renamed APK, wrong channel (`channel=release` signature), plus
    required-and-missing under `FONTAINE_REQUIRE_APK=1`, and a signer-missing-APK case beside the
    signer-missing-installer loop. Also pin that the `dev` archive kind of `release-verify.sh` still
-   rejects `fontaine-android.apk` (the existing `channel = release` guard), and add a shell check of
-   the version code: with `FONTAINE_APK_VERSION_CODE` set per run number, the code grows between
-   run numbers (e.g. 41 then 42) and the unset path still derives 1000 from the 0.1.0 Cargo version
-   (test the derivation by extracting it, or a `--print-version` style dry path, without needing the
-   NDK).
+   rejects `fontaine-android.apk` (the existing `channel = release` guard), add the fixture case of a
+   `.minisig` for the APK with no APK (verifier must fail), and add a shell check of the version
+   code by sourcing `fontaine-android/version-code.sh` (no NDK needed): `FONTAINE_APK_VERSION_CODE`
+   of `0`, a non-numeric value and `2100000000` are rejected, and unset derives 1000 from the
+   0.1.0 Cargo version.
 5. `tasks/fontaine_harness_plan.md` `## Decisions`: update the 2026-11-18 (#710, AFK) line's
    "release channel only" claim and add a dated line for this change (dev keystore, `dev` release
    only), at the end of its subsection.
 6. Docs: `docs/android.md`, README link, and the stale lines of:
+   - `CONTRIBUTING.md` lines ~117-118 (signing keys table: `dev-signing` holds only the minisign
+     secrets; add the three `ANDROID_*` secrets naming the dev keystore, a separate key from the
+     release one) and ~149-154 ("Enabling the dev channel" lists only the installers; add the APK
+     and its `.minisig`, and the three secrets to create).
+   - `tasks/design/platforms.md` line ~49 (`dev` "holds only the installers") and lines ~71-80
+     (signer "requires both" installers, "replaces the four assets": now the APK too, six assets).
+   - `docs/verifying-releases.md` lines 7-9 ("holds only `fontaine-installer.sh` and ...").
    - `docs/verifying-releases.md` line 3 ("Android APK of a tagged release"), lines ~89-99 (APK
      described as release key only; add the dev APK, its Android signature from the dev keystore and
      the key-mismatch note), line ~32 and lines ~72-76 (dev installers under `dev.signing.pub`; add
@@ -113,7 +126,8 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 - `rust/fontaine-android/build-apk.sh`
 - `.github/scripts/release-sign.sh`, `.github/scripts/release-verify.sh`
 - `.github/workflows/dev.yml`, `.github/workflows/ci.yml`
-- `tasks/fontaine_harness_plan.md`
+- `rust/fontaine-android/version-code.sh` (new)
+- `tasks/fontaine_harness_plan.md`, `tasks/design/platforms.md`, `CONTRIBUTING.md`
 - `docs/android.md`, `docs/installing.md`, `docs/verifying-releases.md`, `README.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -129,6 +143,7 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 - AFK: dev `versionCode` is the dev.yml `run_number` (monotonic across Cargo bumps; dev and release APKs use different keys and never update each other, so it need not relate to the Cargo-derived code, 1000 for 0.1.0); it stays far below Android's 2100000000 limit. `base*1000+run` was rejected: it collides once run numbers pass 999.
 - AFK: the APK is a hard dependency of `sign` (fail closed): until the maintainer creates the dev Android keystore secrets in `dev-signing`, the dev channel stops publishing; they must exist before merge.
 - AFK: `release-sign.sh dev-installer` requires the APK; `release-verify.sh dev-installer` requires it only under `FONTAINE_REQUIRE_APK=1`, which `stable-installer` sets; the `dev` archive kind keeps rejecting the APK.
+- AFK: the dev keystore is created by the maintainer, outside CI and agents; CONTRIBUTING.md documents no Android keystore procedure for the release keystore either, so it gets only the three secret names, not a generation, validity or backup policy.
 
 ## Documentation
 
