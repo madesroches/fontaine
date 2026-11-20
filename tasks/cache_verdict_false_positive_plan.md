@@ -49,17 +49,23 @@ false positive).
      pair gives no verdict: its write is not evidence of a replayable prefix.
    - A verdict needs the shortfall twice in a row for the same version: the first shortfall is held
      in memory as a strike (`Verdicts::strike(version) -> bool`, true on the second); a
-     healthy pair clears the strike. Only the second strike calls `mark`.
+     healthy pair clears the strike. Only the second strike calls `mark`. `check` returns a
+     three-way outcome (broken / healthy / no verdict): only a healthy pair clears the strike; a
+     no-verdict pair (skipped or cold) leaves it untouched. The strike is per version, across
+     conversations.
 4. **Expire the verdict.** Each persisted entry gets a `"at"` unix timestamp. `load` drops entries
    older than 7 days, and the next `mark` rewrites the file without them, so a version is
    re-measured after a week and a transient condition cannot disable the optimization for good.
-   Entries without `"at"` (written before this change) count as expired.
+   Entries without `"at"` (written before this change) count as expired. `parse` and the in-memory
+   broken collection carry the `at` per version (a map, not a set); `persist` keeps existing
+   entries' `at` and stamps only the newly marked entry; `mark` takes the evidence for the
+   `read`/`expected` fields.
 
 ## Implementation Steps
 
 1. Run the investigation in Design 1; note the outcome in `## Decisions`.
-2. `context.rs`: usage and gap carried in `Record`/the return of `finished`; the strike set; skip
-   cold previous pairs in `check`; `"at"` timestamp on write and expiry in `parse`/`load`. Bump
+2. `context.rs`: usage and gap carried in `Record`/the return of `finished`; the strike set; `check`
+   returns broken/healthy/no verdict and skips cold previous pairs; `"at"` timestamp on write and expiry in `parse`/`load`. Bump
    `TEMPLATE_REVISION` only if step 1 shows a template change.
 3. `transport.rs`: warning text includes the numbers from `finished`.
 4. `context/tests.rs`: the tests below.
@@ -71,7 +77,9 @@ false positive).
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/context.rs`
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/context/tests.rs`
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/transport.rs`
+- `rust/fontaine-sdk/tests/provider_warn_claude_subscription.rs`
 - `docs/claude-subscription.md`
+- `docs/configuration.md` (the `claude-cache-verdicts.json` row: 7-day expiry)
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -88,7 +96,8 @@ None yet.
 
 ## Documentation
 
-`docs/claude-subscription.md` verdict paragraph (two strikes, 7-day expiry, numbers in the warning).
+`docs/claude-subscription.md` verdict paragraph (two strikes, 7-day expiry, numbers in the warning);
+`docs/configuration.md` `claude-cache-verdicts.json` row (entries expire after 7 days).
 
 ## Testing Strategy
 
@@ -101,6 +110,10 @@ Unit tests against a temp data dir and constructed `Record`s, no live CLI:
 - An entry older than 7 days, or without `"at"`, is ignored on load and absent after the next
   `mark`; a fresh entry still forces `Legacy`.
 - Existing persistence, merge and template-revision tests, adjusted for the new field.
+- `rust/fontaine-sdk/tests/provider_warn_claude_subscription.rs` and the unit test
+  `a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check` (context/tests.rs)
+  are reworked: scripted usage with a warm previous request (`read > 0`), two consecutive
+  shortfalls, and the new warning text.
 
 ## Manual Verification
 
