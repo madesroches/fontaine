@@ -107,13 +107,10 @@ the nextest setup script (implementation step 6).
   `--example` flags (verified to work), since a nextest script is a single command and CI spans
   three OSes; `--profile test` matches `example_bin`; `--cargo-profile`/`--target` runs are out
   of scope (nested build still works, slower).
+- AFK: which tests leak is settled during implementation by the step 1 cold-run reproduction: if no LEAK reproduces, the leak half is closed as not reproducible (no invented fix); if one does, its cause is fixed in the test or code, never by silencing nextest's leak detection; reason: most conservative reading of the issue, whose leak output was never captured.
 
 ## Testing Strategy
 
 The change is test infrastructure; verification is the nextest runs in the implementation steps
 (cold and warm), plus a plain `cargo test -p fontaine-tui --test agents` to confirm the fallback
 path. No new unit tests.
-
-## Open Questions
-
-- Which tests leak, and why? Settled by the step 1 reproduction.
