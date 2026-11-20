@@ -41,7 +41,8 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
    `artifacts-*`, so it never lands in the archives set that `dev` verification would reject).
    No keystore is in scope.
 2. **Sign** (`sign` job gains `needs: build-android`): download `android-unsigned-apk` into
-   `dev-installer/`, apply the Android signature with `apksigner` using the keystore secrets from the
+   `dev-installer/` (the download step goes after the "Set the installers aside" step, which runs bare
+   `mkdir dev-installer`), apply the Android signature with `apksigner` using the keystore secrets from the
    `dev-signing` environment (same step shape as release.yml), then
    `release-sign.sh dev-installer`, which now also signs the APK and fails if it is missing (as it
    does for each installer). The `dev-installer` artifact thus carries both installers and the APK
@@ -52,7 +53,7 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
    release APK are signed by different keys, Android refuses to install one over the other; the docs
    say so.
    **versionCode**: `build-apk.sh` derives `major*1000000 + minor*1000 + patch` from `rust/Cargo.toml`
-   (0.1.0 gives 1000), ignoring any prerelease/build suffix, and takes only `<out.apk> [--debug-sign]`
+   (e.g. 1.2.3 gives 1002003), ignoring any prerelease/build suffix, and takes only `<out.apk> [--debug-sign]`
    with `versionName` the bare Cargo version. Every dev build between version bumps would thus share
    one `versionCode` and Android would not update in place. `build-apk.sh` therefore accepts optional
    `FONTAINE_APK_VERSION_CODE` and `FONTAINE_APK_VERSION_NAME`, which `dev.yml`'s `build-android` sets
@@ -72,7 +73,8 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 ## Implementation Steps
 
 0. `rust/fontaine-android/version-code.sh` (new, sourceable, no side effects on source): a shell
-   function that derives `code`/`name` from `rust/Cargo.toml` and applies the optional
+   function that takes the Cargo.toml path as an argument (`build-apk.sh` passes the real
+   `rust/Cargo.toml`), derives `code`/`name` from it and applies the optional
    `FONTAINE_APK_VERSION_CODE` (must be a positive integer below 2100000000, else return 1) and
    `FONTAINE_APK_VERSION_NAME` overrides; unset keeps today's values. `build-apk.sh` sources it
    (today its derivation runs after `cargo ndk`, so CI could not run it without the NDK) and its
@@ -99,8 +101,9 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
    rejects `fontaine-android.apk` (the existing `channel = release` guard), add the fixture case of a
    `.minisig` for the APK with no APK (verifier must fail), and add a shell check of the version
    code by sourcing `fontaine-android/version-code.sh` (no NDK needed): `FONTAINE_APK_VERSION_CODE`
-   of `0`, a non-numeric value and `2100000000` are rejected, and unset derives 1000 from the
-   0.1.0 Cargo version.
+   of `0`, a non-numeric value and `2100000000` are rejected, and unset derives the code from a
+   fixture Cargo.toml the check writes itself (`version = "1.2.3"` gives 1002003), never from the real
+   `rust/Cargo.toml`, so a version bump cannot turn the check red.
 5. `tasks/fontaine_harness_plan.md` `## Decisions`: update the 2026-11-18 (#710, AFK) line's
    "release channel only" claim and add a dated line for this change (dev keystore, `dev` release
    only), at the end of its subsection.
@@ -116,7 +119,8 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
      described as release key only; add the dev APK, its Android signature from the dev keystore and
      the key-mismatch note), line ~32 and lines ~72-76 (dev installers under `dev.signing.pub`; add
      the APK).
-   - `docs/installing.md` lines ~256-257 ("not to `dev` builds"): add the stable dev APK URL.
+   - `docs/installing.md` line ~248-249 ("The `dev` release itself holds only the installers.") and
+     lines ~256-257 ("not to `dev` builds"): add the stable dev APK URL.
    - the master plan's workspace-layout description of `dev.yml` (line ~207, "the signed dev
      channel"): mention the dev APK.
 7. `CHANGELOG.md` entry.
@@ -140,7 +144,7 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 
 ## Decisions
 
-- AFK: dev `versionCode` is the dev.yml `run_number` (monotonic across Cargo bumps; dev and release APKs use different keys and never update each other, so it need not relate to the Cargo-derived code, 1000 for 0.1.0); it stays far below Android's 2100000000 limit. `base*1000+run` was rejected: it collides once run numbers pass 999.
+- AFK: dev `versionCode` is the dev.yml `run_number` (monotonic across Cargo bumps; dev and release APKs use different keys and never update each other, so it need not relate to the Cargo-derived code); it stays far below Android's 2100000000 limit. `base*1000+run` was rejected: it collides once run numbers pass 999.
 - AFK: the APK is a hard dependency of `sign` (fail closed): until the maintainer creates the dev Android keystore secrets in `dev-signing`, the dev channel stops publishing; they must exist before merge.
 - AFK: `release-sign.sh dev-installer` requires the APK; `release-verify.sh dev-installer` requires it only under `FONTAINE_REQUIRE_APK=1`, which `stable-installer` sets; the `dev` archive kind keeps rejecting the APK.
 - AFK: the dev keystore is created by the maintainer, outside CI and agents; CONTRIBUTING.md documents no Android keystore procedure for the release keystore either, so it gets only the three secret names, not a generation, validity or backup policy.
