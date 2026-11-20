@@ -5,7 +5,8 @@
 //! reply from the process's stream-json output.
 //!
 //! Fontaine never reads or forwards a Claude credential: the CLI is launched with a rebuilt
-//! environment and only ever authenticates itself.
+//! environment and only ever authenticates itself. The one request that reaches Fontaine is the
+//! reminder probe's, sent to a loopback listener that reads only its body and drops its headers.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -35,6 +36,7 @@ pub mod cli;
 mod context;
 pub mod inventory;
 pub mod protocol;
+mod reminder;
 pub mod transport;
 pub mod usage;
 

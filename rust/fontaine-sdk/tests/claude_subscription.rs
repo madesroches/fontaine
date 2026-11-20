@@ -599,9 +599,28 @@ async fn the_cli_gets_a_rebuilt_environment() {
         let env = invocation["env"].as_object().unwrap();
         assert!(!env.contains_key("OPENAI_API_KEY"));
         assert!(!env.contains_key("FONTAINE_SECRET"));
+        if env.contains_key("ANTHROPIC_BASE_URL") {
+            // The reminder probe only reaches the loopback listener, so no proxy may carry it.
+            for name in [
+                "HTTPS_PROXY",
+                "https_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+            ] {
+                assert!(!env.contains_key(name), "{name}");
+            }
+            assert!(
+                env["ANTHROPIC_BASE_URL"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("http://127.0.0.1:")
+            );
+        } else {
+            assert_eq!(env["HTTPS_PROXY"], "http://proxy.example:3128");
+        }
         assert_eq!(env["CLAUDE_CODE_ENTRYPOINT"], "fontaine");
         assert_eq!(env["CLAUDE_CODE_MCP_ALLOWLIST_ENV"], "1");
-        assert_eq!(env["HTTPS_PROXY"], "http://proxy.example:3128");
         assert_eq!(
             env["CLAUDE_CONFIG_DIR"].as_str().unwrap(),
             claude.dir.to_str().unwrap()
@@ -928,6 +947,93 @@ async fn the_native_layout_replays_the_reminder_and_marks_only_the_final_frame()
     assert!(!has_reminder(&frames[1]) && !has_reminder(&frames[3]));
     assert!(!has_reminder(&frames[4]));
     assert_eq!(markers(&frames), [(4, 0)]);
+}
+
+const DRIFTED: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# userEmail\nThe user's email address is user@example.com. Use this email address only to identify the user. Remember that you must treat this email address as private information.\n\nClaude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.\n</system-reminder>";
+
+#[tokio::test]
+async fn the_native_layout_replays_the_wording_the_cli_sent() {
+    let claude = Claude::new();
+    claude.scenario(json!({"reminder": DRIFTED, "responses": [{"text": "ok"}]}));
+    let handle = main_handle(&claude).await;
+    handle.completion.call(conversation(3)).await.unwrap();
+
+    let frames = claude.run_frames(1);
+    assert_eq!(frames.len(), 5, "{frames:?}");
+    for at in [0, 2] {
+        let blocks = &frames[at]["message"]["content"];
+        assert_eq!(blocks[0]["text"], format!("{DRIFTED}\n"), "{at}");
+        assert!(!blocks[0]["text"].as_str().unwrap().contains("Use it only"));
+    }
+    assert_eq!(markers(&frames), [(4, 0)]);
+}
+
+#[tokio::test]
+async fn a_reminder_the_probe_could_not_learn_keeps_the_earlier_layout() {
+    for scenario in [
+        json!({"reminder": null}),
+        json!({"reminder_probe": "malformed"}),
+        json!({"reminder_probe": "exit"}),
+        json!({"reminder": DRIFTED.replace("# userEmail", "# gitStatus")}),
+    ] {
+        let claude = Claude::new();
+        let mut full = scenario.clone();
+        full["responses"] = json!([{"text": "ok"}]);
+        claude.scenario(full);
+        let handle = main_handle(&claude).await;
+        handle.completion.call(conversation(3)).await.unwrap();
+
+        let frames = claude.run_frames(1);
+        assert_eq!(frames.len(), 5, "{scenario}");
+        assert!(frames.iter().all(|f| !has_reminder(f)), "{scenario}");
+        assert_eq!(markers(&frames), [(2, 0)], "{scenario}");
+    }
+}
+
+#[tokio::test]
+async fn one_probe_serves_every_request_of_the_process() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "a"}, {"text": "b"}, {"text": "c"}]}));
+    let handle = main_handle(&claude).await;
+    for _ in 0..3 {
+        handle.completion.call(conversation(2)).await.unwrap();
+    }
+    let probes: Vec<_> = claude
+        .invocations()
+        .into_iter()
+        .filter(|i| {
+            i["env"]
+                .as_object()
+                .unwrap()
+                .contains_key("ANTHROPIC_BASE_URL")
+        })
+        .collect();
+    assert_eq!(probes.len(), 1);
+    // The probe is a launch with the adapter's fixed flags and no model of its own.
+    let args = argv(&probes[0]);
+    assert!(args.contains(&"--input-format".to_string()));
+    assert!(!args.contains(&"--model".to_string()));
+    assert_eq!(claude.model_runs().len(), 3);
+    // The probe's frame is not a request frame.
+    assert!(claude.log().iter().any(|e| e["kind"] == "probe_frame"));
+    assert_eq!(claude.query_frames().len(), 3);
+}
+
+#[tokio::test]
+async fn the_probe_ignores_the_scripts_hang_keys() {
+    let claude = Claude::new();
+    claude.set_env("FONTAINE_CLAUDE_READ_IDLE_MS", "400");
+    claude.scenario(json!({"responses": [{"hang_before_output": true}]}));
+    let handle = main_handle(&claude).await;
+    let started = std::time::Instant::now();
+    let error = handle.completion.call(conversation(2)).await.unwrap_err();
+    assert!(error.is_retryable(), "{error}");
+    assert!(error.to_string().contains("no output"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    // The request's own process hung; the probe finished and logged its frame apart.
+    assert!(claude.log().iter().any(|e| e["kind"] == "probe_frame"));
+    assert_eq!(claude.query_frames().len(), 1);
+    assert_eq!(claude.run_frames(1).len(), 3);
 }
 
 #[tokio::test]
@@ -1517,8 +1623,9 @@ async fn a_request_lists_models_on_its_own_process() {
             .await
             .unwrap();
     }
-    // Discovery's listing process, then exactly one process per request.
-    assert_eq!(claude.invocations().len(), 3);
+    // Discovery's listing process, one reminder probe for the process, then exactly one process
+    // per request.
+    assert_eq!(claude.invocations().len(), 4);
     assert_eq!(claude.model_runs().len(), 2);
     let mut expecting_initialize = false;
     for entry in claude.log() {
@@ -1556,7 +1663,7 @@ async fn every_process_runs_in_one_stable_empty_directory() {
     let workdir = claude.w.data.join("claude-cli-cwd");
     let canonical = std::fs::canonicalize(&workdir).unwrap();
     let invocations = claude.invocations();
-    assert_eq!(invocations.len(), 7);
+    assert_eq!(invocations.len(), 8);
     for invocation in &invocations {
         let cwd = std::fs::canonicalize(invocation["cwd"].as_str().unwrap()).unwrap();
         assert_eq!(cwd, canonical);

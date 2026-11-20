@@ -3,7 +3,8 @@
 //! back the Messages stream events the CLI's output carries.
 //!
 //! The encoded request's placeholder address and headers are discarded; only its body and its
-//! `anthropic-beta` flags are used. Nothing here reads or forwards a credential.
+//! `anthropic-beta` flags are used. Nothing here reads or forwards a credential; the reminder
+//! probe's loopback listener receives the CLI's request and drops its headers.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -242,12 +243,26 @@ impl ClaudeTransport {
         check_row(&listing.rows, selection).map_err(provider)?;
 
         let prints = context::fingerprints(&translated.frames);
-        let layout = context::layout(&listing.context, self.cli.verdicts());
-        context::apply(&mut translated.frames, &listing.context, layout);
+        // Legacy needs no reminder, so a CLI older than the placement measurements or an account
+        // without an email is not probed.
+        let learned = match (&listing.context.email, listing.context.version) {
+            (Some(email), Some(version)) if context::replayable(version) => {
+                self.cli.learn_reminder(email, version).await
+            }
+            _ => None,
+        };
+        let layout = context::layout(&listing.context, learned.as_ref(), self.cli.verdicts());
+        context::apply(
+            &mut translated.frames,
+            &listing.context,
+            learned.as_ref(),
+            layout,
+        );
         let sent = Sent::new(
             &translated.session_id,
             listing.context.version,
             layout,
+            learned.as_ref().map(|learned| learned.wording.as_str()),
             prints,
             &translated.frames,
         )

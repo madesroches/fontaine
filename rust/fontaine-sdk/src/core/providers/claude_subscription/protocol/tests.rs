@@ -1416,7 +1416,11 @@ fn applying_the_cache_layout_does_not_change_the_session_id() {
         version: Some((2, 1, 319)),
     };
     let mut frames = t.frames.clone();
-    apply(&mut frames, &context, Layout::Native);
+    let learned = crate::core::providers::claude_subscription::reminder::Reminder {
+        template: "<system-reminder>\n{email}\n</system-reminder>".to_string(),
+        wording: "w".to_string(),
+    };
+    apply(&mut frames, &context, Some(&learned), Layout::Native);
     // The reminder changes the first frame, which is why the id is derived before `apply`.
     assert_ne!(frames[0], t.frames[0]);
     assert_ne!(derive(&frames[0].value), t.session_id);

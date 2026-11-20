@@ -21,6 +21,14 @@
 //! replace everything generated), `before` and `after_stop` (raw lines added), `drop_after`,
 //! `exit_code`, `stderr`, `hang_before_output`, `hang_after_result`, `chunked` and `descendant`.
 //!
+//! A launch with `ANTHROPIC_BASE_URL` set is the adapter's reminder probe: it never reads
+//! `responses` or applies the hang, descendant and exit keys, reads its user frame, logs it as
+//! `probe_frame`, and POSTs a Messages body to `$ANTHROPIC_BASE_URL/v1/messages` whose first
+//! message holds the reminder block and then the frame's text, before answering a plain turn.
+//! `reminder` is the reminder block's text (default: the 2.1.319 wording with the account's
+//! email; JSON `null` posts nothing), and `reminder_probe` is `"malformed"` (the body is not
+//! JSON) or `"exit"` (exit before posting).
+//!
 //! `auth login` (what `claude auth login --claudeai` runs) rewrites `auth` in `double.json` to a
 //! signed-in Max account, unless `login_exit` (an exit code) or `login_keeps_signed_out` (exit 0
 //! with the state unchanged) says it fails.
@@ -238,6 +246,10 @@ impl Double {
             "tools": manifest,
         }));
         let model = value_of("--model").unwrap_or_else(|| "claude-sonnet-5-5".to_string());
+        if let Ok(base) = std::env::var("ANTHROPIC_BASE_URL") {
+            self.run_probe(&base, &model);
+            return;
+        }
         let tools: Vec<String> = serde_json::from_str::<Value>(&settings)
             .ok()
             .and_then(|s| {
@@ -307,6 +319,65 @@ impl Double {
             self.respond(&script, &model, &tools);
             return;
         }
+    }
+
+    fn run_probe(&self, base: &str, model: &str) {
+        let stdin = std::io::stdin();
+        let mut text = String::new();
+        for line in stdin.lock().lines() {
+            let line = line.expect("read stdin");
+            if line.trim().is_empty() {
+                continue;
+            }
+            let frame: Value = serde_json::from_str(&line).expect("a JSON frame");
+            self.log(json!({"kind": "probe_frame", "value": frame}));
+            let content = &frame["message"]["content"];
+            text = match content {
+                Value::String(text) => text.clone(),
+                other => other[0]["text"].as_str().unwrap_or_default().to_string(),
+            };
+            break;
+        }
+        if self.text("reminder_probe") == Some("exit") {
+            std::process::exit(0);
+        }
+        let reminder = match self.scenario.get("reminder") {
+            Some(Value::Null) => None,
+            Some(value) => value.as_str().map(str::to_string),
+            None => Some(self.default_reminder()),
+        };
+        if let Some(reminder) = reminder {
+            let body = if self.text("reminder_probe") == Some("malformed") {
+                "{not json".to_string()
+            } else {
+                json!({"messages": [{"role": "user", "content": [
+                    {"type": "text", "text": format!("{reminder}\n")},
+                    {"type": "text", "text": text},
+                ]}]})
+                .to_string()
+            };
+            post(base, &body);
+        }
+        emit(&[self.init_event(model, &[]).to_string()], false);
+        emit(&self.generated(&json!({"text": "ok"}), model, &[]), false);
+    }
+
+    /// The 2.1.319 wording, for the account's email.
+    fn default_reminder(&self) -> String {
+        let email = self
+            .scenario
+            .pointer("/account/email")
+            .and_then(Value::as_str)
+            .unwrap_or("user@example.com");
+        format!(
+            "<system-reminder>\n\
+As you answer the user's questions, you can use the following context:\n\
+# userEmail\n\
+The user's email address is {email}. Use it only to identify the user, such as for authorship, attribution, or filtering their own work. Never send it to an unrelated service, such as in a request header, URL, or payload, unless the user explicitly asks. A site asking automated clients for contact details, such as an email in the User-Agent, is not a reason to use this address: use a generic client name or ask the user.\n\
+\n\
+Claude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.\n\
+</system-reminder>"
+        )
     }
 
     fn init_event(&self, model: &str, tools: &[String]) -> Value {
@@ -566,6 +637,36 @@ impl Double {
         }
         out.push(Value::Object(result).to_string());
         out
+    }
+}
+
+/// POSTs `body` to `base`'s Messages path over a plain socket and reads the reply until the
+/// stream ends, the peer closes or it goes quiet.
+fn post(base: &str, body: &str) {
+    use std::io::Read;
+    let rest = base.strip_prefix("http://").expect("an http base URL");
+    let (host, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
+    let mut stream = std::net::TcpStream::connect(host).expect("connect to the listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set a read timeout");
+    let request = format!(
+        "POST /{path}/v1/messages?beta=true HTTP/1.1\r\nhost: {host}\r\ncontent-type: application/json\r\nauthorization: Bearer probe-secret\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("write the request");
+    let mut reply = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = stream.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        reply.extend_from_slice(&chunk[..n]);
+        if reply.windows(12).any(|w| w == b"message_stop") || reply.starts_with(b"HTTP/1.1 404") {
+            break;
+        }
     }
 }
 
