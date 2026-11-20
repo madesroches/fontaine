@@ -144,11 +144,17 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
    {type:text,text:<frame text>}]}]` to `$ANTHROPIC_BASE_URL/v1/messages` over a plain
    `std::net::TcpStream` (echoing the frame's nonce; reads and ignores the reply), answers a fixed
    plain turn, never applies the hang/descendant/exit keys, still logs its usual `invocation` entry
-   (with env), and logs only its frames under a separate kind that `frames()`/`run_frames()`/
-   `query_frames()`/`frames_by_run` (in `rust/fontaine/tests/claude_subscription.rs`) skip.
+   (with env), and logs only its frames under a kind other than `"frame"`: `frames()`,
+   `query_frames()` and `run_frames()` (`rust/fontaine-sdk/tests/core_common/claude_cli.rs`) and
+   `frames_by_run` (`rust/fontaine/tests/claude_subscription.rs`) all filter on `kind == "frame"`,
+   so they skip probe frames with no helper change.
 5. `reminder` defaults to the 2.1.319 wording with the scenario's email, so existing Native-layout
    tests keep working; update the invocation-count assertions in `tests/claude_subscription.rs`
-   (~:1521, :1558) for the extra probe launch.
+   (~:1521, :1558) for the extra probe launch, and update the comment above :1521 ("then exactly
+   one process per request"). Also update `the_cli_gets_a_rebuilt_environment`
+   (`rust/fontaine-sdk/tests/claude_subscription.rs:587-620`): it checks `env["HTTPS_PROXY"]` on every
+   invocation; it must skip invocations whose env has `ANTHROPIC_BASE_URL` for that assertion and
+   assert those have no proxy variable in either case (an integration form of the probe-env check).
 6. Tests below; docs, research README, CHANGELOG.
 
 ## Files to Modify
@@ -157,15 +163,15 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   (new)
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/{context.rs,context/tests.rs,cli.rs,transport.rs,mod.rs}`
 - `rust/fontaine-sdk/examples/claude_cli_double.rs`
-- `rust/fontaine-sdk/tests/claude_subscription.rs` (and `core_common/claude_cli.rs` if a helper is
-  needed), `rust/fontaine-sdk/tests/provider_warn_claude_subscription.rs`
+- `rust/fontaine-sdk/tests/claude_subscription.rs`,
+  `rust/fontaine-sdk/tests/provider_warn_claude_subscription.rs`
 - `docs/claude-subscription.md`, `docs/configuration.md`,
   `research/claude-subscription-cli-context/README.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
 - **Capture via a local fake server vs. a forwarding proxy** (`proxy.py`): the fake needs no
-  upstream, no credentials handling, no inference, and cannot alter a real request; a forwarding
+  upstream, never forwards the bearer token it receives, no inference, and cannot alter a real request; a forwarding
   proxy would carry the user's bearer token to Anthropic through our code for no gain.
 - **Probe once per process vs. per request**: the reminder is a function of CLI version and account;
   per-request would add one CLI start to every call.
@@ -194,7 +200,13 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
     `ANTHROPIC_BASE_URL`; the listener receives the bearer token and email, reads only the
     content-length header and drops the rest, including the bearer token, without storing or
     logging them, and never forwards.
-  - `:227-230`: the `(version, wording)` keying, the new shortfall cause and its warning.
+  - `:227-230`: the `(version, wording)` keying and the warning naming the wording's 8-hex prefix;
+    the `:227-228` parenthetical ("the CLI changed its reminder, so the replayed bytes no longer
+    match") is rewritten: a shortfall now means a placement or other replay mismatch, not a changed
+    reminder.
+  - `:117-118` and `:214`: Native needs a learned reminder, not just version >= 2.1.319.
+  - `:183`: a reminder probe that times out does not fail the request: it falls back to the legacy
+    layout and is retried after 5 minutes.
   - `:235`: add "or when the reminder could not be learned" to the fallback list.
   - `:100` and `:211`: the extra probe CLI start per process.
   - `:67-71`: the adapter's own loopback `ANTHROPIC_BASE_URL` on the probe is not an inherited
@@ -230,6 +242,7 @@ Unit (`reminder/tests.rs`, `context/tests.rs`):
 - Memo: concurrent callers for one key run one probe; a transient failure is retried only after
   5 minutes (a fake probe injected under `start_paused`, as in `quota.rs:10`, `:426`); `Unusable`
   is kept.
+- The probe launch's env has no proxy variable (either case), even when the parent sets them.
 
 Integration (headless-surface tests against `claude_cli_double`, no live API):
 
@@ -238,7 +251,6 @@ Integration (headless-surface tests against `claude_cli_double`, no live API):
   layout.
 - A double that posts nothing / a malformed body / exits before posting: Legacy layout, no warning
   storm.
-- Unit: the probe launch's env has no proxy variable (either case), even when the parent sets them.
 - Two requests in one process produce exactly one double invocation whose env contains
   `ANTHROPIC_BASE_URL` (via `Claude::invocations()`).
 - A hang-script scenario: the probe launch ignores the hang keys and does not wait the discovery
