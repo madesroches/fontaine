@@ -454,6 +454,10 @@ fn a_variant_of_a_defined_tool_name_is_refused_and_never_forwarded() {
         error.contains("did not define: `job_cancel_placeholder`; the model named a tool that is not in this request"),
         "{error}"
     );
+    assert!(
+        error.ends_with("(event: stream_event/content_block_start)"),
+        "{error}"
+    );
 }
 
 #[test]

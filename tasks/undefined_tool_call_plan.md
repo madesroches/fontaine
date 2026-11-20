@@ -40,7 +40,7 @@ is not in the request.
 2. Tests in `protocol/tests.rs` (see Testing Strategy): update the two existing tests asserting the
    old `undefined_call` wording (`a_tool_the_request_did_not_define_is_refused`,
    `an_undefined_call_lists_a_capped_set_of_the_defined_tools`) to the new wording (the latter
-   asserts ``Task`; this request defines no tools``, the empty-tools case); the
+   asserts ``Task`; the model named a tool that is not in this request, which defines no tools``, the empty-tools case); the
    `validate_init` message and its tests stay unchanged.
 3. `CHANGELOG.md`: a Fixed entry for #717.
 
