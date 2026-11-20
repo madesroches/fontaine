@@ -1187,6 +1187,57 @@ fn informational_system_events_are_ignored_before_and_after_init() {
     assert!(matches!(feed(&mut r, notice), Ok(Event::Nothing)));
 }
 
+const REFUSAL_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u","isSynthetic":true,"is_virtual":true,"refused_message_id":"msg_X"}"#;
+
+#[test]
+fn a_classifier_refusal_ends_the_turn_without_echoing_its_payload() {
+    let mut r = started(&[]);
+    let error = r.accept(REFUSAL_LINE.as_bytes()).expect_err("a failure");
+    let text = error.to_string();
+    assert!(text.contains("safety classifier"), "{text}");
+    assert!(
+        !text.contains("msg_X") && !text.contains("reworded"),
+        "{text}"
+    );
+    assert!(!text.contains("native tool"), "{text}");
+    let typed = claude_error(&error).expect("a typed error");
+    assert_eq!(typed.kind, ErrorKind::Protocol);
+    assert!(matches!(*error, ProviderError::Request(_)));
+}
+
+#[test]
+fn near_misses_of_the_classifier_refusal_stay_refused_as_native_requests() {
+    let base: Value = serde_json::from_str(REFUSAL_LINE).unwrap();
+    let mut not_synthetic = base.clone();
+    not_synthetic["isSynthetic"] = json!(false);
+    let mut extra_block = base.clone();
+    extra_block["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "text", "text": "more"}));
+    let mut with_result = base.clone();
+    with_result["message"]["content"] = json!([{"type": "tool_result", "tool_use_id": "t",
+                                                "is_error": true, "content": "x"}]);
+    let mut no_id = base.clone();
+    no_id.as_object_mut().unwrap().remove("refused_message_id");
+    let mut numeric_id = base;
+    numeric_id["refused_message_id"] = json!(7);
+    for (name, event) in [
+        ("not synthetic", not_synthetic),
+        ("extra block", extra_block),
+        ("tool_result mixed in", with_result),
+        ("no refused_message_id", no_id),
+        ("non-string refused_message_id", numeric_id),
+    ] {
+        let mut r = started(&[]);
+        let error = failure(feed(&mut r, event));
+        assert!(
+            error.contains("executed a native tool or permission request"),
+            "{name}: {error}"
+        );
+    }
+}
+
 #[test]
 fn other_system_events_are_refused_by_name() {
     let mut r = started(&[]);

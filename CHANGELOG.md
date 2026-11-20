@@ -70,6 +70,9 @@ All notable changes are recorded here. The format follows
 - `claude-subscription` names the shape of a `user` event it refuses (no content, a block that is
   not a tool result, an unannounced id, and so on) instead of one message for all of them, so the
   rejection can be diagnosed; acceptance is unchanged (#714).
+- `claude-subscription` ends the turn with an error saying Anthropic's safety classifier stopped the
+  response when the CLI reports one (a synthetic `user` event with a `refused_message_id`), instead
+  of refusing it as a native tool request; it is not retried (#714).
 
 ### Fixed
 

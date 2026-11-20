@@ -22,6 +22,24 @@ use super::context::CacheUsage;
 use super::usage::{Usage, parse_rate_limit};
 use super::{ClaudeError, ErrorKind, LimitForm, claude_error};
 
+/// The synthetic notice the CLI sends when the classifier withholds a reply. Matched on its
+/// structured fields only, never its text, which is the classifier's to reword.
+fn is_classifier_refusal(value: &Value) -> bool {
+    let Some([block]) = value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    else {
+        return false;
+    };
+    value.get("isSynthetic").and_then(Value::as_bool) == Some(true)
+        && block.get("type").and_then(Value::as_str) == Some("text")
+        && value
+            .get("refused_message_id")
+            .is_some_and(Value::is_string)
+}
+
 /// What the CLI calls a tool of the `fontaine` MCP server.
 pub const TOOL_PREFIX: &str = "mcp__fontaine__";
 
@@ -1253,6 +1271,14 @@ impl Reader {
     /// The tool results a denied call leaves in the output: tolerated only as errors answering
     /// calls this response announced, once each. Anything else is native tool execution.
     fn denial_echo(&mut self, value: &Value) -> Result<Event, Failure> {
+        if is_classifier_refusal(value) {
+            return Err(ClaudeError::new(
+                ErrorKind::Protocol,
+                "the Claude safety classifier stopped the response; the rest of it was withheld \
+                 and nothing ran, so repeating the request would be refused again",
+            )
+            .boxed());
+        }
         let refused = |reason: &str| {
             protocol(&format!(
                 "the Claude CLI executed a native tool or permission request: {reason}"
