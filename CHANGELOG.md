@@ -82,6 +82,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- The Android app's scan screen no longer draws under the status bar or display cutout, has
+  margins, a scan card that says whether the camera is live, and a framed paste field (hold it to
+  paste); the session screen keeps its prompt above the keyboard (#721).
 - `claude-subscription` accepts and ignores the `system/informational` notice CLI 2.1.329 emits in
   some turns, which failed the turn with a request error (#714).
 - The error for a tool call the Claude CLI makes on a name Fontaine did not define (such as

@@ -1,5 +1,6 @@
 //! The few Java calls the app needs: the camera permission, the device model for the pairing
-//! label, and the deep-link text of the intent that started the activity.
+//! label, the clipboard, the window insets, and the deep-link text of the intent that started the
+//! activity.
 
 use android_activity::AndroidApp;
 use jni::JavaVM;
@@ -73,7 +74,7 @@ pub fn device_model(app: &AndroidApp) -> String {
 }
 
 /// The clipboard's first item as text. Android 10+ only serves it while the app has focus, which
-/// holds when the user has just tapped the button that asks.
+/// holds when the user has just tapped the Paste entry of the field's long-press popup.
 pub fn clipboard_text(app: &AndroidApp) -> Option<String> {
     with_activity(app, |env, activity| {
         let name = env.new_string("clipboard")?;
@@ -143,6 +144,77 @@ pub fn intent_link(app: &AndroidApp) -> Option<String> {
         }
         let text: String = env.get_string(&JString::from(data))?.into();
         Ok(Some(text))
+    })
+    .flatten()
+}
+
+/// What the system covers on each edge of the window, as the platform reports it.
+#[derive(Clone, Copy, Debug)]
+pub struct RawInsets {
+    pub top: i32,
+    pub left: i32,
+    pub right: i32,
+    pub bottom: i32,
+    /// The soft keyboard is part of the values; before API 30 only the content rect knows it.
+    pub includes_keyboard: bool,
+}
+
+/// The system bars, display cutout and (API 30+) keyboard over the window, or `None` while the
+/// decor view is not attached yet. `NativeActivity`'s surface does not shrink for the keyboard, so
+/// the app has to subtract it itself.
+pub fn system_insets(app: &AndroidApp) -> Option<RawInsets> {
+    let modern = AndroidApp::sdk_version() >= 30;
+    with_activity(app, |env, activity| {
+        let window = env
+            .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
+            .l()?;
+        let decor = env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?
+            .l()?;
+        let insets = env
+            .call_method(
+                &decor,
+                "getRootWindowInsets",
+                "()Landroid/view/WindowInsets;",
+                &[],
+            )?
+            .l()?;
+        if insets.is_null() {
+            return Ok(None);
+        }
+        if modern {
+            let mut mask = 0;
+            for kind in ["systemBars", "displayCutout", "ime"] {
+                mask |= env
+                    .call_static_method("android/view/WindowInsets$Type", kind, "()I", &[])?
+                    .i()?;
+            }
+            let found = env
+                .call_method(
+                    &insets,
+                    "getInsets",
+                    "(I)Landroid/graphics/Insets;",
+                    &[JValue::Int(mask)],
+                )?
+                .l()?;
+            let mut edge = |name: &str| env.get_field(&found, name, "I")?.i();
+            Ok(Some(RawInsets {
+                top: edge("top")?,
+                left: edge("left")?,
+                right: edge("right")?,
+                bottom: edge("bottom")?,
+                includes_keyboard: true,
+            }))
+        } else {
+            let mut edge = |name: &str| env.call_method(&insets, name, "()I", &[])?.i();
+            Ok(Some(RawInsets {
+                top: edge("getSystemWindowInsetTop")?,
+                left: edge("getSystemWindowInsetLeft")?,
+                right: edge("getSystemWindowInsetRight")?,
+                bottom: edge("getSystemWindowInsetBottom")?,
+                includes_keyboard: false,
+            }))
+        }
     })
     .flatten()
 }

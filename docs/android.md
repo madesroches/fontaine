@@ -37,8 +37,13 @@ it, and the ticket inside is a secret. Only the confirmation in the host termina
 phone, so decline a pairing prompt you did not start. The app does not keep the link after reading it.
 The phone's name on the confirmation line is its model name.
 
-If the camera is off or denied, copy the link, the prefixed ticket or the bare ticket text and tap
-"Paste" on the scan screen, then "Use this". The camera permission is requested when you tap "Allow camera" on the scan screen.
+The scan screen keeps clear of the status bar, the display cutout and the keyboard. It shows a card
+that reads "Scanning" while the camera is live and "Camera access is off" with an "Allow camera"
+button when it is not, then a paste field and, when the phone is already paired, the list of paired
+hosts. The card shows no camera image.
+
+If the camera is off or denied, copy the link, the prefixed ticket or the bare ticket text, hold the
+field on the scan screen and tap Paste, then "Use this". The camera permission is requested when you tap "Allow camera" on the scan screen.
 
 ## Reattach
 

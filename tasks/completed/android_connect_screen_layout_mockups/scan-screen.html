@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fontaine Android connect screen: mockup</title>
+<style>
+  :root {
+    --bg: #0f0f14;            /* clear color 0.06,0.06,0.08 */
+    --text: #e8e8ec;
+    --dim: #8c8c96;
+    --frame-bg: #1d2230;      /* ImGui dark FrameBg tone */
+    --border: #4a5063;
+    --accent: #3b6fd4;
+    --accent-hi: #4a80ea;
+    --neutral: #2c3347;
+    --warn: #ffcc4d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: #222; color: #ccc; font: 14px system-ui, sans-serif; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  p.note { margin: 0 0 20px; color: #999; max-width: 900px; }
+  .row { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { margin-top: 8px; color: #aaa; font-size: 13px; max-width: 360px; }
+  /* 360 x 800 dp phone, 1 dp = 1 css px */
+  .phone { width: 360px; height: 800px; background: var(--bg); border-radius: 24px; border: 2px solid #444; position: relative; overflow: hidden;
+           font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; color: var(--text); }
+  .status { height: 40px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; font: 13px system-ui, sans-serif; color: #ddd; }
+  .inset-guide { position: absolute; left: 0; right: 0; top: 0; height: 40px; background: repeating-linear-gradient(45deg, rgba(255,80,80,.18) 0 6px, transparent 6px 12px); pointer-events: none; }
+  .nav { position: absolute; left: 0; right: 0; bottom: 0; height: 24px; background: repeating-linear-gradient(45deg, rgba(255,80,80,.18) 0 6px, transparent 6px 12px); }
+  .content { position: absolute; top: 40px; bottom: 24px; left: 0; right: 0; padding: 16px; overflow: hidden; }
+  .hd { font-size: 25px; line-height: 1.2; margin: 4px 0 6px; font-weight: 700; }
+  .cap { font-size: 16px; color: var(--dim); margin: 6px 0 12px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; width: 100%; aspect-ratio: 1 / 1; max-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 16px; text-align: center; background: #14161d; }
+  .card .state { font-size: 18px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #5fd68a; margin-right: 8px; animation: pulse 1.2s infinite ease-in-out; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .field { border: 1px solid var(--border); border-radius: 8px; background: var(--frame-bg); padding: 12px 14px; font-size: 16px; line-height: 1.3; word-break: break-all; min-height: 46px; }
+  .field.hint { color: #7a7a84; }
+  .btn { display: block; width: 100%; border: 0; border-radius: 8px; padding: 12px 14px; font: inherit; font-size: 18px; color: var(--text); background: var(--neutral); margin-top: 10px; text-align: center; }
+  .btn.primary { background: var(--accent); }
+  .label { font-size: 16px; color: var(--dim); margin: 16px 0 8px; }
+  .popup { position: absolute; background: #2c3347; border: 1px solid var(--border); border-radius: 8px; padding: 10px 22px; font-size: 16px; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+  .notice { color: var(--warn); font-size: 16px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<h1>Scan screen: proposed layout (360 x 800 dp phone)</h1>
+<p class="note">Red hatching marks the system-bar insets the app now stays out of. Sizes follow the plan: 16 dp margin, 18 dp body text,
+  25 dp heading, 8 dp rounded frames, 12/14 dp frame padding. Colors are the existing dark ImGui theme with one accent. Open this file in a browser.</p>
+
+<div class="row">
+  <figure>
+    <div class="phone">
+      <div class="status"><span>12 h 15</span><span>LTE ▂▄▆ 82%</span></div>
+      <div class="inset-guide"></div>
+      <div class="content">
+        <div class="hd">Connect to a Fontaine host</div>
+        <div class="cap">Scan the QR code shown in the terminal.</div>
+        <div class="card">
+          <div class="state"><span class="dot"></span>Scanning</div>
+          <div class="cap" style="margin:0">Point the camera at the code in the terminal.</div>
+        </div>
+        <div class="label">Or paste a pairing link or ticket</div>
+        <div class="field hint" style="position:relative">type here<div class="popup" style="left:60px;top:-48px">Paste</div></div>
+        <div class="label">Paired hosts</div>
+        <button class="btn">workstation (a3f9…c21e)</button>
+      </div>
+      <div class="nav"></div>
+    </div>
+    <figcaption>Camera running, one paired host, with the long-press "Paste" popup shown above the field. No camera image is drawn: the card states that scanning is live.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="status"><span>12 h 15</span><span>LTE ▂▄▆ 82%</span></div>
+      <div class="inset-guide"></div>
+      <div class="content">
+        <div class="notice">That text is not a pairing link.</div>
+        <div class="hd">Connect to a Fontaine host</div>
+        <div class="cap">Scan the QR code shown in the terminal.</div>
+        <div class="card" style="max-height: 230px">
+          <div class="state">Camera access is off</div>
+          <div class="cap" style="margin:0">Allow the camera, or paste a copied pairing link below.</div>
+          <button class="btn primary" style="margin:0">Allow camera</button>
+        </div>
+        <div class="label">Or paste a pairing link or ticket</div>
+        <div class="field">fontaine://pair/MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOV3HI2DJOMXWK4TTNFXW4…</div>
+        <button class="btn primary">Use this</button>
+      </div>
+      <div class="nav"></div>
+    </div>
+    <figcaption>Camera denied, a pasted link wrapped in the field with "Use this" enabled, and a notice from a failed paste.</figcaption>
+  </figure>
+</div>
+</body>
+</html>
