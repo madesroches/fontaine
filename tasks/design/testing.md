@@ -112,10 +112,17 @@ account's `claude_config_dir` and logs each launch (argv, environment, files, st
 routing or billing: `FONTAINE_CLAUDE_READ_IDLE_MS` (the silence deadline) and
 `FONTAINE_CLAUDE_PROBE_MS` (the version, login and discovery bounds). The double is located
 through `fontaine-testkit`'s `example_bin`, which builds the example on first use (a no-op
-under CI's workspace `cargo test`, which builds every member's examples already). Concurrent
+under CI's workspace `cargo test` and under `cargo nextest run -p fontaine-tui`, whose setup
+scripts prebuild the examples). The two per-package setup scripts (`build-examples-tui`,
+`build-examples-fontaine`) in `rust/.config/nextest.toml` build them once before any test process
+starts; one combined `-p a -p b` build would unify features and not match the nested
+single-package build. Without them each test process runs its own nested `cargo build` and they
+queue on cargo's build-directory lock behind the first compile. Concurrent
 first calls for the same example are serialized per example, so the build and the copy happen
 once per process, and `example_bin` returns a per-process private copy that a sibling process's
-re-link cannot remove; tests never prebuild. The live Max and Ultra qualification (Manual Verification in the plan that shipped the kind)
+re-link cannot remove. The script is a speed-up only: plain `cargo test` and per-package runs
+still build on first use. It covers the default profile and host target; a `--cargo-profile` or
+`--target` nextest run falls back to the nested build. The live Max and Ultra qualification (Manual Verification in the plan that shipped the kind)
 is a manual step and never a CI gate.
 
 Differential baselines (manual/eval-side only — never unit/integration tests or CI, per AGENTS.md; the `claude-subscription` provider runs the official CLI as a product transport and its tests use the portable fake `claude_cli_double` instead, scripted per test through `double.json` in the account's `claude_config_dir`, never the real binary; its live Max/Ultra qualification is a manual step):
