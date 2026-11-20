@@ -57,8 +57,8 @@ device was revoked and must pair again`); pair again with a new ticket.
 
 The paste field on the scan screen and the message field in a session are edited in place:
 
-- Tap the text to put the cursor there; typing and Backspace act at the cursor, and the D-pad keys
-  and Delete of a hardware keyboard move it and delete forward.
+- Tap the text to put the cursor there; typing and Backspace act at the cursor, and the left and right
+  D-pad keys of a hardware keyboard move it, and Delete deletes forward.
 - Hold a word to select it, or hold and then drag to select a range; the selection follows your
   finger across wrapped lines. Typing replaces the selection.
 - Releasing a hold opens a menu: **Cut** and **Copy** when something is selected, **Paste** and

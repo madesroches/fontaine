@@ -186,11 +186,6 @@ impl Field {
         start..end
     }
 
-    pub fn select_word_at(&mut self, idx: usize) {
-        let range = self.word_range_at(idx);
-        self.select(range.start, range.end);
-    }
-
     /// Replaces the whole text and puts the cursor at its end.
     pub fn replace_all(&mut self, text: &str) {
         self.text = stripped(text);
@@ -383,25 +378,19 @@ mod tests {
     }
 
     #[test]
-    fn select_word_at_picks_the_run_under_the_point() {
-        let mut f = field("hello, wörld  ok", 0);
-        f.select_word_at(1);
-        assert_eq!(f.selected(), "hello");
-        f.select_word_at(6);
-        assert_eq!(f.selected(), ",");
-        f.select_word_at(9);
-        assert_eq!(f.selected(), "wörld");
-        f.select_word_at(14);
-        assert_eq!(f.selected(), "  ");
-        f.select_word_at(99);
-        assert_eq!(f.selected(), "ok");
+    fn word_range_at_picks_the_run_under_the_point() {
+        let f = field("hello, wörld  ok", 0);
+        let word = |i| f.text[f.word_range_at(i)].to_string();
+        assert_eq!(word(1), "hello");
+        assert_eq!(word(6), ",");
+        assert_eq!(word(9), "wörld");
+        assert_eq!(word(14), "  ");
+        assert_eq!(word(99), "ok");
     }
 
     #[test]
-    fn select_word_on_empty_text_selects_nothing() {
-        let mut f = Field::default();
-        f.select_word_at(0);
-        assert_eq!(f.selection(), None);
+    fn word_range_on_empty_text_is_empty() {
+        let f = Field::default();
         assert_eq!(f.word_range_at(7), 0..0);
     }
 }

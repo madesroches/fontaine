@@ -463,8 +463,9 @@ impl Layout {
             let to = range.end.min(line.end).max(from);
             let left = self.width(line.start, from);
             let mut right = self.width(line.start, to);
-            if range.end > line.end {
-                // Selecting past the line's end covers its newline: show it as a sliver.
+            if range.end > line.end && line.end < limit {
+                // Text between this line's end and the next line's start is a newline or skipped
+                // blank; a soft wrap has none, so it gets no sliver.
                 right += self.size * 0.25;
             }
             let top = row as f32 * self.size;

@@ -41,7 +41,7 @@ All notable changes are recorded here. The format follows
 
 - The Android prompt and paste field has a cursor and a selection (#727): tap to place the cursor,
   hold a word or hold and drag to select, and a Cut / Copy / Paste / Select all menu opens over the
-  field. Typing, Backspace and the D-pad and Delete keys act at the cursor or on the selection, and
+  field. Typing, Backspace and the left and right D-pad keys and Delete act at the cursor or on the selection, and
   Paste in a session inserts the clipboard text at the cursor. Swipe typing and spacebar cursor
   dragging are not supported.
 

@@ -1,6 +1,6 @@
 //! The few Java calls the app needs: the camera permission, the device model for the pairing
-//! label, the clipboard (read and write), the window insets, the display rotation, and the deep-link text of the
-//! intent that started the activity.
+//! label, the clipboard (read and write), the window insets, the display rotation, and the
+//! deep-link text of the intent that started the activity.
 
 use android_activity::AndroidApp;
 use jni::JavaVM;
