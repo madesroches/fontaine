@@ -22,16 +22,17 @@ to `branches: [main]`. Nothing else in the workflow changes: the concurrency gro
 superseded PR runs, and `rust-cache` saves only on `main`, so repeated PR runs reuse the main cache.
 
 Update the workspace-layout line in `tasks/fontaine_harness_plan.md` to say the workflow runs on
-every PR. Add a `Build and release` Decisions line there.
+every PR.
 
 The workflow's header comment stays accurate (it explains the split with `ci.yml`, not the filter).
 
 ## Implementation Steps
 1. Edit `.github/workflows/android.yml`: delete the two `paths:` lists.
-2. Edit `tasks/fontaine_harness_plan.md`: the `android.yml` layout line, and one Decisions line at
-   the end of `### Build and release`.
-3. Add a `CHANGELOG.md` `[Unreleased]` entry under `Changed`, at the end of the `Build and release`
-   (or nearest) subject, following the file's convention.
+2. Edit `tasks/fontaine_harness_plan.md`: the `android.yml` layout line, and one line
+   `- 2026-11-19 (#712): ...` at the end of `### Build and release` in `## Decisions`, recording the
+   cost accepted below.
+3. Add a `CHANGELOG.md` `[Unreleased]` entry: `### Changed` there is a flat list, so append a plain
+   entry at its end, ending with `(#712)`.
 
 ## Files to Modify
 - `.github/workflows/android.yml`
@@ -47,14 +48,16 @@ The workflow's header comment stays accurate (it explains the split with `ci.yml
   transitive breakage.
 
 ## Decisions
-- Cost accepted: one Linux job (cached from `main`) per PR, in exchange for no blind spot.
+- Cost accepted: one Linux job (cached from `main`) per PR, including PRs that touch only `tasks/`
+  or `docs/` (which `ci.yml` skips Rust steps for), in exchange for no blind spot.
 
 ## Documentation
 No `docs/` page mentions the trigger. Plan-doc and changelog updates are listed above.
 
 ## Testing Strategy
 No unit-testable behavior. Validate the YAML parses (a YAML load, or `actionlint` if installed).
-The end-to-end check is the workflow running on this PR, which touches none of the former paths.
+The end-to-end check is the workflow running on a later PR that touches only `tasks/` or `docs/`
+(this PR edits the workflow itself, so its own run proves nothing about the filter).
 
 ## Open Questions
 None.
