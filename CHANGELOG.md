@@ -35,6 +35,11 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- The `claude-subscription` cache self-check is harder to trip on a false positive (#718): a
+  previous request that read nothing gives no verdict, a version needs two consecutive shortfalls
+  before the native layout is turned off for it, the warning names the read, expected and gap
+  numbers it judged on, and a persisted verdict expires after 7 days so the version is measured
+  again. Entries in `claude-cache-verdicts.json` written before this change count as expired.
 - The remote QR code now carries a link, `fontaine://pair/<body>`, so a phone's camera can open the
   app (#710). `Ticket::parse` and `fontaine attach` accept the link, the prefixed `fontaine-attach1`
   ticket and the bare body in any case; the text ticket in the dialog is unchanged.

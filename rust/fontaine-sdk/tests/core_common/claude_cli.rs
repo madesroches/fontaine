@@ -187,18 +187,23 @@ pub fn cached(read: u64, write_1h: u64) -> Value {
            "cache_creation": {"ephemeral_1h_input_tokens": write_1h}})
 }
 
-pub async fn three_steps(version: &str, second_read: u64) -> Claude {
+/// Four steps of one conversation over a warm first request. A `second_read` short of the 500
+/// the first one left shows a broken replay at the second and, as the third reads nothing, again
+/// at the third; a full read shows a healthy replay throughout.
+pub async fn four_steps(version: &str, second_read: u64) -> Claude {
     let claude = Claude::new();
+    let third_read = if second_read < 500 { 0 } else { 1000 };
     claude.scenario(json!({
         "claude_code_version": version,
         "responses": [
-            {"text": "a", "usage": cached(0, 500)},
+            {"text": "a", "usage": cached(100, 400)},
             {"text": "b", "usage": cached(second_read, 100)},
-            {"text": "c", "usage": cached(1000, 0)},
+            {"text": "c", "usage": cached(third_read, 100)},
+            {"text": "d", "usage": cached(1100, 0)},
         ],
     }));
     let handle = main_handle(&claude).await;
-    for users in [2, 3, 4] {
+    for users in [2, 3, 4, 5] {
         handle
             .completion
             .call(tagged_conversation(version, users))

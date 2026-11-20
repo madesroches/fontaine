@@ -223,11 +223,14 @@ so a one-shot caller such as the guardian keeps the CLI's 5-minute write, and th
 conversation is written once more on its second step.
 
 The adapter checks that the replay works. It compares a conversation's cache read with what the
-previous request of that conversation wrote. On a shortfall (the CLI changed its reminder, so the
-replayed bytes no longer match), it turns the layout off for that CLI version and shows one warning
-in the session naming the version; `cache-bench` measures the effect. The verdict is kept in
-`claude-cache-verdicts.json` in the data dir (readable by the current user only), so a restart keeps
-the fallback, and it is retired when a Fontaine update changes the reminder template the adapter
+previous request of that conversation wrote. A previous request that itself read nothing was a cold
+start and gives no verdict. On a shortfall (the CLI changed its reminder, so the replayed bytes no
+longer match) twice in a row for one CLI version, with no healthy comparison in between, it turns
+the layout off for that version and shows one warning in the session naming the version and the
+numbers it judged on (read X of expected Y after Z s); `cache-bench` measures the effect. The
+verdict is kept in `claude-cache-verdicts.json` in the data dir (readable by the current user
+only), so a restart keeps the fallback. It expires after 7 days, when the version is measured
+again, and is retired earlier when a Fontaine update changes the reminder template the adapter
 replays. A new CLI version is judged afresh. The layout needs an account email in the CLI's answer.
 On versions below 2.1.319, without an email, or after a warning, the adapter keeps the earlier
 layout: the marker on the last replayed user message, read back up to that message, and each request

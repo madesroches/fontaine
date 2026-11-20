@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use common::World;
 use common::claude_cli::{
-    Claude, argv, double, main_handle, tagged_conversation, three_steps, toml_path,
+    Claude, argv, double, four_steps, main_handle, tagged_conversation, toml_path,
 };
 use fontaine_sdk::core::accounts::{self, ExternalCheckError, SignInState};
 use fontaine_sdk::core::agent::build_guardian;
@@ -952,20 +952,23 @@ async fn an_older_cli_or_an_account_without_an_email_keeps_the_earlier_layout() 
 
 #[tokio::test]
 async fn a_replay_the_cache_did_not_read_back_turns_the_layout_off_for_that_version() {
-    let claude = three_steps("2.1.400", 100).await;
+    let claude = four_steps("2.1.400", 100).await;
     assert!(has_reminder(&claude.run_frames(2)[0]));
     assert_eq!(markers(&claude.run_frames(2)), [(4, 0)]);
+    // One shortfall is not a verdict: the third request still replays natively.
     let third = claude.run_frames(3);
-    assert!(third.iter().all(|f| !has_reminder(f)));
-    assert_eq!(markers(&third), [(4, 0)]);
+    assert!(has_reminder(&third[0]));
+    let fourth = claude.run_frames(4);
+    assert!(fourth.iter().all(|f| !has_reminder(f)));
+    assert_eq!(markers(&fourth), [(6, 0)]);
 }
 
 #[tokio::test]
 async fn a_replay_the_cache_read_back_keeps_the_layout() {
-    let claude = three_steps("2.1.401", 500).await;
-    let third = claude.run_frames(3);
-    assert!(has_reminder(&third[0]));
-    assert_eq!(markers(&third), [(6, 0)]);
+    let claude = four_steps("2.1.401", 500).await;
+    let fourth = claude.run_frames(4);
+    assert!(has_reminder(&fourth[0]));
+    assert_eq!(markers(&fourth), [(8, 0)]);
 }
 
 #[tokio::test]
