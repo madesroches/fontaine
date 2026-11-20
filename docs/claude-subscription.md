@@ -199,7 +199,8 @@ The minimum is **2.1.318**. The gate is a minimum only: newer versions are accep
 protocol shape the adapter does not know still fails closed. The cache layout below is a separate
 matter, with its own threshold at 2.1.319. The order 2.1.319 uses to report a
 denied call, inside the response before its stop, is supported alongside the earlier order after
-the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
+the stop. The `system/informational` notice 2.1.329 emits in some turns is accepted and ignored.
+Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
 
 Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 ms per replayed
 user message.

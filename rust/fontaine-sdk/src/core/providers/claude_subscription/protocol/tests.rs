@@ -1127,6 +1127,16 @@ fn thinking_estimates_are_accepted_in_a_response_only() {
 }
 
 #[test]
+fn informational_system_events_are_ignored_before_and_after_init() {
+    let notice = json!({"type": "system", "subtype": "informational",
+                        "level": "warning", "message": "usage at 98%"});
+    let mut r = reader(&[]);
+    assert!(matches!(feed(&mut r, notice.clone()), Ok(Event::Nothing)));
+    feed(&mut r, init()).unwrap();
+    assert!(matches!(feed(&mut r, notice), Ok(Event::Nothing)));
+}
+
+#[test]
 fn other_system_events_are_refused_by_name() {
     let mut r = started(&[]);
     for subtype in ["model_fallback", "notification"] {

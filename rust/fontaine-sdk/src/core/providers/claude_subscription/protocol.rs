@@ -955,6 +955,8 @@ impl Reader {
                 Ok(Event::Nothing)
             }
             Some("status") => Ok(Event::Nothing),
+            // A human-facing notice (e.g. a usage warning); its payload is never read.
+            Some("informational") => Ok(Event::Nothing),
             Some("api_retry") => Err(protocol("the Claude CLI retried the request on its own")),
             Some("permission_denied") => self.permission_denied(value),
             Some("thinking_tokens") => {
