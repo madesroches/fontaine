@@ -29,6 +29,8 @@ pub struct Luma {
 pub struct Camera {
     /// Degrees the sensor image is turned clockwise from the device's natural orientation.
     sensor_orientation: i32,
+    /// Front cameras turn the opposite way from back ones as the display rotates.
+    front_facing: bool,
     manager: *mut ffi::ACameraManager,
     device: *mut ffi::ACameraDevice,
     reader: *mut ffi::AImageReader,
@@ -70,6 +72,7 @@ impl Camera {
     pub fn start() -> Result<Camera, Error> {
         let mut camera = Camera {
             sensor_orientation: 0,
+            front_facing: false,
             manager: ptr::null_mut(),
             device: ptr::null_mut(),
             reader: ptr::null_mut(),
@@ -84,8 +87,9 @@ impl Camera {
         // released by `Drop` in reverse order, so an early return frees what was made so far.
         unsafe {
             camera.manager = ffi::ACameraManager_create();
-            let (id, sensor_orientation) = camera.back_camera_id()?;
+            let (id, sensor_orientation, front_facing) = camera.back_camera_id()?;
             camera.sensor_orientation = sensor_orientation;
+            camera.front_facing = front_facing;
             let mut callbacks = ffi::ACameraDevice_StateCallbacks {
                 context: std::ptr::from_ref::<AtomicBool>(&camera.dead)
                     .cast_mut()
@@ -159,19 +163,19 @@ impl Camera {
         Ok(camera)
     }
 
-    /// The id and sensor orientation of the first back-facing camera, else of the first camera
-    /// there is.
+    /// The id, sensor orientation and whether it faces the front, of the first back-facing camera,
+    /// else of the first camera there is.
     ///
     /// # Safety
     /// `self.manager` must be a live camera manager.
-    unsafe fn back_camera_id(&self) -> Result<(std::ffi::CString, i32), Error> {
+    unsafe fn back_camera_id(&self) -> Result<(std::ffi::CString, i32, bool), Error> {
         // SAFETY: the caller guarantees the manager; the id list is freed before returning and
         // the chosen id is copied out first.
         unsafe {
             let mut list = ptr::null_mut();
             ok(ffi::ACameraManager_getCameraIdList(self.manager, &mut list))?;
             let count = (*list).numCameras;
-            let mut chosen: Option<(std::ffi::CString, i32)> = None;
+            let mut chosen: Option<(std::ffi::CString, i32, bool)> = None;
             for i in 0..count {
                 let id = *(*list).cameraIds.add(i as usize);
                 let mut metadata = ptr::null_mut();
@@ -181,15 +185,25 @@ impl Camera {
                     continue;
                 }
                 let mut entry = std::mem::zeroed::<ffi::ACameraMetadata_const_entry>();
-                let facing = ffi::ACameraMetadata_getConstEntry(
+                let lens = if ffi::ACameraMetadata_getConstEntry(
                     metadata,
                     ffi::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
                     &mut entry,
                 ) == ffi::camera_status_t::ACAMERA_OK
                     && entry.count > 0
-                    && u32::from(*entry.data.u8_)
-                        == ffi::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK
-                            .0;
+                {
+                    Some(u32::from(*entry.data.u8_))
+                } else {
+                    None
+                };
+                let facing = lens
+                    == Some(
+                        ffi::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK.0,
+                    );
+                let front = lens
+                    == Some(
+                        ffi::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_FRONT.0,
+                    );
                 // A missing entry leaves the preview unrotated rather than failing the camera.
                 let orientation = if ffi::ACameraMetadata_getConstEntry(
                     metadata,
@@ -203,7 +217,7 @@ impl Camera {
                     0
                 };
                 ffi::ACameraMetadata_free(metadata);
-                let owned = (CStr::from_ptr(id).to_owned(), orientation);
+                let owned = (CStr::from_ptr(id).to_owned(), orientation, front);
                 if facing {
                     chosen = Some(owned);
                     break;
@@ -222,6 +236,10 @@ impl Camera {
 
     pub fn sensor_orientation(&self) -> i32 {
         self.sensor_orientation
+    }
+
+    pub fn front_facing(&self) -> bool {
+        self.front_facing
     }
 
     /// The newest frame's luma plane, if one arrived since the last call.

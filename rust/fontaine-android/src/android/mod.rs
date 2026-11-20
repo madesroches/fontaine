@@ -555,11 +555,14 @@ impl Activity {
             self.latest_unuploaded = false;
         }
         let texture = surface.preview.texture()?;
-        let rotation = layout::preview_rotation(camera.sensor_orientation(), self.display_quadrant);
+        let rotation = layout::preview_rotation(
+            camera.sensor_orientation(),
+            camera.front_facing(),
+            self.display_quadrant,
+        );
         Some(PreviewView {
             texture,
-            // The card's side is not known here and only matters to `fit_cover` as non-zero.
-            uv: layout::fit_cover((luma.width as u32, luma.height as u32), 1.0, rotation),
+            uv: layout::fit_cover((luma.width as u32, luma.height as u32), rotation),
         })
     }
 
