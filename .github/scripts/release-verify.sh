@@ -4,7 +4,8 @@
 # the exact trusted comment binding and matches its checksums. The shell and PowerShell installers
 # are accepted on the release channel only, and there they must carry a valid .minisig too, as must
 # fontaine-android.apk, which FONTAINE_REQUIRE_APK=1 makes mandatory. The kind
-# `dev-installer` checks a directory holding exactly both signed dev installers and their .minisig.
+# `dev-installer` checks a directory holding exactly both signed dev installers, optionally
+# fontaine-android.apk (mandatory under FONTAINE_REQUIRE_APK=1), and their .minisig.
 set -euo pipefail
 
 if [ "$#" -ne 5 ]; then
@@ -55,6 +56,7 @@ if [ "$channel" = dev-installer ]; then
     case "$name" in
       fontaine-installer.sh | fontaine-installer.sh.minisig) ;;
       fontaine-installer.ps1 | fontaine-installer.ps1.minisig) ;;
+      fontaine-android.apk | fontaine-android.apk.minisig) ;;
       *) fail "unrecognised asset '$name'" ;;
     esac
   done
@@ -62,6 +64,13 @@ if [ "$channel" = dev-installer ]; then
     [ -f "$dir/$name" ] || fail "$name is missing"
     check_installer "$dir/$name" dev
   done
+  if [ -f "$dir/$apk" ]; then
+    check_installer "$dir/$apk" dev
+  elif [ -f "$dir/$apk.minisig" ]; then
+    fail "$apk.minisig has no archive"
+  elif [ "${FONTAINE_REQUIRE_APK:-}" = 1 ]; then
+    fail "$apk is missing"
+  fi
   echo "release-verify: installers verified for channel dev"
   exit 0
 fi

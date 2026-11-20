@@ -1,12 +1,12 @@
 # Verifying releases
 
-Every release archive, each installer (shell and PowerShell) on both channels, and the Android APK of a tagged release, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
+Every release archive, each installer (shell and PowerShell) on both channels, and the Android APK (of a tagged release or the latest dev build), has a detached [minisign](https://jedisct1.github.io/minisign/) signature
 next to it, `<file>.minisig`, made in CI with a key Fontaine owns. A release is published only
 after CI has downloaded the finished draft and verified every archive, and each installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
 The archives of a dev build live in the immutable `dev-<n>` prerelease. The long-lived `dev`
-prerelease holds only `fontaine-installer.sh` and `fontaine-installer.ps1` with their `.minisig`
+prerelease holds only `fontaine-installer.sh`, `fontaine-installer.ps1` and `fontaine-android.apk` with their `.minisig`
 files, replaced after every successful dev publish; each installer is the dist script rewritten to
 download from that run's `dev-<n>`. The PowerShell installer is also patched, before it is signed, with a
 sha256 check of the archive, which dist's own script lacks; the signature covers exactly the script
@@ -67,16 +67,17 @@ The checksums catch a corrupted download; only the signature proves who made the
 
 ## Verify the installer by hand
 
-Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows) and its `.minisig` from the
+Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows, or `fontaine-android.apk`) and its `.minisig` from the
 [`dev` release](https://github.com/madesroches/fontaine/releases/tag/dev) and
 [`dev.signing.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.signing.pub), then:
 
 ```
 minisign -Vm fontaine-installer.sh -p dev.signing.pub
 minisign -Vm fontaine-installer.ps1 -p dev.signing.pub
+minisign -Vm fontaine-android.apk -p dev.signing.pub
 ```
 
-The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`); its `version` and
+The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`, or `fontaine-android.apk`); its `version` and
 `commit` name the build whose `dev-<n>` archives the script downloads. The installers do not verify
 this signature themselves; see [Installing Fontaine](installing.md#verification) and [on Windows](installing.md#verification-windows).
 
@@ -87,16 +88,19 @@ comment has `channel=release`, the installer's `file`, and the release's version
 ## Verify the Android app
 
 The [Android app](android.md) is released as `fontaine-android.apk` with a `fontaine-android.apk.minisig`, on
-tagged releases only. Verify it like an archive, with `release.signing.pub`:
+tagged releases and on the `dev` release (the latest dev build of `main`). Verify it like an archive,
+with the signing key of its channel:
 
 ```
 minisign -Vm fontaine-android.apk -p release.signing.pub
+minisign -Vm fontaine-android.apk -p dev.signing.pub
 ```
 
-The trusted comment has `channel=release` and `file=fontaine-android.apk`, with the release's version
-and commit. The APK also carries an Android signature made with a keystore that only the release
-signing job can read; Android uses it to accept an install or an update, and it is not the trust
-anchor. The APK has no `.sha256` file.
+The trusted comment has `channel=release` (or `channel=dev`) and `file=fontaine-android.apk`, with the
+build's version and commit. The APK also carries an Android signature made with a keystore that only
+the signing job of its channel can read; Android uses it to accept an install or an update, and it is
+not the trust anchor. The release and dev keystores are different keys, so Android refuses to install a
+dev APK over a release one, or the reverse; uninstall first. The APK has no `.sha256` file.
 
 ## What the signature does not cover
 

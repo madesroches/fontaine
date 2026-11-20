@@ -2,7 +2,9 @@
 # Usage: build-apk.sh <out.apk> [--debug-sign]
 # Builds the arm64 APK without Gradle: cargo-ndk compiles the library, aapt2 packs the manifest,
 # zipalign aligns it. The result is unsigned unless --debug-sign is given; a release APK is signed
-# by the release workflow's `sign` job, which alone holds the keystore.
+# by the release or dev workflow's `sign` job, which alone holds the keystore.
+# The version comes from rust/Cargo.toml; FONTAINE_APK_VERSION_CODE and FONTAINE_APK_VERSION_NAME
+# override the code and name (see version-code.sh).
 # Needs cargo-ndk, ANDROID_HOME (build-tools and platform 34) and an NDK that cargo-ndk can find.
 set -euo pipefail
 
@@ -13,6 +15,10 @@ fi
 out="$(realpath -m "$1")"
 mode="${2:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Before the build, so a bad override fails in seconds rather than after cargo ndk.
+# shellcheck source=version-code.sh
+. "$here/version-code.sh"
+apk_version "$here/../Cargo.toml"
 : "${ANDROID_HOME:?ANDROID_HOME is not set}"
 tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
 platform="$ANDROID_HOME/platforms/android-34/android.jar"
@@ -25,15 +31,6 @@ mkdir -p "$work/stage/lib"
 # dear-imgui-sys links c++_shared on Android; without the flag libc++_shared.so is not copied next
 # to the library, so it is not packaged and the app fails to load.
 (cd "$here/.." && cargo ndk -t arm64-v8a --platform 26 -o "$work/stage/lib" --link-libcxx-shared build -p fontaine-android --release)
-
-# The version comes from the workspace so it cannot drift from the release tag, which the release
-# workflow checks against it; the code is major*1000000 + minor*1000 + patch so it only grows. A
-# prerelease or build suffix stays in the name and is ignored for the code.
-name="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$here/../Cargo.toml" | head -n 1)"
-version="$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)[^"]*".*/\1/p' "$here/../Cargo.toml" | head -n 1)"
-[ -n "$version" ] || { echo "build-apk: no version in rust/Cargo.toml" >&2; exit 1; }
-IFS=. read -r major minor patch <<<"$version"
-code=$((major * 1000000 + minor * 1000 + patch))
 
 "$tools/aapt2" link -o "$work/base.apk" --manifest "$here/AndroidManifest.xml" \
   -I "$platform" --min-sdk-version 26 --target-sdk-version 34 \

@@ -114,8 +114,8 @@ Environments, which are configured in GitHub, not in the repository:
 
 | Environment | Secrets | Deployment rule | Reviewers |
 |---|---|---|---|
-| `release-signing` | `MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD` (release key) | tags matching `v*` only | maintainer, required |
-| `dev-signing` | same names (dev key) | branch `main` only | none |
+| `release-signing` | `MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD` (release key); `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (release Android keystore) | tags matching `v*` only | maintainer, required |
+| `dev-signing` | same names (dev key); the same three `ANDROID_*` names (dev Android keystore, a separate key from the release one) | branch `main` only | none |
 
 Only the `sign` jobs name an environment, and the deployment rules refuse runs from any other ref,
 pull requests included.
@@ -147,12 +147,13 @@ through the HTTPS installer or a manual download verified against the new key in
 dev-key compromise never affects `release`.
 
 **Enabling the dev channel.** Create the `dev-signing` environment (deployment branch `main`, no
-reviewers), bootstrap the dev key, then set the repository variable `FONTAINE_DEV_CHANNEL` to
+reviewers), bootstrap the dev key, create the three `ANDROID_*` secrets for the dev Android keystore
+(without them `sign` fails and the channel publishes nothing), then set the repository variable `FONTAINE_DEV_CHANNEL` to
 `enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. A newer
 build replaces a pending one, so intermediate builds may be skipped and the channel always
 publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Each run also
-replaces `fontaine-installer.sh`, `fontaine-installer.ps1` and their `.minisig` files on the long-lived
-`dev` prerelease, the stable installer address, unless a newer `dev-<n>` is already published. Old dev prereleases are not
+replaces `fontaine-installer.sh`, `fontaine-installer.ps1`, `fontaine-android.apk` and their `.minisig` files on the long-lived
+`dev` prerelease, the stable installer and APK address, unless a newer `dev-<n>` is already published. Old dev prereleases are not
 pruned automatically.
 
 ## Golden-dataset cases

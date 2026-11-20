@@ -246,7 +246,7 @@ Everything it writes is in the data directory (see [Where files live](configurat
 
 Each dev build is a `dev-<n>` [prerelease](https://github.com/madesroches/fontaine/releases) with one
 archive per platform: `fontaine-<target>.tar.xz`, or `.zip` on Windows. (The `dev` release itself
-holds only the installers.) Unpack it and put `fontaine` on your
+holds only the installers and the Android APK.) Unpack it and put `fontaine` on your
 `PATH`; it also holds the license, readme and changelog. Use it where there is no installer. Each archive
 has a detached signature; see [Verifying releases](verifying-releases.md). A manual install writes
 no receipt.
@@ -254,9 +254,12 @@ no receipt.
 ## The Android app
 
 The [Android app](android.md) is a sideloaded APK, `fontaine-android.apk`, attached to tagged releases
-(not to `dev` builds). Download it with its `fontaine-android.apk.minisig`, verify the minisign
+and, for the latest dev build of `main`, at the stable address
+`https://github.com/madesroches/fontaine/releases/download/dev/fontaine-android.apk`. Download it with its `fontaine-android.apk.minisig`, verify the minisign
 signature as described in [Verifying releases](verifying-releases.md#verify-the-android-app), then open the
-file on the phone and allow the install from unknown sources when Android asks. Installing it does
+file on the phone and allow the install from unknown sources when Android asks. Dev and release APKs
+are signed with different Android keys, so Android will not install one over the other: uninstall first
+to switch. Installing it does
 not touch the `fontaine` binary or its receipt.
 
 ## From source

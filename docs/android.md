@@ -7,13 +7,19 @@ and interrupts a turn. It is a sideloaded APK; there is no store listing.
 
 ## Install
 
-Download `fontaine-android.apk` and `fontaine-android.apk.minisig` from a release, verify the
+Download `fontaine-android.apk` and `fontaine-android.apk.minisig` from a tagged release, or the latest
+dev build of `main` from
+`https://github.com/madesroches/fontaine/releases/download/dev/fontaine-android.apk`, verify the
 signature as described in [Verifying releases](verifying-releases.md#verify-the-android-app), then open
 the APK on the phone and allow your browser or file manager to install apps from unknown sources
 when Android asks. The app needs Android 8 (API 26) or newer, an arm64 phone and OpenGL ES 3.
 
 Android's own install signature only lets the system install and update the package. The minisign
 signature is what proves who made the file.
+
+Dev and release APKs are signed with different Android keys, so Android refuses to install one over the
+other; uninstall the app first to switch. Dev builds are signed with one stable key and each has a
+higher version code, so they update in place.
 
 ## Pair
 
