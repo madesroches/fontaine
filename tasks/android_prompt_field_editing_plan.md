@@ -11,7 +11,7 @@ The field logic is a portable model with unit tests; the Android layer draws the
 selection and turns taps, drags and a long-press menu into model operations.
 
 Swipe typing, spacebar cursor dragging and IME composition are **not** in this plan: they need an
-IME `InputConnection`, which the current build cannot provide (see Trade-offs and Decisions).
+IME `InputConnection`, which the current build cannot provide (see Decisions).
 
 ## Current State
 
@@ -46,7 +46,7 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
 - Operations, all clamping to char boundaries and never panicking on any input:
   `insert(&str)` / `insert_char(char)` (replaces the selection), `backspace()` (deletes the
   selection, else the char before the cursor), `delete_forward()`, `move_to(idx)`,
-  `select(anchor, cursor)`, `select_all()`, `move_left/right(extend: bool)`, `selected() -> &str`,
+  `select(anchor, cursor)`, `select_all()`, `move_left()` / `move_right()` (collapse a selection, else step one char), `selected() -> &str`,
   `cut() -> String` (returns selected text, deletes it), `replace_all(&str)` (paste into the empty
   paste field; cursor at end), `clear()`, `as_str()`, `is_empty()`, `cursor()`, `selection() ->
   Option<Range<usize>>`.
@@ -73,8 +73,10 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
   `igImTextCalcWordWrapNextLineStart`, so blanks (spaces, tabs, one `\n`) after a wrap are skipped
   and indices in those runs map to the line end; measure with the unrounded `ImFont_CalcTextSizeA`
   (font `igGetFont()`, size `igGetFontSize()`), not `igCalcTextSize`, which rounds widths up, with
-  `hide_text_after_double_hash` false; the wrap width is the child's own content width, not
-  `width - 2*pad_x`; and the measured field height counts the empty line after a trailing `\n`.
+  `hide_text_after_double_hash` false; the wrap width is `floor(width) - 2*pad_x` (valid while `pad_x` is an
+  integer >= the frame border), the one value used for the field height (computed before
+  `igBeginChild_Str`), drawing and hit-testing; and the measured field height counts the empty line
+  after a trailing `\n`.
   A NUL byte shifts offsets (`c()` strips it before drawing, and `clipboard_text` can return one),
   so `Field::insert` and `replace_all` strip `'\0'`.
 - **Gestures** (pointer 0 only, as now):
@@ -85,8 +87,9 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
   - a `UiState` flag tracks a drag-selection in progress; the existing open-popup-while-held branch
     is replaced by opening the menu at release;
   - long-press release without a drag → select the word under the finger and open the menu;
-  - the menu (existing popup) offers **Cut / Copy / Paste / Select all**, each shown only when it
-    applies (Cut/Copy need a selection; Paste needs clipboard text), emitted as `Tap::Cut`,
+  - the menu (existing popup) offers **Cut / Copy / Paste / Select all**: Cut/Copy are shown only
+    with a selection; Paste and Select all are always shown (Paste does nothing on an empty
+    clipboard, as today), emitted as `Tap::Cut`,
     `Tap::Copy`, `Tap::PasteField`, `Tap::SelectAll`.
   - Word selection is a portable helper on `Field` (`select_word_at(idx)`) so it is unit tested.
 - **Clipboard write (`jni_bridge.rs`)**: `set_clipboard_text(&AndroidApp, &str)` via
@@ -116,23 +119,14 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
 - `rust/fontaine-android/src/android/{mod.rs,ui.rs,jni_bridge.rs}`
 - `docs/android.md`, `CHANGELOG.md`
 
-## Trade-offs
-
-- **Stay on NativeActivity, field-model only (chosen)** vs. a Java `InputConnection` subclass vs.
-  GameActivity. The two alternatives are the only routes to swipe typing, spacebar dragging and
-  composition, but each adds a Java compile + dex step to a deliberately Gradle-free build
-  (`hasCode=false`), changes the manifest and the dev/release workflows, and cannot be exercised in
-  CI or without a device. The chosen route delivers every acceptance criterion with portable,
-  unit-tested logic, and the model's cursor/selection are exactly what an `InputConnection` would
-  later need to mirror, so it is the first step of either alternative rather than throwaway work.
-- **ImGui `InputTextMultiline`** was rejected: it would put cursor and selection logic inside
-  ImGui where the portable unit tests cannot reach, and the issue requires portable field logic.
-
 ## Decisions
 
 - AFK: swipe typing, spacebar cursor dragging and IME composition are deferred to a follow-up issue
   (Java `InputConnection` or GameActivity); the plan covers only what NativeActivity can deliver.
-  This leaves two "Wanted" bullets of the issue open while meeting its Acceptance section.
+  This leaves two "Wanted" bullets of the issue open while meeting its Acceptance section. Both
+  routes add a Java compile + dex step to the deliberately Gradle-free build (`hasCode=false`) and
+  cannot be exercised in CI.
+- ImGui `InputTextMultiline` not used: its cursor/selection logic would be out of reach of the portable unit tests.
 - No cursor blink; a steady cursor line.
 
 ## Documentation
@@ -148,7 +142,7 @@ Automated, in the portable part (`cargo test -p fontaine-android`):
 - `Field`: insert/backspace/delete at start, middle, end; over a selection; with multi-byte chars
   (`é`, emoji) so offsets never split a char; `move_to`/`select` clamping out-of-range and
   mid-char indices; `select_all`, `select_word_at` (word, punctuation, whitespace, empty text);
-  `cut`; `replace_all`; NUL stripping in `insert`/`replace_all`; left/right with and without extend; collapsing a selection on move.
+  `cut`; `replace_all`; NUL stripping in `insert`/`replace_all`; left/right, collapsing a selection on move.
 - `keys::apply`: existing tests ported, plus typing/backspace at a cursor in the middle, replacing a
   selection, Left/Right/Delete.
 
@@ -162,13 +156,12 @@ On a device (build with `rust/fontaine-android/build-apk.sh out.apk --debug-sign
 with a host), because gesture feel and text layout cannot be asserted without a screen:
 1. In a session, type "hello world", tap between "hello" and "world": the cursor line appears there;
    type "X": it lands at the cursor.
-2. Press Backspace: removes the char before the cursor, not the last char.
-3. Long-press a word: it highlights and the menu shows Cut / Copy / Paste / Select all. Cut, then
+2. Long-press a word: it highlights and the menu shows Cut / Copy / Paste / Select all. Cut, then
    Paste elsewhere: text moves.
-4. Drag from long-press across several wrapped lines: the selection follows the finger; typing
+3. Drag from long-press across several wrapped lines: the selection follows the finger; typing
    replaces it.
-5. Copy, open another app, paste: the copied text appears.
-6. On the scan screen, paste a link and tap Use this: unchanged behavior.
+4. Copy, open another app, paste: the copied text appears.
+5. On the scan screen, paste a link and tap Use this: unchanged behavior.
 
 ## Open Questions
 
