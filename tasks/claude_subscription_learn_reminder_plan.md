@@ -50,15 +50,16 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 - Bind `127.0.0.1:0` (tokio `TcpListener`). Launch the CLI through the same `fixed_args`/`launch`
   path as `initialize`, with `ANTHROPIC_BASE_URL` added for this launch only (a `command` variant
   taking extra env; `CONFLICTING_ENV` still refuses an inherited value). Write one user frame
-  (`"ok"`) and close stdin. `launch` gains an extra-env parameter (or a `launch_with_env` variant)
+  (a fresh random nonce per probe, uuid v4) and close stdin. `launch` gains an extra-env parameter (or a `launch_with_env` variant)
   and `ChildFiles::empty` becomes `pub(crate)`, or the launch part of `learn_reminder` stays in
   `cli.rs`.
 - The listener keeps accepting connections and requests (keep-alive included) until the probe ends.
   Each request is parsed as HTTP/1.1 (request line, `content-length` body; capped at 8 MiB). It
   answers every non-matching request 404 and hands off only the first POST to the exact
-  `/v1/messages` path (not `count_tokens`) whose last user text is the probe text, over a oneshot,
-  answering it with the canned SSE body. It never forwards, never logs a body, and discards headers
-  (the CLI's bearer token arrives here and is dropped unread). Local-only by binding.
+  `/v1/messages` path (not `count_tokens`) whose last user text is the probe nonce, over a oneshot,
+  answering it with the canned SSE body. It never forwards, never logs a body, and reads only the
+  content-length header and drops the rest, including the bearer token, without storing or logging
+  them.
 - The probe ends when the matching body arrives (child stopped), the child exits, or the discovery
   timeout elapses.
 
@@ -67,7 +68,7 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 `parse_reminder(body: &Value, email: &str) -> Option<Reminder>`:
 
 - `messages[0]` is a user message whose content is `[text, text]` with the first block
-  `<system-reminder>\n...</system-reminder>\n` and the second our probe text. Any other shape
+  `<system-reminder>\n...</system-reminder>\n` and the second our probe nonce. Any other shape
   (reminder merged into the prompt, placed after it, a string content) gives `None`: the placement
   the rest of the adapter assumes was not observed.
 - The reminder contains the email exactly once and holds no section other than `# userEmail`
@@ -85,7 +86,8 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 A process-wide store beside `Verdicts` (same `STORES` pattern, keyed by data dir) maps
 `(version, sha256(email))` to the outcome: `Learned(Reminder)` or `Unusable` (deterministic: parsed
 `None`), both kept for the process lifetime. A transient failure (could not start, timeout, no
-request) is not memoized as a result; it is retried no sooner than 5 minutes later per key, and the
+request) is not memoized as a result; it is retried no sooner than 5 minutes later per key (the
+timestamp is a `tokio::time::Instant`), and the
 request in hand takes Legacy. Concurrent requests for one key share one probe (per-key async
 mutex), so a burst of subagents starts one capture.
 
@@ -98,8 +100,9 @@ mutex), so a burst of subagents starts one capture.
   failing soft on shape drift.
 - `Sent` carries the `wording`; `Verdicts` keys `broken`, `struck` and the persisted entries by
   `(version, wording)`. `finished`/`mark`/`strike`/`contains` take the pair. A persisted entry gains
-  `"wording"`; `parse` keeps only entries whose `wording` field is present and equal, so a wording
-  change retires the verdict automatically. `TEMPLATE_REVISION` is bumped to 2, which also retires
+  `"wording"`; `parse` keeps entries with `template == TEMPLATE_REVISION` (2) and a present `wording`
+  string, keyed by `(version, wording)`; a new wording finds no entry under its key, so the verdict
+  retires automatically. `TEMPLATE_REVISION` is bumped to 2, which also retires
   every entry written before this change (they have no wording and were keyed by a hardcoded
   template); its doc comment narrows to "where `apply` places the reminder".
 - `REMINDER_TEMPLATE` is removed from production code. The 2.1.319 text moves into the tests as
@@ -132,10 +135,15 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
    and email gate passes, pass the result to `layout`/`apply`/`Sent`; the warning text names the
    wording.
 4. `fontaine-sdk/examples/claude_cli_double.rs`: new scenario key `reminder` (the text it sends as
-   the first message's reminder block; absent keeps today's behavior, nothing posted). When
-   `ANTHROPIC_BASE_URL` is set and a query frame arrives, it POSTs a minimal `/v1/messages` body
-   over a plain `std::net::TcpStream`, reads and ignores the reply, then answers the turn as today.
-5. Tests below; docs, research README, CHANGELOG.
+   the first message's reminder block). A launch with `ANTHROPIC_BASE_URL` set is a probe: it never
+   calls `next_run()` or reads `responses`, POSTs a minimal `/v1/messages` body over a plain
+   `std::net::TcpStream` only if `reminder` is set (reads and ignores the reply), answers a fixed
+   plain turn, never applies the hang/descendant/exit keys, and logs its frames under a separate
+   kind that `frames()`/`run_frames()`/`query_frames()`/`frames_by_run` skip.
+5. `reminder` defaults to the 2.1.319 wording with the scenario's email, so existing Native-layout
+   tests keep working; update the invocation-count assertions in `tests/claude_subscription.rs`
+   (~:1521, :1558) for the extra probe launch.
+6. Tests below; docs, research README, CHANGELOG.
 
 ## Files to Modify
 
@@ -154,7 +162,7 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   upstream, no credentials handling, no inference, and cannot alter a real request; a forwarding
   proxy would carry the user's bearer token to Anthropic through our code for no gain.
 - **Probe once per process vs. per request**: the reminder is a function of CLI version and account;
-  per-request would add 0.4 s to every call.
+  per-request would add one CLI start to every call.
 - **Persisting the learned wording across restarts**: rejected; re-learning costs one CLI start per
   process and avoids a stale-wording file.
 
@@ -176,14 +184,20 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   version and reminder wording (replace "retired earlier when a Fontaine update changes the
   reminder template"). Specific spots:
   - `:13-14`, `:94-96`, `:264-266`: the per-process probe launch with a loopback
-    `ANTHROPIC_BASE_URL`; the listener receives the bearer token and email, discards headers
-    unread, and never forwards.
+    `ANTHROPIC_BASE_URL`; the listener receives the bearer token and email, reads only the
+    content-length header and drops the rest, including the bearer token, without storing or
+    logging them, and never forwards.
   - `:227-230`: the `(version, wording)` keying, the new shortfall cause and its warning.
   - `:235`: add "or when the reminder could not be learned" to the fallback list.
   - `:100` and `:211`: the extra probe CLI start per process.
+- Module docs `claude_subscription/mod.rs:7-8` and `transport.rs:6` ("never reads or forwards a
+  credential"): say the reminder probe's loopback listener receives the CLI's request and drops its
+  headers.
 - `docs/configuration.md`: the `claude-cache-verdicts.json` row mentions the wording key.
 - `research/claude-subscription-cli-context/README.md`: the capture finding (local fake server,
-  canned SSE), the list of requests the CLI was observed to send, and the 2.1.329 wording.
+  canned SSE), the list of requests the CLI was observed to send, and the 2.1.329 wording; also
+  correct the stale path at `:4` to
+  `rust/fontaine-sdk/src/core/providers/claude_subscription/context.rs` and mention `reminder.rs`.
 - `CHANGELOG.md`: entry.
 
 ## Testing Strategy
@@ -203,7 +217,8 @@ Unit (`reminder/tests.rs`, `context/tests.rs`):
 - Capture server: given a raw request (content-length body, split across reads, oversized body,
   non-POST path) it returns the body or 404 and the canned SSE, over a real loopback socket.
 - Memo: concurrent callers for one key run one probe; a transient failure is retried only after
-  5 minutes (tokio `test-util` paused time); `Unusable` is kept.
+  5 minutes (a fake probe injected under `start_paused`, as in `quota.rs:10`, `:426`); `Unusable`
+  is kept.
 
 Integration (headless-surface tests against `claude_cli_double`, no live API):
 
@@ -214,6 +229,8 @@ Integration (headless-surface tests against `claude_cli_double`, no live API):
   storm.
 - Two requests in one process produce exactly one double invocation whose env contains
   `ANTHROPIC_BASE_URL` (via `Claude::invocations()`).
+- A hang-script scenario: the probe launch ignores the hang keys and does not wait the discovery
+  timeout; probe frames never appear in `frames()`/`run_frames()`.
 
 ## Manual Verification
 
