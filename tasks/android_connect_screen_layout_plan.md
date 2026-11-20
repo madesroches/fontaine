@@ -14,11 +14,11 @@ change.
 ## Current State
 
 - `rust/fontaine-android/src/android/mod.rs` `render` (`:245`) calls `ui::draw` with
-  `Imgui::display_size()`; `ui::draw` (`ui.rs:80`) places one window at `(0,0)` covering the whole
+  `Imgui::display_size()`; `ui::draw` (`ui.rs:88`) places one window at `(0,0)` covering the whole
   display, so nothing keeps content out of the status/navigation bars or a display cutout.
 - `Imgui::new` (`mod.rs:182`) uses `igStyleColorsDark` plus `ScaleAllSizes(scale)`; default window
   padding is 8 px at scale 1, so margins are tiny and the default font is small.
-- `ui::scan` (`ui.rs:152`) is two `text` lines, an "Allow camera" button only while the camera is
+- `ui::scan` (`ui.rs:162`) is two `text` lines, an "Allow camera" button only while the camera is
   not ready, a separator, and `field_box`, which is a bare colored text line with no frame.
   Buttons are `igButton` with width `avail_width()`.
 - The camera feeds `rqrr` only; `docs/android.md` and `camera.rs` state no frame is shown or stored.
@@ -49,9 +49,7 @@ Reading the insets, in `jni_bridge.rs`:
 
 - `system_insets(app) -> Option<Insets>`: `activity.getWindow().getDecorView().getRootWindowInsets()`;
   null (not attached yet) returns `None`. The API level comes from `AndroidApp::sdk_version()` (no new JNI call). On API 30+ call `getInsets(systemBars() | displayCutout())`
-  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. When the soft
-  keyboard is up, `adjustResize` already shrinks the surface, so the bottom inset stays the
-  navigation bar only.
+  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`.
 - `Activity` keeps `insets: Insets` and `insets_read: Instant`, stores the raw values as read, and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
   Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
@@ -71,8 +69,9 @@ In `Imgui::new` (`mod.rs`), after `igStyleColorsDark`, set once, before `ScaleAl
 `FrameRounding = 8`, `FramePadding = (14, 12)`, `ItemSpacing = (10, 12)`,
 `FrameBorderSize = 1`, a visible `Border` color for the field outline, and a distinct
 `Button`/`ButtonHovered`/`ButtonActive` accent. `ScaleAllSizes(scale)` then scales them. Also set
-`FontSizeBase = 18.0` (the field `FontScaleDpi` already uses; dp, since `FontScaleDpi` applies the
-density) so body text is not tiny; headings use `FontSizeBase * 1.4` pushed with `igPushFont(null, size)` in `ui.rs`.
+`FontSizeBase = 18.0` (up from the default 13 px; in dp, since `FontScaleDpi` applies the density) so body text is not tiny; headings use `FontSizeBase * 1.4` pushed with `igPushFont(null, size)` in `ui.rs`.
+Also set `io.MouseDragThreshold` to Android touch slop (8 dp x scale): ImGui's default 6 physical px is not
+scaled by `ScaleAllSizes`, so finger jitter would cancel both tap and long-press.
 The monospace look is the bundled ImGui default font and stays.
 
 In `ui.rs`, small helpers keep the screen code declarative: `heading(text)` (larger, bright),
@@ -105,11 +104,13 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
    (applies `FrameBg`, `FrameRounding`, `FrameBorderSize` and `FramePadding`) and
    `ImGuiWindowFlags_NoScrollbar`. It holds the typed text, wrapped, or the dim hint "type here", and its height is `igCalcTextSize` of the text at the wrap width plus
    `2 * FramePadding.y`, so a pasted pairing link (~130-300 characters) or a multi-line session
-   prompt is fully visible. A tap pushes `Tap::FocusField` on release (`igIsMouseReleased(0)` for a press that started on the
+   prompt is fully visible. A tap pushes `Tap::FocusField` on release (`igIsMouseReleased_Nil(0)` for a press that started on the
    field, with no long-press latched and no drag), so a long-press does not open the soft keyboard at press start.
-   Holding it is detected by latching the press when `igIsItemClicked(0)` fires on the frame; on later frames,
+   Holding it is detected by latching the press when `igIsItemClicked(0)` fires on the frame; the "press started on field" and
+   "long-press latched" state is derived each frame from ImGui state (`io.MouseClickedPos[0]` inside the field rect; `igIsPopupOpen`
+   or `io.MouseDownDurationPrev[0] >= 0.5` on the release frame), with no field in `UiState`; on later frames,
    once `igIsMouseDown(0)`, `io.MouseDownDuration[0] >= 0.5` and `!igIsMouseDragging(0, -1)` all hold, it opens a
-   popup at the press point with a single "Paste" entry, like other Android apps; choosing it pushes `Tap::PasteField`, and a tap
+   popup at the press point with a single "Paste" entry drawn with `igButton` (so the release that ends the long press cannot trigger it; only a fresh tap inside the popup does), like other Android apps; choosing it pushes `Tap::PasteField`, and a tap
    anywhere else dismisses it. There is no separate Paste button on either screen. Session's prompt field uses `field_frame` too
    (`field_box` is removed).
 6. `primary_button("Use this")`, shown only when the field is non-empty, full width.
@@ -137,9 +138,9 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 
 1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::ZERO`, `Insets::clamped`, `Insets::from_content_rect`, `safe_rect`, `margin`, `card_side`
    (with its `min_side` parameter) and unit tests; declare `pub mod layout;` in `lib.rs`.
-2. Add `system_insets` to `jni_bridge.rs`.
+2. Add `system_insets` to `jni_bridge.rs`, and reword the doc comment at `jni_bridge.rs:75-76` (clipboard served "when the user has just tapped the button that asks") to refer to the Paste entry of the field's long-press popup.
 3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
-   and `ui::draw`; set the style fields in `Imgui::new`.
+   and `ui::draw`; set the style fields and `io.MouseDragThreshold` (touch slop) in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
    with the card and framed field; in `session`, replace `field_box` with `field_frame` (with the long-press Paste popup),
    remove the Paste button, and delete `field_box`; Send (`primary_button`) and Interrupt (`secondary_button`) split the
@@ -147,7 +148,7 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
    size the session transcript child as the content-region height minus `UiState.footer_px` (clamped to at least 3 text line heights;
    `footer_px == 0.0` means first frame, use the one-line-per-row estimate), the
    footer height (everything drawn after the transcript) measured on the previous frame; update
-   `footer_px` from the cursor Y before and after drawing the footer.
+   `footer_px` from the cursor Y before and after drawing the footer; drop `session`'s `display` parameter, which becomes unused.
 5. In `docs/android.md`, add a scan-screen description to the Pair section, and change lines 40-41's
    "tap "Paste" on the scan screen" to "hold the field and tap Paste".
 6. Add the Decisions lines as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
