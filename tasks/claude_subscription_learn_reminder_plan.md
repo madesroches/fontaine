@@ -50,7 +50,9 @@ above. Cost of one capture: one CLI start (about 0.4 s). Findings go into the re
 - Bind `127.0.0.1:0` (tokio `TcpListener`). Launch the CLI through the same `fixed_args`/`launch`
   path as `initialize`, with `ANTHROPIC_BASE_URL` added for this launch only (a `command` variant
   taking extra env; `CONFLICTING_ENV` still refuses an inherited value). Write one user frame
-  (a fresh random nonce per probe, uuid v4) and close stdin. `launch` gains an extra-env parameter (or a `launch_with_env` variant)
+  (a fresh random nonce per probe, uuid v4) and close stdin. The probe launch removes every proxy
+  variable (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, both cases) that `PASSTHROUGH_ENV`
+  would forward, so the loopback request cannot be routed to an outbound proxy. `launch` gains an extra-env parameter (or a `launch_with_env` variant)
   and `ChildFiles::empty` becomes `pub(crate)`, or the launch part of `learn_reminder` stays in
   `cli.rs`.
 - The listener keeps accepting connections and requests (keep-alive included) until the probe ends.
@@ -99,7 +101,8 @@ mutex), so a burst of subagents starts one capture.
   observed reminder.**- `apply` takes the learned template instead of `REMINDER_TEMPLATE`. `place` is untouched and keeps
   failing soft on shape drift.
 - `Sent` carries the `wording`; `Verdicts` keys `broken`, `struck` and the persisted entries by
-  `(version, wording)`. `finished`/`mark`/`strike`/`contains` take the pair. A persisted entry gains
+  `(version, wording)`. `finished`/`mark`/`strike`/`contains`/`clear_strike` take the pair, and
+  `Finding` gains `wording` (from `Sent`), so it drops `Copy`. A persisted entry gains
   `"wording"`; `parse` keeps entries with `template == TEMPLATE_REVISION` (2) and a present `wording`
   string, keyed by `(version, wording)`; a new wording finds no entry under its key, so the verdict
   retires automatically. `TEMPLATE_REVISION` is bumped to 2, which also retires
@@ -134,12 +137,15 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
 3. `transport.rs::prepare`: call `learn_reminder` after the `initialize` answer when the version
    and email gate passes, pass the result to `layout`/`apply`/`Sent`; the warning text names the
    wording.
-4. `fontaine-sdk/examples/claude_cli_double.rs`: new scenario key `reminder` (the text it sends as
-   the first message's reminder block). A launch with `ANTHROPIC_BASE_URL` set is a probe: it never
-   calls `next_run()` or reads `responses`, POSTs a minimal `/v1/messages` body over a plain
-   `std::net::TcpStream` only if `reminder` is set (reads and ignores the reply), answers a fixed
-   plain turn, never applies the hang/descendant/exit keys, and logs its frames under a separate
-   kind that `frames()`/`run_frames()`/`query_frames()`/`frames_by_run` skip.
+4. `rust/fontaine-sdk/examples/claude_cli_double.rs` (the `fontaine` example only wraps it): new scenario key `reminder` (the text it
+   sends as the first message's reminder block). A launch with `ANTHROPIC_BASE_URL` set is a probe:
+   it never calls `next_run()` or reads `responses`, reads its user frame from stdin and, only if
+   `reminder` is set, POSTs `messages:[{role:user, content:[{type:text,text:"<reminder>\n"},
+   {type:text,text:<frame text>}]}]` to `$ANTHROPIC_BASE_URL/v1/messages` over a plain
+   `std::net::TcpStream` (echoing the frame's nonce; reads and ignores the reply), answers a fixed
+   plain turn, never applies the hang/descendant/exit keys, still logs its usual `invocation` entry
+   (with env), and logs only its frames under a separate kind that `frames()`/`run_frames()`/
+   `query_frames()`/`frames_by_run` (in `rust/fontaine/tests/claude_subscription.rs`) skip.
 5. `reminder` defaults to the 2.1.319 wording with the scenario's email, so existing Native-layout
    tests keep working; update the invocation-count assertions in `tests/claude_subscription.rs`
    (~:1521, :1558) for the extra probe launch.
@@ -173,7 +179,8 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
 - 2026-11-20: Entries written before this change are retired by the `TEMPLATE_REVISION` bump
   rather than migrated; they carry no wording to compare.
 - 2026-11-20: The probe sends the CLI's bearer token to a loopback listener that discards it; the
-  listener never forwards. Accepted: the token never leaves the machine and the listener only binds
+  listener never forwards. Accepted: the token never leaves the machine (the probe launch strips all
+  proxy variables, so the request cannot detour through a proxy) and the listener only binds
   `127.0.0.1`.
 
 ## Documentation
@@ -190,6 +197,10 @@ finished(): read shortfall x2 for (version, wording) -> persist verdict {cli, wo
   - `:227-230`: the `(version, wording)` keying, the new shortfall cause and its warning.
   - `:235`: add "or when the reminder could not be learned" to the fallback list.
   - `:100` and `:211`: the extra probe CLI start per process.
+  - `:67-71`: the adapter's own loopback `ANTHROPIC_BASE_URL` on the probe is not an inherited
+    endpoint.
+  - `:80`: the probe's query reaches only the loopback listener, while the login check may still be
+    running.
 - Module docs `claude_subscription/mod.rs:7-8` and `transport.rs:6` ("never reads or forwards a
   credential"): say the reminder probe's loopback listener receives the CLI's request and drops its
   headers.
@@ -227,6 +238,7 @@ Integration (headless-surface tests against `claude_cli_double`, no live API):
   layout.
 - A double that posts nothing / a malformed body / exits before posting: Legacy layout, no warning
   storm.
+- Unit: the probe launch's env has no proxy variable (either case), even when the parent sets them.
 - Two requests in one process produce exactly one double invocation whose env contains
   `ANTHROPIC_BASE_URL` (via `Claude::invocations()`).
 - A hang-script scenario: the probe launch ignores the hang keys and does not wait the discovery
@@ -234,7 +246,8 @@ Integration (headless-surface tests against `claude_cli_double`, no live API):
 
 ## Manual Verification
 
-1. `cargo run -p fontaine-evals -- cache-bench` against the installed CLI (2.1.329): the replayed
-   steps read from the cache with native layout and the run records no verdict. Not automated: it
+1. Run `cache-bench` in the full form from `docs/claude-subscription.md:276` (with `--model` and
+   `--out`) against the installed CLI (2.1.329): confirm the steady steps read from the cache, then
+   confirm `<data dir>/claude-cache-verdicts.json` holds no entry for 2.1.329. Not automated: it
    needs the live API and a subscription account; the unit and double tests cover the logic, this
    checks the real CLI's reminder end to end.
