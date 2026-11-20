@@ -51,7 +51,8 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 - `Gl` loads `glGenTextures`, `glBindTexture`, `glTexImage2D`, `glTexSubImage2D`,
   `glTexParameteri`, `glPixelStorei`, `glDeleteTextures` the same way as the two it has.
-- New `Preview` owned by `Surface` (so it drops with the GL context current): a single `GL_R8`
+- New `Preview` owned by `Surface`, which declares `preview` before `gl` so the texture is deleted
+  while the GL context is still current; `Preview` uses the function pointers loaded on `Gl`. A single `GL_R8`
   texture, (re)allocated with `glTexImage2D` when the frame size changes and updated with
   `glTexSubImage2D` otherwise, `GL_LINEAR` filtering, `GL_CLAMP_TO_EDGE`, `GL_UNPACK_ALIGNMENT` 1.
   Sampling `GL_R8` gives `(r, 0, 0)`, so the texture swizzles to `(R, R, R, 1)` via
@@ -63,12 +64,14 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 ### UI (`ui.rs`)
 
 - `scan_card`, when `frame.preview` is `Some`, draws the image into the card's inner rect with
-  `ImDrawList_AddImageQuad` (rounded to the card; the UV quad from `fit_cover`), then overlays the
+  `ImDrawList_AddImageQuad` (a square quad with the four corners and UVs from `fit_cover`), then overlays the
   existing "Scanning" label and hint over a translucent dark strip at the bottom so they stay
   legible on a bright image. With `None` (no camera, permission off, or no frame yet) the card is
   as today.
-- The texture id is passed as an `ImTextureRef` whose id is the GL texture name; confirm the exact
-  `dear-imgui-sys` 0.22 type while implementing.
+- `dear-imgui-sys` 0.22: `ImDrawList_AddImageQuad(self_, tex_ref: ImTextureRef_c, p1..p4: ImVec2_c,
+  uv1..uv4: ImVec2_c, col: ImU32)`. Build `ImTextureRef_c { _TexData: null_mut(), _TexID:
+  texture_name as u64, .. }` (`ImTextureID = ImU64`; the struct has a `Default` impl) and pass `col`
+  as opaque white.
 
 ## Implementation Steps
 
@@ -100,8 +103,9 @@ reader and needs no new camera output, no JNI and no external-OES shader (ImGui 
 
 ## Documentation
 
-- `docs/android.md`: replace "The card shows no camera image." with a description of the live
-  grayscale preview and that frames are not stored.
+- `docs/android.md`: replace "The card shows no camera image." (line 43) with a description of the
+  live grayscale preview and that frames are not stored, and update the card description (line 41)
+  to mention the live preview behind the "Scanning" label.
 - `CHANGELOG.md`: an Android entry.
 
 ## Testing Strategy
@@ -119,8 +123,3 @@ grant the camera, and confirm the card shows the live, upright image filling the
 "Scanning" label legible; rotate the phone and confirm it stays upright; scan a host's QR code and
 confirm pairing still starts; deny the camera and confirm the card shows the "Camera access is off"
 state. Orientation and GL output cannot be reached by a host test.
-
-## Open Questions
-
-- Does the `dear-imgui-sys` 0.22 draw-list API take a raw `u64` texture id or an `ImTextureRef`
-  (resolved by reading the crate during implementation)?
