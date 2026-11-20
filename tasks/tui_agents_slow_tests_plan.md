@@ -22,10 +22,7 @@ leaking.
   the first one compiles the `fontaine` example (`repo_mcp_server`) when the outer
   `cargo nextest run -p fontaine-tui` did not build it (a per-package run builds only that
   package's targets).
-- Measured on a warm tree: run together, three of the four took about 10 s each (lock queueing
-  behind a nested build); run alone, one took 0.9 s; the whole `agents` binary takes 4.7 s and
-  the whole crate 42 s with no SLOW and no LEAK lines. The >60 s in the issue needs a cold or
-  stale target dir, which is where the nested compile is long. Every test that calls
+- The >60 s in the issue comes from a cold or stale target dir, where the nested compile is long. Every test that calls
   `example_bin` (nine in `agents.rs`, plus `hooks.rs` and `common/mod.rs`) queues on cargo's lock;
   which four exceed 60 s depends on timing.
 - `rust/.config/nextest.toml` sets only `slow-timeout`; there is no setup script.
@@ -41,9 +38,7 @@ process.
    cargo command takes several `-p` and `--example` flags and builds each example from the package
    that has it):
    `cargo build --profile test -p fontaine-tui -p fontaine --example touch_marker --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double`.
-   It uses `--profile test` because that is what `example_bin` passes (`profile_flag` maps the
-   `debug` dir to `test`; `build_and_copy` in `rust/fontaine-testkit/src/lib.rs`), so the nested
-   build sees fresh fingerprints. Default features and no workspace-wide build, because feature
+   Default features and no workspace-wide build, because feature
    unification could make the fingerprints differ from the nested build's. Non-default profiles
    and targets (`--cargo-profile`, `--target`) are out of scope: the script only covers the
    default `cargo nextest run`; otherwise the nested build still works, just slower. Attach the
@@ -67,7 +62,9 @@ process.
    the SLOW and LEAK lines and which tests they name.
 2. Add the nextest setup script to `rust/.config/nextest.toml`: the single `cargo build --profile
    test -p fontaine-tui -p fontaine --example ...` command from Design 1, attached with filter
-   `package(fontaine-tui)` only.
+   `package(fontaine-tui)` only. The config shape (nextest 0.9.146) is a `[scripts.setup.<name>]`
+   definition with `command` plus a `[[profile.default.scripts]]` entry with
+   `filter = 'package(fontaine-tui)'` and `setup = "<name>"`.
 3. Re-run the reproduction; confirm the four tests finish in a few seconds and no SLOW remains,
    and that the nested build is a no-op (the exact nested form, `cargo build -v --profile test -p <pkg>
    --example <name>`, shows `Fresh`, no `Compiling`).
@@ -77,13 +74,15 @@ process.
 5. Re-run the full `cargo nextest run -p fontaine-tui` and `cargo test` (plain, no setup script)
    to confirm both paths still pass.
 6. Update the `example_bin` paragraph in `tasks/design/testing.md` ("no-op under CI's workspace
-   `cargo test`", "tests never prebuild") to describe the nextest setup script.
+   `cargo test`", "tests never prebuild") to describe the nextest setup script, and the module doc in `rust/fontaine-testkit/src/lib.rs`
+   (line 10: `example_bin` is "a no-op under the workspace run", silent on the setup script).
 7. Add a `CHANGELOG.md` `[Unreleased]` / Fixed entry citing #723.
 
 ## Files to Modify
 
 - `rust/.config/nextest.toml`
 - `tasks/design/testing.md`
+- `rust/fontaine-testkit/src/lib.rs` (module doc)
 - `CHANGELOG.md`
 - Whatever the leak diagnosis points at (likely `rust/fontaine-tui/tests/agents.rs`,
   `rust/fontaine-tui/tests/common/mod.rs`)
