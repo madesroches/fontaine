@@ -56,9 +56,8 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
 - Paste (`Tap::PasteField`) inserts the clipboard text untrimmed at the cursor over the selection in
   the prompt field; the paste field keeps its current whole-replacement behavior with the text
   trimmed.
-- A `TextEvent` (only produced by a future backend) keeps replacing the text, via `replace_all`,
-  with the cursor taken from its `selection`, which is in UTF-16 code units: convert to a byte
-  offset, then clamp to the text.
+- A `TextEvent` (never produced by NativeActivity) keeps replacing the text via `replace_all`,
+  cursor at the end.
 
 ### Android layer
 
@@ -86,7 +85,9 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
     press, as today (nothing scrolls);
   - a `UiState` flag tracks a drag-selection in progress; the existing open-popup-while-held branch
     is replaced by opening the menu at release;
-  - long-press release without a drag → select the word under the finger and open the menu;
+  - release that ends a drag-select → keep the dragged range and open the menu;
+  - long-press release without a drag → if the press is inside the existing selection, keep it;
+    otherwise select the word under the finger; either way open the menu;
   - the menu (existing popup) offers **Cut / Copy / Paste / Select all**: Cut/Copy are shown only
     with a selection; Paste and Select all are always shown (Paste does nothing on an empty
     clipboard, as today), emitted as `Tap::Cut`,
@@ -128,6 +129,8 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
   cannot be exercised in CI.
 - ImGui `InputTextMultiline` not used: its cursor/selection logic would be out of reach of the portable unit tests.
 - No cursor blink; a steady cursor line.
+- AFK: a drag-select release opens the Cut/Copy menu with the dragged range kept, and a long press inside an existing selection keeps it and opens the menu instead of selecting a word.
+- AFK: `TextEvent` (never produced by NativeActivity) keeps replacing the text via `replace_all` with the cursor at the end; no UTF-16 selection conversion.
 
 ## Documentation
 
