@@ -9,11 +9,11 @@
 //! last replayed user message instead, before the point where the CLI's addition changes the
 //! bytes.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::tools::error_chain::chain;
 use crate::tools::lock::{lock, lock_recovering};
@@ -50,6 +50,9 @@ const READ_SLACK: u64 = 64;
 const MAX_GAP: Duration = Duration::from_secs(55 * 60);
 /// The API looks back 20 blocks for an earlier write; keep a margin inside it.
 const MAX_ADDED_BLOCKS: usize = 18;
+/// How long a persisted verdict holds before the version is measured again. A version string does
+/// not change when the API's cache behaviour does, so age is the one signal always available.
+const VERDICT_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How many conversations' last requests are remembered.
 const RECORDED: usize = 256;
 
@@ -391,23 +394,51 @@ impl Sent {
     }
 }
 
+/// What a broken replay was judged on, kept so the verdict can be audited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Evidence {
+    pub read: u64,
+    pub expected: u64,
+    pub gap: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Broken(Evidence),
+    Healthy,
+    NoVerdict,
+}
+
 /// Whether `now` shows a replay the cache did not read back. Anything that makes the comparison
 /// unsound gives no verdict.
-fn check(prev: &Record, now: &Record) -> bool {
+fn check(prev: &Record, now: &Record) -> Outcome {
     let extends =
         now.prints.len() > prev.prints.len() && now.prints[..prev.prints.len()] == prev.prints[..];
     if !extends || prev.merged_tail || prev.unreplayable_tail || prev.settings != now.settings {
-        return false;
+        return Outcome::NoVerdict;
     }
-    if now.at.saturating_duration_since(prev.at) >= MAX_GAP {
-        return false;
+    // A request that read nothing was a cold start: its write is not evidence the prefix replays.
+    if prev.usage.read == 0 {
+        return Outcome::NoVerdict;
+    }
+    let gap = now.at.saturating_duration_since(prev.at);
+    if gap >= MAX_GAP {
+        return Outcome::NoVerdict;
     }
     let added: usize = now.blocks[prev.prints.len()..].iter().sum();
     if added > MAX_ADDED_BLOCKS {
-        return false;
+        return Outcome::NoVerdict;
     }
     let expected = prev.usage.read + prev.usage.write_1h;
-    now.usage.read + READ_SLACK < expected
+    if now.usage.read + READ_SLACK < expected {
+        Outcome::Broken(Evidence {
+            read: now.usage.read,
+            expected,
+            gap,
+        })
+    } else {
+        Outcome::Healthy
+    }
 }
 
 #[derive(Default)]
@@ -438,8 +469,30 @@ static RECORDS: LazyLock<Mutex<Records>> = LazyLock::new(|| Mutex::new(Records::
 
 const VERDICTS_FILE: &str = "claude-cache-verdicts.json";
 
-/// The CLI versions whose replay the self-check saw miss the cache, kept in the data dir so a
-/// restart keeps the fallback instead of paying a full-history rewrite to rediscover it.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// A persisted verdict: when it was reached, and the usage it was judged on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    at: u64,
+    read: Option<u64>,
+    expected: Option<u64>,
+}
+
+impl Entry {
+    fn fresh(&self, now: u64) -> bool {
+        now.saturating_sub(self.at) < VERDICT_TTL.as_secs()
+    }
+}
+
+/// The CLI versions whose replay the self-check saw miss the cache twice in a row, kept in the
+/// data dir so a restart keeps the fallback instead of paying a full-history rewrite to
+/// rediscover it. A verdict expires, so a transient condition cannot disable the optimization for
+/// good.
 pub(super) struct Verdicts {
     path: PathBuf,
     warn: Warn,
@@ -447,7 +500,9 @@ pub(super) struct Verdicts {
     // warning waits for the first request.
     load_warning: Mutex<Option<String>>,
     // Only chooses a cache layout, so a poisoned lock is recovered; the file is the durable record.
-    broken: Mutex<BTreeSet<(u32, u32, u32)>>,
+    broken: Mutex<BTreeMap<(u32, u32, u32), Entry>>,
+    // One shortfall is not yet a verdict; kept in memory only, across conversations.
+    struck: Mutex<BTreeSet<(u32, u32, u32)>>,
 }
 
 static STORES: LazyLock<Mutex<HashMap<PathBuf, Arc<Verdicts>>>> =
@@ -459,8 +514,9 @@ fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
     parts.next().is_none().then_some(version)
 }
 
-/// The broken versions a verdicts file holds for the current template revision.
-fn parse(text: &str) -> Result<BTreeSet<(u32, u32, u32)>, serde_json::Error> {
+/// The unexpired broken versions a verdicts file holds for the current template revision. An
+/// entry without a timestamp predates expiry and counts as expired.
+fn parse(text: &str, now: u64) -> Result<BTreeMap<(u32, u32, u32), Entry>, serde_json::Error> {
     let value: Value = serde_json::from_str(text)?;
     Ok(value
         .get("broken")
@@ -470,13 +526,21 @@ fn parse(text: &str) -> Result<BTreeSet<(u32, u32, u32)>, serde_json::Error> {
         .filter(|entry| {
             entry.get("template").and_then(Value::as_u64) == Some(TEMPLATE_REVISION.into())
         })
-        .filter_map(|entry| parse_version(entry.get("cli")?.as_str()?))
+        .filter_map(|entry| {
+            let version = parse_version(entry.get("cli")?.as_str()?)?;
+            let parsed = Entry {
+                at: entry.get("at")?.as_u64()?,
+                read: entry.get("read").and_then(Value::as_u64),
+                expected: entry.get("expected").and_then(Value::as_u64),
+            };
+            parsed.fresh(now).then_some((version, parsed))
+        })
         .collect())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mark {
-    /// The version was already in the set.
+    /// The version already had an unexpired verdict.
     Known,
     Saved,
     Unsaved,
@@ -497,22 +561,22 @@ impl Verdicts {
     fn load(path: PathBuf, warn: Warn) -> Verdicts {
         let mut load_warning = None;
         let broken = match file_lock::read_shared(&path) {
-            Ok(text) => parse(&text).unwrap_or_else(|e| {
+            Ok(text) => parse(&text, unix_now()).unwrap_or_else(|e| {
                 load_warning = Some(format!(
                     "the Claude CLI cache verdicts in {} could not be parsed and are ignored: {}",
                     path.display(),
                     chain(&e)
                 ));
-                BTreeSet::new()
+                BTreeMap::new()
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => {
                 load_warning = Some(format!(
                     "the Claude CLI cache verdicts in {} could not be read and are ignored: {}",
                     path.display(),
                     chain(&e)
                 ));
-                BTreeSet::new()
+                BTreeMap::new()
             }
         };
         Verdicts {
@@ -520,6 +584,7 @@ impl Verdicts {
             warn,
             load_warning: Mutex::new(load_warning),
             broken: Mutex::new(broken),
+            struck: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -530,16 +595,40 @@ impl Verdicts {
         if let Some(message) = held {
             self.warn.emit(&message);
         }
-        lock_recovering(&self.broken).contains(&version)
+        lock_recovering(&self.broken)
+            .get(&version)
+            .is_some_and(|entry| entry.fresh(unix_now()))
+    }
+
+    /// Records a shortfall for `version`; true when the previous observation was one too, which
+    /// is what makes a verdict.
+    pub(super) fn strike(&self, version: (u32, u32, u32)) -> bool {
+        // Advisory state: a poisoned lock costs at most a missed or early verdict.
+        !lock_recovering(&self.struck).insert(version)
+    }
+
+    /// A healthy pair shows the version replays, so an earlier shortfall no longer counts.
+    pub(super) fn clear_strike(&self, version: (u32, u32, u32)) {
+        lock_recovering(&self.struck).remove(&version);
     }
 
     /// Adds a version to the broken set and persists it. A failed write is warned about and
     /// leaves the in-memory verdict in place.
-    pub(super) fn mark(&self, version: (u32, u32, u32)) -> Mark {
-        if !lock_recovering(&self.broken).insert(version) {
-            return Mark::Known;
+    pub(super) fn mark(&self, version: (u32, u32, u32), evidence: &Evidence) -> Mark {
+        let now = unix_now();
+        let entry = Entry {
+            at: now,
+            read: Some(evidence.read),
+            expected: Some(evidence.expected),
+        };
+        {
+            let mut broken = lock_recovering(&self.broken);
+            if broken.get(&version).is_some_and(|known| known.fresh(now)) {
+                return Mark::Known;
+            }
+            broken.insert(version, entry);
         }
-        match self.persist(version) {
+        match self.persist(version, entry, now) {
             Ok(()) => Mark::Saved,
             Err(e) => {
                 self.warn.emit(&format!(
@@ -552,18 +641,32 @@ impl Verdicts {
         }
     }
 
-    fn persist(&self, version: (u32, u32, u32)) -> std::io::Result<()> {
+    fn persist(&self, version: (u32, u32, u32), entry: Entry, now: u64) -> std::io::Result<()> {
         let _guard = file_lock::lock(&self.path)?;
         // Merge what another process wrote since the load. A plain read: `read_shared` would wait
-        // on the lock held here. An unreadable file is replaced by the write below.
+        // on the lock held here. An unreadable file is replaced by the write below, and expired
+        // entries are not carried over.
         let mut broken = std::fs::read_to_string(&self.path)
             .ok()
-            .and_then(|text| parse(&text).ok())
+            .and_then(|text| parse(&text, now).ok())
             .unwrap_or_default();
-        broken.insert(version);
+        broken.insert(version, entry);
         let entries: Vec<Value> = broken
             .iter()
-            .map(|(a, b, c)| json!({"cli": format!("{a}.{b}.{c}"), "template": TEMPLATE_REVISION}))
+            .map(|((a, b, c), entry)| {
+                let mut value = json!({
+                    "cli": format!("{a}.{b}.{c}"),
+                    "template": TEMPLATE_REVISION,
+                    "at": entry.at,
+                });
+                if let Some(read) = entry.read {
+                    value["read"] = read.into();
+                }
+                if let Some(expected) = entry.expected {
+                    value["expected"] = expected.into();
+                }
+                value
+            })
             .collect();
         let text = serde_json::to_string_pretty(&json!({"broken": entries}))
             .expect("a JSON value serializes");
@@ -571,15 +674,42 @@ impl Verdicts {
     }
 }
 
+/// A verdict the self-check reached, with what it was judged on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Finding {
+    pub version: (u32, u32, u32),
+    pub saved: bool,
+    pub evidence: Evidence,
+}
+
+impl Finding {
+    pub(super) fn warning(&self) -> String {
+        let (a, b, c) = self.version;
+        let remembered = if self.saved {
+            " and the verdict is remembered for a week"
+        } else {
+            ""
+        };
+        format!(
+            "the Claude CLI's replayed context was not read back from the prompt cache \
+             (read {} of expected {} after {} s); the cache optimization is off for CLI \
+             version {a}.{b}.{c}{remembered} (`cache-bench` measures it)",
+            self.evidence.read,
+            self.evidence.expected,
+            self.evidence.gap.as_secs()
+        )
+    }
+}
+
 /// Records a finished request and runs the self-check against the conversation's previous one.
-/// Returns the version, and whether its verdict was saved, when this request is the first to show
-/// its replay broken.
+/// Returns the verdict when this request is the second consecutive one to show the version's
+/// replay broken.
 pub(super) fn finished(
     sent: Sent,
     usage: Option<CacheUsage>,
     at: Instant,
     verdicts: &Verdicts,
-) -> Option<((u32, u32, u32), bool)> {
+) -> Option<Finding> {
     let mut records = lock_recovering(&RECORDS);
     let (Layout::Native, Some(version), Some(usage)) = (sent.layout, sent.version, usage) else {
         records.take(&sent.session_id);
@@ -595,17 +725,32 @@ pub(super) fn finished(
         usage,
         at,
     };
-    let broken = previous.is_some_and(|prev| check(&prev, &now));
+    let outcome = previous.map_or(Outcome::NoVerdict, |prev| check(&prev, &now));
     records.put(sent.session_id, now);
     drop(records);
-    if !broken {
+    let evidence = match outcome {
+        Outcome::Healthy => {
+            verdicts.clear_strike(version);
+            return None;
+        }
+        Outcome::NoVerdict => return None,
+        Outcome::Broken(evidence) => evidence,
+    };
+    if !verdicts.strike(version) {
         return None;
     }
-    match verdicts.mark(version) {
-        Mark::Known => None,
-        Mark::Saved => Some((version, true)),
-        Mark::Unsaved => Some((version, false)),
-    }
+    let mark = verdicts.mark(version, &evidence);
+    verdicts.clear_strike(version);
+    let saved = match mark {
+        Mark::Known => return None,
+        Mark::Saved => true,
+        Mark::Unsaved => false,
+    };
+    Some(Finding {
+        version,
+        saved,
+        evidence,
+    })
 }
 
 #[cfg(test)]

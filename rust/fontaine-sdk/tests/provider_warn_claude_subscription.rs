@@ -18,14 +18,16 @@ fn cached(read: u64, write_1h: u64) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn the_cache_self_check_warning_reaches_the_approver_with_the_cli_version() {
+async fn the_cache_self_check_warning_reaches_the_approver_with_the_cli_version_and_numbers() {
     let claude = Claude::new();
     claude.scenario(json!({
         "claude_code_version": "2.1.402",
         "responses": [
             {"text": "a", "usage": cached(0, 500)},
-            {"text": "b", "usage": cached(100, 100)},
-            {"text": "c", "usage": cached(1000, 0)},
+            {"text": "b", "usage": cached(100, 400)},
+            {"text": "c", "usage": cached(200, 100)},
+            {"text": "d", "usage": cached(0, 300)},
+            {"text": "e", "usage": cached(0, 300)},
         ],
     }));
     let models = claude.resolve(None).await.unwrap();
@@ -41,7 +43,7 @@ async fn the_cache_self_check_warning_reaches_the_approver_with_the_cli_version(
         None,
         approver.clone(),
     );
-    for users in [2, 3, 4] {
+    for users in [2, 3, 4, 5, 6] {
         handle
             .completion
             .call(tagged_conversation("2.1.402", users))
@@ -55,4 +57,8 @@ async fn the_cache_self_check_warning_reaches_the_approver_with_the_cli_version(
         .collect();
     assert_eq!(ours.len(), 1, "{warnings:?}");
     assert!(ours[0].contains("2.1.402"), "{warnings:?}");
+    assert!(
+        ours[0].contains("read 0 of expected 300 after"),
+        "{warnings:?}"
+    );
 }
