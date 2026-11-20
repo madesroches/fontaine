@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use android_activity::input::{
     InputEvent, KeyAction, KeyMapChar, Keycode, MotionAction, TextInputAction, TextInputState,
 };
-use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, Rect};
 use dear_imgui_sys as sys;
 use fontaine_remote::{AttachOptions, Client, ClientStore, RelayMode, Target};
 use khronos_egl as egl;
@@ -22,14 +22,22 @@ use sha2::{Digest, Sha256};
 
 use crate::app::{Action, App, Screen};
 use crate::keys::{self, Key};
+use crate::layout::{self, Insets};
 use crate::link::is_pair_link;
 use crate::store::DirStore;
 use camera::Camera;
 use error::{Context, Error, chain};
-use ui::Tap;
+use jni_bridge::RawInsets;
+use ui::{Tap, UiState};
 
 /// How often a camera frame is decoded: a QR decode costs more than a frame's budget.
 const SCAN_INTERVAL: Duration = Duration::from_millis(150);
+
+/// How often the window insets are asked of Java between the events that change them.
+const INSETS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Android touch slop in dp.
+const TOUCH_SLOP_DP: f32 = 8.0;
 
 type EglInstance = egl::DynamicInstance<egl::EGL1_4>;
 
@@ -188,8 +196,28 @@ impl Imgui {
             (*io).IniFilename = std::ptr::null();
             let style = sys::igGetStyle();
             sys::igStyleColorsDark(style);
+            let color = |r: f32, g: f32, b: f32| sys::ImVec4_c {
+                x: r,
+                y: g,
+                z: b,
+                w: 1.0,
+            };
+            (*style).FontSizeBase = 18.0;
+            (*style).FrameRounding = 8.0;
+            (*style).FramePadding = sys::ImVec2_c { x: 14.0, y: 12.0 };
+            (*style).ItemSpacing = sys::ImVec2_c { x: 10.0, y: 12.0 };
+            (*style).FrameBorderSize = 1.0;
+            (*style).ScrollbarSize = 14.0;
+            let colors = &mut (*style).Colors;
+            colors[sys::ImGuiCol_Border as usize] = color(0.42, 0.45, 0.52);
+            colors[sys::ImGuiCol_Button as usize] = color(0.17, 0.42, 0.82);
+            colors[sys::ImGuiCol_ButtonHovered as usize] = color(0.23, 0.50, 0.92);
+            colors[sys::ImGuiCol_ButtonActive as usize] = color(0.13, 0.34, 0.70);
             sys::ImGuiStyle_ScaleAllSizes(style, scale);
             (*style).FontScaleDpi = scale;
+            // ImGui's default drag threshold is physical pixels and ScaleAllSizes leaves it, so
+            // finger jitter would cancel both a tap and a long press.
+            (*io).MouseDragThreshold = TOUCH_SLOP_DP * scale;
             if !sys::backend_shim::android::dear_imgui_backend_android_init(
                 window.ptr().as_ptr().cast(),
             ) {
@@ -242,21 +270,57 @@ struct Surface {
     gl: Gl,
 }
 
-fn render(surface: &Surface, app: &App, field: &str, camera: bool, denied: bool) -> Vec<Tap> {
+/// What `render` needs beyond the app: the typed text, the camera state and the raw numbers the
+/// platform reported about the window.
+struct FrameParams<'a> {
+    field: &'a str,
+    camera_ready: bool,
+    camera_denied: bool,
+    raw_insets: Option<RawInsets>,
+    content_rect: Rect,
+    scale: f32,
+}
+
+/// The insets for this frame. The window insets are primary; the content rect, which the
+/// activity reports without a Java call, covers the time before the first read and the keyboard
+/// before API 30.
+fn resolve_insets(raw: Option<RawInsets>, rect: Rect, display: (f32, f32)) -> Insets {
+    let from_rect =
+        Insets::from_content_rect(rect.left, rect.top, rect.right, rect.bottom, display);
+    let insets = match raw {
+        Some(raw) => Insets {
+            top: raw.top as f32,
+            left: raw.left as f32,
+            right: raw.right as f32,
+            bottom: if raw.includes_keyboard {
+                raw.bottom as f32
+            } else {
+                (raw.bottom as f32).max(from_rect.bottom)
+            },
+        },
+        None => from_rect,
+    };
+    insets.clamped(display)
+}
+
+fn render(surface: &Surface, app: &App, state: &mut UiState, params: &FrameParams<'_>) -> Vec<Tap> {
     let view = app.view();
     // SAFETY: one frame on the UI thread with the context and the GLES context current.
     let taps = unsafe {
         sys::backend_shim::opengl3::dear_imgui_backend_opengl3_new_frame();
         sys::backend_shim::android::dear_imgui_backend_android_new_frame();
         sys::igNewFrame();
-        let taps = ui::draw(
-            &view,
-            surface.imgui.display_size(),
-            field,
-            camera,
-            denied,
-            true,
-        );
+        let display = surface.imgui.display_size();
+        let frame = ui::Frame {
+            display,
+            insets: resolve_insets(params.raw_insets, params.content_rect.clone(), display),
+            margin: layout::margin(params.scale),
+            field: params.field,
+            camera_ready: params.camera_ready,
+            camera_denied: params.camera_denied,
+            scroll_to_end: true,
+        };
+        let taps = ui::draw(&view, &frame, state);
         sys::igRender();
         (surface.gl.clear_color)(0.06, 0.06, 0.08, 1.0);
         (surface.gl.clear)(0x4000);
@@ -293,9 +357,24 @@ struct Activity {
     last_link: Option<[u8; 32]>,
     label: String,
     scale: f32,
+    ui_state: UiState,
+    /// The window insets as last read from Java, in physical pixels.
+    insets: Option<RawInsets>,
+    insets_read: Instant,
+    /// An event that moves the bars or keyboard arrived since the last read.
+    insets_stale: bool,
 }
 
 impl Activity {
+    fn refresh_insets(&mut self) {
+        if !self.insets_stale && self.insets_read.elapsed() < INSETS_INTERVAL {
+            return;
+        }
+        self.insets_stale = false;
+        self.insets_read = Instant::now();
+        self.insets = jni_bridge::system_insets(&self.android);
+    }
+
     fn take_intent_link(&mut self) {
         let Some(link) = jni_bridge::intent_link(&self.android).filter(|l| is_pair_link(l)) else {
             return;
@@ -537,14 +616,17 @@ impl Activity {
         self.input();
         self.drain_client();
         self.scan();
+        self.refresh_insets();
+        let params = FrameParams {
+            field: &self.field,
+            camera_ready: self.camera.is_some(),
+            camera_denied: self.camera_denied,
+            raw_insets: self.insets,
+            content_rect: self.android.content_rect(),
+            scale: self.scale,
+        };
         let taps = match &self.surface {
-            Some(surface) => render(
-                surface,
-                &self.app,
-                &self.field,
-                self.camera.is_some(),
-                self.camera_denied,
-            ),
+            Some(surface) => render(surface, &self.app, &mut self.ui_state, &params),
             None => Vec::new(),
         };
         for tap in taps {
@@ -610,6 +692,10 @@ fn android_main(app: AndroidApp) {
         last_link: None,
         label,
         scale,
+        ui_state: UiState::default(),
+        insets: None,
+        insets_read: Instant::now(),
+        insets_stale: true,
     };
     activity.refresh_hosts();
     activity.take_intent_link();
@@ -629,12 +715,16 @@ fn android_main(app: AndroidApp) {
                         activity.camera = None;
                         activity.surface = None;
                     }
+                    MainEvent::WindowResized { .. } | MainEvent::ContentRectChanged { .. } => {
+                        activity.insets_stale = true;
+                    }
                     MainEvent::Pause => {
                         activity.resumed = false;
                         activity.camera = None;
                     }
                     MainEvent::Resume { .. } => {
                         activity.resumed = true;
+                        activity.insets_stale = true;
                         activity.camera = None;
                         activity.camera_failed = false;
                         activity.permission_stale = true;
