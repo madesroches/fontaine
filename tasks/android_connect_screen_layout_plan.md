@@ -52,14 +52,15 @@ Reading the insets, in `jni_bridge.rs`:
   with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. When the soft
   keyboard is up, `adjustResize` already shrinks the surface, so the bottom inset stays the
   navigation bar only.
-- `Activity` keeps `insets: Insets` and `insets_read: Instant`, applies `Insets::clamped` in the single
-  place it stores them, and refreshes it each frame at most every 500 ms and on every
+- `Activity` keeps `insets: Insets` and `insets_read: Instant`, stores the raw values as read, and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
   Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
   `layout.rs` (`left/top` as the inset, display minus `right/bottom` as the opposite insets). An empty
   rect (`right == 0` or `bottom == 0`, which is what `android-activity` reports before the first
   `onContentRectChanged`) gives `Insets::ZERO`, not the whole display.
-- `ui::draw` takes the `Insets` and `margin`; it positions the window at the safe rect and sets
+- `render` applies `Insets::clamped` once per frame with that frame's `Imgui::display_size()`
+  (the display size may be unset before the first frame or stale after rotation when insets are read).
+- `ui::draw` takes the clamped `Insets` and `margin`; it positions the window at the safe rect and sets
   `WindowPadding = (margin, margin)` for the frame, so everything inside is inset from the bars and
   the screen edge. The clear color still fills the whole surface, so the bars sit on the app
   background.
@@ -76,7 +77,7 @@ The monospace look is the bundled ImGui default font and stays.
 
 In `ui.rs`, small helpers keep the screen code declarative: `heading(text)` (larger, bright),
 `caption(text)` (dim, wrapped), `gap(px)` (`igDummy`), `primary_button(label)` and
-`secondary_button(label)` (full width, `FramePadding` taller than default, accent vs. neutral
+`secondary_button(label)` (full width, the global `FramePadding` unchanged, accent vs. neutral
 `Button` color pushed and popped), and `field_frame(field, hint, taps)` (below).
 
 ### Scan screen
@@ -85,17 +86,17 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 
 1. Notice, when present (unchanged colors), with a `gap`.
 2. `heading("Connect to a Fontaine host")`, then a `caption` line with the one-sentence action.
-3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, width
-   `avail_width()` capped at the height remaining after the notice, heading and caption minus the
-   height of the paste section (`below_px`, computed from style metrics: caption line height + one-line
-   `field_frame` height + `primary_button` height + 3 * `ItemSpacing.y`), with
-   a minimum side of 8 text line heights (`card_side(avail_width, avail_height, below_px, min_side)`; the caller passes
-   `8 * igGetTextLineHeight()` as `min_side`; the side is `min(avail_width, max(min_side, avail_height - below_px))`, floored at 0),
+3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, sized by
+   `card_side(avail_width, avail_height, below_px, min_side)` where `avail_height` is the height
+   remaining after the notice, heading and caption, `below_px` is the height of the paste section
+   (computed from style metrics: caption line height + one-line `field_frame` height +
+   `primary_button` height + 3 * `ItemSpacing.y`) and the caller passes `8 * igGetTextLineHeight()`
+   as `min_side`; the side is `min(avail_width, max(min_side, avail_height - below_px))`, floored at 0,
    so the paste section stays on screen in landscape. Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
    - not live (keyed on `!camera_ready`, the camera not running): when `camera_denied` is set,
-     "Camera access is off" and the existing denied wording; otherwise (e.g. between the Allow tap
+     "Camera access is off" and the denied wording reworded to say "hold the field below and tap Paste" in place of the removed Paste button; otherwise (e.g. between the Allow tap
      and the permission result) a neutral "Camera is not running" line. Either way a
      `primary_button("Allow camera")` inside the card.
    No camera image is drawn (Decisions).
@@ -104,8 +105,10 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
    (applies `FrameBg`, `FrameRounding`, `FrameBorderSize` and `FramePadding`) and
    `ImGuiWindowFlags_NoScrollbar`. It holds the typed text, wrapped, or the dim hint "type here", and its height is `igCalcTextSize` of the text at the wrap width plus
    `2 * FramePadding.y`, so a pasted pairing link (~130-300 characters) or a multi-line session
-   prompt is fully visible. A tap inside it pushes `Tap::FocusField` as today. Holding it (primary pointer down on the
-   frame for 0.5 s without dragging, detected once per press from `igIsItemActive()` and the io's `MouseDownDuration`) opens a
+   prompt is fully visible. A tap pushes `Tap::FocusField` on release (`igIsMouseReleased(0)` for a press that started on the
+   field, with no long-press latched and no drag), so a long-press does not open the soft keyboard at press start.
+   Holding it is detected by latching the press when `igIsItemClicked(0)` fires on the frame; on later frames,
+   once `igIsMouseDown(0)`, `io.MouseDownDuration[0] >= 0.5` and `!igIsMouseDragging(0, -1)` all hold, it opens a
    popup at the press point with a single "Paste" entry, like other Android apps; choosing it pushes `Tap::PasteField`, and a tap
    anywhere else dismisses it. There is no separate Paste button on either screen. Session's prompt field uses `field_frame` too
    (`field_box` is removed).
@@ -138,12 +141,15 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
-   with the card and framed field; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
+   with the card and framed field; in `session`, replace `field_box` with `field_frame` (with the long-press Paste popup),
+   remove the Paste button, and delete `field_box`; Send (`primary_button`) and Interrupt (`secondary_button`) split the
+   session row in halves, with "Leave session" full width below; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
    size the session transcript child as the content-region height minus `UiState.footer_px` (clamped to at least 3 text line heights;
    `footer_px == 0.0` means first frame, use the one-line-per-row estimate), the
    footer height (everything drawn after the transcript) measured on the previous frame; update
    `footer_px` from the cursor Y before and after drawing the footer.
-5. In `docs/android.md`, add a scan-screen description to the Pair section.
+5. In `docs/android.md`, add a scan-screen description to the Pair section, and change lines 40-41's
+   "tap "Paste" on the scan screen" to "hold the field and tap Paste".
 6. Add the Decisions lines as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
    subsection of `tasks/fontaine_harness_plan.md` Decisions (where the Android lines live), plus a
    `CHANGELOG.md` `[Unreleased]` "Fixed" entry.
@@ -179,11 +185,8 @@ section, and change the "tap Paste" instructions (Pair, fallback) to "hold the f
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side`; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
-  a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
-  both the width and the remaining height, in landscape leaves `below_px` for the paste section
-  (or the minimum side when that is not possible), and is never negative on a tiny display;
-  `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
+  the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
   left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
 
