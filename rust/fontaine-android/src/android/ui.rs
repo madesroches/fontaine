@@ -263,9 +263,28 @@ pub fn draw(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState) -> Vec<Tap>
     taps
 }
 
+/// Whether the press landed inside the rect, limited to the part of it the current window shows:
+/// a field scrolled partly out of view is not tappable where it is cut off.
 fn mouse_clicked_in(min: ImVec2_c, max: ImVec2_c) -> bool {
-    // SAFETY: the context is current and the io struct lives as long as it.
-    let at = unsafe { (*sys::igGetIO_Nil()).MouseClickedPos[0] };
+    // SAFETY: a frame is open; the context is current and the io struct lives as long as it.
+    let (at, clip_min, clip_max) = unsafe {
+        let list = sys::igGetWindowDrawList();
+        (
+            (*sys::igGetIO_Nil()).MouseClickedPos[0],
+            sys::ImDrawList_GetClipRectMin(list),
+            sys::ImDrawList_GetClipRectMax(list),
+        )
+    };
+    let (min, max) = (
+        ImVec2_c {
+            x: min.x.max(clip_min.x),
+            y: min.y.max(clip_min.y),
+        },
+        ImVec2_c {
+            x: max.x.min(clip_max.x),
+            y: max.y.min(clip_max.y),
+        },
+    );
     at.x >= min.x && at.x <= max.x && at.y >= min.y && at.y <= max.y
 }
 

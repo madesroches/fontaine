@@ -281,26 +281,18 @@ struct FrameParams<'a> {
     scale: f32,
 }
 
-/// The insets for this frame. The window insets are primary; the content rect, which the
-/// activity reports without a Java call, covers the time before the first read and the keyboard
-/// before API 30.
 fn resolve_insets(raw: Option<RawInsets>, rect: Rect, display: (f32, f32)) -> Insets {
-    let from_rect =
-        Insets::from_content_rect(rect.left, rect.top, rect.right, rect.bottom, display);
-    let insets = match raw {
-        Some(raw) => Insets {
-            top: raw.top as f32,
-            left: raw.left as f32,
-            right: raw.right as f32,
-            bottom: if raw.includes_keyboard {
-                raw.bottom as f32
-            } else {
-                (raw.bottom as f32).max(from_rect.bottom)
-            },
-        },
-        None => from_rect,
-    };
-    insets.clamped(display)
+    layout::resolve_insets(
+        raw.map(|raw| layout::WindowInsets {
+            top: raw.top,
+            left: raw.left,
+            right: raw.right,
+            bottom: raw.bottom,
+            includes_keyboard: raw.includes_keyboard,
+        }),
+        (rect.left, rect.top, rect.right, rect.bottom),
+        display,
+    )
 }
 
 fn render(surface: &Surface, app: &App, state: &mut UiState, params: &FrameParams<'_>) -> Vec<Tap> {

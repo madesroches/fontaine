@@ -37,8 +37,8 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
 
 - `Insets { top, left, right, bottom }` in physical pixels (the unit of ImGui coordinates here),
   plus `Insets::ZERO`.
-- `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset is capped
-  at 40 % of the display on its axis (the bottom at 60 %, so a soft keyboard fits) so a bad value
+- `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset but the bottom is capped
+  at 40 % of the display on its axis (the bottom has only the axis total below, so a soft keyboard fits in landscape too) so a bad value
   from the platform never collapses the window. Opposing insets also total at most 80 % of the axis
   (the bottom, then the right, is reduced), so `safe_rect` keeps at least 20 % of each axis and never
   returns a 0 size, which `SetNextWindowSize` treats as auto-fit.
@@ -199,7 +199,7 @@ section, and change the "tap Paste" instructions (Pair section, lines 40-41) to 
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis (60 % for the bottom, so a keyboard-height bottom inset survives); oversized opposing insets (e.g. 40 % top + 60 % bottom, likewise left/right) leave `safe_rect` a positive size of at least 20 % of the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  the axis (a keyboard-height bottom inset, portrait or landscape, survives up to the axis total); oversized opposing insets (e.g. 40 % top + 60 % bottom, likewise left/right) leave `safe_rect` a positive size of at least 20 % of the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
   left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
