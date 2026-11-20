@@ -43,15 +43,21 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 2. **Sign** (`sign` job gains `needs: build-android`): download `android-unsigned-apk` into
    `dev-installer/`, apply the Android signature with `apksigner` using the keystore secrets from the
    `dev-signing` environment (same step shape as release.yml), then
-   `release-sign.sh dev-installer`, which now also signs the APK. The `dev-installer` artifact thus
-   carries both installers and the APK with signatures.
+   `release-sign.sh dev-installer`, which now also signs the APK and fails if it is missing (as it
+   does for each installer). The `dev-installer` artifact thus carries both installers and the APK
+   with signatures. The APK is a hard dependency of `sign`: no unsigned or missing APK is published.
 3. **Android signing key**: a dedicated dev keystore, distinct from the release one, stored as
    `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` in the `dev-signing`
    environment. It is stable across builds so dev builds update in place. Because the dev APK and the
    release APK are signed by different keys, Android refuses to install one over the other; the docs
-   say so. The `versionCode` must increase per dev build for Android to accept an update: the
-   implementer checks how `build-apk.sh` derives it and, if it is not monotonic, derives it from the
-   run number (see Open Questions).
+   say so.
+   **versionCode**: `build-apk.sh` derives `major*1000000 + minor*1000 + patch` from `rust/Cargo.toml`
+   (0.1.0 gives 1000), ignoring any prerelease/build suffix, and takes only `<out.apk> [--debug-sign]`
+   with `versionName` the bare Cargo version. Every dev build between version bumps would thus share
+   one `versionCode` and Android would not update in place. `build-apk.sh` therefore accepts optional
+   `FONTAINE_APK_VERSION_CODE` and `FONTAINE_APK_VERSION_NAME`, which `dev.yml`'s `build-android` sets
+   (code = dev.yml `run_number`, name = `<version>-dev.<n>+<commit>`, the receipt version of the
+   installers). Unset, the script behaves exactly as today (release and `android.yml` unchanged).
 4. **Verify** (`release-verify.sh`): the `dev-installer` kind accepts `fontaine-android.apk` and its
    `.minisig` in addition to the installers (trusted comment `channel=dev`), and requires the APK
    under `FONTAINE_REQUIRE_APK=1`. `stable-installer` sets that variable.
@@ -65,27 +71,46 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 
 ## Implementation Steps
 
-1. `.github/scripts/release-sign.sh`: in the `dev-installer` branch also include
-   `$dir/fontaine-android.apk` when present; update the comments (the "release channel only" comment
-   goes).
+0. `rust/fontaine-android/build-apk.sh`: honor optional `FONTAINE_APK_VERSION_CODE` (must be a
+   positive integer below 2100000000, else exit 1) and `FONTAINE_APK_VERSION_NAME`, overriding the
+   Cargo-derived `code` and `name`; unset keeps today's values; update the header comment.
+1. `.github/scripts/release-sign.sh`: in the `dev-installer` branch require and sign
+   `$dir/fontaine-android.apk` (`fail "no $apk in '$dir'"` if missing, like the installers); update
+   the comments (the "release channel only" comment goes).
 2. `.github/scripts/release-verify.sh`: in the `dev-installer` branch accept the APK and its
    `.minisig`, check it with `check_installer ... dev` when present, require it under
    `FONTAINE_REQUIRE_APK=1`; update headers.
-3. `.github/workflows/dev.yml`: add `build-android`; extend `sign` (needs, download, apksigner step,
-   `dev-installer` dir); extend `stable-installer` (require APK, upload, byte compare); update the
+3. `.github/workflows/dev.yml`: add `build-android` (sets the two version env vars); extend `sign`
+   (needs, download, apksigner step, `dev-installer` dir); extend `stable-installer` (require APK, upload, byte compare); update the
    top-of-file comment.
-4. `.github/workflows/ci.yml`: add dev-installer fixture tests: sign a fixture with the APK, verify
-   passes, required-and-missing fails, tampered APK fails, an APK with a `channel=release` signature
-   fails.
+4. `.github/workflows/ci.yml` (dev-installer fixtures, about lines 578-650): the signer now requires
+   the APK, so the existing dev-installer sign fixtures (`signed_installer`, `other_signed`,
+   `one_missing`) get a fixture APK added. APK-less fixtures stay valid for the verifier when
+   `FONTAINE_REQUIRE_APK` is unset (only the signer demands the APK). APK cases mirror the installer
+   set: tampered, missing `.minisig`, renamed APK, wrong channel (`channel=release` signature), plus
+   required-and-missing under `FONTAINE_REQUIRE_APK=1`, and a signer-missing-APK case beside the
+   signer-missing-installer loop. Also pin that the `dev` archive kind of `release-verify.sh` still
+   rejects `fontaine-android.apk` (the existing `channel = release` guard), and add a shell check of
+   the version code: with `FONTAINE_APK_VERSION_CODE` set per run number, the code grows between
+   run numbers (e.g. 41 then 42) and the unset path still derives 1000 from the 0.1.0 Cargo version
+   (test the derivation by extracting it, or a `--print-version` style dry path, without needing the
+   NDK).
 5. `tasks/fontaine_harness_plan.md` `## Decisions`: update the 2026-11-18 (#710, AFK) line's
    "release channel only" claim and add a dated line for this change (dev keystore, `dev` release
    only), at the end of its subsection.
-6. Docs: `docs/android.md`, `docs/installing.md`, `docs/verifying-releases.md` (dev APK, the stable
-   URL, `dev.signing.pub`, the key-mismatch note), README link.
+6. Docs: `docs/android.md`, README link, and the stale lines of:
+   - `docs/verifying-releases.md` line 3 ("Android APK of a tagged release"), lines ~89-99 (APK
+     described as release key only; add the dev APK, its Android signature from the dev keystore and
+     the key-mismatch note), line ~32 and lines ~72-76 (dev installers under `dev.signing.pub`; add
+     the APK).
+   - `docs/installing.md` lines ~256-257 ("not to `dev` builds"): add the stable dev APK URL.
+   - the master plan's workspace-layout description of `dev.yml` (line ~207, "the signed dev
+     channel"): mention the dev APK.
 7. `CHANGELOG.md` entry.
 
 ## Files to Modify
 
+- `rust/fontaine-android/build-apk.sh`
 - `.github/scripts/release-sign.sh`, `.github/scripts/release-verify.sh`
 - `.github/workflows/dev.yml`, `.github/workflows/ci.yml`
 - `tasks/fontaine_harness_plan.md`
@@ -101,9 +126,13 @@ as `dev-<n>` is the immutable archive release and `dev` is the one URL that alwa
 
 ## Decisions
 
+- AFK: dev `versionCode` is the dev.yml `run_number` (monotonic across Cargo bumps; dev and release APKs use different keys and never update each other, so it need not relate to the Cargo-derived code, 1000 for 0.1.0); it stays far below Android's 2100000000 limit. `base*1000+run` was rejected: it collides once run numbers pass 999.
+- AFK: the APK is a hard dependency of `sign` (fail closed): until the maintainer creates the dev Android keystore secrets in `dev-signing`, the dev channel stops publishing; they must exist before merge.
+- AFK: `release-sign.sh dev-installer` requires the APK; `release-verify.sh dev-installer` requires it only under `FONTAINE_REQUIRE_APK=1`, which `stable-installer` sets; the `dev` archive kind keeps rejecting the APK.
+
 ## Documentation
 
-See step 6: the dev APK URL, that it is signed by the dev keys, and that dev and release APKs cannot
+See step 6 (exact stale lines listed there): the dev APK URL, that it is signed by the dev keys, and that dev and release APKs cannot
 update each other.
 
 ## Testing Strategy
@@ -122,7 +151,4 @@ the real secrets and the live release, which no fixture has.
 
 ## Open Questions
 
-- Does `fontaine-android/build-apk.sh` produce a monotonically increasing `versionCode`? If not,
-  dev updates over a previous dev APK are rejected by Android. Settle by reading the script.
-- The dev Android keystore and secrets must be created in the `dev-signing` environment by the
-  maintainer; the workflow fails closed with an explicit error until they exist.
+None.
