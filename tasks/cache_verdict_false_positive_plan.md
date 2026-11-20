@@ -32,19 +32,17 @@ re-measurable instead of permanent.
 
 ## Design
 
-Step 0 is evidence, since the root cause is not known from the code alone (CLI regression versus a
-false positive).
+The root cause is not known from the code alone (CLI regression versus a false positive), and no
+evidence of a template change exists, so the plan treats the verdict as a possible false positive:
+the hardening below ships, and `TEMPLATE_REVISION` and the template stay unchanged. A live
+`cache-bench` comparison of 2.1.329 against the last known good version is a manual follow-up, not
+a gate.
 
-1. **Investigate** (manual, recorded in `## Decisions` when done): run `cache-bench` against 2.1.329 and
-   the last version known good; if 2.1.329 native replay reads back, the verdict is a false
-   positive and the checks below close the hole. If it genuinely misses, record the byte-level
-   difference (the reminder template changed in 2.1.329) and bump `TEMPLATE_REVISION`/update the
-   template in the same change.
-2. **Record the evidence.** `Record` keeps its `CacheUsage`; `finished` returns the previous and
+1. **Record the evidence.** `Record` keeps its `CacheUsage`; `finished` returns the previous and
    current usage and the gap with the verdict, and the warning prints them
    (`read X of expected Y after Z s`). The persisted entry gains optional `read`, `expected`
    fields for audit; `parse` ignores them.
-3. **Harden `check` against false positives**:
+2. **Harden `check` against false positives**:
    - A previous request that itself read nothing (`prev.usage.read == 0`) is a cold start, so the
      pair gives no verdict: its write is not evidence of a replayable prefix.
    - A verdict needs the shortfall twice in a row for the same version: the first shortfall is held
@@ -53,7 +51,7 @@ false positive).
      three-way outcome (broken / healthy / no verdict): only a healthy pair clears the strike; a
      no-verdict pair (skipped or cold) leaves it untouched. The strike is per version, across
      conversations.
-4. **Expire the verdict.** Each persisted entry gets a `"at"` unix timestamp. `load` drops entries
+3. **Expire the verdict.** Each persisted entry gets a `"at"` unix timestamp. `load` drops entries
    older than 7 days, and the next `mark` rewrites the file without them, so a version is
    re-measured after a week and a transient condition cannot disable the optimization for good.
    Entries without `"at"` (written before this change) count as expired. `parse` and the in-memory
@@ -63,13 +61,12 @@ false positive).
 
 ## Implementation Steps
 
-1. Run the investigation in Design 1; note the outcome in `## Decisions`.
-2. `context.rs`: usage and gap carried in `Record`/the return of `finished`; the strike set; `check`
-   returns broken/healthy/no verdict and skips cold previous pairs; `"at"` timestamp on write and expiry in `parse`/`load`. Bump
-   `TEMPLATE_REVISION` only if step 1 shows a template change.
-3. `transport.rs`: warning text includes the numbers from `finished`.
-4. `context/tests.rs`: the tests below.
-5. `docs/claude-subscription.md`: replace the "kept until the template changes" sentence with the
+1. `context.rs`: usage and gap carried in `Record`/the return of `finished`; the strike set; `check`
+   returns broken/healthy/no verdict and skips cold previous pairs; `"at"` timestamp on write and expiry in `parse`/`load`. Do not bump
+   `TEMPLATE_REVISION` or change the template.
+2. `transport.rs`: warning text includes the numbers from `finished`.
+3. `context/tests.rs`: the tests below.
+4. `docs/claude-subscription.md`: replace the "kept until the template changes" sentence with the
    two-strike rule and the 7-day expiry. `CHANGELOG.md`: entry.
 
 ## Files to Modify
@@ -92,7 +89,7 @@ false positive).
 
 ## Decisions
 
-None yet.
+- AFK: 2026-11-20 — Whether CLI 2.1.329 is a genuine regression is unanswered (needs a live `cache-bench` run); take the most conservative option satisfying #718: ship the false-positive hardening (cold-previous skip, two strikes, 7-day expiry, numbers in the warning) and do NOT bump `TEMPLATE_REVISION` or change the template, since no evidence of a template change exists; the live `cache-bench` comparison is a manual follow-up, not a gate.
 
 ## Documentation
 
@@ -119,9 +116,9 @@ Unit tests against a temp data dir and constructed `Record`s, no live CLI:
 
 1. `cargo run -p fontaine-evals -- cache-bench` against the installed CLI (2.1.329) and the previous
    version: native replay should read back on a healthy version. This needs the real CLI and the
-   live API, which no unit test reaches.
+   live API, which no unit test reaches. It is a manual follow-up, not a gate: if 2.1.329 genuinely
+   misses, record the byte-level template difference and bump `TEMPLATE_REVISION` in a separate change.
 
 ## Open Questions
 
-- Is 2.1.329 a genuine regression? Answered by Manual Verification step 1; the plan's step 2 forks on
-  it.
+None.
