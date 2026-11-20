@@ -67,17 +67,16 @@ The checksums catch a corrupted download; only the signature proves who made the
 
 ## Verify the installer by hand
 
-Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows, or `fontaine-android.apk`) and its `.minisig` from the
+Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows) and its `.minisig` from the
 [`dev` release](https://github.com/madesroches/fontaine/releases/tag/dev) and
 [`dev.signing.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.signing.pub), then:
 
 ```
 minisign -Vm fontaine-installer.sh -p dev.signing.pub
 minisign -Vm fontaine-installer.ps1 -p dev.signing.pub
-minisign -Vm fontaine-android.apk -p dev.signing.pub
 ```
 
-The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`, or `fontaine-android.apk`); its `version` and
+The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`); its `version` and
 `commit` name the build whose `dev-<n>` archives the script downloads. The installers do not verify
 this signature themselves; see [Installing Fontaine](installing.md#verification) and [on Windows](installing.md#verification-windows).
 
