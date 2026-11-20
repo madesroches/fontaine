@@ -427,7 +427,35 @@ fn a_tool_the_request_did_not_define_is_refused() {
                       "content_block": {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}})),
     ));
     assert!(
-        error.contains("did not define: `Bash`; this request defines read_file"),
+        error.contains(
+            "did not define: `Bash`; the model named a tool that is not in this request, which defines read_file"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_variant_of_a_defined_tool_name_is_refused_and_never_forwarded() {
+    let mut r = reader(&["job_cancel"]);
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    let failed = feed(
+        &mut r,
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "tool_use", "id": "t", "name": "job_cancel_placeholder", "input": {}}})),
+    )
+    .expect_err("a failure");
+    assert_eq!(
+        claude_error(&failed).map(|e| e.kind),
+        Some(ErrorKind::Protocol)
+    );
+    let error = failed.to_string();
+    assert!(
+        error.contains("did not define: `job_cancel_placeholder`; the model named a tool that is not in this request"),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("(event: stream_event/content_block_start)"),
         "{error}"
     );
 }
@@ -457,7 +485,9 @@ fn an_undefined_call_lists_a_capped_set_of_the_defined_tools() {
                       "content_block": {"type": "tool_use", "id": "t", "name": "Task", "input": {}}})),
     ));
     assert!(
-        error.contains("`Task`; this request defines no tools"),
+        error.contains(
+            "`Task`; the model named a tool that is not in this request, which defines no tools"
+        ),
         "{error}"
     );
 }

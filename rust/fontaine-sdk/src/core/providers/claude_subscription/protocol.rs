@@ -1065,15 +1065,15 @@ impl Reader {
     fn undefined_call(&self, cli_name: &str) -> Failure {
         let defined = self.expect.aliases.names();
         let defined = if defined.len() == 0 {
-            "this request defines no tools".to_string()
+            "which defines no tools".to_string()
         } else {
             format!(
-                "this request defines {}",
+                "which defines {}",
                 capped_list(defined.map(str::to_string), SHOWN_DEFINED)
             )
         };
         protocol(&format!(
-            "the Claude CLI called a tool Fontaine did not define: {}; {defined}",
+            "the Claude CLI called a tool Fontaine did not define: {}; the model named a tool that is not in this request, {defined}",
             quoted(cli_name)
         ))
     }
