@@ -28,23 +28,27 @@ is not in the request.
    model did not name exactly. `restore_call` stays unchanged.
 2. **No new `ErrorKind`, no retry.** The failure stays `ErrorKind::Protocol`, so the `(event: ...)`
    suffix and debug trail stay (see Trade-offs).
-3. **Clearer message.** `undefined_call` says the model named a tool that is not in the request,
-   keeping the called name and the capped list of defined tools. No "did you mean" hint.
+3. **Clearer message.** `undefined_call` produces exactly: ``the Claude CLI called a tool Fontaine did not define: `<name>`; the model named a tool that is not in this request, which defines <capped list>``
+   (`<name>` is the called name, `<capped list>` the existing capped list of defined tools). The
+   prefix up to the name is unchanged, so substring assertions on ``did not define: `X`;`` still
+   hold. No "did you mean" hint. The init-time message in `validate_init` keeps its old wording.
 4. **Trust boundary unchanged.** The refused call is never forwarded, never reaches the permission
    pipeline, and is recorded as `request_failed`. `validate_init` is untouched.
 
 ## Implementation Steps
 
 1. `protocol.rs`: reword the message in `undefined_call`; keep the `Protocol` kind.
-2. Tests in `protocol/tests.rs` (see Testing Strategy).
-3. `docs/claude-subscription.md`: update the wording.
-4. `CHANGELOG.md`: a Fixed entry for #717.
+2. Tests in `protocol/tests.rs` (see Testing Strategy): update the two existing tests asserting the
+   old `undefined_call` wording (`a_tool_the_request_did_not_define_is_refused`,
+   `an_undefined_call_lists_a_capped_set_of_the_defined_tools`) to the new wording; the
+   `validate_init` message and its tests stay unchanged.
+3. `CHANGELOG.md`: a Fixed entry for #717.
 
 ## Files to Modify
 
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/protocol.rs`
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/protocol/tests.rs`
-- `docs/claude-subscription.md`, `CHANGELOG.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -65,11 +69,9 @@ is not in the request.
 - AFK: no live capture is available, so the fix is a clearer message, not an alias.
 - AFK: no retry and no new `ErrorKind`; retry needs an `Http` wrapper that loses `claude_error`
   typing, and a new pub enum variant is semver-breaking. A retry can be a separate follow-up issue.
-
-## Documentation
-
-`docs/claude-subscription.md`: the "Failures" wording for an undefined tool name (the model named a
-tool not in the request; the request fails).
+- AFK: the new message keeps the existing prefix up to the called name and appends the explanation,
+  the most conservative wording, so existing substring assertions partly survive. Docs never quote
+  the message text, so no docs change.
 
 ## Testing Strategy
 
@@ -79,4 +81,6 @@ All unit tests, no live CLI:
   `job_cancel` defined) is refused, is never forwarded as a frame, the message says the model named
   a tool not in the request and names the call, and the error is still `ErrorKind::Protocol` with
   the `(event: ...)` suffix.
-- An arbitrary unknown name (`Bash`, a 500-char name) is still refused.
+- The two existing tests (`a_tool_the_request_did_not_define_is_refused`,
+  `an_undefined_call_lists_a_capped_set_of_the_defined_tools`) are updated to the new wording; they
+  pin the arbitrary unknown name and capped-list cases, so no separate test for those.
