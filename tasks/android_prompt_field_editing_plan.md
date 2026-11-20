@@ -17,7 +17,7 @@ IME `InputConnection`, which the current build cannot provide (see Trade-offs an
 
 - `rust/fontaine-android/src/keys.rs` — `apply(&mut String, Key)` appends a char or pops the last
   one; `Enter` asks to submit.
-- `rust/fontaine-android/src/android/mod.rs` — `App::field: String` (line ~502); `input()` (~750)
+- `rust/fontaine-android/src/android/mod.rs` — `Activity::field: String` (lines ~486/502) and `FrameParams::field: &'a str` (~432); `input()` (~750)
   forwards only pointer 0 to ImGui as a mouse, turns `KeyEvent`s into `Key`s and applies them, and
   takes a `TextEvent` as a wholesale replacement of the field. `clear_field`, `Tap::PasteField` and
   `Tap::SubmitField` reset the field and call `set_text_input_state(default())`.
@@ -53,24 +53,37 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
 - `keys::apply` takes `&mut Field` instead of `&mut String`; `Key` gains `Left`, `Right`, `Delete`
   (D-pad and hardware keyboards deliver them; the soft keyboard does not). Behavior for existing
   keys is unchanged except that it now acts at the cursor.
-- Paste (`Tap::PasteField`) inserts at the cursor over the selection in the prompt field; the paste
-  field keeps its current whole-replacement behavior with the text trimmed.
+- Paste (`Tap::PasteField`) inserts the clipboard text untrimmed at the cursor over the selection in
+  the prompt field; the paste field keeps its current whole-replacement behavior with the text
+  trimmed.
 - A `TextEvent` (only produced by a future backend) keeps replacing the text, via `replace_all`,
-  with the cursor taken from its `selection` clamped to the text.
+  with the cursor taken from its `selection`, which is in UTF-16 code units: convert to a byte
+  offset, then clamp to the text.
 
 ### Android layer
 
 - **Hit-testing and drawing (`ui.rs`)**: `field_frame` takes `&Field`. It draws the wrapped text
   with the selection as a filled rect behind the selected glyph range and the cursor as a thin
   line (blinking is skipped: a steady line is enough and avoids forced redraws). Mapping a point to
-  a byte index uses ImGui's text layout: wrap lines with `ImFont_CalcWordWrapPositionA`, pick the
-  line from `y`, then the char whose cumulative `igCalcTextSize` width spans `x`. The reverse
+  a byte index uses ImGui's text layout: wrap lines with `ImFont_CalcWordWrapPosition`, pick the
+  line from `y`, then the char whose cumulative width spans `x`. The reverse
   (index to rect) uses the same wrap. Both live in one small helper pair so draw and hit-test
-  cannot disagree.
+  cannot disagree. To match what ImGui draws, the helpers copy `ImFont::RenderText`'s line loop:
+  wrap with `ImFont_CalcWordWrapPosition(font, size, text, end, wrap_width)` and
+  `igImTextCalcWordWrapNextLineStart`, so blanks (spaces, tabs, one `\n`) after a wrap are skipped
+  and indices in those runs map to the line end; measure with the unrounded `ImFont_CalcTextSizeA`
+  (font `igGetFont()`, size `igGetFontSize()`), not `igCalcTextSize`, which rounds widths up, with
+  `hide_text_after_double_hash` false; the wrap width is the child's own content width, not
+  `width - 2*pad_x`; and the measured field height counts the empty line after a trailing `\n`.
+  A NUL byte shifts offsets (`c()` strips it before drawing, and `clipboard_text` can return one),
+  so `Field::insert` and `replace_all` strip `'\0'`.
 - **Gestures** (pointer 0 only, as now):
   - short tap → `Tap::MoveCursor(idx)` and open the keyboard (replaces `Tap::FocusField`);
   - press-and-drag after the long-press threshold → `Tap::SelectRange(anchor, idx)` (anchor is the
-    index under the press); drag before the threshold is left to scrolling as today;
+    index under the press); a drag that starts before the threshold cancels the tap and the long
+    press, as today (nothing scrolls);
+  - a `UiState` flag tracks a drag-selection in progress; the existing open-popup-while-held branch
+    is replaced by opening the menu at release;
   - long-press release without a drag → select the word under the finger and open the menu;
   - the menu (existing popup) offers **Cut / Copy / Paste / Select all**, each shown only when it
     applies (Cut/Copy need a selection; Paste needs clipboard text), emitted as `Tap::Cut`,
@@ -78,19 +91,23 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
   - Word selection is a portable helper on `Field` (`select_word_at(idx)`) so it is unit tested.
 - **Clipboard write (`jni_bridge.rs`)**: `set_clipboard_text(&AndroidApp, &str)` via
   `ClipboardManager.setPrimaryClip(ClipData.newPlainText)`, mirroring `clipboard_text`'s attach and
-  error handling. Failure surfaces through the app notice, like other bridge failures.
-- **State reset**: `clear_field` and the post-paste reset keep calling `set_text_input_state` (still
-  a no-op on this backend) so a GameActivity move later needs no change in the callers.
+  error handling. It returns `Option<()>` (from `with_activity`, which swallows JNI errors). On
+  failure the selection is kept and the activity shows a `set_notice`. Cut reads `selected()`,
+  writes, and calls `cut()` only if the write succeeded.
+- **State reset**: unchanged: `clear_field` and the post-paste reset keep calling
+  `set_text_input_state`.
 
 ## Implementation Steps
 
 1. `field.rs`: the `Field` model and its unit tests; export in `lib.rs`.
 2. `keys.rs`: switch `apply` to `&mut Field`, add `Left`/`Right`/`Delete`, update its tests.
-3. `jni_bridge.rs`: `set_clipboard_text`.
+3. `jni_bridge.rs`: `set_clipboard_text` returning `Option<()>`.
 4. `ui.rs`: index↔point helpers, selection and cursor drawing, new gestures and menu; new `Tap`
    variants (`MoveCursor`, `SelectRange`, `Cut`, `Copy`, `SelectAll`); `Frame::field: &Field`.
-5. `android/mod.rs`: `App::field: Field`; `input()` maps `Keycode::DpadLeft/Right`, `ForwardDel`;
-   `handle_tap` handles the new taps (Cut/Copy write the clipboard; Cut then edits the field).
+5. `android/mod.rs`: `Activity::field: Field` and `FrameParams::field: &Field`; `input()` maps
+   `Keycode::DpadLeft/Right`, `ForwardDel`; `handle_tap` handles the new taps (Copy writes the
+   clipboard; Cut writes it and deletes the selection only if the write succeeded, else
+   `set_notice` and the selection stays).
 6. Docs and changelog.
 
 ## Files to Modify
@@ -122,7 +139,8 @@ Field { text: String, anchor: usize, cursor: usize }   // byte offsets on char b
 
 - `docs/android.md`: describe tap-to-place, long-press/drag selection, the Cut/Copy/Paste/Select all
   menu, and state that swipe typing and spacebar cursor dragging are not supported.
-- `CHANGELOG.md`: an `[Unreleased]` entry under Added, at the end of the Android subject's group.
+- `CHANGELOG.md`: an `[Unreleased]` entry under `### Added`, at the end of the `#### TUI` subject section (the
+  issue's `area:tui` label, per CONTRIBUTING.md); create the section if missing.
 
 ## Testing Strategy
 
@@ -130,13 +148,13 @@ Automated, in the portable part (`cargo test -p fontaine-android`):
 - `Field`: insert/backspace/delete at start, middle, end; over a selection; with multi-byte chars
   (`é`, emoji) so offsets never split a char; `move_to`/`select` clamping out-of-range and
   mid-char indices; `select_all`, `select_word_at` (word, punctuation, whitespace, empty text);
-  `cut`; `replace_all`; left/right with and without extend; collapsing a selection on move.
+  `cut`; `replace_all`; NUL stripping in `insert`/`replace_all`; left/right with and without extend; collapsing a selection on move.
 - `keys::apply`: existing tests ported, plus typing/backspace at a cursor in the middle, replacing a
-  selection, Left/Right/Delete, and Enter on a non-empty field.
+  selection, Left/Right/Delete.
 
 Android-only code (`ui.rs`, `mod.rs`, `jni_bridge.rs`) is not unit-testable here; the CI check is
-that it compiles and lints (`cargo clippy --target aarch64-linux-android` per the existing Android
-CI job).
+that it compiles and lints (`cargo ndk -t arm64-v8a --platform 26 clippy -p fontaine-android --all-targets -- -D warnings`,
+the `apk` job in `.github/workflows/android.yml`).
 
 ## Manual Verification
 
