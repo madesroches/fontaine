@@ -12,7 +12,10 @@
 //! this process. Cargo re-links `examples/<name>` on every nested build, so a sibling test
 //! process's build could remove it between this process's build and its spawn. Concurrent
 //! first calls for the same example are serialized per example, so the build and the copy
-//! happen once per process.
+//! happen once per process. `cargo nextest run -p fontaine-tui` builds the examples once up
+//! front through a setup script in `.config/nextest.toml`, so each test process's nested build
+//! is a no-op instead of a compile queued on cargo's build-directory lock; without the script
+//! (plain `cargo test`, other packages) the first-use build still applies.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;

@@ -82,6 +82,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `cargo nextest run -p fontaine-tui` no longer has four `agents` tests exceeding the 60 s slow
+  threshold (#723): a nextest setup script builds the helper example binaries once before the tests
+  start, instead of every test process running its own nested `cargo build`. No test was reported as
+  leaking on a cold run, so no leak fix was made.
 - The Android app's scan screen no longer draws under the status bar or display cutout, has
   margins, a scan card that says whether the camera is live, and a framed paste field (hold it to
   paste); the session screen keeps its prompt above the keyboard (#721).

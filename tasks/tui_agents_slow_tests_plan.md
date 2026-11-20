@@ -108,6 +108,11 @@ the nextest setup script (implementation step 6).
   three OSes; `--profile test` matches `example_bin`; `--cargo-profile`/`--target` runs are out
   of scope (nested build still works, slower).
 - AFK: which tests leak is settled during implementation by the step 1 cold-run reproduction: if no LEAK reproduces, the leak half is closed as not reproducible (no invented fix); if one does, its cause is fixed in the test or code, never by silencing nextest's leak detection; reason: most conservative reading of the issue, whose leak output was never captured.
+- AFK: the leak half is closed as not reproducible; reason: two cold runs of `cargo nextest run
+  -p fontaine-tui` (examples removed, `fontaine-sdk` touched) printed no LEAK and no SLOW line (the
+  four tests took 2.5-10 s on this machine, whose nested compile is short).
+- AFK: the nextest config enables the `setup-scripts` experimental feature
+  (`experimental = ["setup-scripts"]`); reason: nextest 0.9.146 rejects a setup script otherwise.
 
 ## Testing Strategy
 
