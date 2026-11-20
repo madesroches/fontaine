@@ -38,7 +38,8 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
 - `Insets { top, left, right, bottom }` in physical pixels (the unit of ImGui coordinates here),
   plus `Insets::ZERO`.
 - `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset is capped
-  at 40 % of the display on its axis so a bad value from the platform never collapses the window.
+  at 40 % of the display on its axis (the bottom at 60 %, so a soft keyboard fits) so a bad value
+  from the platform never collapses the window.
 - `Insets::from_content_rect(left, top, right, bottom, display)`: takes plain `i32` values and the
   display size; `mod.rs` converts from `AndroidApp::content_rect()` so `layout.rs` imports no
   android-activity types.
@@ -48,8 +49,10 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
 Reading the insets, in `jni_bridge.rs`:
 
 - `system_insets(app) -> Option<Insets>`: `activity.getWindow().getDecorView().getRootWindowInsets()`;
-  null (not attached yet) returns `None`. The API level comes from `AndroidApp::sdk_version()` (no new JNI call). On API 30+ call `getInsets(systemBars() | displayCutout())`
-  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`.
+  null (not attached yet) returns `None`. The API level comes from `AndroidApp::sdk_version()` (no new JNI call). On API 30+ call `getInsets(systemBars() | displayCutout() | ime())`
+  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`, with the bottom
+  taken as the larger of that value and the `content_rect` bottom inset on every read. The keyboard
+  is part of the bottom inset because `NativeActivity`'s surface does not shrink under `adjustResize`.
 - `Activity` keeps `insets: Insets` and `insets_read: Instant`, stores the raw values as read, and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
   Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
@@ -107,9 +110,9 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
    prompt is fully visible. A tap pushes `Tap::FocusField` on release (`igIsMouseReleased_Nil(0)` for a press that started on the
    field, with no long-press latched and no drag), so a long-press does not open the soft keyboard at press start.
    Holding it is detected by latching the press when `igIsItemClicked(0)` fires on the frame; the "press started on field" and
-   "long-press latched" state is derived each frame from ImGui state (`io.MouseClickedPos[0]` inside the field rect; `igIsPopupOpen`
+   "long-press latched" state is derived each frame from ImGui state (`io.MouseClickedPos[0]` inside the field rect; `igIsPopupOpen_Str`
    or `io.MouseDownDurationPrev[0] >= 0.5` on the release frame), with no field in `UiState`; on later frames,
-   once `igIsMouseDown(0)`, `io.MouseDownDuration[0] >= 0.5` and `!igIsMouseDragging(0, -1)` all hold, it opens a
+   once `igIsMouseDown_Nil(0)`, `io.MouseDownDuration[0] >= 0.5` and `!igIsMouseDragging(0, -1)` all hold, it opens a
    popup at the press point with a single "Paste" entry drawn with `igButton` (so the release that ends the long press cannot trigger it; only a fresh tap inside the popup does), like other Android apps; choosing it pushes `Tap::PasteField`, and a tap
    anywhere else dismisses it. There is no separate Paste button on either screen. Session's prompt field uses `field_frame` too
    (`field_box` is removed).
@@ -138,7 +141,7 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 
 1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::ZERO`, `Insets::clamped`, `Insets::from_content_rect`, `safe_rect`, `margin`, `card_side`
    (with its `min_side` parameter) and unit tests; declare `pub mod layout;` in `lib.rs`.
-2. Add `system_insets` to `jni_bridge.rs`, and reword the doc comment at `jni_bridge.rs:75-76` (clipboard served "when the user has just tapped the button that asks") to refer to the Paste entry of the field's long-press popup.
+2. Add `system_insets` to `jni_bridge.rs`, update the module doc at `jni_bridge.rs:1-2` to name the clipboard and the window insets, and reword the doc comment at `jni_bridge.rs:75-76` (clipboard served "when the user has just tapped the button that asks") to refer to the Paste entry of the field's long-press popup.
 3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
    and `ui::draw`; set the style fields and `io.MouseDragThreshold` (touch slop) in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
@@ -173,20 +176,21 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
   camera pipeline deliberately shows and stores nothing, a viewfinder needs a YUV-to-GL texture path
   that cannot be verified without a device, and the issue accepts "a clear Scan button" as the
   alternative; the viewfinder stays a follow-up.
-- Insets are re-read on resume, resize and every 500 ms rather than every frame, and the IME inset is
-  not requested because `adjustResize` already shrinks the surface.
+- Insets are re-read on resume, resize and every 500 ms rather than every frame.
+- The keyboard inset is read (`ime()` on API 30+, `content_rect` bottom below) because
+  `NativeActivity`'s surface and ImGui display size do not shrink under `adjustResize`.
 - JNI window insets are primary and `content_rect` the fallback; if a device shows `content_rect`
   alone is correct, drop the JNI path in a follow-up.
 
 ## Documentation
 
 `docs/android.md`: describe the scan screen (scan card, paste field, paired hosts) in the Pair
-section, and change the "tap Paste" instructions (Pair, fallback) to "hold the field and tap Paste". No new page, so `SUMMARY.md` and `index.md` do not change.
+section, and change the "tap Paste" instructions (Pair section, lines 40-41) to "hold the field and tap Paste". No new page, so `SUMMARY.md` and `index.md` do not change.
 
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  the axis (60 % for the bottom, so a keyboard-height bottom inset survives); `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
   left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
@@ -199,8 +203,8 @@ section, and change the "tap Paste" instructions (Pair, fallback) to "hold the f
 2. With the camera permission off: the card shows "Camera access is off" and "Allow camera"; the paste
    field has an outline. Long-press it: a "Paste" popup appears at the finger and pastes the clipboard text; a short tap
    opens the keyboard. Rotate to landscape: the paste field is visible without scrolling.
-3. With the soft keyboard up, type in the session prompt field: the transcript and footer stay inside
-   the visible area.
+3. With the soft keyboard up, type in the session prompt field: the window's bottom edge sits at the
+   top of the keyboard, so the prompt field and footer stay visible above it.
 4. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
 
 ## Open Questions
