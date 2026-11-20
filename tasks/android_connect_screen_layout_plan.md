@@ -39,28 +39,32 @@ New portable module `rust/fontaine-android/src/layout.rs` (host-tested):
   plus `Insets::ZERO`.
 - `Insets::clamped(self, display: (f32, f32))`: negative values become 0, and each inset is capped
   at 40 % of the display on its axis (the bottom at 60 %, so a soft keyboard fits) so a bad value
-  from the platform never collapses the window.
+  from the platform never collapses the window. Opposing insets also total at most 80 % of the axis
+  (the bottom, then the right, is reduced), so `safe_rect` keeps at least 20 % of each axis and never
+  returns a 0 size, which `SetNextWindowSize` treats as auto-fit.
 - `Insets::from_content_rect(left, top, right, bottom, display)`: takes plain `i32` values and the
-  display size; `mod.rs` converts from `AndroidApp::content_rect()` so `layout.rs` imports no
+  display size; `render` converts from `AndroidApp::content_rect()` so `layout.rs` imports no
   android-activity types.
 - `safe_rect(display, insets) -> (pos, size)`: the window rectangle the UI draws into.
 - `margin(scale) -> f32`: the outer content margin, `16.0 * scale`.
 
 Reading the insets, in `jni_bridge.rs`:
 
-- `system_insets(app) -> Option<Insets>`: `activity.getWindow().getDecorView().getRootWindowInsets()`;
+- `system_insets(app) -> Option<RawInsets>` (raw `i32` top/left/right/bottom, no display size needed): `activity.getWindow().getDecorView().getRootWindowInsets()`;
   null (not attached yet) returns `None`. The API level comes from `AndroidApp::sdk_version()` (no new JNI call). On API 30+ call `getInsets(systemBars() | displayCutout() | ime())`
-  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`, with the bottom
-  taken as the larger of that value and the `content_rect` bottom inset on every read. The keyboard
+  with `WindowInsets$Type`; below 30 use `getSystemWindowInsetTop/Left/Right/Bottom`. The keyboard
   is part of the bottom inset because `NativeActivity`'s surface does not shrink under `adjustResize`.
-- `Activity` keeps `insets: Insets` and `insets_read: Instant`, stores the raw values as read, and refreshes it each frame at most every 500 ms and on every
+- `Activity` keeps `insets: Option<RawInsets>` and `insets_read: Instant`, stores the raw values as read (no display-size conversion at read time), and refreshes it each frame at most every 500 ms and on every
   `MainEvent::WindowResized`, `ContentRectChanged` and `Resume` (cheap JNI call, but not per frame).
-  Until the first successful read, fall back to `Insets::from_content_rect(content_rect, display)` in
-  `layout.rs` (`left/top` as the inset, display minus `right/bottom` as the opposite insets). An empty
+  The conversion happens in `render`, where the display size is valid after `new_frame`: it calls
+  `app.content_rect()` and `Insets::from_content_rect(rect, Imgui::display_size())` (`left/top` as the
+  inset, display minus `right/bottom` as the opposite insets). On API 30+ with a read the raw insets are used
+  as is; below 30 the bottom is the larger of the raw bottom and the `content_rect` bottom inset; until the first successful read
+  (`None`) the `content_rect` insets are used alone. An empty
   rect (`right == 0` or `bottom == 0`, which is what `android-activity` reports before the first
   `onContentRectChanged`) gives `Insets::ZERO`, not the whole display.
-- `render` applies `Insets::clamped` once per frame with that frame's `Imgui::display_size()`
-  (the display size may be unset before the first frame or stale after rotation when insets are read).
+- `render` then applies `Insets::clamped` once per frame with that same frame's `Imgui::display_size()`
+  (the display size may be unset before the first frame or stale after rotation at read time, hence no conversion there).
 - `ui::draw` takes the clamped `Insets` and `margin`; it positions the window at the safe rect and sets
   `WindowPadding = (margin, margin)` for the frame, so everything inside is inset from the bars and
   the screen edge. The clear color still fills the whole surface, so the bars sit on the app
@@ -70,7 +74,7 @@ Reading the insets, in `jni_bridge.rs`:
 
 In `Imgui::new` (`mod.rs`), after `igStyleColorsDark`, set once, before `ScaleAllSizes`:
 `FrameRounding = 8`, `FramePadding = (14, 12)`, `ItemSpacing = (10, 12)`,
-`FrameBorderSize = 1`, a visible `Border` color for the field outline, and a distinct
+`FrameBorderSize = 1`, `ScrollbarSize = 14`, a visible `Border` color for the field outline, and a distinct
 `Button`/`ButtonHovered`/`ButtonActive` accent. `ScaleAllSizes(scale)` then scales them. Also set
 `FontSizeBase = 18.0` (up from the default 13 px; in dp, since `FontScaleDpi` applies the density) so body text is not tiny; headings use `FontSizeBase * 1.4` pushed with `igPushFont(null, size)` in `ui.rs`.
 Also set `io.MouseDragThreshold` to Android touch slop (8 dp x scale): ImGui's default 6 physical px is not
@@ -119,7 +123,9 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 6. `primary_button("Use this")`, shown only when the field is non-empty, full width.
 7. When paired hosts exist: `caption("Paired hosts")` and one `secondary_button` per host.
 
-The main window scrolls when the content overflows.
+The main window scrolls when the content overflows, through its scrollbar only: the app feeds ImGui just
+the pointer position and left button (no wheel), and dragging content on a `NoMove` window does not
+scroll, so there is no touch drag-to-scroll. `ScrollbarSize` is widened to 14 dp in `Imgui::new` so the bar is a usable touch target.
 
 Other screens (Confirm, Pairing, Error, Session) get the safe rect and margin for free; Confirm and
 Pairing use `heading` for their first line and `primary_button`/`secondary_button`. The session
@@ -141,8 +147,8 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 
 1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `Insets::ZERO`, `Insets::clamped`, `Insets::from_content_rect`, `safe_rect`, `margin`, `card_side`
    (with its `min_side` parameter) and unit tests; declare `pub mod layout;` in `lib.rs`.
-2. Add `system_insets` to `jni_bridge.rs`, update the module doc at `jni_bridge.rs:1-2` to name the clipboard and the window insets, and reword the doc comment at `jni_bridge.rs:75-76` (clipboard served "when the user has just tapped the button that asks") to refer to the Paste entry of the field's long-press popup.
-3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both, plus `self.scale` (or a precomputed margin, as `ui::draw` needs `margin(scale)`), to `render`
+2. Add `system_insets` (raw values only, no content_rect conversion) to `jni_bridge.rs`, update the module doc at `jni_bridge.rs:1-2` to name the clipboard and the window insets, and reword the doc comment at `jni_bridge.rs:75-76` (clipboard served "when the user has just tapped the button that asks") to refer to the Paste entry of the field's long-press popup.
+3. In `mod.rs`: add `insets: Option<RawInsets>` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh the raw insets per the cadence above, and in `render` convert via `content_rect()`/`from_content_rect` with the frame's display size (pre-API-30 bottom max, no-read fallback) then `clamped`; pass the result and `UiState`, plus `self.scale` (or a precomputed margin, as `ui::draw` needs `margin(scale)`), to `render`
    and `ui::draw`; set the style fields and `io.MouseDragThreshold` (touch slop) in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
    with the card and framed field; in `session`, replace `field_box` with `field_frame` (with the long-press Paste popup),
@@ -179,6 +185,9 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 - Insets are re-read on resume, resize and every 500 ms rather than every frame.
 - The keyboard inset is read (`ime()` on API 30+, `content_rect` bottom below) because
   `NativeActivity`'s surface and ImGui display size do not shrink under `adjustResize`.
+- AFK: touch overflow relies on the (widened, `ScrollbarSize` 14 dp) scrollbar only; touch drag-to-scroll is not added (smaller design surface; the app sends no wheel events).
+- AFK: `Insets::clamped` also caps opposing insets at 80 % of the axis total so `safe_rect` never collapses to 0 (auto-fit), with a unit test.
+- AFK: the `content_rect` to inset conversion, the pre-API-30 bottom max and the no-read fallback run in `render` with that frame's display size; `Activity` and `system_insets` hold only raw JNI insets.
 - JNI window insets are primary and `content_rect` the fallback; if a device shows `content_rect`
   alone is correct, drop the JNI path in a follow-up.
 
@@ -190,7 +199,7 @@ section, and change the "tap Paste" instructions (Pair section, lines 40-41) to 
 ## Testing Strategy
 
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
-  the axis (60 % for the bottom, so a keyboard-height bottom inset survives); `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
+  the axis (60 % for the bottom, so a keyboard-height bottom inset survives); oversized opposing insets (e.g. 40 % top + 60 % bottom, likewise left/right) leave `safe_rect` a positive size of at least 20 % of the axis; `card_side` follows `min(avail_width, max(min_side, avail_height - below_px))` floored at 0, tested with an 8-line-height `min_side` and with width-limited, height-limited (landscape), min-side and tiny-display cases; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
   left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
