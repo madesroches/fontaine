@@ -82,12 +82,15 @@ Layout, top to bottom, all inside the safe rect with the outer margin:
 1. Notice, when present (unchanged colors), with a `gap`.
 2. `heading("Connect to a Fontaine host")`, then a `caption` line with the one-sentence action.
 3. A scan card: a child window with border (`ImGuiChildFlags_Borders`), square, width
-   `avail_width()` capped at the height remaining after the notice, heading and caption
-   (`card_side(avail_width, avail_height)`). Inside, centered:
+   `avail_width()` capped at the height remaining after the notice, heading and caption minus the
+   measured height of the paste section (item 4 caption, one-line `field_frame`, Paste button), with
+   a minimum side (`card_side(avail_width, avail_height, below_px)`), so the paste section stays on
+   screen in landscape. Inside, centered:
    - camera live: a "Scanning" label with a pulsing dot (alpha from `igGetTime()`), and the line
      "Point the camera at the code in the terminal.";
-   - not live (`Activity::scan` sets `camera_denied` whenever permission is missing or the camera
-     failed to start): "Camera access is off" and the existing denied wording, with a
+   - not live (keyed on `!camera_ready`, the camera not running): when `camera_denied` is set,
+     "Camera access is off" and the existing denied wording; otherwise (e.g. between the Allow tap
+     and the permission result) a neutral "Camera is not running" line. Either way a
      `primary_button("Allow camera")` inside the card.
    No camera image is drawn (Decisions).
 4. `caption("Or paste a pairing link or ticket")` as the section label.
@@ -106,22 +109,25 @@ The main window scrolls when the content overflows.
 
 Other screens (Confirm, Pairing, Error, Session) get the safe rect and margin for free; Confirm and
 Pairing use `heading` for their first line and `primary_button`/`secondary_button`. The session
-transcript child is sized as `igGetContentRegionAvail().y` minus a footer counted with
-`igGetFrameHeightWithSpacing()` for each button row, including the dialog's buttons, plus the
-prompt `field_frame`'s computed (wrapped, variable) height and `ItemSpacing.y`, so the footer stays on screen with the larger padding.
+transcript child height is the content-region height minus the footer height measured on the
+previous frame. The footer is everything `session` draws after the transcript child (separator,
+`dialog_panel` with its wrapped text, diff lines and buttons, separator, prompt field and button
+rows); it is measured as the cursor Y delta across drawing it and kept in a small `UiState { footer_px: f32 }`
+that the `Activity` holds and passes to `ui::draw`. The first frame uses a one-line-per-row
+estimate. The dialog is not moved into a capped child.
 
 ## Implementation Steps
 
 1. Add `rust/fontaine-android/src/layout.rs` with `Insets`, `safe_rect`, `margin`, `card_side` and
    unit tests; declare `pub mod layout;` in `lib.rs`.
 2. Add `system_insets` to `jni_bridge.rs`.
-3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) to `Activity`, refresh it per the cadence above, pass it to `render`
+3. In `mod.rs`: add `insets` and `insets_read: Instant` (the 500 ms throttle) and a `UiState` to `Activity`, refresh insets per the cadence above, pass both to `render`
    and `ui::draw`; set the style fields in `Imgui::new`.
 4. In `ui.rs`: apply the safe rect and window padding in `draw`; add the helpers; rewrite `scan`
    with the card and framed field; use `heading` and the button helpers on Confirm and Pairing, only the button helpers on Error;
-   size the session transcript as `igGetContentRegionAvail().y` minus a footer counted with
-   `igGetFrameHeightWithSpacing()` per button row (including the dialog's buttons) plus the prompt
-   `field_frame`'s wrapped height.
+   size the session transcript child as the content-region height minus `UiState.footer_px`, the
+   footer height (everything drawn after the transcript) measured on the previous frame; update
+   `footer_px` from the cursor Y before and after drawing the footer.
 5. In `docs/android.md`, add a scan-screen description to the Pair section.
 6. Add the two Decisions as `- 2026-11-xx (#721):` lines at the end of the `### Build and release`
    subsection of `tasks/fontaine_harness_plan.md` Decisions (where the Android lines live), plus a
@@ -158,7 +164,8 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
 - Unit tests in `layout.rs`: negative insets clamp to zero; an oversize inset is capped at 40 % of
   the axis; `safe_rect` of zero insets is the full display; `safe_rect` with a 120 px top inset and
   a 48 px bottom inset on 1080x2400 starts at y = 120 with height 2232; `card_side` is limited by
-  both the width and the remaining height and never negative on a tiny display;
+  both the width and the remaining height, in landscape leaves `below_px` for the paste section
+  (or the minimum side when that is not possible), and is never negative on a tiny display;
   `Insets::from_content_rect` of an all-zero rect is `Insets::ZERO`, and of a real rect gives
   left/top and display minus right/bottom.
 - `ui.rs`/`jni_bridge.rs` are Android-only FFI and compile-checked by the NDK clippy in `android.yml`.
@@ -169,7 +176,7 @@ section. No new page, so `SUMMARY.md` and `index.md` do not change.
    the app: the heading sits fully below the clock and icons, with equal side margins; expected
    because the safe rect is applied. Not automated: it needs a device and a real window.
 2. With the camera permission off: the card shows "Camera access is off" and "Allow camera"; the paste
-   field has an outline and the Paste button has margin. Rotate to landscape: content scrolls.
+   field has an outline and the Paste button has margin. Rotate to landscape: the paste field and Paste button are visible without scrolling.
 3. Pair from a host QR: the live state reads "Scanning" and the flow is unchanged.
 
 ## Open Questions
