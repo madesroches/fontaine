@@ -140,8 +140,8 @@ and triggers a one-line-per-row estimate. The dialog is not moved into a capped 
 
 ## Mockups
 
-- `tasks/android_connect_screen_layout_mockups/scan-screen.html`: scan screen with the camera live and the long-press Paste popup, and with the camera denied and a wrapped pasted link.
-- `tasks/android_connect_screen_layout_mockups/session-screen.html`: session screen idle, with an approval showing a diff, and reconnecting with a wrapped message.
+- `tasks/completed/android_connect_screen_layout_mockups/scan-screen.html`: scan screen with the camera live and the long-press Paste popup, and with the camera denied and a wrapped pasted link.
+- `tasks/completed/android_connect_screen_layout_mockups/session-screen.html`: session screen idle, with an approval showing a diff, and reconnecting with a wrapped message.
 
 ## Implementation Steps
 
