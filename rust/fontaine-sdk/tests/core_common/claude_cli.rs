@@ -199,7 +199,7 @@ pub async fn four_steps(version: &str, second_read: u64) -> Claude {
             {"text": "a", "usage": cached(100, 400)},
             {"text": "b", "usage": cached(second_read, 100)},
             {"text": "c", "usage": cached(third_read, 100)},
-            {"text": "d", "usage": cached(1000, 0)},
+            {"text": "d", "usage": cached(1100, 0)},
         ],
     }));
     let handle = main_handle(&claude).await;
