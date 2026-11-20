@@ -36,13 +36,18 @@ leaking.
 Build the example binaries once, before any test process starts, instead of once per test
 process.
 
-1. Add a nextest setup script in `rust/.config/nextest.toml` that runs one
-   `cargo build -p <pkg> --example <name>` per example the `fontaine-tui` tests use, in the same
-   form `example_bin` uses (`build_and_copy` in `rust/fontaine-testkit/src/lib.rs`): `touch_marker`
-   (`fontaine-tui`), and `repo_mcp_server`, `hook_marker`, `fontaine_claude_cli_double`
-   (`fontaine`). Default features and no workspace-wide build, because feature unification could
-   make the fingerprints differ from the nested build's. Attach the script with the filter
-   `package(fontaine-tui)` only. After it, each test's nested `cargo build` in
+1. Add a nextest setup script in `rust/.config/nextest.toml`. A script is a single command and CI
+   runs on Linux, macOS and Windows, so it is one cross-platform cargo invocation (verified: one
+   cargo command takes several `-p` and `--example` flags and builds each example from the package
+   that has it):
+   `cargo build --profile test -p fontaine-tui -p fontaine --example touch_marker --example repo_mcp_server --example hook_marker --example fontaine_claude_cli_double`.
+   It uses `--profile test` because that is what `example_bin` passes (`profile_flag` maps the
+   `debug` dir to `test`; `build_and_copy` in `rust/fontaine-testkit/src/lib.rs`), so the nested
+   build sees fresh fingerprints. Default features and no workspace-wide build, because feature
+   unification could make the fingerprints differ from the nested build's. Non-default profiles
+   and targets (`--cargo-profile`, `--target`) are out of scope: the script only covers the
+   default `cargo nextest run`; otherwise the nested build still works, just slower. Attach the
+   script with the filter `package(fontaine-tui)` only. After it, each test's nested `cargo build` in
    `example_bin` is a no-op freshness check and no longer queues behind a compile.
 2. Keep `example_bin` as is: it still covers plain `cargo test` and per-package runs, where no
    setup script runs.
@@ -50,21 +55,25 @@ process.
    every `LEAK`). Fix what the reproduction shows. Likely causes named in the issue: a child
    process (an MCP server or hook the test started) or a thread still holding stdout/stderr after
    the test returns. If the leaking tests are the ones that start `touch_marker` /
-   `repo_mcp_server`, make the test shut the server down (the `World` drive ends the interface;
-   confirm the MCP child is reaped on drop) rather than silencing the warning in nextest config.
+   `repo_mcp_server`, make the test shut the server down rather than silencing the warning in nextest config. MCP
+   and hook children already use `kill_on_drop(true)` (`servers.rs` ~659/921, `user_hooks.rs`
+   ~104), so a LEAK would come from a piped stderr/stdout handle outliving the test (the stderr
+   drain at `servers.rs` ~926; `user_hooks.rs` ~103); diagnose there.
 
 ## Implementation Steps
 
 1. Reproduce on a cold build: touch a source file in `fontaine-sdk` (or remove the example
    artifacts from `rust/target/debug/examples`), run `cargo nextest run -p fontaine-tui`, record
    the SLOW and LEAK lines and which tests they name.
-2. Add the nextest setup script to `rust/.config/nextest.toml`: one `cargo build -p <pkg>
-   --example <name>` per example listed in Design 1, attached with filter `package(fontaine-tui)`
-   only.
+2. Add the nextest setup script to `rust/.config/nextest.toml`: the single `cargo build --profile
+   test -p fontaine-tui -p fontaine --example ...` command from Design 1, attached with filter
+   `package(fontaine-tui)` only.
 3. Re-run the reproduction; confirm the four tests finish in a few seconds and no SLOW remains,
-   and that the nested build is a no-op (`cargo build -v -p <pkg> --example <name>` shows
-   `Fresh`, no `Compiling`).
-4. Diagnose each LEAK from step 1 and fix its cause in the test or in the code it exercises.
+   and that the nested build is a no-op (the exact nested form, `cargo build -v --profile test -p <pkg>
+   --example <name>`, shows `Fresh`, no `Compiling`).
+4. Diagnose each LEAK from step 1 and fix its cause in the test or in the code it exercises. If
+   the cold run shows no LEAK, record that in `## Decisions` as an `AFK:` line and close the leak
+   half as not reproducible; do not invent a fix.
 5. Re-run the full `cargo nextest run -p fontaine-tui` and `cargo test` (plain, no setup script)
    to confirm both paths still pass.
 6. Update the `example_bin` paragraph in `tasks/design/testing.md` ("no-op under CI's workspace
@@ -95,6 +104,10 @@ the nextest setup script (implementation step 6).
 
 - AFK: the setup script is attached with filter `package(fontaine-tui)` only; reason: narrowest
   scope that satisfies the issue, other crates have the same pattern and can follow.
+- AFK: the setup script is one `cargo build --profile test` command with multiple `-p` and
+  `--example` flags (verified to work), since a nextest script is a single command and CI spans
+  three OSes; `--profile test` matches `example_bin`; `--cargo-profile`/`--target` runs are out
+  of scope (nested build still works, slower).
 
 ## Testing Strategy
 
