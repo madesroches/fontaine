@@ -299,7 +299,9 @@ jobs:
           trap 'rm -f "$keystore"' EXIT
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
           tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          # No v4 .idsig sidecar: release-verify.sh rejects unrecognised files in the asset dir.
           "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --v4-signing-enabled false \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out dev-installer/fontaine-android.signed.apk \
             dev-installer/fontaine-android.apk
           "$tools/apksigner" verify dev-installer/fontaine-android.signed.apk
