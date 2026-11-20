@@ -4,22 +4,8 @@ name: Android
 # builds the Android-only layer and the APK, which need the NDK.
 on:
   pull_request:
-    paths:
-      - "rust/fontaine-android/**"
-      - "rust/fontaine-remote/**"
-      - "rust/Cargo.toml"
-      - "rust/Cargo.lock"
-      - "rust/rust-toolchain.toml"
-      - ".github/workflows/android.yml"
   push:
     branches: [main]
-    paths:
-      - "rust/fontaine-android/**"
-      - "rust/fontaine-remote/**"
-      - "rust/Cargo.toml"
-      - "rust/Cargo.lock"
-      - "rust/rust-toolchain.toml"
-      - ".github/workflows/android.yml"
 
 env:
   CARGO_TERM_COLOR: always
