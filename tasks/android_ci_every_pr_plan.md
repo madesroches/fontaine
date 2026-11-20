@@ -49,7 +49,7 @@ The workflow's header comment stays accurate (it explains the split with `ci.yml
 
 ## Decisions
 - Cost accepted: one Linux job (cached from `main`) per PR, including PRs that touch only `tasks/`
-  or `docs/` (which `ci.yml` skips Rust steps for), in exchange for no blind spot.
+  or `AGENTS.md` (which `ci.yml` skips Rust steps for), in exchange for no blind spot.
 
 ## Documentation
 No `docs/` page mentions the trigger. Plan-doc and changelog updates are listed above.

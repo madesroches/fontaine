@@ -64,7 +64,9 @@ All notable changes are recorded here. The format follows
   now takes a `jiff::Timestamp` instead of a `chrono::DateTime<Utc>`, as does
   `fontaine_sdk::core::project_env::setup_notice`; `fontaine_sdk::core::schedule::Cron::next_after`
   now takes and returns a `jiff::Zoned`.
-- The Android workflow (NDK clippy and the debug APK) now runs on every pull request and every push to `main`, not only when Android, remote or toolchain paths change, so a change elsewhere in the workspace can no longer break the Android build unseen (#712).
+- The Android workflow (NDK clippy and the debug APK) now runs on every pull request and every
+  push to `main`, not only when Android, remote or toolchain paths change, so a change elsewhere
+  in the workspace can no longer break the Android build unseen (#712).
 
 ### Fixed
 
