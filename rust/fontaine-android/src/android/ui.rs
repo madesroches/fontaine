@@ -102,6 +102,14 @@ pub struct UiState {
     footer_px: f32,
 }
 
+/// The camera image as a GL texture and the UV of each card corner (top-left, top-right,
+/// bottom-right, bottom-left), already turned upright and cropped to a square.
+#[derive(Clone, Copy, Debug)]
+pub struct PreviewView {
+    pub texture: u32,
+    pub uv: [(f32, f32); 4],
+}
+
 /// Everything `draw` needs besides the view.
 pub struct Frame<'a> {
     pub display: (f32, f32),
@@ -112,6 +120,8 @@ pub struct Frame<'a> {
     /// Whether the scan screen can show the camera.
     pub camera_ready: bool,
     pub camera_denied: bool,
+    /// The live image behind the scan card's label; `None` until a frame has arrived.
+    pub preview: Option<PreviewView>,
     pub scroll_to_end: bool,
 }
 
@@ -456,7 +466,18 @@ fn scan_card(frame: &Frame<'_>, side: f32, avail_w: f32, taps: &mut Vec<Tap>) {
         if frame.camera_ready {
             let hint = "Point the camera at the code in the terminal.";
             let total = line + spacing_y + text_height(hint, inner_w);
-            center_vertically(inner_h, total);
+            if let Some(preview) = frame.preview {
+                draw_preview(&preview, inner_w, inner_h, total + 2.0 * spacing_y);
+                // Sit the label in the strip at the bottom of the image.
+                // SAFETY: a frame is open and inside a child window.
+                unsafe {
+                    sys::igSetCursorPosY(
+                        sys::igGetCursorPosY() + (inner_h - total - spacing_y).max(0.0),
+                    );
+                }
+            } else {
+                center_vertically(inner_h, total);
+            }
             scanning_label(line);
             centered_wrapped(hint, DIM);
         } else {
@@ -486,6 +507,50 @@ fn scan_card(frame: &Frame<'_>, side: f32, avail_w: f32, taps: &mut Vec<Tap>) {
     }
     // SAFETY: balances `igBeginChild_Str`, which requires an end call even when it returned false.
     unsafe { sys::igEndChild() };
+}
+
+/// Fills the card's content area with the camera image and darkens a strip of `strip_h` at the
+/// bottom so the label stays legible over a bright scene.
+fn draw_preview(preview: &PreviewView, width: f32, height: f32, strip_h: f32) {
+    // SAFETY: a frame is open inside the card; the draw list is the current window's and the
+    // texture name is a live GL texture of the current context for this frame's render.
+    unsafe {
+        let origin = sys::igGetCursorScreenPos();
+        let list = sys::igGetWindowDrawList();
+        let at = |x: f32, y: f32| v2(origin.x + x, origin.y + y);
+        let uv = |i: usize| v2(preview.uv[i].0, preview.uv[i].1);
+        let texture = sys::ImTextureRef_c {
+            _TexID: u64::from(preview.texture),
+            ..Default::default()
+        };
+        sys::ImDrawList_AddImageQuad(
+            list,
+            texture,
+            at(0.0, 0.0),
+            at(width, 0.0),
+            at(width, height),
+            at(0.0, height),
+            uv(0),
+            uv(1),
+            uv(2),
+            uv(3),
+            0xFFFF_FFFF,
+        );
+        let strip = sys::igGetColorU32_Vec4(ImVec4_c {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 0.6,
+        });
+        sys::ImDrawList_AddRectFilled(
+            list,
+            at(0.0, (height - strip_h).max(0.0)),
+            at(width, height),
+            strip,
+            0.0,
+            0,
+        );
+    }
 }
 
 fn center_vertically(inner_h: f32, content_h: f32) {

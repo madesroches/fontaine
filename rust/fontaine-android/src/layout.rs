@@ -128,6 +128,48 @@ pub fn card_side(avail_width: f32, avail_height: f32, below_px: f32, min_side: f
         .max(0.0)
 }
 
+/// Degrees clockwise the camera's frame must turn to look upright on a display turned
+/// `display_quadrant` quarter turns (`Display.getRotation()`); the formulas Android documents for
+/// back- and front-facing cameras, which differ by 180 degrees in landscape.
+pub fn preview_rotation(sensor: i32, front_facing: bool, display_quadrant: i32) -> u16 {
+    let quadrant = if (0..=3).contains(&display_quadrant) {
+        display_quadrant
+    } else {
+        0
+    };
+    let turn = if front_facing {
+        90 * quadrant
+    } else {
+        -90 * quadrant
+    };
+    (sensor + turn).rem_euclid(360) as u16
+}
+
+/// UV corners, in the order top-left, top-right, bottom-right, bottom-left of a square card, that
+/// show the frame turned `rotation` degrees clockwise and centre-cropped to fill the card, so the
+/// card stays full whatever the frame's shape. A rotation that is not a right angle counts as 0.
+pub fn fit_cover(src: (u32, u32), rotation: u16) -> [(f32, f32); 4] {
+    let (width, height) = (src.0 as f32, src.1 as f32);
+    // A frame with no area has nothing to crop; show the whole frame rather than divide by zero.
+    let (u0, u1, v0, v1) = if width > 0.0 && height > 0.0 {
+        let side = width.min(height);
+        let u = (width - side) * 0.5 / width;
+        let v = (height - side) * 0.5 / height;
+        (u, 1.0 - u, v, 1.0 - v)
+    } else {
+        (0.0, 1.0, 0.0, 1.0)
+    };
+    let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+    let turns = match rotation {
+        90 => 1,
+        180 => 2,
+        270 => 3,
+        _ => 0,
+    };
+    // Turning the image clockwise moves each source corner one screen corner along.
+    std::array::from_fn(|screen| corners[(screen + 4 - turns) % 4])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +310,92 @@ mod tests {
     fn card_never_goes_negative() {
         assert_eq!(card_side(-5.0, 10.0, 500.0, 160.0), 0.0);
         assert_eq!(card_side(0.0, 0.0, 0.0, 0.0), 0.0);
+    }
+
+    fn close(a: [(f32, f32); 4], b: [(f32, f32); 4]) {
+        for (p, q) in a.iter().zip(b) {
+            assert!(
+                (p.0 - q.0).abs() < 1e-6 && (p.1 - q.1).abs() < 1e-6,
+                "{a:?} {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_landscape_frame_is_cropped_to_a_centred_square() {
+        // 720 of 1280 columns are kept: 280 px cut from each side.
+        close(
+            fit_cover((1280, 720), 0),
+            [
+                (0.21875, 0.0),
+                (0.78125, 0.0),
+                (0.78125, 1.0),
+                (0.21875, 1.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_square_frame_is_shown_whole() {
+        close(
+            fit_cover((600, 600), 0),
+            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        );
+    }
+
+    #[test]
+    fn a_quarter_turn_moves_each_corner_along() {
+        let (a, b) = (0.21875, 0.78125);
+        close(
+            fit_cover((1280, 720), 90),
+            [(a, 1.0), (a, 0.0), (b, 0.0), (b, 1.0)],
+        );
+        close(
+            fit_cover((1280, 720), 180),
+            [(b, 1.0), (a, 1.0), (a, 0.0), (b, 0.0)],
+        );
+        close(
+            fit_cover((1280, 720), 270),
+            [(b, 0.0), (b, 1.0), (a, 1.0), (a, 0.0)],
+        );
+    }
+
+    #[test]
+    fn a_bad_rotation_counts_as_none() {
+        let upright = fit_cover((1280, 720), 0);
+        for bad in [1, 45, 91, 360, 450] {
+            close(fit_cover((1280, 720), bad), upright);
+        }
+    }
+
+    #[test]
+    fn an_empty_frame_shows_the_whole_frame() {
+        let whole = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        close(fit_cover((0, 720), 0), whole);
+    }
+
+    #[test]
+    fn preview_rotation_is_sensor_minus_display() {
+        for (sensor, expected) in [(90, [90, 0, 270, 180]), (270, [270, 180, 90, 0])] {
+            for (quadrant, want) in expected.into_iter().enumerate() {
+                assert_eq!(preview_rotation(sensor, false, quadrant as i32), want);
+            }
+        }
+    }
+
+    #[test]
+    fn a_front_camera_turns_the_other_way() {
+        for (sensor, expected) in [(270, [270, 0, 90, 180]), (90, [90, 180, 270, 0])] {
+            for (quadrant, want) in expected.into_iter().enumerate() {
+                assert_eq!(preview_rotation(sensor, true, quadrant as i32), want);
+            }
+        }
+    }
+
+    #[test]
+    fn preview_rotation_ignores_an_unknown_display_rotation() {
+        assert_eq!(preview_rotation(90, false, -1), 90);
+        assert_eq!(preview_rotation(90, true, 4), 90);
+        assert_eq!(preview_rotation(270, false, i32::MAX), 270);
     }
 }

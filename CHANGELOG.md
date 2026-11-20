@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The Android scan card shows the live camera image (#728): a grayscale preview of the frames the QR
+  decoder reads, cropped to fill the square and kept upright when the phone rotates, with the
+  "Scanning" label over a dark strip. Frames stay in memory only until the next one replaces them;
+  nothing is stored.
 - The Android APK is published on the dev channel (#716): `fontaine-android.apk` and its `.minisig`
   sit on the `dev` release beside the dev installers, at
   `releases/download/dev/fontaine-android.apk`, minisigned with the dev key and signed for Android

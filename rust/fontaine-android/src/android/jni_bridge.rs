@@ -1,6 +1,6 @@
 //! The few Java calls the app needs: the camera permission, the device model for the pairing
-//! label, the clipboard, the window insets, and the deep-link text of the intent that started the
-//! activity.
+//! label, the clipboard, the window insets, the display rotation, and the deep-link text of the
+//! intent that started the activity.
 
 use android_activity::AndroidApp;
 use jni::JavaVM;
@@ -146,6 +146,30 @@ pub fn intent_link(app: &AndroidApp) -> Option<String> {
         Ok(Some(text))
     })
     .flatten()
+}
+
+/// `Display.getRotation()`: 0..=3 quarter turns of the display from its natural orientation, or
+/// `None` when Java cannot say.
+pub fn display_rotation(app: &AndroidApp) -> Option<i32> {
+    with_activity(app, |env, activity| {
+        let manager = env
+            .call_method(
+                activity,
+                "getWindowManager",
+                "()Landroid/view/WindowManager;",
+                &[],
+            )?
+            .l()?;
+        let display = env
+            .call_method(
+                &manager,
+                "getDefaultDisplay",
+                "()Landroid/view/Display;",
+                &[],
+            )?
+            .l()?;
+        env.call_method(&display, "getRotation", "()I", &[])?.i()
+    })
 }
 
 /// What the system covers on each edge of the window, as the platform reports it.

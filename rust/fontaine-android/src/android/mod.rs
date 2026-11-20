@@ -24,11 +24,12 @@ use crate::app::{Action, App, Screen};
 use crate::keys::{self, Key};
 use crate::layout::{self, Insets};
 use crate::link::is_pair_link;
+use crate::scan::decode_luma;
 use crate::store::DirStore;
-use camera::Camera;
+use camera::{Camera, Luma};
 use error::{Context, Error, chain};
 use jni_bridge::RawInsets;
-use ui::{Tap, UiState};
+use ui::{PreviewView, Tap, UiState};
 
 /// How often a camera frame is decoded: a QR decode costs more than a frame's budget.
 const SCAN_INTERVAL: Duration = Duration::from_millis(150);
@@ -41,17 +42,46 @@ const TOUCH_SLOP_DP: f32 = 8.0;
 
 type EglInstance = egl::DynamicInstance<egl::EGL1_4>;
 
-type GlClearColor = unsafe extern "system" fn(f32, f32, f32, f32);
-type GlClear = unsafe extern "system" fn(u32);
-type Made = (egl::Context, egl::Surface, GlClearColor, GlClear);
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_RED: u32 = 0x1903;
+const GL_R8: i32 = 0x8229;
+const GL_ONE: i32 = 1;
+const GL_LINEAR: i32 = 0x2601;
+const GL_CLAMP_TO_EDGE: i32 = 0x812F;
+const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
+const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
+const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+const GL_TEXTURE_SWIZZLE_R: u32 = 0x8E42;
+const GL_TEXTURE_SWIZZLE_G: u32 = 0x8E43;
+const GL_TEXTURE_SWIZZLE_B: u32 = 0x8E44;
+const GL_TEXTURE_SWIZZLE_A: u32 = 0x8E45;
+
+/// The GLES entry points the app calls itself; ImGui's backend loads its own.
+#[derive(Clone, Copy)]
+struct Procs {
+    clear_color: unsafe extern "system" fn(f32, f32, f32, f32),
+    clear: unsafe extern "system" fn(u32),
+    gen_textures: unsafe extern "system" fn(i32, *mut u32),
+    bind_texture: unsafe extern "system" fn(u32, u32),
+    tex_image_2d: unsafe extern "system" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
+    tex_sub_image_2d:
+        unsafe extern "system" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
+    tex_parameteri: unsafe extern "system" fn(u32, u32, i32),
+    pixel_storei: unsafe extern "system" fn(u32, i32),
+    delete_textures: unsafe extern "system" fn(i32, *const u32),
+}
+
+type Made = (egl::Context, egl::Surface, Procs);
 
 struct Gl {
     egl: EglInstance,
     display: egl::Display,
     surface: egl::Surface,
     context: egl::Context,
-    clear_color: GlClearColor,
-    clear: GlClear,
+    procs: Procs,
 }
 
 impl Gl {
@@ -64,13 +94,12 @@ impl Gl {
             .ok_or_else(|| Error::new("EGL has no display"))?;
         egl.initialize(display).context("cannot initialize EGL")?;
         match Self::with_display(&egl, display, window) {
-            Ok((context, surface, clear_color, clear)) => Ok(Gl {
+            Ok((context, surface, procs)) => Ok(Gl {
                 egl,
                 display,
                 surface,
                 context,
-                clear_color,
-                clear,
+                procs,
             }),
             Err(e) => {
                 let _ = egl.terminate(display);
@@ -116,7 +145,7 @@ impl Gl {
             )
             .context("cannot create the EGL context")?;
         match Self::with_context(egl, display, config, context, window) {
-            Ok((surface, clear_color, clear)) => Ok((context, surface, clear_color, clear)),
+            Ok((surface, procs)) => Ok((context, surface, procs)),
             Err(e) => {
                 let _ = egl.destroy_context(display, context);
                 Err(e)
@@ -130,7 +159,7 @@ impl Gl {
         config: egl::Config,
         context: egl::Context,
         window: &ndk::native_window::NativeWindow,
-    ) -> Result<(egl::Surface, GlClearColor, GlClear), Error> {
+    ) -> Result<(egl::Surface, Procs), Error> {
         // SAFETY: the pointer is the live ANativeWindow, which outlives the surface because the
         // surface is destroyed before the window is terminated.
         let surface = unsafe {
@@ -149,9 +178,23 @@ impl Gl {
                 egl.get_proc_address(name)
                     .ok_or_else(|| Error::new(format!("GLES has no {name}")))
             };
-            Ok((proc("glClearColor")?, proc("glClear")?))
+            // SAFETY: each name is the GLES entry point whose signature the field of `Procs` it
+            // fills declares.
+            unsafe {
+                Ok(Procs {
+                    clear_color: load(proc("glClearColor")?),
+                    clear: load(proc("glClear")?),
+                    gen_textures: load(proc("glGenTextures")?),
+                    bind_texture: load(proc("glBindTexture")?),
+                    tex_image_2d: load(proc("glTexImage2D")?),
+                    tex_sub_image_2d: load(proc("glTexSubImage2D")?),
+                    tex_parameteri: load(proc("glTexParameteri")?),
+                    pixel_storei: load(proc("glPixelStorei")?),
+                    delete_textures: load(proc("glDeleteTextures")?),
+                })
+            }
         })();
-        let (clear_color, clear) = match loaded {
+        let procs = match loaded {
             Ok(procs) => procs,
             Err(e) => {
                 let _ = egl.make_current(display, None, None, None);
@@ -159,17 +202,25 @@ impl Gl {
                 return Err(e);
             }
         };
-        Ok((
-            surface,
-            // SAFETY: both are the GLES entry points of those names, whose signatures these are.
-            unsafe { std::mem::transmute::<extern "system" fn(), GlClearColor>(clear_color) },
-            unsafe { std::mem::transmute::<extern "system" fn(), GlClear>(clear) },
-        ))
+        Ok((surface, procs))
     }
 
     fn swap(&self) {
         let _ = self.egl.swap_buffers(self.display, self.surface);
     }
+}
+
+/// Types a loaded GLES entry point as its real signature.
+///
+/// # Safety
+/// `T` must be the function pointer type of the symbol `f` was loaded for.
+unsafe fn load<T: Copy>(f: extern "system" fn()) -> T {
+    assert_eq!(
+        std::mem::size_of::<T>(),
+        std::mem::size_of::<extern "system" fn()>()
+    );
+    // SAFETY: the caller vouches for the type, and the assert holds both to pointer size.
+    unsafe { std::mem::transmute_copy(&f) }
 }
 
 impl Drop for Gl {
@@ -264,9 +315,114 @@ impl Drop for Imgui {
     }
 }
 
+/// The newest camera frame as a GL texture, made on the first upload and deleted when the scan
+/// screen has no live camera.
+struct Preview {
+    procs: Procs,
+    /// Zero while there is no texture.
+    texture: u32,
+    size: (usize, usize),
+}
+
+impl Preview {
+    fn new(procs: Procs) -> Preview {
+        Preview {
+            procs,
+            texture: 0,
+            size: (0, 0),
+        }
+    }
+
+    /// Needs the GL context current.
+    fn upload(&mut self, luma: &Luma) {
+        let (Ok(width), Ok(height)) = (i32::try_from(luma.width), i32::try_from(luma.height))
+        else {
+            return;
+        };
+        if luma.width == 0 || luma.data.len() != luma.width * luma.height {
+            return;
+        }
+        let p = self.procs;
+        // SAFETY: the GLES context is current on this thread, and `luma.data` holds exactly
+        // width * height bytes, which is what a GL_R8 upload at alignment 1 reads.
+        unsafe {
+            (p.pixel_storei)(GL_UNPACK_ALIGNMENT, 1);
+            if self.texture == 0 {
+                (p.gen_textures)(1, &mut self.texture);
+                (p.bind_texture)(GL_TEXTURE_2D, self.texture);
+                (p.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                (p.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                (p.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                (p.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                // A GL_R8 texture samples as (r, 0, 0, 1); gray needs r in all three channels.
+                for channel in [
+                    GL_TEXTURE_SWIZZLE_R,
+                    GL_TEXTURE_SWIZZLE_G,
+                    GL_TEXTURE_SWIZZLE_B,
+                ] {
+                    (p.tex_parameteri)(GL_TEXTURE_2D, channel, GL_RED as i32);
+                }
+                (p.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+                self.size = (0, 0);
+            } else {
+                (p.bind_texture)(GL_TEXTURE_2D, self.texture);
+            }
+            let data = luma.data.as_ptr().cast::<c_void>();
+            if self.size == (luma.width, luma.height) {
+                (p.tex_sub_image_2d)(
+                    GL_TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    width,
+                    height,
+                    GL_RED,
+                    GL_UNSIGNED_BYTE,
+                    data,
+                );
+            } else {
+                (p.tex_image_2d)(
+                    GL_TEXTURE_2D,
+                    0,
+                    GL_R8,
+                    width,
+                    height,
+                    0,
+                    GL_RED,
+                    GL_UNSIGNED_BYTE,
+                    data,
+                );
+                self.size = (luma.width, luma.height);
+            }
+        }
+    }
+
+    fn texture(&self) -> Option<u32> {
+        (self.texture != 0).then_some(self.texture)
+    }
+
+    /// Needs the GL context current.
+    fn release(&mut self) {
+        if self.texture != 0 {
+            // SAFETY: the GLES context is current and `texture` is a name this made.
+            unsafe { (self.procs.delete_textures)(1, &self.texture) };
+            self.texture = 0;
+            self.size = (0, 0);
+        }
+    }
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 // `imgui` first: fields drop in declaration order and its backends need the GL context current.
+// `preview` before `gl` so its texture is deleted while the context is still current.
 struct Surface {
     imgui: Imgui,
+    preview: Preview,
     gl: Gl,
 }
 
@@ -276,6 +432,7 @@ struct FrameParams<'a> {
     field: &'a str,
     camera_ready: bool,
     camera_denied: bool,
+    preview: Option<PreviewView>,
     raw_insets: Option<RawInsets>,
     content_rect: Rect,
     scale: f32,
@@ -310,12 +467,13 @@ fn render(surface: &Surface, app: &App, state: &mut UiState, params: &FrameParam
             field: params.field,
             camera_ready: params.camera_ready,
             camera_denied: params.camera_denied,
+            preview: params.preview,
             scroll_to_end: true,
         };
         let taps = ui::draw(&view, &frame, state);
         sys::igRender();
-        (surface.gl.clear_color)(0.06, 0.06, 0.08, 1.0);
-        (surface.gl.clear)(0x4000);
+        (surface.gl.procs.clear_color)(0.06, 0.06, 0.08, 1.0);
+        (surface.gl.procs.clear)(0x4000);
         sys::backend_shim::opengl3::dear_imgui_backend_opengl3_render_draw_data(
             sys::igGetDrawData(),
         );
@@ -333,6 +491,12 @@ struct Activity {
     client: Option<Client>,
     surface: Option<Surface>,
     camera: Option<Camera>,
+    /// The newest camera frame, kept for the preview and the decoder; cleared with `camera`.
+    latest: Option<Luma>,
+    /// `latest` arrived since the texture was last filled.
+    latest_unuploaded: bool,
+    /// `latest` arrived since the decoder last looked.
+    latest_undecoded: bool,
     last_scan: Instant,
     /// What the soft keyboard has typed into the paste or prompt field.
     field: String,
@@ -355,6 +519,8 @@ struct Activity {
     insets_read: Instant,
     /// An event that moves the bars or keyboard arrived since the last read.
     insets_stale: bool,
+    /// `Display.getRotation()` as last read, refreshed with the insets; 0 when Java cannot say.
+    display_quadrant: i32,
 }
 
 impl Activity {
@@ -365,6 +531,39 @@ impl Activity {
         self.insets_stale = false;
         self.insets_read = Instant::now();
         self.insets = jni_bridge::system_insets(&self.android);
+        self.display_quadrant = jni_bridge::display_rotation(&self.android).unwrap_or(0);
+    }
+
+    /// The frame is dropped with the camera, which is what keeps the texture from outliving it.
+    fn drop_camera(&mut self) {
+        self.camera = None;
+        self.latest = None;
+        self.latest_unuploaded = false;
+        self.latest_undecoded = false;
+    }
+
+    /// Fills the texture from the newest frame and says how to draw it, or deletes the texture
+    /// when the scan screen has no live camera.
+    fn upload_preview(&mut self) -> Option<PreviewView> {
+        let surface = self.surface.as_mut()?;
+        let (Some(camera), Some(luma)) = (self.camera.as_ref(), self.latest.as_ref()) else {
+            surface.preview.release();
+            return None;
+        };
+        if self.latest_unuploaded {
+            surface.preview.upload(luma);
+            self.latest_unuploaded = false;
+        }
+        let texture = surface.preview.texture()?;
+        let rotation = layout::preview_rotation(
+            camera.sensor_orientation(),
+            camera.front_facing(),
+            self.display_quadrant,
+        );
+        Some(PreviewView {
+            texture,
+            uv: layout::fit_cover((luma.width as u32, luma.height as u32), rotation),
+        })
     }
 
     fn take_intent_link(&mut self) {
@@ -400,7 +599,7 @@ impl Activity {
             Some(Action::Start(target)) => {
                 let _enter = self.runtime.enter();
                 let store: Arc<dyn ClientStore> = self.store.clone();
-                self.camera = None;
+                self.drop_camera();
                 let mut options = AttachOptions::new(self.label.clone());
                 // A stored host has no address in hand, so it is found through the relay, as
                 // `fontaine attach` does by default.
@@ -498,11 +697,11 @@ impl Activity {
         let want_camera =
             *self.app.screen() == Screen::Scan && self.surface.is_some() && self.resumed;
         if !want_camera {
-            self.camera = None;
+            self.drop_camera();
             return;
         }
         if self.camera.as_ref().is_some_and(Camera::is_dead) {
-            self.camera = None;
+            self.drop_camera();
         }
         if self.permission_stale {
             self.permission_stale = false;
@@ -527,11 +726,23 @@ impl Activity {
                 }
             }
         }
+        if let Some(luma) = self.camera.as_mut().and_then(Camera::latest_luma) {
+            self.latest = Some(luma);
+            self.latest_unuploaded = true;
+            self.latest_undecoded = true;
+        }
         if self.last_scan.elapsed() < SCAN_INTERVAL {
             return;
         }
         self.last_scan = Instant::now();
-        if let Some(text) = self.camera.as_mut().and_then(Camera::poll) {
+        if !std::mem::take(&mut self.latest_undecoded) {
+            return;
+        }
+        let text = self
+            .latest
+            .as_ref()
+            .and_then(|luma| decode_luma(luma.width, luma.height, &luma.data));
+        if let Some(text) = text {
             self.app.submit_link(&text);
         }
     }
@@ -609,10 +820,12 @@ impl Activity {
         self.drain_client();
         self.scan();
         self.refresh_insets();
+        let preview = self.upload_preview();
         let params = FrameParams {
             field: &self.field,
             camera_ready: self.camera.is_some(),
             camera_denied: self.camera_denied,
+            preview,
             raw_insets: self.insets,
             content_rect: self.android.content_rect(),
             scale: self.scale,
@@ -633,7 +846,10 @@ impl Activity {
         let built = Gl::new(&window)
             .and_then(|gl| Imgui::new(&window, self.scale).map(|imgui| (gl, imgui)));
         match built {
-            Ok((gl, imgui)) => self.surface = Some(Surface { gl, imgui }),
+            Ok((gl, imgui)) => {
+                let preview = Preview::new(gl.procs);
+                self.surface = Some(Surface { imgui, preview, gl });
+            }
             Err(e) => log::error!("the screen could not start: {}", chain(&e)),
         }
     }
@@ -674,6 +890,9 @@ fn android_main(app: AndroidApp) {
         client: None,
         surface: None,
         camera: None,
+        latest: None,
+        latest_unuploaded: false,
+        latest_undecoded: false,
         last_scan: Instant::now(),
         field: String::new(),
         camera_denied: false,
@@ -688,6 +907,7 @@ fn android_main(app: AndroidApp) {
         insets: None,
         insets_read: Instant::now(),
         insets_stale: true,
+        display_quadrant: 0,
     };
     activity.refresh_hosts();
     activity.take_intent_link();
@@ -704,7 +924,7 @@ fn android_main(app: AndroidApp) {
                 match event {
                     MainEvent::InitWindow { .. } => activity.open_surface(),
                     MainEvent::TerminateWindow { .. } => {
-                        activity.camera = None;
+                        activity.drop_camera();
                         activity.surface = None;
                     }
                     MainEvent::WindowResized { .. } | MainEvent::ContentRectChanged { .. } => {
@@ -712,12 +932,12 @@ fn android_main(app: AndroidApp) {
                     }
                     MainEvent::Pause => {
                         activity.resumed = false;
-                        activity.camera = None;
+                        activity.drop_camera();
                     }
                     MainEvent::Resume { .. } => {
                         activity.resumed = true;
                         activity.insets_stale = true;
-                        activity.camera = None;
+                        activity.drop_camera();
                         activity.camera_failed = false;
                         activity.permission_stale = true;
                         // getIntent() stays the launch intent, so this only catches a launch link
