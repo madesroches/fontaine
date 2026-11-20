@@ -1,5 +1,5 @@
 //! The few Java calls the app needs: the camera permission, the device model for the pairing
-//! label, the clipboard, the window insets, the display rotation, and the deep-link text of the
+//! label, the clipboard (read and write), the window insets, the display rotation, and the deep-link text of the
 //! intent that started the activity.
 
 use android_activity::AndroidApp;
@@ -125,6 +125,44 @@ pub fn clipboard_text(app: &AndroidApp) -> Option<String> {
         Ok(Some(text))
     })
     .flatten()
+}
+
+/// Puts `text` on the clipboard as plain text. `None` when Java refused or cannot be reached, so
+/// the caller can keep what it was about to move.
+pub fn set_clipboard_text(app: &AndroidApp, text: &str) -> Option<()> {
+    with_activity(app, |env, activity| {
+        let name = env.new_string("clipboard")?;
+        let manager = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Ok(false);
+        }
+        let label = env.new_string("Fontaine")?;
+        let body = env.new_string(text)?;
+        let clip = env
+            .call_static_method(
+                "android/content/ClipData",
+                "newPlainText",
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                &[JValue::Object(&label), JValue::Object(&body)],
+            )?
+            .l()?;
+        env.call_method(
+            &manager,
+            "setPrimaryClip",
+            "(Landroid/content/ClipData;)V",
+            &[JValue::Object(&clip)],
+        )?;
+        Ok(true)
+    })
+    .filter(|written| *written)
+    .map(|_| ())
 }
 
 /// The data string of the launching intent, when the activity was opened by a link.

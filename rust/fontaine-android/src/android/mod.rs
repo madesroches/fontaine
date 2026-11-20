@@ -21,6 +21,7 @@ use khronos_egl as egl;
 use sha2::{Digest, Sha256};
 
 use crate::app::{Action, App, Screen};
+use crate::field::Field;
 use crate::keys::{self, Key};
 use crate::layout::{self, Insets};
 use crate::link::is_pair_link;
@@ -429,7 +430,7 @@ struct Surface {
 /// What `render` needs beyond the app: the typed text, the camera state and the raw numbers the
 /// platform reported about the window.
 struct FrameParams<'a> {
-    field: &'a str,
+    field: &'a Field,
     camera_ready: bool,
     camera_denied: bool,
     preview: Option<PreviewView>,
@@ -498,8 +499,8 @@ struct Activity {
     /// `latest` arrived since the decoder last looked.
     latest_undecoded: bool,
     last_scan: Instant,
-    /// What the soft keyboard has typed into the paste or prompt field.
-    field: String,
+    /// What has been typed into the paste or prompt field, with its cursor and selection.
+    field: Field,
     camera_denied: bool,
     camera_granted: bool,
     /// The permission is asked of Java only when it may have changed, not every frame.
@@ -589,6 +590,21 @@ impl Activity {
         }
     }
 
+    /// Puts the selection on the clipboard; false, with a notice, when it could not be written or
+    /// nothing is selected.
+    fn write_clipboard(&mut self) -> bool {
+        let selected = self.field.selected();
+        if selected.is_empty() {
+            return false;
+        }
+        if jni_bridge::set_clipboard_text(&self.android, selected).is_some() {
+            return true;
+        }
+        self.app
+            .set_notice("cannot copy to the clipboard".to_string());
+        false
+    }
+
     fn clear_field(&mut self) {
         self.field.clear();
         self.android.set_text_input_state(TextInputState::default());
@@ -640,15 +656,33 @@ impl Activity {
 
     fn handle_tap(&mut self, tap: Tap) {
         match tap {
-            Tap::FocusField => self.android.show_soft_input(true),
+            Tap::MoveCursor(idx) => {
+                self.field.move_to(idx);
+                self.android.show_soft_input(true);
+            }
+            Tap::SelectRange(anchor, cursor) => self.field.select(anchor, cursor),
+            Tap::SelectAll => self.field.select_all(),
+            Tap::Copy => {
+                self.write_clipboard();
+            }
+            Tap::Cut => {
+                if self.write_clipboard() {
+                    self.field.cut();
+                    self.android.set_text_input_state(TextInputState::default());
+                }
+            }
             Tap::PasteField => {
                 if let Some(text) = jni_bridge::clipboard_text(&self.android) {
-                    self.field = text.trim().to_string();
+                    if *self.app.screen() == Screen::Session {
+                        self.field.insert(&text);
+                    } else {
+                        self.field.replace_all(text.trim());
+                    }
                     self.android.set_text_input_state(TextInputState::default());
                 }
             }
             Tap::SubmitField => {
-                let text = std::mem::take(&mut self.field);
+                let text = self.field.as_str().to_string();
                 let action = if *self.app.screen() == Screen::Session {
                     self.app.send_prompt(&text)
                 } else {
@@ -778,6 +812,9 @@ impl Activity {
                 pressed.push(match code {
                     Keycode::Enter | Keycode::NumpadEnter => Key::Enter,
                     Keycode::Del => Key::Backspace,
+                    Keycode::ForwardDel => Key::Delete,
+                    Keycode::DpadLeft => Key::Left,
+                    Keycode::DpadRight => Key::Right,
                     _ => match self
                         .android
                         .device_key_character_map(key.device_id())
@@ -803,7 +840,7 @@ impl Activity {
             _ => InputStatus::Unhandled,
         }) {}
         if let Some(text) = typed {
-            self.field = text;
+            self.field.replace_all(&text);
         }
         for key in pressed {
             if keys::apply(&mut self.field, key) {
@@ -894,7 +931,7 @@ fn android_main(app: AndroidApp) {
         latest_unuploaded: false,
         latest_undecoded: false,
         last_scan: Instant::now(),
-        field: String::new(),
+        field: Field::default(),
         camera_denied: false,
         camera_granted: false,
         permission_stale: true,
