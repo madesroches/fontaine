@@ -40,9 +40,13 @@ history. Registry, risk class and gate are untouched; only how the schema reache
 **Capability.** A new `AccountKind`/provider method `native_deferral() -> bool` (default `false`,
 `true` for `anthropic`), next to `accepts_context_editing`. The account-kind flag is a model-less
 method on `Provider`. Native is on for every `anthropic` account whose model supports it; the
-per-model check runs in each advertiser from its own model: Claude models released on or before
-Opus 4.1 (2025-08-05), i.e. Opus 4/4.1, Sonnet 4 and 3.x, are not native; unknown or undated ids
-are native, with the retry as backstop.
+per-model check runs in each advertiser from its own model: an explicit model-id deny rule, not a
+release-date comparison (rig-core 0.46 `models.json` carries no `release_date` for the Opus 4/4.1
+and Sonnet 4 entries, and `derived_facts.rs:94` clears it). Ids starting `claude-3`, and the Opus 4,
+Opus 4.1 and Sonnet 4 families in alias and dated form (`claude-opus-4-0`, `claude-opus-4-1`,
+`claude-opus-4-1-20250805`, `claude-opus-4-20250514`, `claude-sonnet-4-0`,
+`claude-sonnet-4-20250514`), are not native; every other id is native, with the retry as backstop.
+A unit test covers those ids plus a newer id.
 A `[mcp] native_tool_search = true|false` (default `true`) turns it off. Any other host behind an `anthropic` account relies on
 the retry; `databricks` and `opencode-go` stay client-side.
 
@@ -69,7 +73,10 @@ left untouched):
    step, so the marker can sit on a tool `DeferWire` then defers, which Anthropic rejects with a
    400. `DeferWire` therefore moves `cache_control` off every tool it defers onto the last
    remaining non-deferred tool (if none carried one and a tools cache marker was present, it
-   keeps one marker on the last non-deferred tool).
+   keeps one marker on the last non-deferred tool). The marker is
+   moved on the encoded body rather than by moving deferred tools into `additional_params.tools`
+   before the inner encode: that would reorder tools and skip rig's `strict` and
+   `eager_input_streaming` handling, changing rig-produced bytes for the tools themselves.
 2. For each `tool_result` block whose `tool_use_id` belongs to a `tool_use` named `tool_search`
    and whose `content` holds exactly one text block (rig encodes a `String` output as an array of
    `{"type":"text"}` blocks; empty output is a plain string), rewrite `content` into `tool_reference` blocks (`{"type":"tool_reference","tool_name":…}`),
@@ -157,8 +164,10 @@ the retry state keep today's behavior byte for byte. `claude-subscription` still
   retry-without falls back safely), user and project scope may both set it.
 - AFK: the retry-off flag is session-wide: one agent's 400 turns native off for every agent.
 - AFK: the retry covers only this feature's two field names, not a general capability set (#169).
-- AFK: cache savings are not measured in this change; run `cache-bench` (#498) before and after and
-  record the numbers in the PR as a measurement, not a merge gate.
+- AFK: per-model native rule is an explicit id deny list (`claude-3*`, Opus 4/4.1, Sonnet 4, alias and
+  dated ids; all else native, retry as backstop), not a release-date check, since rig's catalog has no dates for them.
+- AFK: the cache marker is moved on the encoded body by `DeferWire`, not by pre-encode relocation of deferred tools into `additional_params.tools` (keeps rig's tool bytes and order).
+- AFK: cache savings are not gated in this change; `cache-bench` (#498) covers only claude-subscription/databricks Messages-wire accounts with no MCP fixture, so measure manually: an `anthropic` session with a deferred MCP server, comparing cache read tokens before and after a `tool_search` load, recorded in the PR. A follow-up issue to extend `cache-bench` is to be filed, not done here.
 
 ## Documentation
 
