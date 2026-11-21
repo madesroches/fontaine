@@ -304,14 +304,16 @@ of the process that runs Fontaine. It is for development and is off unless set:
 | `1`, `full` | each request's complete frame list as sent, cache marker and reminder included |
 | `delta` | only the messages that are new since the conversation's previous request |
 
-Any other value is off, with one warning that names the accepted ones. There is no config key at
+Any other value is off, with one warning per connection that names the accepted ones. There is no config key at
 any scope, and `--debug-file` and `FONTAINE_LOG` never enable it, so a shared project file cannot
 turn it on.
 
 Nothing is created until the first request. Then Fontaine creates
 `<data dir>/claude-capture/<session>-<token>.jsonl` (the directory 0700, the file 0600), one file
-per process shared by every conversation of its connection (the root agent, the guardian and
-subagents), and warns once with its path. **The file is not redacted**: it holds every prompt, file
+per connection, shared by every conversation of that connection (the main model's connection,
+which the guardian on the same account and subagents share), and warns once per file with its path.
+A subagent model, a `/model` switch or a guardian account that connects separately gets its own
+file and warning, and request indices restart in each file. **The file is not redacted**: it holds every prompt, file
 content and tool result in the frames, plus the CLI's result events. Nothing is exported: it never
 reaches telemetry, the ledger or a remote device. If the files cannot be created or written, one
 warning is shown, the capture stops and the request goes on. Delete the whole
