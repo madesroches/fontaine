@@ -155,7 +155,7 @@ tokens bump it; each owns an `Arc` of the tracker rather than borrowing, so it c
 One task per `AgentRuntime`, spawned at runtime build through `Handle::try_current()` like the other
 background spawns (`AgentRuntime::new` is synchronous and called from test helpers), owns change
 detection and the hook. `AgentRuntime` keeps an abort-on-drop handle, and the monitor is stopped
-after the final transition, so it cannot fire after `session_end` or outlive a TUI session switch or
+by teardown (which quiesces it first), so it cannot fire after `session_end` or outlive a TUI session switch or
 an SDK `Session` drop:
 
 - Wakes on: a new public `Jobs::subscribe()` (wrapping the existing `watch`), `AgentTree::changed()`
@@ -171,8 +171,9 @@ an SDK `Session` drop:
   comparison; a burst that returns to the previous state publishes nothing.
 - **Reason** is derived from the field diff by fixed priority (`waiting_changed`, `turn_started`,
   `turn_ended`, `agent_started`, `agent_ended`, `job_started`, `job_ended`, `notification_queued`,
-  `notification_delivered`, `queue_changed`), plus two explicit overrides the runtime sets: `clear`
-  (`clear_conversation`, after `end_jobs`) and `shutdown` (teardown). Reasons are a closed enum
+  `notification_delivered`, `queue_changed`), plus two explicit overrides: `clear`
+  (`clear_conversation`, after `end_jobs`) and `shutdown`, which teardown computes itself
+  (see the hook's Teardown). Reasons are a closed enum
   with stable wire strings.
 - Hook delivery is **serial and latest-wins**: one in-flight hook run at a time, and while it runs
   only the newest pending snapshot is kept, so a slow hook never reorders or backs up, and the
@@ -196,35 +197,28 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
 - Payload: the common fields (`session_id`, `cwd`, …) plus `hook_event_name`, `reason`,
   `previous_state`, and `activity` (the shared object above, including `seq` and its own
   `session_id`).
-- Teardown: the final transition is delivered once, inside `AgentRuntime::fire_session_end`
-  (`core/agent/hooks.rs:44`), which every exit uses: it recomputes after jobs are stopped and awaits
-  one `activity_changed` (reason `shutdown`) before `session_end`, because a fire-and-forget task
-  would be dropped with the runtime. The delivery is bounded by a fixed slice of the remaining
-  final-shutdown deadline (as `MCP_GRACEFUL_CLOSE` is a slice; the TUI budget is 2 s,
-  `FINAL_SHUTDOWN_BUDGET` in `fontaine-tui/src/shutdown.rs:11`, while a hook's default timeout is
-  30 s except `session_end` at 1.5 s, `config.rs:903-907`), and `session_end` stays inside the overall
-  deadline (`finish_final_shutdown`, `shutdown.rs:38-55`). Jobs are already force-stopped in
-  `begin_final_shutdown`, so only awaiting `wait_stopped` remains before the transition;
-  `finish_final_shutdown` (`core/agent/shutdown.rs:44-52`), which runs `session_end` in a
-  `tokio::join!` beside it, awaits the job stop first, but only for its own fixed slice of the
-  remaining deadline: `wait_stopped` (`tools/jobs.rs:1153-1163`) loops until no job runs or the
-  whole deadline passes, so if jobs have not stopped by the slice the transition is computed and
-  delivered anyway and `session_end` keeps its share (`core/agent/shutdown.rs:45-53`). Final
-  shutdown needs no agent stop (`abort_all` sets nodes Killed synchronously). The other exits already stop jobs before
-  `fire_session_end`: headless (`terminate_all` at `run.rs:1121/1205/1240`, then
-  `fire_session_end("other")` at `fontaine/src/headless.rs:291`), Claude-compat
-  (`claude_compat/mod.rs:362`) and the embedded `Session` (`session.rs:777`). The TUI session switch
-  (`fontaine-tui/src/lib.rs:726-730`, `session_end("resume")`) is reordered to stop agents
-  (`kill_all` + `settled`) and jobs before calling it, so the final `shutdown` snapshot is not
-  active or `running_agents > 0`. The headless input-error exit (`run.rs:1121-1123`) does
-  `terminate_all` but no `kill_all` before `session_end` fires (`headless.rs:291`,
-  `claude_compat/mod.rs:362`, `session.rs:777`); it gets the same agent stop.
+- Teardown: `AgentRuntime::fire_session_end` (`core/agent/hooks.rs:44-46`, which every exit uses)
+  first quiesces the monitor (stops its wake loop, awaits any in-flight delivery, takes its last
+  published value and `seq`), then computes the current activity and awaits one `activity_changed`
+  (reason `shutdown`, `seq` continuing the monitor's) before `session_end`. The `shutdown`
+  transition is always delivered, never dropped by dedup as "no change", and is never concurrent
+  with a monitor delivery. A fire-and-forget task would be dropped with the runtime, hence the await.
+  `fire_session_end` takes a delivery cap for that awaited transition. `finish_final_shutdown`'s
+  branch becomes `timeout(slice, wait_stopped)` → transition (bounded by a slice of the remaining
+  deadline) → `session_end`, replacing the `tokio::join!` arm for `session_end`. The non-final
+  callers (`fontaine-tui/src/lib.rs:727`, `headless.rs:291`, `claude_compat/mod.rs:362`,
+  `session.rs:777`) pass a fixed 1.5 s cap, `session_end`'s own default timeout. Reorder the TUI
+  session switch (`lib.rs:726-730`) to stop agents (`kill_all` + `settled`) and jobs before
+  `fire_session_end`, and add `kill_all` + `settled` at the headless input-error exit
+  (`run.rs:1118-1123`), so the final `shutdown` snapshot is not active or `running_agents > 0`.
 
 ### The status line
 
 `activity` joins the status-line JSON payload as the same `to_json()` object, read from
 `runtime.activity()` at render time, in `build_statusline_payload`
-(`fontaine-tui/src/ui/mod.rs:399-451`), which already holds the runtime. Rune accessor exposure is
+(`fontaine-tui/src/ui/mod.rs:399-451`), which already holds the runtime. The monitor publishes after
+the draw that follows a turn end and `refresh_interval_secs` is off by default, so the TUI loop
+redraws the status line on `runtime.activity().changed()`. Rune accessor exposure is
 not part of this change.
 
 ## Implementation Steps
@@ -261,9 +255,11 @@ not part of this change.
    the `AgentRuntime::notification_prompt` wrapper take/return a `TurnClaim`; update its callers, including
    `fontaine-sdk/tests/core_scanner.rs` and `tests/core_lsp.rs`.
 4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`) through
-   `Handle::try_current()`, with an abort-on-drop handle on `AgentRuntime` and a stop after the final
-   transition, `AgentRuntime::activity()` (`watch::Receiver`), and the shutdown/clear reason overrides
-   (`core/agent/shutdown.rs`, `clear_conversation`).
+   `Handle::try_current()`, with an abort-on-drop handle on `AgentRuntime` and a `quiesce` that teardown
+   calls, `AgentRuntime::activity()` (`watch::Receiver`), the `clear` reason override
+   (`clear_conversation`) and the teardown transition in `fire_session_end` (`core/agent/hooks.rs`,
+   `core/agent/shutdown.rs`). `begin_final_shutdown`'s `abort_all`/`force_stop_all` wake the monitor,
+   so it is quiesced before the transition.
 5. **Hook plumbing.** `HookEvent::ActivityChanged` in every `match` and `ALL` (now 19),
    `MatcherKind::Values(["active","waiting","idle"])`, `COMMAND_HTTP`, `ProjectScope::Loads`,
    `discards_system_message`; `LifecycleHooks::activity_changed`; the config catalog row
@@ -273,7 +269,9 @@ not part of this change.
    (`core/plugins.rs:1285`) and SDK `initialize.hooks` (`claude_compat/hooks.rs:71`); document that in
    `docs/plugins.md` and `docs/hooks.md`.
 6. **Status line.** `activity` in the payload struct (`statusline/mod.rs`), read from
-   `runtime.activity()` in `build_statusline_payload`.
+   `runtime.activity()` in `build_statusline_payload`; add a `runtime.activity().changed()` arm to
+   the TUI loop's `select!` (`fontaine-tui/src/ui/mod.rs:~959-1021`) calling
+   `trigger_statusline(StatuslineTrigger::Draw)`.
 7. **Docs and Decisions** (below).
 8. `cargo fmt`, `clippy -D warnings`, `cargo test`, rustdoc.
 
@@ -287,14 +285,14 @@ not part of this change.
 - `rust/fontaine-sdk/src/core/gate.rs` (tracker on `SessionState`), `core/turn.rs` (`TurnScope`),
   `core/agent.rs` (`notification_prompt`, `activity()`, `clear_conversation`),
   `core/agent/shutdown.rs`, `core/agent/build.rs` / `setup.rs` (monitor), `core/agent/hooks.rs`,
-  `core/agent/goal.rs`, `session.rs`
+  `core/agent/goal.rs`, `session.rs`; `rust/fontaine-sdk/src/agents/spawn.rs`
 - `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `config_scope.rs`, `user_hooks.rs`
   (event + method)
 - `rust/fontaine-sdk/tests/core_scanner.rs`, `tests/core_lsp.rs` (`notification_prompt` callers)
-- `rust/fontaine-sdk/src/core/statusline/mod.rs`, `run.rs`
+- `rust/fontaine-sdk/src/core/statusline/mod.rs`, `rust/fontaine-sdk/src/run.rs`
 - `rust/fontaine-tui/src/ui/{mod,turn,goal}.rs`, `ui/commands/{context,workspace}.rs`,
-  `fontaine-tui/src/lib.rs`
-- `rust/fontaine/src/claude_compat/mod.rs` (final transition), `rust/fontaine/src/headless.rs`
+  `fontaine-tui/src/lib.rs`, `fontaine-tui/src/ui/remote.rs`
+- `rust/fontaine/src/claude_compat/mod.rs` (final transition), `claude_compat/router.rs`, `rust/fontaine/src/headless.rs`
 - `docs/hooks.md`, `docs/configuration.md`, `docs/tui.md`, `docs/tools.md`, `docs/plugins.md`;
   `CHANGELOG.md`;
   `tasks/fontaine_harness_plan.md` (Decisions)
@@ -316,6 +314,8 @@ not part of this change.
 - 2026-11-21: `session_end` now fires after agents and jobs are stopped on the TUI session switch
   and the headless input-error exit (it fired before the stop at `fontaine-tui/src/lib.rs:726`), so
   the final snapshot is idle.
+- 2026-11-21: the awaited `shutdown` transition of a non-final `fire_session_end` is capped at 1.5 s
+  (`session_end`'s default timeout); final shutdown slices it from the remaining deadline.
 
 ## Documentation
 
@@ -359,13 +359,17 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   goal paths, `remote_idle`) each hold a scope across the retract (sampled never idle), the router's
   queued inputs count in `queued_prompts`, and a read-order test pins the `wake_for_inbox`
   take → wake → requeue handoff (never `running_agents == 0` with an empty inbox).
-- Shutdown/exit: the final transition is delivered once, inside `fire_session_end`, after job stop
+- Shutdown/exit: the final transition is delivered once (continuing the monitor's `seq`, never
+  deduped away, never concurrent with a monitor delivery, including a job or agent ending
+  concurrently during teardown), inside `fire_session_end`, after job stop
   and before `session_end` at shutdown, headless, Claude-compat, embedded `Session` and TUI session
   switch; a slow `activity_changed` hook cannot starve `session_end`, and a job that never finishes does
-  not either (the pre-transition `wait_stopped` is bounded by its own slice); the session-switch and
+  not either (the pre-transition `wait_stopped` is bounded by its own slice; non-final callers cap the transition
+  at 1.5 s); the session-switch and
   headless input-error final snapshots show no running agents.
 - Monitor lifetime: built without a tokio runtime it does not panic; it does not fire after
-  `session_end`, and does not outlive a dropped runtime.
+  `session_end`, and does not outlive a dropped runtime; a job or agent ending during teardown
+  neither starts a second delivery nor is lost.
 - Cancellation paths: model `job_cancel` (no note posted), panel `kill_by_user`, natural exit with
   completion consumed through `job_output`, `/clear` (`end_jobs` + discard), shutdown, each
   updating the snapshot with the right reason.
@@ -379,7 +383,8 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
 - Regression pins: `stop` still fires at the same point with the same payload (existing hook
   tests), subagent idle/wake tests unchanged, headless integration tests still prove running jobs
   are terminated at run end.
-- Status line: payload includes `activity` identical to the hook object.
+- Status line: payload includes `activity` identical to the hook object, and follows a late publish
+  (the loop redraws on `activity().changed()`).
 
 ## Manual Verification
 
