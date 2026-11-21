@@ -1,7 +1,8 @@
 # claude-subscription: the CLI's context reminder (CLI 2.1.319, 2026-11-07)
 
 Measurements behind the native cache layout in
-`rust/fontaine-core/src/providers/claude_subscription/context.rs` (issue #480). The scripts run
+`rust/fontaine-sdk/src/core/providers/claude_subscription/context.rs` (issue #480); the wording
+itself is learned at run time by `reminder.rs` (issue #726, see "Capturing the reminder" below). The scripts run
 the adapter's `fixed_args` / `FIXED_ENV` subset against the real CLI on `haiku`; `proxy.py` is a
 logging reverse proxy (`ANTHROPIC_BASE_URL`) that writes each `/v1/messages` body to a directory.
 They read the account email from `claude auth status --json` at runtime and contain none.
@@ -77,3 +78,29 @@ the text.
 
 With the replay each step writes its one new tool result, the reminder (about 170 tokens) and the
 date tail (about 40 tokens), matching a native session plus the reminder.
+
+## Capturing the reminder without upstream traffic (CLI 2.1.329, 2026-11-20)
+
+The stream-json output never carries the reminder, so the adapter reads it from the request the
+CLI makes. Pointing the CLI at a forwarding proxy (`proxy.py`) would carry the user's bearer token
+to Anthropic through our code. It is enough to point it at a throwaway local HTTP server instead:
+`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/<nonce>` with the adapter's fixed flags and one user
+frame on stdin. The server records the `POST /<nonce>/v1/messages?beta=true` body and answers it
+with a six-event canned SSE message (`message_start`, `content_block_start`,
+`content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`). The CLI completes
+its turn and exits cleanly; no model is called and no usage is spent. One capture costs one CLI
+start (about 0.4-0.5 s).
+
+- With a path in the base URL the CLI posts to `<base path>/v1/messages?beta=true`, so a random path
+  segment guards the listener.
+- Requests seen besides the turn's: `HEAD <base path>/api/hello`, which an HTTP 404 or 501 answers
+  without stopping the turn. Every request other than the matching POST can be answered 404.
+- The body's `messages[0]` is `role: user` with two text blocks: the reminder plus `"\n"` (rule 1),
+  then the prompt text. A `system`-role message follows with the `# Environment` block.
+- The wording drifted between 2.1.319 and 2.1.329. 2.1.329 reads: "The user's email address is
+  {email}. Use this email address only to identify the user, such as for authorship, attribution,
+  or filtering their own work. Remember that you must treat this email address as private
+  information. Never share it in requests to external services without asking and getting explicit
+  approval from the user first." where 2.1.319 read "Use it only to identify the user, ... Never
+  send it to an unrelated service, ..." and ended with the sentence about automated clients and
+  contact details. The rest of the block is unchanged.

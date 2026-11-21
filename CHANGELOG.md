@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
+  process, per CLI version and account, a short probe launch points the CLI at a loopback listener
+  that captures the reminder and answers with a canned reply, so no model is called and nothing
+  reaches Anthropic. Native cache replay uses the learned wording, so a CLI release that rewords
+  the reminder (2.1.329 did) no longer costs two real requests to discover; a reminder that cannot
+  be learned falls back to the earlier layout. The persisted broken verdict is keyed to the CLI
+  version and the wording's hash, and verdicts written before this change are retired.
 - The Android scan card shows the live camera image (#728): a grayscale preview of the frames the QR
   decoder reads, cropped to fill the square and kept upright when the phone rotates, with the
   "Scanning" label over a dark strip. Frames stay in memory only until the next one replaces them;

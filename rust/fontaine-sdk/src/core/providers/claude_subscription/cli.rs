@@ -18,6 +18,7 @@ use tokio::sync::OnceCell;
 
 use super::context::Verdicts;
 use super::protocol::{Event, Failure, Reader};
+use super::reminder::Reminders;
 use super::transport::{next, rejected};
 use super::{ClaudeError, ErrorKind, LimitForm, USAGE_SETTINGS_URL, claude_error};
 use crate::core::models::SharedEnv;
@@ -131,6 +132,18 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "DISABLE_ERROR_REPORTING",
 ];
 
+/// The proxy settings among `PASSTHROUGH_ENV`.
+const PROXY_ENV: &[&str] = &[
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "all_proxy",
+];
+
 /// What the CLI is always told, whatever the user's environment says: no native memory,
 /// instructions, compaction, retries, fallbacks, background work, updates or telemetry, and no
 /// identity but ours.
@@ -185,6 +198,8 @@ pub struct Timeouts {
     /// The outer bound of model discovery, and of the request-time model listing on a request's
     /// own process.
     pub discovery: Duration,
+    /// The outer bound of the reminder probe, which only reaches a loopback listener.
+    pub probe: Duration,
 }
 
 impl Default for Timeouts {
@@ -194,6 +209,7 @@ impl Default for Timeouts {
             version: Duration::from_secs(30),
             auth: Duration::from_secs(60),
             discovery: Duration::from_secs(120),
+            probe: Duration::from_secs(10),
         }
     }
 }
@@ -219,6 +235,7 @@ impl Timeouts {
             timeouts.auth = probe;
             timeouts.discovery = probe;
         }
+        timeouts.probe = timeouts.probe.min(timeouts.discovery);
         timeouts
     }
 }
@@ -280,6 +297,7 @@ pub struct Cli {
     version_ok: OnceCell<()>,
     warn: Warn,
     verdicts: Arc<Verdicts>,
+    reminders: Arc<Reminders>,
 }
 
 impl Cli {
@@ -302,7 +320,12 @@ impl Cli {
             version_ok: OnceCell::new(),
             warn,
             verdicts,
+            reminders: Reminders::shared(data_dir),
         }
+    }
+
+    pub(super) fn reminders(&self) -> &Arc<Reminders> {
+        &self.reminders
     }
 
     pub(super) fn verdicts(&self) -> &Arc<Verdicts> {
@@ -517,9 +540,13 @@ impl Cli {
 
     /// The environment a launch starts from, rebuilt: nothing is inherited that is not named
     /// here.
-    fn environment(&self) -> Vec<(OsString, OsString)> {
+    fn environment(&self, loopback: Option<&str>) -> Vec<(OsString, OsString)> {
         let mut vars: Vec<(OsString, OsString)> = Vec::new();
         for name in PASSTHROUGH_ENV {
+            // A loopback request must not be routed through an outbound proxy.
+            if loopback.is_some() && PROXY_ENV.contains(name) {
+                continue;
+            }
             if let Some(value) = (self.env)(name) {
                 vars.push((OsString::from(name), value));
             }
@@ -542,15 +569,18 @@ impl Cli {
             OsString::from("GIT_CEILING_DIRECTORIES"),
             self.data_dir.clone().into_os_string(),
         ));
+        if let Some(url) = loopback {
+            vars.push((OsString::from("ANTHROPIC_BASE_URL"), OsString::from(url)));
+        }
         vars
     }
 
-    fn command(&self, args: Vec<OsString>, cwd: &Path) -> Command {
+    fn command(&self, args: Vec<OsString>, cwd: &Path, loopback: Option<&str>) -> Command {
         let mut command = Command::new(&self.program);
         command
             .args(args)
             .env_clear()
-            .envs(self.environment())
+            .envs(self.environment(loopback))
             .current_dir(cwd)
             .kill_on_drop(true);
         #[cfg(unix)]
@@ -579,8 +609,20 @@ impl Cli {
         args: Vec<OsString>,
         stdin: bool,
     ) -> Result<CliChild, ClaudeError> {
+        self.launch_with(scratch, args, stdin, None)
+    }
+
+    /// `launch` for the reminder probe: `loopback` is the base URL its one request goes to, and
+    /// replaces the inherited proxy settings. The only launch that sets `ANTHROPIC_BASE_URL`.
+    pub(super) fn launch_with(
+        &self,
+        scratch: Scratch,
+        args: Vec<OsString>,
+        stdin: bool,
+        loopback: Option<&str>,
+    ) -> Result<CliChild, ClaudeError> {
         self.refuse_instruction_files()?;
-        let mut command = self.command(args, &self.workdir);
+        let mut command = self.command(args, &self.workdir, loopback);
         command
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -802,7 +844,7 @@ pub(crate) struct ChildFiles {
 
 impl ChildFiles {
     /// The files of a process that only lists models: no tools, an empty prompt.
-    fn empty(scratch: &Scratch) -> std::io::Result<Self> {
+    pub(super) fn empty(scratch: &Scratch) -> std::io::Result<Self> {
         Ok(ChildFiles {
             settings: scratch.write("settings.json", &serde_json::to_vec(&base_settings())?)?,
             mcp_config: scratch.write("mcp.json", br#"{"mcpServers":{}}"#)?,
@@ -1307,6 +1349,78 @@ mod tests {
             );
         }
         assert_eq!(cli_context(&json!({})).version, None);
+    }
+
+    fn cli_over(env: SharedEnv) -> Cli {
+        Cli::new(
+            Some(PathBuf::from("claude")),
+            None,
+            Path::new("/tmp/data"),
+            env,
+            Timeouts::default(),
+            Warn::to(|_| {}),
+        )
+    }
+
+    #[test]
+    fn the_probe_launch_drops_every_proxy_variable_and_names_its_loopback_url() {
+        let proxies = [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+            "no_proxy",
+        ];
+        let env: SharedEnv = Arc::new(|name: &str| {
+            [
+                "HTTPS_PROXY",
+                "HTTP_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "https_proxy",
+                "http_proxy",
+                "all_proxy",
+                "no_proxy",
+                "PATH",
+            ]
+            .contains(&name)
+            .then(|| OsString::from("http://proxy.example:3128"))
+        });
+        let cli = cli_over(env);
+        let has = |vars: &[(OsString, OsString)], name: &str| vars.iter().any(|(n, _)| n == name);
+
+        let request = cli.environment(None);
+        assert!(!has(&request, "ANTHROPIC_BASE_URL"));
+        for name in proxies {
+            assert!(has(&request, name), "{name}");
+        }
+
+        let probe = cli.environment(Some("http://127.0.0.1:1/nonce"));
+        for name in proxies {
+            assert!(!has(&probe, name), "{name}");
+        }
+        assert!(has(&probe, "PATH"));
+        let base = probe
+            .iter()
+            .find(|(n, _)| n == "ANTHROPIC_BASE_URL")
+            .unwrap();
+        assert_eq!(base.1, "http://127.0.0.1:1/nonce");
+    }
+
+    #[test]
+    fn the_probe_timeout_is_capped_by_discovery() {
+        assert_eq!(Timeouts::default().probe, Duration::from_secs(10));
+        let short =
+            |name: &str| (name == "FONTAINE_CLAUDE_PROBE_MS").then(|| OsString::from("300"));
+        let timeouts = Timeouts::from_env(&short);
+        assert_eq!(timeouts.probe, Duration::from_millis(300));
+        assert_eq!(timeouts.discovery, Duration::from_millis(300));
+        let long =
+            |name: &str| (name == "FONTAINE_CLAUDE_PROBE_MS").then(|| OsString::from("60000"));
+        assert_eq!(Timeouts::from_env(&long).probe, Duration::from_secs(10));
     }
 
     #[cfg(unix)]

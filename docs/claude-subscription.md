@@ -10,8 +10,10 @@ own agent loop, tools, permission pipeline, guardian, sessions, memory and compa
   binary. Pro, Team and Enterprise plans are refused.
 - Not supported: sharing or pooling credentials, resale, hosted or multi-tenant use,
   `claude setup-token`, using `CLAUDE_CODE_OAUTH_TOKEN` directly, and importing anything from
-  `~/.claude`. Fontaine never reads, copies or forwards a Claude credential, never presents
-  itself as Claude Code, and never selects API-key, gateway, cloud-backend, paid-credit or
+  `~/.claude`. Fontaine never reads, copies or forwards a Claude credential (the one request
+  that reaches Fontaine, the reminder probe described under
+  [Supported CLI versions](#supported-cli-versions), goes to a listener on the loopback interface
+  that reads only its body and drops its headers), never presents itself as Claude Code, and never selects API-key, gateway, cloud-backend, paid-credit or
   fallback-model routing. The CLI's own fallback is never used; a [model list](configuration.md#falling-through-to-the-next-entry)
   you write moves to its next entry in Fontaine, never inside the CLI.
 - Anthropic's terms for the Agent SDK and for signing in to Claude Code apply to you. Check them
@@ -65,13 +67,15 @@ Before the models are listed and before every model request Fontaine:
 
 1. runs `claude --version` (once per connection) and refuses a CLI older than **2.1.318**;
 2. refuses to start when the environment sets a variable that would change which account or
-   backend bills: Anthropic API, auth and OAuth tokens, custom endpoints, headers, betas or extra
+   backend bills (the reminder probe sets `ANTHROPIC_BASE_URL` to its own loopback listener for
+   its one launch; that is not an inherited endpoint): Anthropic API, auth and OAuth tokens, custom endpoints, headers, betas or extra
    body, Foundry, AWS and Vertex credentials and backend switches, Anthropic profiles, and model,
    effort or fallback overrides. The refusal names the variables, never their values; unset them
    and start again. The environment is looked up live, so a variable set later is seen too;
 3. runs `claude auth status` for the account's profile and requires a signed-in `claude.ai`
    subscription on a Max or Ultra plan. For a model request this runs alongside the start of the
-   request's own CLI process;
+   request's own CLI process and of the reminder probe, whose request reaches only the loopback
+   listener, never Anthropic;
 4. asks the CLI for its model list (an `initialize` request, no turn, no inference) and refuses the
    selected model if its current row says it draws from paid usage credits or resolves to another
    model than when it was listed. For a model request the question goes to that request's own
@@ -93,11 +97,13 @@ unavailable with the reason instead of hiding it.
 
 Every CLI process is started with an empty environment rebuilt from the program, identity and temp
 paths, locale, the profile directory, proxy and TLS settings and privacy opt-outs. No other
-variable, including other providers' keys, reaches it.
+variable, including other providers' keys, reaches it. The reminder probe's launch drops the proxy
+settings, so its loopback request cannot be routed to a proxy.
 
 ## What a request is
 
-Each model call starts a fresh CLI process and replays the
+Each model call starts a fresh CLI process (the first call of a Fontaine process also starts one
+extra, short-lived CLI for the reminder probe) and replays the
 conversation Fontaine holds: history as stream-json frames (signed reasoning included), then the
 final user or tool-result frame, which is the only one that asks for a response. Nothing is
 resumed or persisted by the CLI; Fontaine's ledger and session store are the only record. The
@@ -114,8 +120,8 @@ changes per request would change the prompt after its first lines. Fontaine chec
 is empty when it connects, and before every launch refuses one that holds `CLAUDE.md`, `AGENTS.md`
 or `.claude`. Git discovery from it is capped at the data directory. The files of one request
 (settings, tool inventory, system prompt) stay in a temporary directory removed with the process.
-Fontaine marks one message for the prompt cache (the final message on CLI 2.1.319 and later, the
-last replayed user message otherwise; see [Supported CLI versions](#supported-cli-versions)), and
+Fontaine marks one message for the prompt cache (the final message on CLI 2.1.319 and later with a
+reminder it learned, the last replayed user message otherwise; see [Supported CLI versions](#supported-cli-versions)), and
 the CLI's claude.ai connectors are not fetched.
 
 The CLI is started with its own memory, instruction files, compaction, hooks, subagents, retries,
@@ -181,6 +187,7 @@ reports without a rejected window, and a billing failure, are not waited for.
 | Anthropic's safety classifier withholds the reply | not retried, since the same request would be refused again: the turn ends with an error saying the classifier stopped the response. Nothing ran, and the [guardian](guardian.md) cannot observe a call the classifier withholds |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried with backoff, like any provider (see [`[retry]`](configuration.md#retry)) |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
+| The reminder probe taking too long, or failing | the request is not failed: it takes the earlier cache layout, and the probe is tried again after 5 minutes |
 
 A protocol failure names what the CLI did wrong: the MCP servers and statuses it reported when the
 inert tool inventory did not start (a `failed` inventory is one the CLI could not start or talk to),
@@ -209,11 +216,12 @@ the stop. The `system/informational` notice 2.1.329 emits in some turns is accep
 Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
 
 Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 ms per replayed
-user message.
+user message, and the first request of a Fontaine process adds one more CLI start for the
+reminder probe.
 
 On versions from 2.1.319, replayed history is read from the prompt cache up to the previous
-request's final message. The adapter repeats the CLI's own context reminder on every replayed user
-message, where the CLI put it, so each replayed message matches the request that last wrote it
+request's final message. The adapter repeats the CLI's own context reminder, as the CLI worded it,
+on every replayed user message, where the CLI put it, so each replayed message matches the request that last wrote it
 byte for byte, and it puts its cache marker on the final message. Each step then writes only its
 new messages plus about 170 tokens of the reminder per user message, near a native Claude Code
 session's write. The write that is never read back is the CLI's trailing date and token-budget
@@ -222,17 +230,35 @@ third, and the marker on the final message keeps the hour. A request of one mess
 so a one-shot caller such as the guardian keeps the CLI's 5-minute write, and the first message of a
 conversation is written once more on its second step.
 
+The adapter learns the reminder from the CLI instead of assuming its wording, which changes between
+CLI releases. At the first request of a Fontaine process, per CLI version and account, it starts the
+CLI once more with `ANTHROPIC_BASE_URL` pointing at a listener it opens on the loopback interface,
+under a random path only that launch knows, and reads the reminder out of the request the CLI makes
+there. The listener answers with a canned reply and forwards nothing, so the probe makes no model
+call and uses no quota; it costs one CLI start (about 0.4 s), and requests that start meanwhile
+share it. The CLI's request carries its bearer token and the account email; the listener reads only
+the content-length header and the body, drops the rest of the headers, token included, without
+storing or logging them, and the email is kept in memory like the one in the `initialize` answer.
+The reminder is used only if it has the shape the replay reproduces: the email once, and no section
+beyond `# userEmail` (a git or project section would depend on the directory). A reminder that
+cannot be read in time, or is not of that shape, leaves the request on the earlier layout below; a
+probe that could not tell is retried no sooner than 5 minutes later, and a shape that cannot be
+replayed is kept for the process.
+
 The adapter checks that the replay works. It compares a conversation's cache read with what the
 previous request of that conversation wrote. A previous request that itself read nothing was a cold
-start and gives no verdict. On a shortfall (the CLI changed its reminder, so the replayed bytes no
-longer match) twice in a row for one CLI version, with no healthy comparison in between, it turns
-the layout off for that version and shows one warning in the session naming the version and the
-numbers it judged on (read X of expected Y after Z s); `cache-bench` measures the effect. The
-verdict is kept in `claude-cache-verdicts.json` in the data dir (readable by the current user
+start and gives no verdict. On a shortfall (the replayed bytes no longer match what the CLI wrote, for example
+because a placement differs from the measured ones) twice in a row for one CLI version and one
+reminder wording, with no healthy comparison in between, it turns the layout off for that pair and
+shows one warning in the session naming the version, the first 8 hex digits of the wording's
+SHA-256 and the numbers it judged on (read X of expected Y after Z s); `cache-bench` measures the
+effect. The verdict is kept in `claude-cache-verdicts.json` in the data dir (readable by the current user
 only), so a restart keeps the fallback. It expires after 7 days, when the version is measured
-again, and is retired earlier when a Fontaine update changes the reminder template the adapter
-replays. A new CLI version is judged afresh. The layout needs an account email in the CLI's answer.
-On versions below 2.1.319, without an email, or after a warning, the adapter keeps the earlier
+again, and is retired earlier when the CLI's reminder wording changes or a Fontaine update changes
+where the adapter places the reminder. A new CLI version is judged afresh. The layout needs an
+account email in the CLI's answer and a reminder the probe learned.
+On versions below 2.1.319, without an email, when the reminder could not be learned, or after a
+warning, the adapter keeps the earlier
 layout: the marker on the last replayed user message, read back up to that message, and each request
 writing the last two messages, about twice a native session's write per step. The never-read
 5-minute write there is the CLI's breakpoint on the final message.
@@ -262,7 +288,8 @@ it writes about 8600 (the new result, the reminder and the date block), and read
 cache.
 
 The adapter repeats the CLI's reminder on replayed messages so they match byte for byte. The email
-it holds is the one the CLI already sends on every request: it goes to the same endpoint, and the
+it holds is the one the CLI already sends on every request (the probe's listener sees it, on the
+loopback interface only): it goes to the same endpoint, and the
 adapter keeps it in memory for the request only, never in a log, the ledger or an error. The cost
 is about 170 tokens of context per user message, about 17000 tokens at 100 tool calls.
 

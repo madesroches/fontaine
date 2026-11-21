@@ -1,5 +1,9 @@
 use super::*;
 use crate::core::providers::claude_subscription::protocol::{SessionSeed, Translated, translate};
+use crate::core::providers::claude_subscription::reminder::parse_reminder;
+use crate::core::providers::claude_subscription::reminder::tests::{
+    EMAIL, NONCE, TEMPLATE_2_1_319, body,
+};
 
 fn ctx(version: Option<(u32, u32, u32)>, email: Option<&str>) -> CliContext {
     CliContext {
@@ -41,8 +45,22 @@ fn native_ctx() -> CliContext {
     ctx(Some((2, 1, 319)), Some("user@example.com"))
 }
 
+/// The reminder CLI 2.1.319 sent, as the probe learns it.
+fn learned() -> Reminder {
+    parse_reminder(
+        &body(&TEMPLATE_2_1_319.replace("{email}", EMAIL)),
+        EMAIL,
+        NONCE,
+    )
+    .expect("the 2.1.319 reminder parses")
+}
+
+fn wording() -> String {
+    learned().wording
+}
+
 fn reminder() -> String {
-    REMINDER_TEMPLATE.replace("{email}", "user@example.com")
+    learned().with_email(EMAIL)
 }
 
 fn translated(messages: Value) -> Translated {
@@ -67,7 +85,7 @@ fn translated(messages: Value) -> Translated {
 
 fn applied(messages: Value, layout: Layout) -> Vec<Frame> {
     let mut frames = translated(messages).frames;
-    apply(&mut frames, &native_ctx(), layout);
+    apply(&mut frames, &native_ctx(), Some(&learned()), layout);
     frames
 }
 
@@ -136,28 +154,115 @@ fn the_reminder_template_has_the_measured_shape() {
 fn the_layout_follows_version_and_email() {
     let (_dir, v, _) = store();
     assert_eq!(
-        layout(&ctx(Some((2, 1, 318)), Some("a@b.c")), &v),
+        layout(&ctx(Some((2, 1, 318)), Some("a@b.c")), Some(&learned()), &v),
         Layout::Legacy
     );
     assert_eq!(
-        layout(&ctx(Some((2, 1, 319)), Some("a@b.c")), &v),
+        layout(&ctx(Some((2, 1, 319)), Some("a@b.c")), Some(&learned()), &v),
         Layout::Native
     );
     assert_eq!(
-        layout(&ctx(Some((2, 2, 0)), Some("a@b.c")), &v),
+        layout(&ctx(Some((2, 2, 0)), Some("a@b.c")), Some(&learned()), &v),
         Layout::Native
     );
-    assert_eq!(layout(&ctx(Some((2, 1, 319)), None), &v), Layout::Legacy);
-    assert_eq!(layout(&ctx(None, Some("a@b.c")), &v), Layout::Legacy);
+    assert_eq!(
+        layout(&ctx(Some((2, 1, 319)), None), Some(&learned()), &v),
+        Layout::Legacy
+    );
+    assert_eq!(
+        layout(&ctx(None, Some("a@b.c")), Some(&learned()), &v),
+        Layout::Legacy
+    );
     let broken = (2, 9, 100);
     assert_eq!(
-        layout(&ctx(Some(broken), Some("a@b.c")), &v),
+        layout(&ctx(Some(broken), Some("a@b.c")), Some(&learned()), &v),
         Layout::Native
     );
-    assert_eq!(v.mark(broken, &evidence()), Mark::Saved);
+    assert_eq!(v.mark(broken, &wording(), &evidence()), Mark::Saved);
     assert_eq!(
-        layout(&ctx(Some(broken), Some("a@b.c")), &v),
+        layout(&ctx(Some(broken), Some("a@b.c")), Some(&learned()), &v),
         Layout::Legacy
+    );
+}
+
+#[test]
+fn a_verdict_judges_one_wording_and_a_new_wording_starts_clean() {
+    let (_dir, v, _) = store();
+    let version = (2, 9, 160);
+    assert_eq!(v.mark(version, "wording-a", &evidence()), Mark::Saved);
+    assert!(v.contains(version, "wording-a"));
+    assert!(!v.contains(version, "wording-b"));
+    assert_eq!(v.mark(version, "wording-b", &evidence()), Mark::Saved);
+    assert!(!v.strike(version, "wording-c"));
+    assert!(!v.strike(version, "wording-d"));
+    assert!(v.strike(version, "wording-c"));
+    let other = Reminder {
+        template: "other {email}".to_string(),
+        wording: "wording-b".to_string(),
+    };
+    assert_eq!(
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&other), &v),
+        Layout::Legacy
+    );
+    assert_eq!(
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&learned()), &v),
+        Layout::Native
+    );
+}
+
+#[test]
+fn a_persisted_verdict_round_trips_its_wording_and_an_entry_without_one_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(VERDICTS_FILE);
+    let at = unix_now();
+    std::fs::write(
+        &path,
+        json!({"broken": [
+            {"cli": "2.9.161", "template": TEMPLATE_REVISION, "at": at},
+            {"cli": "2.9.162", "template": 1, "wording": "wording-a", "at": at},
+            {"cli": "2.9.163", "template": TEMPLATE_REVISION, "wording": 7, "at": at},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let (v, _) = reload(dir.path());
+    for version in [(2, 9, 161), (2, 9, 162), (2, 9, 163)] {
+        assert!(!v.contains(version, "wording-a"), "{version:?}");
+    }
+    assert_eq!(v.mark((2, 9, 164), "wording-a", &evidence()), Mark::Saved);
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("\"wording\": \"wording-a\""), "{written}");
+    let (restarted, _) = reload(dir.path());
+    assert!(restarted.contains((2, 9, 164), "wording-a"));
+    assert!(!restarted.contains((2, 9, 164), "wording-b"));
+}
+
+#[test]
+fn the_layout_needs_a_learned_reminder() {
+    let (_dir, v, _) = store();
+    let context = ctx(Some((2, 1, 329)), Some("a@b.c"));
+    assert_eq!(layout(&context, None, &v), Layout::Legacy);
+    assert_eq!(layout(&context, Some(&learned()), &v), Layout::Native);
+    let old = ctx(Some((2, 1, 318)), Some("a@b.c"));
+    assert_eq!(layout(&old, Some(&learned()), &v), Layout::Legacy);
+}
+
+#[test]
+fn a_native_request_replays_the_learned_text() {
+    let drifted = Reminder {
+        template: "<system-reminder>\nlearned {email}\n</system-reminder>".to_string(),
+        wording: "w".to_string(),
+    };
+    let mut frames = translated(json!([
+        {"role": "user", "content": "start"},
+        assistant(),
+        {"role": "user", "content": "final"},
+    ]))
+    .frames;
+    apply(&mut frames, &native_ctx(), Some(&drifted), Layout::Native);
+    assert_eq!(
+        content(&frames, 0)[0]["text"],
+        "<system-reminder>\nlearned user@example.com\n</system-reminder>\n"
     );
 }
 
@@ -165,19 +270,23 @@ fn the_layout_follows_version_and_email() {
 fn a_version_is_marked_broken_once() {
     let (_dir, v, _) = store();
     let version = (2, 9, 101);
-    assert_eq!(v.mark(version, &evidence()), Mark::Saved);
-    assert_eq!(v.mark(version, &evidence()), Mark::Known);
+    assert_eq!(v.mark(version, &wording(), &evidence()), Mark::Saved);
+    assert_eq!(v.mark(version, &wording(), &evidence()), Mark::Known);
 }
 
 #[test]
 fn a_marked_version_survives_a_restart() {
     let (dir, v, warnings) = store();
     let version = (2, 9, 110);
-    assert_eq!(v.mark(version, &evidence()), Mark::Saved);
+    assert_eq!(v.mark(version, &wording(), &evidence()), Mark::Saved);
     let (restarted, restart_warnings) = reload(dir.path());
-    assert!(restarted.contains(version));
+    assert!(restarted.contains(version, &wording()));
     assert_eq!(
-        layout(&ctx(Some(version), Some("a@b.c")), &restarted),
+        layout(
+            &ctx(Some(version), Some("a@b.c")),
+            Some(&learned()),
+            &restarted
+        ),
         Layout::Legacy
     );
     assert!(warnings.lock().unwrap().is_empty());
@@ -193,18 +302,18 @@ fn an_entry_of_another_template_revision_is_ignored_and_dropped_on_the_next_writ
     std::fs::write(
         &path,
         json!({"broken": [
-            {"cli": "2.9.111", "template": stale, "at": at},
-            {"cli": "2.9.112", "template": TEMPLATE_REVISION, "at": at},
-            {"cli": "not.a.version", "template": TEMPLATE_REVISION, "at": at},
+            {"cli": "2.9.111", "template": stale, "wording": wording(), "at": at},
+            {"cli": "2.9.112", "template": TEMPLATE_REVISION, "wording": wording(), "at": at},
+            {"cli": "not.a.version", "template": TEMPLATE_REVISION, "wording": wording(), "at": at},
         ]})
         .to_string(),
     )
     .unwrap();
     let (v, warnings) = reload(dir.path());
-    assert!(!v.contains((2, 9, 111)));
-    assert!(v.contains((2, 9, 112)));
+    assert!(!v.contains((2, 9, 111), &wording()));
+    assert!(v.contains((2, 9, 112), &wording()));
     assert!(warnings.lock().unwrap().is_empty());
-    assert_eq!(v.mark((2, 9, 113), &evidence()), Mark::Saved);
+    assert_eq!(v.mark((2, 9, 113), &wording(), &evidence()), Mark::Saved);
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(!written.contains("2.9.111"));
     assert!(written.contains("2.9.112") && written.contains("2.9.113"));
@@ -219,38 +328,38 @@ fn an_expired_or_untimed_entry_is_ignored_and_dropped_on_the_next_mark() {
     std::fs::write(
         &path,
         json!({"broken": [
-            {"cli": "2.9.114", "template": TEMPLATE_REVISION, "at": old},
-            {"cli": "2.9.115", "template": TEMPLATE_REVISION},
-            {"cli": "2.9.116", "template": TEMPLATE_REVISION, "at": now - 60},
+            {"cli": "2.9.114", "template": TEMPLATE_REVISION, "wording": wording(), "at": old},
+            {"cli": "2.9.115", "template": TEMPLATE_REVISION, "wording": wording()},
+            {"cli": "2.9.116", "template": TEMPLATE_REVISION, "wording": wording(), "at": now - 60},
         ]})
         .to_string(),
     )
     .unwrap();
     let (v, warnings) = reload(dir.path());
-    assert!(!v.contains((2, 9, 114)));
-    assert!(!v.contains((2, 9, 115)));
-    assert!(v.contains((2, 9, 116)));
+    assert!(!v.contains((2, 9, 114), &wording()));
+    assert!(!v.contains((2, 9, 115), &wording()));
+    assert!(v.contains((2, 9, 116), &wording()));
     assert!(warnings.lock().unwrap().is_empty());
     assert_eq!(
-        layout(&ctx(Some((2, 9, 116)), Some("a@b.c")), &v),
+        layout(&ctx(Some((2, 9, 116)), Some("a@b.c")), Some(&learned()), &v),
         Layout::Legacy
     );
-    assert_eq!(v.mark((2, 9, 117), &evidence()), Mark::Saved);
+    assert_eq!(v.mark((2, 9, 117), &wording(), &evidence()), Mark::Saved);
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(!written.contains("2.9.114") && !written.contains("2.9.115"));
     assert!(written.contains("2.9.116") && written.contains("2.9.117"));
-    let entry = parse(&written, unix_now()).unwrap()[&(2, 9, 117)];
+    let entry = parse(&written, unix_now()).unwrap()[&((2, 9, 117), wording())];
     assert_eq!((entry.read, entry.expected), (Some(10), Some(900)));
 }
 
 #[test]
 fn a_second_strike_for_a_version_is_what_makes_a_verdict() {
     let (_dir, v, _) = store();
-    assert!(!v.strike((2, 9, 118)));
-    assert!(!v.strike((2, 9, 119)));
-    assert!(v.strike((2, 9, 118)));
-    v.clear_strike((2, 9, 119));
-    assert!(!v.strike((2, 9, 119)));
+    assert!(!v.strike((2, 9, 118), &wording()));
+    assert!(!v.strike((2, 9, 119), &wording()));
+    assert!(v.strike((2, 9, 118), &wording()));
+    v.clear_strike((2, 9, 119), &wording());
+    assert!(!v.strike((2, 9, 119), &wording()));
 }
 
 #[test]
@@ -258,29 +367,35 @@ fn a_mark_merges_a_verdict_another_store_wrote_in_between() {
     let dir = tempfile::tempdir().unwrap();
     let (first, _) = reload(dir.path());
     let (second, _) = reload(dir.path());
-    assert_eq!(first.mark((2, 9, 120), &evidence()), Mark::Saved);
-    assert_eq!(second.mark((2, 9, 121), &evidence()), Mark::Saved);
+    assert_eq!(
+        first.mark((2, 9, 120), &wording(), &evidence()),
+        Mark::Saved
+    );
+    assert_eq!(
+        second.mark((2, 9, 121), &wording(), &evidence()),
+        Mark::Saved
+    );
     let (merged, _) = reload(dir.path());
-    assert!(merged.contains((2, 9, 120)));
-    assert!(merged.contains((2, 9, 121)));
+    assert!(merged.contains((2, 9, 120), &wording()));
+    assert!(merged.contains((2, 9, 121), &wording()));
 }
 
 #[test]
 fn a_missing_file_loads_empty_and_a_corrupt_one_warns_once_and_is_repaired() {
     let dir = tempfile::tempdir().unwrap();
     let (v, warnings) = reload(dir.path());
-    assert!(!v.contains((2, 9, 130)));
+    assert!(!v.contains((2, 9, 130), &wording()));
     assert!(warnings.lock().unwrap().is_empty());
 
     let path = dir.path().join(VERDICTS_FILE);
     std::fs::write(&path, "{not json").unwrap();
     let (v, warnings) = reload(dir.path());
-    assert!(!v.contains((2, 9, 130)));
+    assert!(!v.contains((2, 9, 130), &wording()));
     assert_eq!(warnings.lock().unwrap().len(), 1);
-    assert_eq!(v.mark((2, 9, 130), &evidence()), Mark::Saved);
+    assert_eq!(v.mark((2, 9, 130), &wording(), &evidence()), Mark::Saved);
     assert_eq!(warnings.lock().unwrap().len(), 1);
     let (repaired, repaired_warnings) = reload(dir.path());
-    assert!(repaired.contains((2, 9, 130)));
+    assert!(repaired.contains((2, 9, 130), &wording()));
     assert!(repaired_warnings.lock().unwrap().is_empty());
 }
 
@@ -291,11 +406,11 @@ fn a_failed_write_still_marks_in_memory_and_warns_once() {
     std::fs::write(&blocker, "").unwrap();
     let (v, warnings) = store_in(&blocker);
     // Unix warns at load (ENOTDIR) and Windows does not, so count only what the mark adds.
-    v.contains((2, 9, 140));
+    v.contains((2, 9, 140), &wording());
     let before = warnings.lock().unwrap().len();
-    assert_eq!(v.mark((2, 9, 140), &evidence()), Mark::Unsaved);
-    assert!(v.contains((2, 9, 140)));
-    assert_eq!(v.mark((2, 9, 140), &evidence()), Mark::Known);
+    assert_eq!(v.mark((2, 9, 140), &wording(), &evidence()), Mark::Unsaved);
+    assert!(v.contains((2, 9, 140), &wording()));
+    assert_eq!(v.mark((2, 9, 140), &wording(), &evidence()), Mark::Known);
     assert_eq!(warnings.lock().unwrap().len(), before + 1);
 }
 
@@ -304,13 +419,16 @@ fn a_data_dir_has_one_shared_store_and_another_dir_has_its_own() {
     let (dir, first, _) = store();
     let (same, _) = store_in(dir.path());
     assert!(Arc::ptr_eq(&first, &same));
-    assert_eq!(first.mark((2, 9, 150), &evidence()), Mark::Saved);
-    assert!(same.contains((2, 9, 150)));
-    assert_eq!(same.mark((2, 9, 150), &evidence()), Mark::Known);
+    assert_eq!(
+        first.mark((2, 9, 150), &wording(), &evidence()),
+        Mark::Saved
+    );
+    assert!(same.contains((2, 9, 150), &wording()));
+    assert_eq!(same.mark((2, 9, 150), &wording(), &evidence()), Mark::Known);
 
     let (_other_dir, other, _) = store();
     assert!(!Arc::ptr_eq(&first, &other));
-    assert!(!other.contains((2, 9, 150)));
+    assert!(!other.contains((2, 9, 150), &wording()));
 }
 
 fn record(frames: usize, blocks: usize, read: u64, write_1h: u64, at: Instant) -> Record {
@@ -418,6 +536,7 @@ fn sent(session: &str, version: (u32, u32, u32), frames: &[Frame]) -> Sent {
         session,
         Some(version),
         Layout::Native,
+        Some(&wording()),
         fingerprints(frames),
         frames,
     )
@@ -468,7 +587,7 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
         None
     );
     assert_eq!(
-        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&learned()), &v),
         Layout::Native
     );
     let finding = finished(
@@ -494,8 +613,9 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
         "{warning}"
     );
     assert!(warning.contains("2.9.102"), "{warning}");
+    assert!(warning.contains(&wording()[..8]), "{warning}");
     assert_eq!(
-        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&learned()), &v),
         Layout::Legacy
     );
 
@@ -517,7 +637,7 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
         None
     );
     assert_eq!(
-        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&learned()), &v),
         Layout::Legacy
     );
 }
@@ -537,7 +657,7 @@ fn a_healthy_pair_between_two_shortfalls_clears_the_strike_and_a_cold_one_does_n
     // Healthy: read back everything of the previous 600.
     assert_eq!(run("f", 4, usage(700, 0)), None);
     assert_eq!(
-        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        layout(&ctx(Some(version), Some("a@b.c")), Some(&learned()), &v),
         Layout::Native
     );
 
@@ -567,6 +687,7 @@ fn a_legacy_request_or_a_missing_usage_drops_the_conversations_record() {
         "d",
         Some(version),
         Layout::Legacy,
+        None,
         fingerprints(&frames),
         &frames,
     );
