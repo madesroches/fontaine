@@ -7,8 +7,6 @@ mod common;
 use common::pipeline::{Options, Rig, allow_verdict, allowed, fake_guardian, verdict_json};
 use common::{conflicted_rebase, git, git_init, write};
 use fontaine_sdk::core::config::PermissionMode::{self, Auto};
-use fontaine_sdk::core::gate::ChildRestrictions;
-use fontaine_sdk::core::permission_rules::parse_rule;
 use fontaine_sdk::core::permissions::{HookDecision, HookError, PreToolUseEvent, PreToolUseHook};
 use fontaine_sdk::core::tier::Tier;
 use serde_json::{Value, json};
@@ -218,28 +216,76 @@ async fn an_edit_rule_or_a_child_without_edit_sends_the_edit_to_the_guardian() {
         assert_ne!(last_tier(&rig), Tier::ShellEdit, "{name}");
         assert_eq!(fake.calls(), 1, "{name}");
     }
+}
+
+#[tokio::test]
+async fn a_child_whose_toolset_lacks_edit_sends_the_shell_edit_to_the_guardian() {
+    for (tools, expect_skip) in [
+        (vec!["read", "shell"], false),
+        (vec!["read", "shell", "edit"], false),
+        (vec!["read", "shell", "edit", "write"], true),
+    ] {
+        let (rig, fake) = repo_rig(&["a.txt"]);
+        let id = rig
+            .agents
+            .reserve(
+                fontaine_sdk::tools::gate::ROOT_AGENT,
+                "worker",
+                "m",
+                tools.iter().map(|t| t.to_string()).collect(),
+                fontaine_sdk::agents::mode::Ladder::Auto,
+            )
+            .unwrap();
+        rig.check_as(&id, "shell", shell("sed -i 's/a/b/' a.txt"))
+            .await;
+        assert_eq!(last_tier(&rig) == Tier::ShellEdit, expect_skip, "{tools:?}");
+        assert_eq!(fake.calls(), usize::from(!expect_skip), "{tools:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_commit_or_continue_skips_the_guardian_only_without_an_installed_hook() {
     let (rig, fake) = repo_rig(&["a.txt"]);
-    let id = rig
-        .agents
-        .reserve(
-            fontaine_sdk::tools::gate::ROOT_AGENT,
-            "worker",
-            "m",
-            Vec::new(),
-            fontaine_sdk::agents::mode::Ladder::Auto,
+    let hooks = rig.work().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    write(&hooks.join("pre-commit.sample"), "#!/bin/sh\n");
+    write(&rig.work().join("a.txt"), "b\n");
+    assert!(skips(&rig, &fake, "git add a.txt && git commit -m x").await);
+    write(&hooks.join("pre-commit"), "#!/bin/sh\nexit 0\n");
+    write(&rig.work().join("a.txt"), "c\n");
+    assert!(judged(&rig, &fake, "git add a.txt && git commit -m x").await);
+    assert!(skips(&rig, &fake, "git add a.txt").await);
+
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
+    git_init(rig.work());
+    conflicted_rebase(rig.work());
+    write(&rig.work().join("CHANGELOG.md"), "# Changes\nok\n");
+    write(&rig.work().join(".git/hooks/post-rewrite"), "#!/bin/sh\n");
+    assert!(
+        judged(
+            &rig,
+            &fake,
+            "git add CHANGELOG.md && GIT_EDITOR=true git rebase --continue"
         )
-        .unwrap();
-    rig.state.set_child_restrictions(
-        &id,
-        ChildRestrictions {
-            only: Vec::new(),
-            deny: vec![parse_rule("edit").unwrap()],
-        },
+        .await
     );
-    rig.check_as(&id, "shell", shell("sed -i 's/a/b/' a.txt"))
-        .await;
-    assert_ne!(last_tier(&rig), Tier::ShellEdit);
-    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_move_into_a_directory_that_may_be_made_in_the_same_call_is_checked_there() {
+    let (rig, fake) = repo_rig(&["a.txt"]);
+    write(&rig.work().join("notes.md"), "n\n");
+    git(rig.work(), &["add", "notes.md"]);
+    assert!(judged(&rig, &fake, "mkdir -p docs/rules && mv notes.md docs/rules").await);
+    assert!(
+        judged(
+            &rig,
+            &fake,
+            "mkdir -p docs/rules && git mv notes.md docs/rules"
+        )
+        .await
+    );
 }
 
 struct Named(&'static str);

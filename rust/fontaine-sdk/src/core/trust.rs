@@ -517,6 +517,37 @@ pub(crate) fn hooks_path(root: &Path) -> Result<Option<PathBuf>, ()> {
     }))
 }
 
+/// Whether the repository enclosing `root` has a hook git would run: any entry of its hooks
+/// directory (`core.hooksPath`, else the common git directory's `hooks`) that is not a `.sample`
+/// file. A directory that cannot be read counts as active, so the answer is only "no" when
+/// nothing could run.
+pub(crate) fn hooks_installed(root: &Path) -> bool {
+    let Ok(configured) = hooks_path(root) else {
+        return true;
+    };
+    let dir = match configured {
+        Some(dir) => dir,
+        None => {
+            let options = gix::open::Options::default().strict_config(true);
+            match gix::discover_opts(root, gix::discover::upwards::Options::default(), options) {
+                Ok(repo) => repo.common_dir().join("hooks"),
+                Err(_) => return true,
+            }
+        }
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) => return err.kind() != std::io::ErrorKind::NotFound,
+    };
+    entries.into_iter().any(|entry| match entry {
+        Ok(entry) => {
+            !entry.file_name().to_string_lossy().ends_with(".sample")
+                && !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        }
+        Err(_) => true,
+    })
+}
+
 /// User trust is earned only by a file git does not know about (untracked or ignored — both
 /// mean absent from the index) in a trusted root. Everything else is project scope.
 pub fn classify_project_local(

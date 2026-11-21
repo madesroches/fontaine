@@ -30,6 +30,9 @@ pub trait TargetCheck {
     fn write_target(&self, path: &str) -> bool;
     /// `path` is in the primary root and is not a protected location.
     fn not_protected(&self, path: &str) -> bool;
+    /// The repository has no hook git would run, so a commit or a `--continue` runs no code
+    /// the workspace could have planted.
+    fn hooks_inactive(&self) -> bool;
     /// `path` is an exact index file entry the `edit` tool could change without a verdict; the
     /// file itself need not exist.
     fn tracked_entry(&self, path: &str) -> bool;
@@ -295,24 +298,32 @@ impl Walk<'_> {
         }
         let dest = self.abs(dest);
         let into_dir = Path::new(&dest).is_dir();
+        let missing = !Path::new(&dest).exists();
         if !into_dir && sources.len() != 1 {
             return false;
         }
         sources.iter().all(|source| {
             let from = self.abs(source);
-            let to = if into_dir {
-                let Some(name) = Path::new(&from).file_name() else {
-                    return false;
-                };
-                Path::new(&dest).join(name).to_string_lossy().into_owned()
-            } else {
-                dest.clone()
+            let inside = || {
+                Path::new(&from)
+                    .file_name()
+                    .map(|name| Path::new(&dest).join(name).to_string_lossy().into_owned())
             };
+            let Some(to) = (if into_dir {
+                inside()
+            } else {
+                Some(dest.clone())
+            }) else {
+                return false;
+            };
+            // An earlier `mkdir` in the same call is not there yet, so a destination that is
+            // absent might become the directory the file lands in.
             !under_dot_git(&from)
                 && !under_dot_git(&to)
                 && self.check.read_target("mv", &from)
                 && self.check.edit_target(&from)
                 && self.check.write_target(&to)
+                && (!missing || inside().is_some_and(|inner| self.check.write_target(&inner)))
         })
     }
 
@@ -330,8 +341,10 @@ impl Walk<'_> {
             "add" => self.git_add(args),
             "rm" => self.git_rm(args),
             "mv" => self.git_mv(args),
-            "commit" => self.git_commit(args),
-            op if CONTINUABLE.contains(&op) => args == ["--continue"],
+            "commit" => self.git_commit(args) && self.check.hooks_inactive(),
+            op if CONTINUABLE.contains(&op) => {
+                args == ["--continue"] && self.check.hooks_inactive()
+            }
             _ => self.read_only(argv, false),
         }
     }
@@ -415,10 +428,19 @@ impl Walk<'_> {
             return false;
         };
         let (from, to) = (self.abs(from), self.abs(to));
+        // Absent now, `to` may be a directory an earlier `mkdir` in this call creates.
+        let inner = (!Path::new(&to).exists())
+            .then(|| {
+                Path::new(&from)
+                    .file_name()
+                    .map(|name| Path::new(&to).join(name))
+            })
+            .flatten();
         !under_dot_git(&from)
             && !under_dot_git(&to)
             && self.check.edit_target(&from)
             && self.check.write_target(&to)
+            && inner.is_none_or(|inner| self.check.write_target(&inner.to_string_lossy()))
     }
 
     fn git_commit(&self, args: &[String]) -> bool {
@@ -718,7 +740,15 @@ mod tests {
             rel.components().any(|c| {
                 matches!(
                     c.as_os_str().to_str(),
-                    Some(".git" | ".husky" | ".claude" | ".github" | ".mcp.json" | "AGENTS.md")
+                    Some(
+                        ".git"
+                            | ".husky"
+                            | ".claude"
+                            | ".github"
+                            | ".mcp.json"
+                            | "AGENTS.md"
+                            | "rules"
+                    )
                 )
             })
         }
@@ -741,6 +771,10 @@ mod tests {
 
         fn not_protected(&self, path: &str) -> bool {
             !self.protected(path)
+        }
+
+        fn hooks_inactive(&self) -> bool {
+            true
         }
 
         fn tracked_entry(&self, path: &str) -> bool {
@@ -1022,6 +1056,8 @@ mod tests {
             "mkdir -m 777 x",
             "mkdir",
             "mkdir -p .husky && git mv a.txt .husky/pre-commit",
+            "mkdir -p docs/rules && mv a.txt docs/rules",
+            "mkdir -p docs/rules && git mv a.txt docs/rules",
             "mkdir -p sub/mod",
         ] {
             assert!(!accepts(&f, command), "{command:?} must not take the tier");

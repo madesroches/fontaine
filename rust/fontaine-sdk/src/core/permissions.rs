@@ -1129,6 +1129,10 @@ impl TargetCheck for ShellTargets<'_> {
         self.plain(path).is_some() && !self.protected(path)
     }
 
+    fn hooks_inactive(&self) -> bool {
+        !trust::hooks_installed(self.scope.primary())
+    }
+
     fn tracked_entry(&self, path: &str) -> bool {
         self.target("edit", path)
             .is_some_and(|(_, state)| state == TargetState::Tracked)
@@ -1816,6 +1820,15 @@ impl PermissionPipeline {
 
     fn unjudged_shell_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
         if !self.state.auto_edits.shell || self.hooks_name_file_tools() {
+            return None;
+        }
+        // A shell call never meets the toolset removal that keeps a child off `edit`/`write`, so
+        // an agent without both goes to the guardian; an unknown toolset cannot vouch either.
+        let tools = self.state.agents().known_tools_of(call.agent)?;
+        if !["edit", "write"]
+            .iter()
+            .all(|needed| tools.iter().any(|tool| tool == needed))
+        {
             return None;
         }
         let command = args.get("command")?.as_str()?;
