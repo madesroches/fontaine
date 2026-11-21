@@ -4,7 +4,7 @@
 #[path = "core_common/mod.rs"]
 mod common;
 
-use common::pipeline::{Options, Rig, allow_verdict, allowed, fake_guardian, verdict_json};
+use common::pipeline::{Options, Rig, allow_verdict, allowed, fake_guardian};
 use common::{conflicted_rebase, git, git_init, write};
 use fontaine_sdk::core::config::PermissionMode::{self, Auto};
 use fontaine_sdk::core::permissions::{HookDecision, HookError, PreToolUseEvent, PreToolUseHook};
@@ -63,6 +63,7 @@ async fn judged(rig: &Rig, fake: &common::pipeline::Fake, command: &str) -> bool
     last_tier(rig) != Tier::ShellEdit && fake.calls() == before + 1
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_conflict_resolution_of_a_rebase_skips_the_guardian() {
     let fake = fake_guardian(allow_verdict());
@@ -85,6 +86,8 @@ async fn an_add_and_commit_of_a_tracked_file_skips_the_guardian() {
     assert_eq!(fake.calls(), 0);
 }
 
+// Only GNU `sed -i` is modelled, so a `sed` edit takes the tier on Linux alone.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn each_local_verb_in_its_allowed_form_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt", "src/b.txt", "src/c.txt"]);
@@ -164,9 +167,14 @@ async fn a_deny_rule_wins_before_the_tier() {
     assert_eq!(fake.calls(), 0);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_shell_edit_resets_the_loop_breaker_like_a_tracked_edit() {
-    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let fake = fake_guardian(common::pipeline::verdict_json(
+        "deny",
+        "Download+Execute",
+        0.97,
+    ));
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
     git_init(rig.work());
     write(&rig.work().join("a.txt"), "a\n");
@@ -218,6 +226,7 @@ async fn an_edit_rule_or_a_child_without_edit_sends_the_edit_to_the_guardian() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_child_whose_toolset_lacks_edit_sends_the_shell_edit_to_the_guardian() {
     for (tools, expect_skip) in [
@@ -341,6 +350,7 @@ async fn a_hook_on_a_file_tool_sends_the_shell_edit_to_the_guardian() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn hook_runner_configuration_goes_to_the_guardian() {
     let (rig, fake) = repo_rig(&[
@@ -363,6 +373,7 @@ async fn hook_runner_configuration_goes_to_the_guardian() {
     assert!(skips(&rig, &fake, "sed -i 's/a/b/' scripts/hooks/pre-commit").await);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_directory_core_hooks_path_names_goes_to_the_guardian() {
     let (rig, fake) = repo_rig(&["scripts/hooks/pre-commit", "a.txt"]);
