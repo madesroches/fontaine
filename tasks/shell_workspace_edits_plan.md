@@ -164,9 +164,9 @@ check below. `/dev/null` and descriptor copies are fine.
      the edit-target check, because moving a file deletes it from its old place.
    - The destination passes the write-target check. When it is an existing directory, the check
      applies to each `DST/basename(SRC)`.
-5. **`git add`.** Flags: `-A`, `--all`, `-u`, `--update`, `-v`, `--`. Every pathspec is a literal
-   path inside the primary root (`.` is allowed) and not under `.git`, and passes `read_target` and
-   `not_protected`.
+5. **`git add`.** Flags: `-u`, `--update`, `-v`, `--`. Never `-A` / `--all`. Every pathspec is a
+   literal path to an existing file inside the primary root (not `.`, not a directory) and not under
+   `.git`, and passes `read_target` and `not_protected`; `-u` takes no pathspec or file pathspecs.
 6. **`git rm`.** Flags: `--cached`, `-r`, `-q`, `--`. Never `-f` / `--force`. Paths are literal and
    in the primary root. Without `--cached` each passes the edit-target check; with `--cached` each
    passes the instruction/CI exclusion and `not_protected`. Without `-f`, git itself refuses to remove a file whose content differs from HEAD or the index, so
@@ -289,7 +289,7 @@ roots is never by itself a reason to deny it.
 ### Guardian verdict: `instead`
 
 `RawVerdict` and `Verdict` gain `instead: Option<String>` (`#[serde(default)]`), so an answer
-without it stays valid and the field stays out of the schema's `required` list. The audit
+without the field stays valid. The audit
 `DecisionRecord.instead` is `#[serde(default, skip_serializing_if = "Option::is_none")]`, so old
 records still deserialize (`fontaine-tui/src/transcript.rs`).
 
@@ -300,8 +300,8 @@ no narrower call would be allowed. Never name a call that reaches the effect thi
 
 **Validation** in `Verdict::from_raw`:
 
-- `instead` on an `allow` is a malformed answer, retried like a mismatched label;
-- an empty string becomes `None`;
+- `null` and the empty string become `None` first; only a non-empty `instead` on an `allow` is a
+  malformed answer, retried like a mismatched label;
 - it is cut to `adjudication::SUMMARY_CHARS` the way `explanation_of` cuts the explanation.
 
 **Deny text.** On a guardian deny or escalate-converted-to-deny, the guardian denial sentence formatted in
@@ -352,7 +352,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
    (`read_target`, `edit_target`, `write_target`, including the rule, child-restriction and
    file-hook checks, and the shared argv[0]→file-tool-calls helper factored out of
    `ruled_read_calls`; the hook exclusion is `read | ls | grep | edit | write | notebook_edit`). Define the `TargetCheck` trait in `tools/shell_edit.rs` here and register the
-   module in `tools.rs`. The file-tool behaviour must not change; the existing `permissions_fast_edits.rs` tests guard that.
+   module in `tools.rs`. Add the strict `pub(crate)` tracked-state variant in `core/trust.rs` (gitlink and intent-to-add entries do not count as tracked) and use it in both branches. File-tool behaviour changes only for gitlink and intent-to-add entries, which now go to the guardian; the existing `permissions_fast_edits.rs` tests guard the rest.
 3. **Pre-classifier hook.** In `tools/preclassify.rs`, split `read_paths` into
    `read_only_argv(argv, env)` plus the existing single-command wrapper, and expose `parse_git`'s
    per-argv form to the crate.
@@ -404,7 +404,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
      carried an `instead` (see Testing Strategy).
 9. **Eval harness.** In `fontaine-evals`, parse and validate `git_operation` session facts in
    `live.rs` (`facts_from`) and `case.rs`; carry `instead` from the live adjudication into
-   `CaseResult` (`runner.rs`); count denials carrying `instead` in `report.rs`.
+   `CaseResult` (`runner.rs`, `#[serde(default)]` on the field because `--resume` reads it back, and fix the struct literals in `screen.rs`, `tests/screen_unit.rs` and `tests/report.rs`); count denials carrying `instead` in `report.rs`.
 10. **Tests** (see Testing Strategy).
 11. **Live eval.** Run the live Haiku eval as described in Testing Strategy and commit its
     scorecard.
@@ -416,7 +416,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - `rust/fontaine-sdk/src/core/tier.rs`
 - `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `config_scope.rs`
 - `rust/fontaine-sdk/src/core/gate.rs`, `core/agent/setup.rs`, `tests/core_common/pipeline.rs`
-- `rust/fontaine-sdk/src/core/permissions.rs`
+- `rust/fontaine-sdk/src/core/permissions.rs`, `core/trust.rs`
 - `rust/fontaine-sdk/src/tools/preclassify.rs`
 - `rust/fontaine-sdk/src/tools/shell_edit.rs` (new), `rust/fontaine-sdk/src/tools.rs`
 - `rust/fontaine-sdk/tests/permissions_shell_edits.rs` (new)
@@ -425,7 +425,8 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
   `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`, `guardian_minimal.md`
 - `rust/fontaine-sdk/src/core/adjudication.rs`, `agent.rs`, `ledger.rs`, `audit.rs`,
   `core/statusline/mod.rs`, `rust/fontaine-tui/src/app.rs`
-- `rust/fontaine-evals/src/live.rs`, `case.rs`, `runner.rs`, `report.rs`
+- `rust/fontaine-evals/src/live.rs`, `case.rs`, `runner.rs`, `report.rs`, `screen.rs`,
+  `rust/fontaine-evals/tests/screen_unit.rs`, `tests/report.rs`
 - `rust/fontaine-sdk/tests/composition.rs`
 - `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/tools.md`, `docs/evals.md`,
   `evals/README.md`
@@ -464,6 +465,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 
 - 2026-11-21: AFK: the tier covers `auto`/`afk` only; `acceptEdits` keeps prompting for mutating shell (conservative; the human there can answer).
 - 2026-11-21: (user) The live eval's catch rate may get slightly worse (at most 3 points) if the false-deny rate does not rise: a working `auto` mode comes first.
+- 2026-11-21: AFK: `git add` in `shell_edit` takes only file pathspecs or `-u`; `-A`/`--all`/`.` go to the guardian so an un-ignored secret is never staged unjudged.
 - 2026-11-21: (user) #744's guardian-side changes (`git_operation` fact, `instead` verdict field) ship in this change, verified with a live Haiku eval on the `router` OpenRouter account.
 
 ## Documentation
@@ -530,6 +532,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
   - `git rm src/x` under an `Edit(src/**)` deny, and the same from a child with `shell` but not
     `edit`;
   - `git add .mcp.json`;
+  - `git add -A`, `git add --all` and `git add .`;
   - `mkdir .claude/x`;
   - `for`, `if` and subshells;
   - input redirect `< /etc/passwd`;
@@ -564,6 +567,8 @@ count):
 - A child with `shell` but not `edit` running `sed -i f` → guardian, not `shell_edit`.
 - A PreToolUse hook matching `read`, `ls`, `grep`, `edit` or `write` (one test per matcher, including `grep`) → guardian, not `shell_edit`.
 
+**File-tool strictness** (`tests/permissions_fast_edits.rs`): an `edit` of an intent-to-add file goes to the guardian.
+
 **Config tests**: project scope `auto_shell_edits = true` is rejected, and `false` is accepted.
 
 **Guardian unit tests**:
@@ -571,7 +576,7 @@ count):
 - **`verdict.rs`:**
   - `instead` is optional and its absence parses;
   - `instead` on an `allow` is rejected;
-  - an empty `instead` becomes `None`;
+  - an empty `instead` and a `null` one become `None`, including on an `allow`;
   - an over-long one is cut.
 - **`prompt_builder.rs`:**
   - the `git_operation` line renders in the guardian view, in both the "started this session" and
