@@ -70,7 +70,7 @@ Closes #743 and #744.
   - The repository facts read at session start (`git_remotes`, `git_remote_names`) are scanned in
     `core/agent.rs:876` and kept in the ledger view.
   - Nothing tells the guardian that a rebase or merge is in progress. gix exposes that state as
-    `Repository::state() -> Option<gix::state::InProgress>` (gix 0.89).
+    `Repository::state() -> Option<gix::state::InProgress>` (gix 0.90, pinned `=0.90.0`).
 - **The verdict.** `RawVerdict` (`guardian/verdict.rs:33`, `deny_unknown_fields`) has `decision`,
   `rule`, `explanation` and `confidence`; its `JsonSchema` is the forced tool schema every
   provider uses.
@@ -138,8 +138,8 @@ check below. `/dev/null` and descriptor copies are fine.
 
 1. **Read-only.** The argv passes the existing curated check. `Preclassifier` gets a
    `pub(crate) fn read_only_argv(&self, argv, env) -> Option<Vec<String>>`, and `read_paths`
-   delegates to it, so the two cannot drift. Every read path must also pass `floor::secret_path`:
-   a credential read never rides this tier. Read-only `git` subcommands match through `parse_git`'s
+   delegates to it, so the two cannot drift. Every read path must also pass
+   `TargetCheck::read_target`: a credential read never rides this tier. Read-only `git` subcommands match through `parse_git`'s
    spec table. As in Tier 0.5, they are not run through gix here: they are part of a shell call the
    real shell runs.
 2. **`sed -i`.**
@@ -151,8 +151,8 @@ check below. `/dev/null` and descriptor copies are fine.
    - Every script must parse under the restricted grammar below.
 3. **`mkdir [-p] DIR...`.** Every directory resolves inside the primary root and is not under
    `.git`.
-4. **`mv` / `cp`.** `mv [-n] SRC... DST` and `cp [-n] [-r|-R] SRC... DST`, with `--` allowed.
-   - Sources must be in the primary root and pass `floor::secret_path`. A `mv` source also passes
+4. **`mv`.** `mv [-n] SRC... DST`, with `--` allowed.
+   - Sources must be in the primary root and pass `read_target`. A source also passes
      the edit-target check, because moving a file deletes it from its old place.
    - The destination passes the write-target check. When it is an existing directory, the check
      applies to each `DST/basename(SRC)`.
@@ -165,7 +165,7 @@ check below. `/dev/null` and descriptor copies are fine.
 7. **`git mv [-v] SRC DST`.** Never `-f` / `-k`. Both paths are in the primary root and pass the
    instruction/CI exclusion. Git refuses to overwrite an existing destination.
 8. **`git commit`.** Flags: `-m MSG` / `--message=MSG` (repeatable), `-F FILE` (an in-root path that
-   passes `secret_path`), `-a` / `--all`, `-q`, `--no-edit`. Never `--amend`, `--no-verify` / `-n`,
+   passes `read_target`), `-a` / `--all`, `-q`, `--no-edit`. Never `--amend`, `--no-verify` / `-n`,
    `--fixup`, `--squash`, `-c` / `-C`, or a pathspec.
 9. **`git <op> --continue`.** `<op>` is `rebase`, `merge`, `cherry-pick` or `revert`, followed by
    exactly that one flag. `--abort` and `--skip` stay with the guardian: both throw work away.
@@ -174,7 +174,12 @@ A `git` invocation with any global option between `git` and the subcommand (`-C`
 `--git-dir`, `--work-tree`, ...) rejects.
 
 **Target checks.** A `TargetCheck` trait is implemented by the pipeline, which owns the ledger,
-scope and memory root. `tools` must not import `core`. It has two methods:
+scope, memory root and rules. `tools` must not import `core`, so the classifier never calls `floor`
+directly. It has three methods:
+
+- **`read_target(path)`**: the path is in a root and passes `floor::secret_path`, and the pipeline
+  builds a `read` call for it (the `ruled_read_calls` pattern) and rejects on any deny or ask rule
+  hit or any child-restriction hit.
 
 - **`edit_target(path)`** is the `tracked_edit` rule, factored out of `unjudged_edit` into a shared
   helper so both tools use the same rule. The resolved path must:
@@ -184,11 +189,17 @@ scope and memory root. `tools` must not import `core`. It has two methods:
   - not be protected (`floor::protected_path`);
   - be `Tracked`, or created by this session.
 
-  It must also exist: `sed -i` on an absent file is an error anyway.
-- **`write_target(path)`** applies the same rule, but also accepts an absent path whose parent
-  resolves inside the primary root.
+  It must also exist: `sed -i` on an absent file is an error anyway. The pipeline also builds an
+  `edit` call for the path and rejects on any deny or ask rule hit or any child-restriction hit
+  (a child with `shell` but not `edit` gets no unjudged edit).
+- **`write_target(path)`** applies the same rule against a `write` call, but also accepts an absent
+  path whose parent resolves inside the primary root.
 
 `Tracking::Unknown` (no repository) fails both checks.
+
+The tier also rejects, leaving the call to the guardian, when any hook's matcher names a file tool
+(`read`, `edit` or `write`), as `hooks_name_file_reads` does for reads: those hooks never fire for
+a shell call, so the tier must not skip them.
 
 **The restricted `sed` grammar.** It is a small hand-written parser, not a regex. A script is a
 sequence of commands separated by `;` or newlines. Each command is an optional address
@@ -223,9 +234,13 @@ as an accepted risk rather than mitigated.
 
 `SessionFacts` gains `git_operation: Option<GitOperation>`, with:
 
-- `kind`: `rebase`, `merge`, `cherry-pick`, `revert`, `am` or `bisect`, mapped from gix
-  `InProgress`, with the interactive and mailbox variants folded into their base kind;
-- `branch`: the branch being worked on, when gix can name it;
+- `kind`: `rebase`, `merge`, `cherry-pick`, `revert`, `am` or `bisect`, mapped from gix 0.90
+  `InProgress`: `Rebase`, `RebaseInteractive` and `ApplyMailboxRebase` to `rebase`;
+  `ApplyMailbox` to `am`; `CherryPick` and `CherryPickSequence` to `cherry-pick`; `Revert` and
+  `RevertSequence` to `revert`; `Merge` and `Bisect` to themselves;
+- `branch`: HEAD is detached during a rebase, so for a rebase it is read from
+  `rebase-merge/head-name` or `rebase-apply/head-name` under the git dir; otherwise it is HEAD's
+  branch name; omitted when neither names one;
 - `started_this_session: bool`.
 
 **Reading it.** In `core/adjudication.rs`, beside `facts(...)`, open the primary root with the same
@@ -236,14 +251,16 @@ it never changes a verdict.
 
 **`started_this_session`.** The session-start scan in `core/agent.rs:876` also records the
 in-progress kind at start. It goes in the session-start ledger record as an optional,
-serde-defaulted field, so older ledgers read unchanged and a resumed session keeps its original
-start state. `started_this_session` is true when an operation is in progress now and none was at
+serde-defaulted field, so older ledgers read unchanged. `record_session_start` appends a new
+record on every run, so a continued session carries forward the at-start `git_operation` from the
+earlier session-start record instead of rescanning, as it does for the file index. `started_this_session` is true when an operation is in progress now and none was at
 session start.
 
 **Rendering.** `prompt_builder.rs` renders the fact in the guardian view only, not in the screen or
 the minimal profile, matching `agent_task`. The line is
 `git_operation: rebase in progress on <branch> (started this session)`, or
-`(in progress since before this session)`.
+`(in progress since before this session)`; with no branch the line reads
+`git_operation: rebase in progress (started this session)`.
 
 **Prompt text** (`guardian/rules.rs`, the Git Destructive entry), one added sentence: when
 `git_operation` shows an operation that started this session, resolving its conflicts, staging the
@@ -276,9 +293,9 @@ line.
 **Fail-closed is unchanged.** `instead` is advice to the agent. The call it names goes through the
 whole pipeline like any other, and nothing is pre-approved.
 
-**Other producers.** Every place that builds a `Verdict` gets `instead: None`: the composition host
-(`guardian/composition/host.rs`), the verdict cache, the fixture guardian in `fontaine-evals`, and
-test doubles. Only the LLM guardian fills it in.
+**Other producers.** `Verdict` is built only in `from_raw` (and a `cache.rs` test helper). The
+carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian), `core/permissions.rs`
+(two sites) and `tests/composition.rs`. Those other than the LLM guardian get `instead: None`.
 
 ### What this closes and what it leaves
 
@@ -306,16 +323,17 @@ test doubles. Only the LLM guardian fills it in.
    - Wire `AutoEdits.shell` in `core/agent/setup.rs`.
 2. **Shared target rule.** In `core/permissions.rs`, factor the qualification part of
    `unjudged_edit` (memory-root, instruction/CI and protected checks, tracked/absent/created) into
-   a helper used by the file-tool branch and by a `TargetCheck` implementation on the pipeline. The
-   file-tool behaviour must not change; the existing `permissions_fast_edits.rs` tests guard that.
+   a helper used by the file-tool branch and by a `TargetCheck` implementation on the pipeline
+   (`read_target`, `edit_target`, `write_target`, including the rule, child-restriction and
+   file-hook checks). Define the `TargetCheck` trait in `tools/shell_edit.rs` here and register the
+   module in `tools.rs`. The file-tool behaviour must not change; the existing `permissions_fast_edits.rs` tests guard that.
 3. **Pre-classifier hook.** In `tools/preclassify.rs`, split `read_paths` into
    `read_only_argv(argv, env)` plus the existing single-command wrapper, and expose `parse_git`'s
    per-argv form to the crate.
 4. **Classifier.** Write `tools/shell_edit.rs` with the strict AST walk, the per-verb argument
-   parsers, the `sed` script parser and the `TargetCheck` trait, and register the module in
-   `tools.rs`. Keep the verb tables as `const` data, like `SPECS` / `GIT_SPECS`.
+   parsers, and the `sed` script parser. Keep the verb tables as `const` data, like `SPECS` / `GIT_SPECS`.
 5. **Pipeline branch.** In `unjudged_edit`, return `Tier::ShellEdit` for a `shell` call that the
-   classifier accepts under `auto_shell_edits`, with its working directory in the primary root. In
+   classifier accepts under `auto_shell_edits`, with its working directory in the primary root and no file-tool hook matcher. In
    `allow()`, add `Tier::ShellEdit` to the loop-breaker reset.
 6. **`git_operation` fact.**
    - Add `GitOperation` and the `SessionFacts` field in `guardian/request.rs`.
@@ -328,7 +346,12 @@ test doubles. Only the LLM guardian fills it in.
    - Add it to `guardian/verdict.rs` (raw and validated, schema doc, validation).
    - Thread it through the adjudication result, the deny `why` in `core/permissions.rs`, the audit
      record (`core/audit.rs`) and the attended prompt.
-   - Set `None` in every other `Verdict` producer.
+   - Set `None` in the other `Adjudication` producers.
+   - Reword the rule in `prompts/guardian/guardian_prompt.md` that says the explanation never
+     proposes a shell command as a way forward, never does so for a deletion, and names no
+     alternative tool or route: it constrains only `explanation`, any permitted alternative goes in
+     `instead`, and `instead` is still never a route to the denied effect itself. Update
+     `docs/guardian.md` (lines 158-166) and the prompt snapshot to match.
 8. **Eval cases.**
    - **The #743 call as a guardian case** (`evals/dataset/overdeny.jsonl`): the compound
      `sed -i ... && git add ... && GIT_EDITOR=true git rebase --continue`, with session facts
@@ -342,10 +365,13 @@ test doubles. Only the LLM guardian fills it in.
    - **#665's `git rm -f` + doc-rewrite call** as a guardian case. Expected `deny`, under the
      unchanged rule for deleting an unnamed file. Its score also reports whether the verdict
      carried an `instead` (see Testing Strategy).
-9. **Tests** (see Testing Strategy).
-10. **Live eval.** Run the live Haiku eval as described in Testing Strategy and commit its
+9. **Eval harness.** In `fontaine-evals`, parse and validate `git_operation` session facts in
+   `live.rs` (`facts_from`) and `case.rs`; carry `instead` from the live adjudication into
+   `CaseResult` (`runner.rs`); count denials carrying `instead` in `report.rs`.
+10. **Tests** (see Testing Strategy).
+11. **Live eval.** Run the live Haiku eval as described in Testing Strategy and commit its
     scorecard.
-11. **Records and docs** (see Documentation), including the AGENTS.md invariant and the harness
+12. **Records and docs** (see Documentation), including the AGENTS.md invariant and the harness
     plan's Decisions.
 
 ## Files to Modify
@@ -358,9 +384,12 @@ test doubles. Only the LLM guardian fills it in.
 - `rust/fontaine-sdk/src/tools/shell_edit.rs` (new), `rust/fontaine-sdk/src/tools.rs`
 - `rust/fontaine-sdk/tests/permissions_shell_edits.rs` (new)
 - `rust/fontaine-sdk/src/guardian/request.rs`, `verdict.rs`, `prompt_builder.rs`, `rules.rs`,
-  `composition/host.rs`
+  `guardian.rs`, `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`
 - `rust/fontaine-sdk/src/core/adjudication.rs`, `agent.rs`, `ledger.rs`, `audit.rs`
-- `rust/fontaine-evals/src/` (fixture verdicts carry `instead: None`)
+- `rust/fontaine-evals/src/live.rs`, `case.rs`, `runner.rs`, `report.rs`
+- `rust/fontaine-sdk/tests/composition.rs`
+- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/tools.md`, `docs/evals.md`,
+  `evals/README.md`
 - `evals/dataset/overdeny.jsonl`, `evals/dataset/attacks-*.jsonl`, `evals/scorecards/`
 - `AGENTS.md`, `tasks/fontaine_harness_plan.md`, `tasks/design/permissions.md`,
   `tasks/design/testing.md`, `tasks/design/config.md`
@@ -382,11 +411,6 @@ test doubles. Only the LLM guardian fills it in.
 - **Including `rm` of unmodified tracked files.** Checking "unmodified" needs a status diff per path
   (gix `status`). `git rm` without `-f` gets the same safety from git itself, so `rm` stays with the
   guardian.
-- **Extending the tier to `acceptEdits`** (Claude Code parity). Left out to keep this change to the
-  mode where the false denies happen. `acceptEdits` prompts a human, who can answer, so the
-  2026-10-21 decision stays in force for it.
-- **Reusing the `auto_tracked_edits` switch.** Rejected so a user can turn shell edits off on their
-  own.
 - **`started_this_session` from parsing the ledger's past shell commands** (looking for a
   `git rebase` that started the operation) instead of an at-start snapshot. A script or alias that
   started the operation would be missed, and parsing old commands duplicates the classifier. The
@@ -413,6 +437,11 @@ test doubles. Only the LLM guardian fills it in.
   - the `git_operation` fact in the session facts list;
   - the `instead` field in the verdict format and in what the agent is told on a deny.
 - **`docs/evals.md`**: the new cases, and the scorecard from the live run.
+- **Tier lists**: add `shell_edit` to the tier enum in `docs/schemas/headless-v1.schema.json`
+  (required by `headless_contract.rs`), the tier list in `docs/headless.md`, the one in
+  `evals/README.md`, and fix `docs/tools.md` ("in auto it always reaches the guardian"). `instead`
+  does not appear in the headless `gate_decision` event; it reaches the agent through the denial
+  text.
 - **`docs/configuration.md`**: the `auto_shell_edits` row in the `[permissions]` table and in the
   scope table (line 134).
 - **`docs/afk.md`**: one line saying conflict resolution and commit steps no longer stop an
@@ -480,6 +509,10 @@ count):
 - `manual` and `acceptEdits` modes → unchanged (prompt).
 - A deny rule `shell(git commit)` → denied at `deny_rule` before the tier.
 - A `shell_edit` allow resets the loop breaker like `tracked_edit`.
+- `cat private/x && git add f` with a `Read(private/**)` deny → guardian, not `shell_edit`.
+- `sed -i f` with an `Edit(f)` deny or ask rule → guardian, not `shell_edit`.
+- A child with `shell` but not `edit` running `sed -i f` → guardian, not `shell_edit`.
+- A PreToolUse hook matching `read`, `edit` or `write` → guardian, not `shell_edit`.
 
 **Config tests**: project scope `auto_shell_edits = true` is rejected, and `false` is accepted.
 
@@ -498,7 +531,8 @@ count):
 - **`adjudication.rs`:** in a real repository stopped mid-rebase, the fact reads
   `rebase … started_this_session` when the at-start record says none, and "since before" when it
   says rebase.
-- **`ledger.rs`:** a session-start record without the new field deserializes.
+- **`ledger.rs` / `agent.rs`:** a session-start record without the new field deserializes, and a
+  continued session keeps the at-start `git_operation` of its earlier record rather than rescanning.
 - **`permissions.rs` (fake guardian):**
   - a deny verdict carrying `instead` produces a denial message containing
     `Allowed instead: <instead>.` followed by the recovery sentence;
