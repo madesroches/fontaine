@@ -54,6 +54,11 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- `claude-subscription` account email is no longer left to chance (#725): the base prompt tells the
+  model that a `<system-reminder>` block in a tool result is transport context, not tool output,
+  and not to repeat the address unless asked for authorship, and the account emails (kept in process
+  memory only) are scrubbed, in any letter case, from `draft_bug_report` drafts and `/bug` reports.
+
 - The `claude-subscription` cache self-check is harder to trip on a false positive (#718): a
   previous request that read nothing gives no verdict, a version needs two consecutive shortfalls
   before the native layout is turned off for it, the warning names the read, expected and gap

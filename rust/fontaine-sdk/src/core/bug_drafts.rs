@@ -8,7 +8,8 @@ use crate::tools::bug_draft::{DraftArgs, DraftSink, MAX_DRAFTS};
 use serde::{Deserialize, Serialize};
 
 use crate::core::owner_only;
-use crate::core::redact::Redactor;
+use crate::core::providers::claude_subscription::known_account_emails;
+use crate::core::redact::{Redactor, Secret};
 
 const DIR: &str = "bug-drafts";
 
@@ -107,6 +108,12 @@ impl DraftSink for FileDrafts {
                 "{MAX_DRAFTS} drafts are already pending; the user can file them with /bug"
             ));
         }
+        // Read now, not at construction: an account's email is learned on its first request.
+        let redactor = self.redactor.extended(
+            known_account_emails(&self.data_dir)
+                .into_iter()
+                .map(Secret::email),
+        );
         let directory = dir(&self.data_dir);
         std::fs::create_dir_all(&directory)
             .map_err(|e| format!("cannot create the drafts directory: {e}"))?;
@@ -115,9 +122,9 @@ impl DraftSink for FileDrafts {
             let path = directory.join(format!("{id}.json"));
             let saved = Draft {
                 id: id.clone(),
-                title: self.redactor.redact(&draft.title),
-                area: self.redactor.redact(&draft.area),
-                details: self.redactor.redact(&draft.details),
+                title: redactor.redact(&draft.title),
+                area: redactor.redact(&draft.area),
+                details: redactor.redact(&draft.details),
             };
             let text = serde_json::to_string_pretty(&saved).expect("a draft serializes");
             match owner_only::create_new(&path) {
@@ -141,7 +148,6 @@ impl DraftSink for FileDrafts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::redact::Secret;
 
     fn args(details: &str) -> DraftArgs {
         DraftArgs {
@@ -170,6 +176,29 @@ mod tests {
         assert!(drafts[0].description().starts_with("crash\n\nArea: tui"));
         let raw = std::fs::read_to_string(dir(data.path()).join("session--1.json")).unwrap();
         assert!(!raw.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn learned_account_emails_are_scrubbed_from_drafts() {
+        let data = tempfile::tempdir().unwrap();
+        let sink = FileDrafts::new(data.path().into(), "session-abcdef", Redactor::default());
+        let mut draft = args("mail Someone@Private.Example about it");
+        draft.title = "from someone@private.example".into();
+        let before = sink.save(&draft).unwrap();
+        assert!(
+            list(data.path())[0]
+                .details
+                .contains("Someone@Private.Example")
+        );
+        remove(data.path(), &before).unwrap();
+        crate::core::providers::claude_subscription::record_email_for_tests(
+            data.path(),
+            "someone@private.example",
+        );
+        sink.save(&draft).unwrap();
+        let saved = &list(data.path())[0];
+        assert_eq!(saved.details, "mail [redacted] about it");
+        assert_eq!(saved.title, "from [redacted]");
     }
 
     #[test]

@@ -16,7 +16,8 @@ use fontaine_sdk::core::agent::build_guardian;
 use fontaine_sdk::core::config::AccountKind;
 use fontaine_sdk::core::models::{self, GuardianModel, ModelError, Models, Switcher};
 use fontaine_sdk::core::providers::claude_subscription::{
-    CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names, login_command,
+    CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names, known_account_emails,
+    login_command,
 };
 use fontaine_sdk::guardian::{
     AdjudicationRequest, Decision, EnvironmentConfig, Profile, RuleConfig, SessionFacts,
@@ -924,6 +925,24 @@ fn markers(frames: &[Value]) -> Vec<(usize, usize)> {
         }
     }
     at
+}
+
+#[tokio::test]
+async fn discovery_learns_the_account_email_in_memory_only() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "ok"}]}));
+    assert!(known_account_emails(&claude.w.data).is_empty());
+    let handle = main_handle(&claude).await;
+    assert_eq!(known_account_emails(&claude.w.data), ["user@example.com"]);
+    handle.completion.call(conversation(1)).await.unwrap();
+    assert_eq!(known_account_emails(&claude.w.data), ["user@example.com"]);
+    for entry in std::fs::read_dir(&claude.w.data).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            let text = std::fs::read(&path).unwrap();
+            assert!(!String::from_utf8_lossy(&text).contains("user@example.com"));
+        }
+    }
 }
 
 #[tokio::test]

@@ -10,11 +10,25 @@ const TOKEN_PREFIXES: [&str; 6] = ["sk-", "ghp_", "gho_", "ghs_", "github_pat_",
 
 /// A value that must never appear in output.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
+pub struct Secret {
+    value: String,
+    ignore_case: bool,
+}
 
 impl Secret {
     pub fn new(value: impl Into<String>) -> Secret {
-        Secret(value.into())
+        Secret {
+            value: value.into(),
+            ignore_case: false,
+        }
+    }
+
+    /// An email address, matched ASCII case-insensitively: a re-cased address is the same one.
+    pub fn email(value: impl Into<String>) -> Secret {
+        Secret {
+            value: value.into(),
+            ignore_case: true,
+        }
     }
 }
 
@@ -105,6 +119,9 @@ pub fn session_secrets(
             out.push(Secret::new(value.to_string_lossy().into_owned()));
         }
     }
+    for email in crate::core::providers::claude_subscription::known_account_emails(data_dir) {
+        out.push(Secret::email(email));
+    }
     out
 }
 
@@ -112,18 +129,34 @@ pub fn session_secrets(
 pub struct Redactor {
     /// Longest first, so a secret that contains another is replaced whole.
     values: Vec<String>,
+    /// Matched ASCII case-insensitively; stored lowercased, longest first.
+    emails: Vec<String>,
 }
 
 impl Redactor {
     pub fn new(secrets: impl IntoIterator<Item = Secret>) -> Redactor {
-        let mut values: Vec<String> = secrets
-            .into_iter()
-            .map(|s| s.0)
-            .filter(|v| v.chars().count() >= MIN_SECRET_LEN)
-            .collect();
-        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
-        values.dedup();
-        Redactor { values }
+        Redactor::default().extended(secrets)
+    }
+
+    /// A copy that also scrubs `extra`.
+    pub fn extended(&self, extra: impl IntoIterator<Item = Secret>) -> Redactor {
+        let mut values = self.values.clone();
+        let mut emails = self.emails.clone();
+        for secret in extra {
+            if secret.value.chars().count() < MIN_SECRET_LEN {
+                continue;
+            }
+            if secret.ignore_case {
+                emails.push(secret.value.to_ascii_lowercase());
+            } else {
+                values.push(secret.value);
+            }
+        }
+        for list in [&mut values, &mut emails] {
+            list.sort_by_key(|v| std::cmp::Reverse(v.len()));
+            list.dedup();
+        }
+        Redactor { values, emails }
     }
 
     pub fn redact(&self, text: &str) -> String {
@@ -133,8 +166,25 @@ impl Redactor {
                 out = out.replace(value.as_str(), REDACTED);
             }
         }
+        for email in &self.emails {
+            out = replace_ignoring_ascii_case(&out, email);
+        }
         scrub_pem(&scrub_tokens(&out))
     }
+}
+
+/// Replaces every ASCII case variant of `lower`; lowercasing ASCII keeps byte offsets.
+fn replace_ignoring_ascii_case(text: &str, lower: &str) -> String {
+    let haystack = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    while let Some(at) = haystack[from..].find(lower) {
+        out.push_str(&text[from..from + at]);
+        out.push_str(REDACTED);
+        from += at + lower.len();
+    }
+    out.push_str(&text[from..]);
+    out
 }
 
 fn is_token_char(c: char) -> bool {
@@ -370,5 +420,29 @@ mod tests {
     #[test]
     fn debug_does_not_show_the_value() {
         assert_eq!(format!("{:?}", Secret::new("topsecretvalue")), "Secret(..)");
+    }
+
+    #[test]
+    fn emails_are_scrubbed_in_any_ascii_case_and_other_secrets_are_not() {
+        let r = Redactor::new([Secret::new("Case-Sensitive-1")])
+            .extended([Secret::email("User@Example.com"), Secret::email("a@b.c")]);
+        assert_eq!(
+            r.redact("by USER@example.COM and user@example.com; a@b.c; case-sensitive-1"),
+            "by [redacted] and [redacted]; a@b.c; case-sensitive-1"
+        );
+    }
+
+    #[test]
+    fn session_secrets_include_the_learned_account_emails() {
+        let data = tempfile::tempdir().unwrap();
+        let config = crate::core::config::Config::defaults(data.path().into());
+        let before = Redactor::new(session_secrets(&config, data.path(), &|_| None, &|_| {}));
+        assert_eq!(before.redact("x@private.example"), "x@private.example");
+        crate::core::providers::claude_subscription::record_email_for_tests(
+            data.path(),
+            "x@private.example",
+        );
+        let after = Redactor::new(session_secrets(&config, data.path(), &|_| None, &|_| {}));
+        assert_eq!(after.redact("mail X@Private.example"), "mail [redacted]");
     }
 }

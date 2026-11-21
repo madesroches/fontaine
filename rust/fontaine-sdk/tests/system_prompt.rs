@@ -66,6 +66,7 @@ fn the_base_steers_toward_the_dedicated_tools_and_explains_denials_and_secrets()
         "Reserve it for what the other tools cannot do",
         "Do not retry a denied call",
         "Never print, quote or repeat secrets",
+        "may be appended to a tool result by the transport",
         "only the user can add a root",
         "may also inspect files outside the roots",
         "never answer a denied `read`, `ls`, `glob` or `grep` by using `shell`",

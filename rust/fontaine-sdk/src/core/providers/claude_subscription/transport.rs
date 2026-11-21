@@ -242,6 +242,9 @@ impl ClaudeTransport {
         };
         check_row(&listing.rows, selection).map_err(provider)?;
 
+        if let Some(email) = &listing.context.email {
+            self.cli.note_email(email);
+        }
         let prints = context::fingerprints(&translated.frames);
         // Legacy needs no reminder, so a CLI older than the placement measurements or an account
         // without an email is not probed.

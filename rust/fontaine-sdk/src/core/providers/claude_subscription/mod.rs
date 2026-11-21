@@ -42,6 +42,9 @@ pub mod usage;
 
 pub use cli::{CONFLICTING_ENV, Cli, MIN_VERSION, Timeouts, inherited_env_names, login_command};
 pub use inventory::INVENTORY_FLAG;
+pub use reminder::known_account_emails;
+#[cfg(test)]
+pub(crate) use reminder::record_email as record_email_for_tests;
 pub use transport::{ClaudeTransport, InventoryCommand};
 
 /// Where the account's own extra-usage setting is changed.

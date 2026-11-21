@@ -503,6 +503,12 @@ impl Cli {
         self.check_login().await
     }
 
+    /// Remembers the signed-in account's email, in memory only, so it can be scrubbed from text
+    /// the model writes for sharing.
+    pub(super) fn note_email(&self, email: &str) {
+        super::reminder::record_email(&self.data_dir, email);
+    }
+
     /// Preflight, then an `initialize` control request and nothing else: no turn, no inference.
     pub async fn discover(&self) -> Result<Vec<ModelRow>, ClaudeError> {
         self.preflight().await?;
@@ -535,6 +541,9 @@ impl Cli {
                     .expect("a listing without a reader fails only with Claude errors")
             })?;
         child.stop().await;
+        if let Some(email) = &listing.context.email {
+            self.note_email(email);
+        }
         Ok(listing.rows)
     }
 
@@ -1313,6 +1322,33 @@ mod tests {
             error.to_string(),
             "the Claude CLI ended before it listed its models"
         );
+    }
+
+    #[test]
+    fn learned_emails_are_per_data_dir_and_accumulate() {
+        let data = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let cli = |dir: &Path| {
+            Cli::new(
+                None,
+                None,
+                dir,
+                Arc::new(|_| None),
+                Timeouts::default(),
+                Warn::process(),
+            )
+        };
+        let (cli, elsewhere) = (cli(data.path()), cli(other.path()));
+        assert!(super::super::known_account_emails(data.path()).is_empty());
+        cli.note_email("b@example.com");
+        cli.note_email("a@example.com");
+        cli.note_email("a@example.com");
+        assert_eq!(
+            super::super::known_account_emails(data.path()),
+            ["a@example.com", "b@example.com"]
+        );
+        assert!(super::super::known_account_emails(other.path()).is_empty());
+        drop(elsewhere);
     }
 
     #[cfg(unix)]

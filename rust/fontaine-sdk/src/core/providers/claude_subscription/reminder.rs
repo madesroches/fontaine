@@ -6,7 +6,7 @@
 //! reminder out of the request the CLI makes there. The listener answers with a canned stream and
 //! never forwards anything, so the probe costs one process start and no model call.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -288,6 +288,29 @@ pub(super) struct Reminders {
 
 static MEMOS: LazyLock<Mutex<HashMap<PathBuf, Arc<Reminders>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Account emails seen in a listing, per data dir. Process memory only: the plaintext address is
+/// never written to disk, so it can be scrubbed from drafts without being stored.
+static EMAILS: LazyLock<Mutex<HashMap<PathBuf, BTreeSet<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn record_email(data_dir: &Path, email: &str) {
+    lock(&EMAILS, "claude account emails")
+        .entry(data_dir.to_path_buf())
+        .or_default()
+        .insert(email.to_string());
+}
+
+/// Every account email a listing has returned in this process for `data_dir`; several accounts
+/// can share one data dir.
+pub fn known_account_emails(data_dir: &Path) -> Vec<String> {
+    // Connect keys the memos by the absolute path, so the lookup must too.
+    let data_dir = std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    lock(&EMAILS, "claude account emails")
+        .get(&data_dir)
+        .map(|emails| emails.iter().cloned().collect())
+        .unwrap_or_default()
+}
 
 fn key(version: (u32, u32, u32), email: &str) -> Key {
     (version, hex(&Sha256::digest(email.as_bytes())))

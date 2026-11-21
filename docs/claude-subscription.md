@@ -238,7 +238,7 @@ there. The listener answers with a canned reply and forwards nothing, so the pro
 call and uses no quota; it costs one CLI start (about 0.4 s), and requests that start meanwhile
 share it. The CLI's request carries its bearer token and the account email; the listener reads only
 the content-length header and the body, drops the rest of the headers, token included, without
-storing or logging them, and the email is kept in memory like the one in the `initialize` answer.
+storing or logging them, and the email is kept in process memory like the one in the `initialize` answer.
 The reminder is used only if it has the shape the replay reproduces: the email once, and no section
 beyond `# userEmail` (a git or project section would depend on the directory). A reminder that
 cannot be read in time, or is not of that shape, leaves the request on the earlier layout below; a
@@ -290,7 +290,13 @@ cache.
 The adapter repeats the CLI's reminder on replayed messages so they match byte for byte. The email
 it holds is the one the CLI already sends on every request (the probe's listener sees it, on the
 loopback interface only): it goes to the same endpoint, and the
-adapter keeps it in memory for the request only, never in a log, the ledger or an error. The cost
+adapter keeps it in memory for the life of the process, never on disk, in a log, the ledger or an
+error. The model sees the reminder inside a tool result, so the base prompt tells it what the block
+is: added context, not the tool's output, not to be acted on and not to be repeated unless you ask
+for authorship or attribution. A replacement `system_prompt` drops that sentence, so the address
+is also scrubbed, in any letter case, from the bug-report drafts the model queues with
+`draft_bug_report` and from `/bug` reports, alongside the other known secrets. A resumed session is
+scrubbed once discovery or a request has told the adapter the address. The cost
 is about 170 tokens of context per user message, about 17000 tokens at 100 tool calls.
 
 ### Checking cache usage
