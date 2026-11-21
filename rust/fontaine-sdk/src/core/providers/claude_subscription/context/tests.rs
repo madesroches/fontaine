@@ -38,6 +38,9 @@ fn evidence() -> Evidence {
         read: 10,
         expected: 900,
         gap: Duration::from_secs(5),
+        prev_read: 800,
+        prev_write_1h: 100,
+        thinking: true,
     }
 }
 
@@ -438,7 +441,12 @@ fn record(frames: usize, blocks: usize, read: u64, write_1h: u64, at: Instant) -
         merged_tail: false,
         unreplayable_tail: false,
         settings: 0,
-        usage: CacheUsage { read, write_1h },
+        thinking: false,
+        usage: CacheUsage {
+            read,
+            write_1h,
+            ..Default::default()
+        },
         at,
     }
 }
@@ -455,7 +463,10 @@ fn the_check_flags_only_a_read_short_of_what_was_written() {
         Outcome::Broken(Evidence {
             read: 1435,
             expected: 1500,
-            gap: Duration::from_secs(60)
+            gap: Duration::from_secs(60),
+            prev_read: 1000,
+            prev_write_1h: 500,
+            thinking: false,
         })
     );
     assert!(matches!(check(&prev, &next(1000)), Outcome::Broken(_)));
@@ -466,7 +477,10 @@ fn a_cold_previous_request_gives_no_verdict() {
     let t0 = Instant::now();
     let cold = record(3, 1, 0, 500, t0);
     let soon = t0 + Duration::from_secs(60);
-    assert_eq!(check(&cold, &record(5, 1, 0, 0, soon)), Outcome::NoVerdict);
+    assert_eq!(
+        check(&cold, &record(5, 1, 0, 0, soon)),
+        Outcome::Skipped(Skip::ColdPrevious)
+    );
 }
 
 #[test]
@@ -475,13 +489,30 @@ fn the_check_gives_no_verdict_when_the_comparison_is_unsound() {
     let prev = record(3, 1, 1000, 500, t0);
     let soon = t0 + Duration::from_secs(60);
 
-    let none = Outcome::NoVerdict;
+    let skipped = |skip| Outcome::Skipped(skip);
     let mut diverged = record(5, 1, 0, 0, soon);
     diverged.prints[1] = 99;
-    assert_eq!(check(&prev, &diverged), none);
+    assert_eq!(
+        check(&prev, &diverged),
+        skipped(Skip::NotExtended {
+            first_diff: 1,
+            prev_len: 3,
+            now_len: 5
+        })
+    );
 
-    assert_eq!(check(&prev, &record(3, 1, 0, 0, soon)), none);
-    assert_eq!(check(&prev, &record(5, 1, 0, 0, t0 + MAX_GAP)), none);
+    assert_eq!(
+        check(&prev, &record(3, 1, 0, 0, soon)),
+        skipped(Skip::NotExtended {
+            first_diff: 3,
+            prev_len: 3,
+            now_len: 3
+        })
+    );
+    assert_eq!(
+        check(&prev, &record(5, 1, 0, 0, t0 + MAX_GAP)),
+        skipped(Skip::GapTooLong)
+    );
     assert!(matches!(
         check(
             &prev,
@@ -494,19 +525,28 @@ fn the_check_gives_no_verdict_when_the_comparison_is_unsound() {
         check(&prev, &record(5, 9, 0, 0, soon)),
         Outcome::Broken(_)
     ));
-    assert_eq!(check(&prev, &record(5, 10, 0, 0, soon)), none);
+    assert_eq!(
+        check(&prev, &record(5, 10, 0, 0, soon)),
+        skipped(Skip::TooManyAdded)
+    );
 
     let mut merged = record(3, 1, 1000, 500, t0);
     merged.merged_tail = true;
-    assert_eq!(check(&merged, &record(5, 1, 0, 0, soon)), none);
+    assert_eq!(
+        check(&merged, &record(5, 1, 0, 0, soon)),
+        skipped(Skip::MergedTail)
+    );
 
     let mut media = record(3, 1, 1000, 500, t0);
     media.unreplayable_tail = true;
-    assert_eq!(check(&media, &record(5, 1, 0, 0, soon)), none);
+    assert_eq!(
+        check(&media, &record(5, 1, 0, 0, soon)),
+        skipped(Skip::UnreplayableTail)
+    );
 
     let mut retuned = record(5, 1, 0, 0, soon);
     retuned.settings = 1;
-    assert_eq!(check(&prev, &retuned), none);
+    assert_eq!(check(&prev, &retuned), skipped(Skip::SettingsChanged));
     assert_ne!(
         settings_print(Some("high"), &json!({"env": {"X": "{}"}})),
         settings_print(Some("low"), &json!({"env": {"X": "{}"}}))
@@ -557,15 +597,19 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
     let (_dir, v, _) = store();
     let version = (2, 9, 102);
     let at = Instant::now();
-    let short = Some(CacheUsage {
-        read: 0,
-        write_1h: 0,
-    });
+    let short = Some(CacheUsage::default());
     let wrote = Some(CacheUsage {
         read: 100,
         write_1h: 400,
+        ..Default::default()
     });
-    let usage = |read, write_1h| Some(CacheUsage { read, write_1h });
+    let usage = |read, write_1h| {
+        Some(CacheUsage {
+            read,
+            write_1h,
+            ..Default::default()
+        })
+    };
 
     // The first request has nothing to compare with.
     assert_eq!(
@@ -604,7 +648,10 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
         Evidence {
             read: 300,
             expected: 600,
-            gap: Duration::from_secs(5)
+            gap: Duration::from_secs(5),
+            prev_read: 200,
+            prev_write_1h: 400,
+            thinking: false,
         }
     );
     let warning = finding.warning();
@@ -629,7 +676,7 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
             sent("c", version, &conversation(3)),
             Some(CacheUsage {
                 read: 900,
-                write_1h: 0
+                ..Default::default()
             }),
             at,
             &v,
@@ -647,7 +694,13 @@ fn a_healthy_pair_between_two_shortfalls_clears_the_strike_and_a_cold_one_does_n
     let (_dir, v, _) = store();
     let version = (2, 9, 104);
     let at = Instant::now();
-    let usage = |read, write_1h| Some(CacheUsage { read, write_1h });
+    let usage = |read, write_1h| {
+        Some(CacheUsage {
+            read,
+            write_1h,
+            ..Default::default()
+        })
+    };
     let run = |session: &str, users, usage| {
         finished(sent(session, version, &conversation(users)), usage, at, &v)
     };
@@ -680,6 +733,7 @@ fn a_legacy_request_or_a_missing_usage_drops_the_conversations_record() {
     let wrote = Some(CacheUsage {
         read: 100,
         write_1h: 400,
+        ..Default::default()
     });
     finished(sent("d", version, &conversation(2)), wrote, at, &v);
     let frames = conversation(3);
@@ -692,10 +746,7 @@ fn a_legacy_request_or_a_missing_usage_drops_the_conversations_record() {
         &frames,
     );
     assert_eq!(finished(legacy, wrote, at, &v), None);
-    let short = Some(CacheUsage {
-        read: 0,
-        write_1h: 0,
-    });
+    let short = Some(CacheUsage::default());
     assert_eq!(
         finished(sent("d", version, &conversation(4)), short, at, &v),
         None
@@ -728,20 +779,25 @@ fn the_records_are_bounded() {
 fn the_cache_usage_reads_the_result() {
     let usage = CacheUsage::from_result(&json!({
         "cache_read_input_tokens": 7,
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4,
         "cache_creation": {"ephemeral_1h_input_tokens": 3, "ephemeral_5m_input_tokens": 1},
     }));
     assert_eq!(
         usage,
         Some(CacheUsage {
             read: 7,
-            write_1h: 3
+            write_1h: 3,
+            input: 2,
+            write_total: 4,
+            write_5m: 1,
         })
     );
     assert_eq!(
         CacheUsage::from_result(&json!({"cache_read_input_tokens": 7})),
         Some(CacheUsage {
             read: 7,
-            write_1h: 0
+            ..Default::default()
         })
     );
     assert_eq!(CacheUsage::from_result(&json!({"output_tokens": 1})), None);
@@ -1058,4 +1114,226 @@ fn legacy_marks_the_last_cacheable_block_of_the_history_frame() {
         Layout::Legacy,
     );
     assert_eq!(marked(&frames), [(0, 1)]);
+}
+
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The events `run` emitted, one line each.
+fn logged(run: impl FnOnce()) -> Vec<String> {
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    text.lines().map(str::to_string).collect()
+}
+
+fn usage_of(read: u64, write_1h: u64) -> Option<CacheUsage> {
+    Some(CacheUsage {
+        read,
+        write_1h,
+        input: 3,
+        write_total: write_1h + 5,
+        write_5m: 5,
+    })
+}
+
+#[test]
+fn a_cache_usage_defaults_what_the_result_leaves_out() {
+    let usage = CacheUsage::from_result(&json!({"cache_read_input_tokens": 1})).unwrap();
+    assert_eq!((usage.input, usage.write_total, usage.write_5m), (0, 0, 0));
+}
+
+#[test]
+fn a_thinking_block_in_the_conversation_is_noted() {
+    let with = translated(json!([
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "hm", "signature": "sig"},
+            {"type": "text", "text": "ok"}]},
+        {"role": "user", "content": "next"},
+    ]))
+    .frames;
+    assert!(sent("think", (2, 9, 170), &with).thinking);
+    assert!(!sent("think", (2, 9, 170), &conversation(3)).thinking);
+}
+
+#[test]
+fn every_request_logs_its_outcome_usage_and_no_message_text() {
+    let (_dir, v, _) = store();
+    let version = (2, 9, 171);
+    let at = Instant::now();
+    let secret = "do-not-log-this-text";
+    let mut first = conversation(2);
+    first[0].value["message"]["content"] = json!(secret);
+    let rewritten_to = |users| {
+        let mut frames = conversation(users);
+        frames[0].value["message"]["content"] = json!("other");
+        frames
+    };
+    let lines = logged(|| {
+        finished(sent("log1", version, &first), usage_of(100, 400), at, &v);
+        // The prefix no longer extends: the first frame was rewritten.
+        finished(
+            sent("log1", version, &rewritten_to(3)),
+            usage_of(200, 400),
+            at + Duration::from_secs(5),
+            &v,
+        );
+        finished(
+            sent("log1", version, &rewritten_to(5)),
+            usage_of(900, 0),
+            at + Duration::from_secs(9),
+            &v,
+        );
+        finished(
+            sent("log1", version, &rewritten_to(7)),
+            usage_of(1, 0),
+            at + Duration::from_secs(12),
+            &v,
+        );
+    });
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(
+        lines[0].contains("outcome=\"skipped:first_request\""),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains("previous_usage=none"), "{}", lines[0]);
+    assert!(lines[0].contains("usage=read=100 input=3 write=405 write_1h=400 write_5m=5"));
+    assert!(lines[0].contains("wording=") && lines[0].contains("cli=2.9.171"));
+    assert!(
+        lines[1].contains("outcome=\"skipped:not_extended\""),
+        "{}",
+        lines[1]
+    );
+    assert!(lines[1].contains("first_diff=Some(0)"), "{}", lines[1]);
+    assert!(lines[1].contains("prev_frames=Some(3)"), "{}", lines[1]);
+    assert!(lines[1].contains("now_frames=Some(5)"), "{}", lines[1]);
+    assert!(lines[2].contains("outcome=\"healthy\""), "{}", lines[2]);
+    assert!(lines[2].contains("gap_secs=Some(4)"), "{}", lines[2]);
+    assert!(lines[3].contains("strike=\"strike\""), "{}", lines[3]);
+    assert!(lines[3].contains("outcome=\"broken\""), "{}", lines[3]);
+    assert!(lines.iter().all(|line| !line.contains(secret)));
+}
+
+#[test]
+fn a_request_without_a_native_layout_logs_what_is_missing() {
+    let (_dir, v, _) = store();
+    let frames = conversation(2);
+    let legacy = Sent::new(
+        "log2",
+        Some((2, 9, 172)),
+        Layout::Legacy,
+        None,
+        fingerprints(&frames),
+        &frames,
+    );
+    let lines = logged(|| {
+        finished(legacy, usage_of(1, 1), Instant::now(), &v);
+        finished(sent("log3", (2, 9, 172), &frames), None, Instant::now(), &v);
+    });
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].contains("outcome=\"no_record\"") && lines[0].contains("missing=\"layout\""));
+    assert!(lines[1].contains("outcome=\"no_record\"") && lines[1].contains("missing=\"usage\""));
+}
+
+#[test]
+fn a_verdict_is_logged_when_the_second_shortfall_lands() {
+    let (_dir, v, _) = store();
+    let version = (2, 9, 173);
+    let at = Instant::now();
+    let lines = logged(|| {
+        finished(
+            sent("log4", version, &conversation(2)),
+            usage_of(100, 400),
+            at,
+            &v,
+        );
+        finished(
+            sent("log4", version, &conversation(3)),
+            usage_of(200, 400),
+            at,
+            &v,
+        );
+        finished(
+            sent("log4", version, &conversation(4)),
+            usage_of(300, 400),
+            at,
+            &v,
+        );
+    });
+    assert!(lines[1].contains("strike=\"strike\""), "{}", lines[1]);
+    assert!(lines[2].contains("strike=\"verdict\""), "{}", lines[2]);
+}
+
+#[test]
+fn a_persisted_verdict_keeps_its_extra_fields_across_a_merge_and_an_older_file_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(VERDICTS_FILE);
+    let at = unix_now();
+    std::fs::write(
+        &path,
+        json!({"broken": [
+            {"cli": "2.9.180", "template": TEMPLATE_REVISION, "wording": wording(), "at": at,
+             "read": 1, "expected": 2},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let (first, _) = reload(dir.path());
+    assert!(first.contains((2, 9, 180), &wording()));
+    assert_eq!(
+        first.mark((2, 9, 181), &wording(), &evidence()),
+        Mark::Saved
+    );
+    // Another store persists a second entry: neither entry may lose its fields.
+    let (second, _) = reload(dir.path());
+    let other = Evidence {
+        prev_read: 7,
+        prev_write_1h: 8,
+        thinking: false,
+        ..evidence()
+    };
+    assert_eq!(second.mark((2, 9, 182), &wording(), &other), Mark::Saved);
+    let written = std::fs::read_to_string(&path).unwrap();
+    let entries = parse(&written, unix_now()).unwrap();
+    let old = entries[&((2, 9, 180), wording())];
+    assert_eq!(
+        (old.read, old.prev_read, old.thinking),
+        (Some(1), None, None)
+    );
+    let kept = entries[&((2, 9, 181), wording())];
+    assert_eq!(
+        (kept.prev_read, kept.prev_write_1h, kept.thinking),
+        (Some(800), Some(100), Some(true))
+    );
+    let newest = entries[&((2, 9, 182), wording())];
+    assert_eq!(
+        (newest.prev_read, newest.prev_write_1h, newest.thinking),
+        (Some(7), Some(8), Some(false))
+    );
 }

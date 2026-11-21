@@ -197,6 +197,19 @@ undefined name still fails the request. With `--debug-file`, a protocol failure 
 rejected line (cut to 4 KiB) and the events accepted before it to the debug file. A failed request
 is recorded in the session ledger as `request_failed`, with the same text.
 
+With `--debug-file`, every finished request of the native layout also writes one debug event,
+`claude cache self-check`, with counts, hashes and tokens only (no message text): `session`, `cli`,
+`wording` (first 8 hex digits), `layout`, `frames`, `added` (blocks added since the previous
+request), `usage` and `previous_usage` (`read`, `input`, `write`, `write_1h`, `write_5m` tokens;
+`write` is the total cache write, so a write in the 5-minute bucket is visible), `gap_secs`,
+`thinking` (whether the conversation holds a thinking block) and `outcome`: `healthy`, `broken` or
+`skipped:<reason>`. The reasons are `first_request`, `not_extended`, `merged_tail`,
+`unreplayable_tail`, `settings_changed`, `cold_previous`, `gap_too_long` and `too_many_added`; for
+`not_extended` the event adds `first_diff` (the first frame whose fingerprint differs), `prev_frames`
+and `now_frames`. A `broken` request has `strike` set to `strike` (the first shortfall) or
+`verdict` (the second, which turns the layout off). A request with no native layout, CLI version,
+reminder wording or cache usage logs `outcome="no_record"` and `missing`.
+
 A `user` event the adapter refuses fails with `the Claude CLI executed a native tool or permission
 request` followed by the shape it refused (for example `content that is not a list of blocks`). To
 capture the line for a report, rerun the same request with `--debug-file <path>`: the rejected
@@ -253,7 +266,10 @@ reminder wording, with no healthy comparison in between, it turns the layout off
 shows one warning in the session naming the version, the first 8 hex digits of the wording's
 SHA-256 and the numbers it judged on (read X of expected Y after Z s); `cache-bench` measures the
 effect. The verdict is kept in `claude-cache-verdicts.json` in the data dir (readable by the current user
-only), so a restart keeps the fallback. It expires after 7 days, when the version is measured
+only), so a restart keeps the fallback. Each entry records `read` and `expected`, and the previous
+request's `prev_read` and `prev_write_1h` and whether the conversation held a `thinking` block, so a
+verdict can be judged afterwards without a debug file; an older file without those fields loads
+unchanged. It expires after 7 days, when the version is measured
 again, and is retired earlier when the CLI's reminder wording changes or a Fontaine update changes
 where the adapter places the reminder. A new CLI version is judged afresh. The layout needs an
 account email in the CLI's answer and a reminder the probe learned.
