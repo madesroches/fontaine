@@ -37,7 +37,7 @@ use crate::core::gate::{
     AFK_STOPPED_MESSAGE, CompositionStage, DeniedCall, RetrySource, SessionState,
     UNREGISTERED_AGENT, permission_mode,
 };
-use crate::core::ledger::{Existence, Record, RemoteSender};
+use crate::core::ledger::{Record, RemoteSender};
 use crate::core::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
     parse_rule, propose,
@@ -1005,8 +1005,8 @@ fn explanation_of(why: &str) -> String {
 enum TargetState {
     /// A file the index holds.
     Tracked,
-    /// A file a tool of this session created.
-    Created,
+    /// Something exists there that the index does not hold.
+    Present,
     /// Nothing there yet.
     Absent,
 }
@@ -1030,6 +1030,14 @@ impl HooksDir {
             }
         }
     }
+}
+
+/// Whether the home directory is `primary` or lies under it (`$HOME`, `/home`, `/`): such a root
+/// is not a workspace that is assumed backed up, and every dotfile the floor does not list sits
+/// in it.
+fn root_holds_home(primary: &Path, home: &Path) -> bool {
+    let canonical = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    floor::under(&canonical, primary).is_some() || floor::under(home, primary).is_some()
 }
 
 /// The floor's view of the paths a shell edit touches, so the classifier in `tools` can ask
@@ -1088,13 +1096,9 @@ impl ShellTargets<'_> {
         if !self.clear(&calls) {
             return None;
         }
-        let state = self.pipeline.target_state(
-            self.scope,
-            given,
-            &resolved,
-            &self.hooks,
-            tool == "write",
-        )?;
+        let state = self
+            .pipeline
+            .target_state(self.scope, given, &resolved, &self.hooks)?;
         Some((resolved, state))
     }
 }
@@ -1779,9 +1783,9 @@ impl PermissionPipeline {
     }
 
     /// The tier of an `auto` edit that needs no guardian verdict: a file-tool write into the
-    /// session scratch directory, an edit to a file git tracks, a file that does not exist yet or
-    /// one this session created, or a shell call made only of such edits, read-only commands and
-    /// local git steps. Only reached after the whole floor and the hooks have passed, and a
+    /// session scratch directory, an edit to any file in the primary root that
+    /// [`Self::target_state`] accepts, or a shell call made only of such edits and deletions,
+    /// read-only commands and local git steps. Only reached after the whole floor and the hooks have passed, and a
     /// protected path never gets here. Anything uncertain answers `None`, which leaves the call
     /// to the guardian.
     fn unjudged_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
@@ -1808,14 +1812,8 @@ impl PermissionPipeline {
         if !edits.tracked || root != 0 {
             return None;
         }
-        self.target_state(
-            &scope,
-            given,
-            &resolved,
-            &HooksDir::read(scope.primary()),
-            false,
-        )
-        .map(|_| Tier::TrackedEdit)
+        self.target_state(&scope, given, &resolved, &HooksDir::read(scope.primary()))
+            .map(|_| Tier::TrackedEdit)
     }
 
     fn unjudged_shell_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
@@ -1856,21 +1854,30 @@ impl PermissionPipeline {
 
     /// What an unjudged edit of `given` (resolved to `resolved`) would act on, or `None` when the
     /// guardian must judge it: a file outside the primary root, the memory store, an instruction
-    /// file or CI path, hook-runner configuration, a path git does not track that already exists
-    /// and no tool of this session created, or any path when git cannot be read. `deep` also
-    /// accepts a path whose parent directories do not exist yet (`mkdir -p a/b`), which a file
-    /// tool never creates in one call.
+    /// file or CI path, hook-runner configuration, a secret file, a persistence or code-execution
+    /// location, any path in a root that holds the home directory, or any path when git cannot be
+    /// read. Whether git tracks the file, or a tool of this session created it, makes no
+    /// difference: workspace files are assumed to be backed up. A path whose parent directories do
+    /// not exist yet is `Absent` when the nearest existing ancestor is a directory in the root
+    /// (`mkdir -p a/b`).
     fn target_state(
         &self,
         scope: &Scope,
         given: &str,
         resolved: &Path,
         hooks: &HooksDir,
-        deep: bool,
     ) -> Option<TargetState> {
         let primary = scope.primary();
         if let Some(memory) = &self.state.memory_root
             && floor::under(resolved, memory).is_some()
+        {
+            return None;
+        }
+        if self
+            .state
+            .home
+            .as_deref()
+            .is_some_and(|home| root_holds_home(primary, home))
         {
             return None;
         }
@@ -1880,40 +1887,40 @@ impl PermissionPipeline {
             floor::under(path, primary).is_some_and(|rel| {
                 floor::is_instruction_or_ci_path(&rel, floor::FOLD_CASE)
                     || floor::is_hook_config_path(&rel, floor::FOLD_CASE)
+                    || floor::is_persistence_path(&rel, floor::FOLD_CASE)
             })
         };
-        if excluded(resolved) || excluded(&written) || hooks.names(resolved, &written)? {
+        if excluded(resolved)
+            || excluded(&written)
+            || hooks.names(resolved, &written)?
+            || floor::secret_path(scope, given).is_some()
+        {
+            return None;
+        }
+        // Resolution canonicalizes every link that has a target, so a link still standing here
+        // is dangling and a write through it creates the target wherever it points.
+        if std::fs::symlink_metadata(resolved).is_ok_and(|meta| meta.is_symlink()) {
+            return None;
+        }
+        // Another name for the inode may sit outside the root, and a write changes the inode.
+        #[cfg(unix)]
+        if std::fs::symlink_metadata(resolved)
+            .is_ok_and(|meta| meta.is_file() && std::os::unix::fs::MetadataExt::nlink(&meta) > 1)
+        {
             return None;
         }
         match trust::tracking(primary, resolved) {
-            Tracking::Tracked => Some(TargetState::Tracked),
-            Tracking::Untracked => {
-                let absent = matches!(
-                    std::fs::symlink_metadata(resolved),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
-                );
-                let created = self
-                    .state
-                    .ledger
-                    .view()
-                    .existence(&resolved.to_string_lossy())
-                    == Existence::CreatedThisSession;
-                if absent {
-                    Some(TargetState::Absent)
-                } else {
-                    created.then_some(TargetState::Created)
-                }
-            }
-            Tracking::Unknown if deep => {
-                // The nearest ancestor that exists decides: a directory inside a work tree.
-                let ancestor = resolved.ancestors().skip(1).find(|dir| dir.exists())?;
-                (floor::under(ancestor, primary).is_some()
-                    && ancestor.is_dir()
-                    && trust::tracking(primary, ancestor) == Tracking::Untracked)
-                    .then_some(TargetState::Absent)
-            }
-            Tracking::Unknown => None,
+            Tracking::Unreadable => return None,
+            Tracking::Tracked => return Some(TargetState::Tracked),
+            Tracking::Untracked | Tracking::Unknown => {}
         }
+        if std::fs::symlink_metadata(resolved).is_ok() {
+            return Some(TargetState::Present);
+        }
+        // The nearest ancestor that exists decides: a directory inside the root.
+        let ancestor = resolved.ancestors().skip(1).find(|dir| dir.exists())?;
+        (floor::under(ancestor, primary).is_some() && ancestor.is_dir())
+            .then_some(TargetState::Absent)
     }
 
     /// Who cannot be asked right now, AFK first: a headless run with AFK on is told the AFK
@@ -3584,5 +3591,16 @@ mod tests {
         let reply = afk.elicit_url(url_request()).await;
         assert_eq!(reply, ElicitReply::Accept(serde_json::Map::default()));
         assert_eq!(*recording.asked.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_root_that_holds_the_home_directory_is_refused() {
+        let home = Path::new("/home/me");
+        for root in ["/home/me", "/home", "/"] {
+            assert!(root_holds_home(Path::new(root), home), "{root}");
+        }
+        for root in ["/home/me/project", "/home/other", "/srv/work"] {
+            assert!(!root_holds_home(Path::new(root), home), "{root}");
+        }
     }
 }

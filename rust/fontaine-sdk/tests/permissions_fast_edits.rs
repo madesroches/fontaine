@@ -1,5 +1,5 @@
-//! `auto` edits that skip the guardian after the floor: tracked, new and session-created files,
-//! and writes into the session scratch directory. Everything uncertain still reaches the guardian.
+//! `auto` edits that skip the guardian after the floor: any file in the primary root, tracked by
+//! git or not, and writes into the session scratch directory. Everything uncertain still reaches the guardian.
 
 #[path = "core_common/mod.rs"]
 mod common;
@@ -88,16 +88,99 @@ async fn a_new_file_and_a_file_the_session_created_skip_the_guardian() {
 }
 
 #[tokio::test]
-async fn an_existing_untracked_or_ignored_file_goes_to_the_guardian() {
+async fn an_existing_untracked_or_ignored_file_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt", ".gitignore"], "", false);
     write(&rig.work().join(".gitignore"), "ignored.txt\n");
     write(&rig.work().join("ignored.txt"), "a");
     write(&rig.work().join("untracked.txt"), "a");
     for path in ["ignored.txt", "untracked.txt"] {
         assert!(allowed(&rig.check("edit", edit_args(path)).await));
+        assert_eq!(last_tier(&rig), Tier::TrackedEdit, "{path}");
+    }
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_write_under_a_directory_that_does_not_exist_yet_skips_the_guardian() {
+    let (rig, fake) = repo_rig(&["a.txt"], "", false);
+    assert!(allowed(
+        &rig.check("write", write_args("new/deeper/f.txt")).await
+    ));
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn an_edit_in_a_root_with_no_repository_skips_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
+    write(&rig.work().join("old.txt"), "a");
+    assert!(allowed(&rig.check("edit", edit_args("old.txt")).await));
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn secret_files_go_to_the_guardian_tracked_or_not() {
+    let (rig, fake) = repo_rig(&["a.txt", "tracked/.env"], "", false);
+    write(&rig.work().join(".env"), "a");
+    for path in [".env", "tracked/.env"] {
+        assert!(allowed(&rig.check("edit", edit_args(path)).await), "{path}");
         assert_eq!(last_tier(&rig), Tier::Guardian, "{path}");
     }
     assert_eq!(fake.calls(), 2);
+}
+
+const PERSISTENCE: [&str; 5] = [
+    ".envrc",
+    ".ssh/authorized_keys",
+    ".config/systemd/user/x.service",
+    ".cargo/config.toml",
+    ".local/bin/x",
+];
+
+#[tokio::test]
+async fn persistence_locations_go_to_the_guardian_with_or_without_a_repository() {
+    let (rig, fake) = repo_rig(&["a.txt"], "", false);
+    for path in PERSISTENCE {
+        assert!(
+            allowed(&rig.check("write", write_args(path)).await),
+            "{path}"
+        );
+        assert_eq!(last_tier(&rig), Tier::Guardian, "{path}");
+    }
+    assert_eq!(fake.calls(), PERSISTENCE.len());
+
+    let fake = fake_guardian(allow_verdict());
+    let bare = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
+    for path in PERSISTENCE {
+        assert!(
+            allowed(&bare.check("write", write_args(path)).await),
+            "{path}"
+        );
+        assert_eq!(last_tier(&bare), Tier::Guardian, "{path}");
+    }
+    assert_eq!(fake.calls(), PERSISTENCE.len());
+}
+
+#[tokio::test]
+async fn a_repository_git_cannot_read_goes_to_the_guardian() {
+    let (rig, fake) = repo_rig(&["a.txt"], "", false);
+    write(&rig.work().join(".git/config"), "[core\n\tbroken = = =\n");
+    assert!(allowed(&rig.check("edit", edit_args("a.txt")).await));
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn pre_commit_config_and_github_stay_with_the_guardian_untracked() {
+    let (rig, fake) = repo_rig(&["a.txt"], "", false);
+    for path in ["AGENTS.md", ".github/x", ".pre-commit-config.yaml"] {
+        write(&rig.work().join(path), "a");
+        assert!(allowed(&rig.check("edit", edit_args(path)).await), "{path}");
+        assert_eq!(last_tier(&rig), Tier::Guardian, "{path}");
+    }
+    assert_eq!(fake.calls(), 3);
 }
 
 #[tokio::test]
@@ -180,30 +263,50 @@ async fn symlinks_are_judged_by_their_resolved_target() {
     write(&work.join("untracked.txt"), "a");
     let outside = tempfile::tempdir().unwrap();
     write(&outside.path().join("elsewhere.txt"), "a");
+    write(&work.join(".envrc"), "a");
     symlink("untracked.txt", work.join("to_untracked")).unwrap();
+    symlink(".envrc", work.join("to_envrc")).unwrap();
     symlink(
         outside.path().join("elsewhere.txt"),
         work.join("to_outside"),
     )
     .unwrap();
     symlink("AGENTS.md", work.join("notes.txt")).unwrap();
-    git(&work, &["add", "to_untracked", "to_outside", "notes.txt"]);
+    git(
+        &work,
+        &["add", "to_untracked", "to_outside", "to_envrc", "notes.txt"],
+    );
     git(&work, &["commit", "-q", "-m", "links"]);
     // The links are tracked, but only the resolved path counts.
-    for link in ["to_untracked", "to_outside", "notes.txt"] {
+    for link in ["to_outside", "to_envrc", "notes.txt"] {
         rig.check("edit", edit_args(link)).await;
         assert_ne!(last_tier(&rig), Tier::TrackedEdit, "{link}");
     }
-    assert!(fake.calls() >= 2);
+    rig.check("edit", edit_args("to_untracked")).await;
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 3);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dangling_symlink_out_of_the_root_goes_to_the_guardian() {
+    use std::os::unix::fs::symlink;
+    let (rig, fake) = repo_rig(&["tracked.txt"], "", false);
+    let work = rig.work().to_path_buf();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path().join("missing.txt"), work.join("dangling")).unwrap();
+    rig.check("write", write_args("dangling")).await;
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 1);
 }
 
 #[tokio::test]
-async fn a_new_file_in_a_root_that_is_not_a_git_work_tree_goes_to_the_guardian() {
+async fn a_new_file_in_a_root_that_is_not_a_git_work_tree_skips_the_guardian() {
     let fake = fake_guardian(allow_verdict());
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
     assert!(allowed(&rig.check("write", write_args("fresh.txt")).await));
-    assert_eq!(last_tier(&rig), Tier::Guardian);
-    assert_eq!(fake.calls(), 1);
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
 }
 
 #[tokio::test]
@@ -318,13 +421,13 @@ async fn a_fast_edit_between_denials_keeps_auto_from_pausing() {
 }
 
 #[tokio::test]
-async fn an_intent_to_add_file_goes_to_the_guardian() {
+async fn an_intent_to_add_file_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt"], "", false);
     write(&rig.work().join("planned.txt"), "a");
     git(rig.work(), &["add", "-N", "planned.txt"]);
     assert!(allowed(&rig.check("edit", edit_args("planned.txt")).await));
-    assert_eq!(last_tier(&rig), Tier::Guardian);
-    assert_eq!(fake.calls(), 1);
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
 }
 
 #[tokio::test]

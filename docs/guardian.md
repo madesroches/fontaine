@@ -10,12 +10,12 @@ A call reaches the guardian in `auto` mode. The [deterministic floor](permission
 rules, protected-path handling), the read-only fast path (which includes a spawn of
 an agent type that can only read, and excludes reads of secret files such as `.env`), every other `agent` spawn, the coordination tools (`send_message` and `board_update`) and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
-it also does not see file-tool edits to tracked, new or session-created files in your workspace,
+it also does not see file-tool edits to any file in your workspace, tracked by git or not,
 writes into the session scratch directory, or a shell call that Fontaine parses in full and that is
-made only of read-only commands, in-root edits (`sed -i`, `mkdir`, `mv`) and the local git steps
+made only of read-only commands, in-root edits and deletions of files (`sed -i`, `mkdir`, `mv`, `rm`) and the local git steps
 (`git add`, `git commit`, `git rm`, `git mv`, `git rebase --continue`) (see
 [the pipeline](permissions.md#the-pipeline)); it
-still sees instruction files, `.github/`, hook-runner config, existing untracked files and every shell command that does not take one of those fast paths (including supported read-only `git` subcommands).
+still sees instruction files, `.github/`, hook-runner config, credential files, persistence locations (`.envrc`, `.ssh/`, `.config/`, `.cargo/` and the like), every path when your workspace root holds your home directory or git cannot be read, and every shell command that does not take one of those fast paths (including supported read-only `git` subcommands).
 
 ## Threat model
 
@@ -333,16 +333,14 @@ directory)`. A target the harness cannot resolve (a variable, a glob, an expande
 relative target after a `cd`, arguments a launcher such as `xargs` reads at run time) adds
 nothing; wrappers (`sudo`, `env`, `timeout`, `xargs`...) with literal operands are still read: the guardian reads the raw command and judges it under
 `Destroy Pre-existing Files`, which covers a recursive delete whose target the call does not make
-clear. A deletion whose target resolves inside the workspace roots is not that rule, whether or not
-the target is `pre_existing` or `git_tracked` (a glob with a literal part inside the roots counts as
-inside); `.git` and anything under it, a target the call does not make clear and a target outside the
-roots are still judged under it, as are truncations and no-content overwrites. Writing or editing a
-path inside the roots with new content is not that rule either, whatever the path's status
-(`pre_existing`, `unindexed` or `git_tracked`, marked or not) and whether or not git tracks it, and
-through any route: a redirect, `sed -i`, a heredoc, a script or a file tool. A missing `git_tracked`
-mark, which a script or a `sed -i` always lacks, never turns an edit into a match. A `mv`, `cp` or
-extract onto a `pre_existing` path that is not `git_tracked` is still judged under it, since
-clobbering one file with another is not authoring new content. A listed deletion is always denied, in both profiles and whatever your messages say: the
+clear. Nothing that resolves inside the workspace roots is that rule, whatever the path's status
+(`pre_existing`, `unindexed` or `git_tracked`, marked or not) and whether or not git tracks it:
+every edit, overwrite, truncation, move, copy, extract and deletion there, by shell or file tool,
+is routine, because workspace files are assumed to be backed up (a glob with a literal part inside
+the roots counts as inside). `.git` and anything under it (including expiring the reflog or pruning
+unreachable objects), a target the call does not make clear and a target outside the roots are
+still judged under it. A missing `git_tracked` mark, which a script or a `sed -i` always lacks,
+never turns an edit into a match. A listed deletion is always denied, in both profiles and whatever your messages say: the
 full profile's hard deny (under the `Destroy Pre-existing Files` label, kept whatever you put in
 `[auto_mode]`) and the minimal profile's `class=host-data-delete` (rule `Container Escape`). A
 composition's `allow_below` never allows such a call: it abstains, so the script falls through to

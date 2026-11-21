@@ -2604,12 +2604,13 @@ pub struct Permissions {
     pub ask: Vec<SourcedRule>,
     pub allow: Vec<SourcedRule>,
     pub additional_directories: Vec<String>,
-    /// In `auto`, edits to tracked files, new files and files this session created skip the
-    /// guardian.
+    /// In `auto`, edits to any file in the primary root skip the guardian, whether or not git
+    /// tracks it.
     pub auto_tracked_edits: bool,
     /// In `auto`, file-tool writes inside the session scratch directory skip the guardian.
     pub auto_scratch_writes: bool,
-    /// In `auto`, a fully parsed in-root shell edit or local git step skips the guardian.
+    /// In `auto`, a fully parsed in-root shell edit, deletion of files or local git step skips the
+    /// guardian.
     pub auto_shell_edits: bool,
 }
 

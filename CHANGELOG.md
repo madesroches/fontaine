@@ -122,6 +122,20 @@ All notable changes are recorded here. The format follows
 - `session_end` now fires after the agents and jobs are stopped on a TUI session switch and on a
   headless input error (it fired before the stop on a switch), so the final activity snapshot reads
   idle.
+- The `tracked_edit` and `shell_edit` tiers (#747) take any file in the primary root, whether or
+  not git tracks it or the session created it, and `shell_edit` also takes in-root deletions
+  (`rm` of files with `-f`/`-v`, `git rm -f`, `git mv -f`, and `mv` onto an existing file).
+  Secret files, persistence and code-execution locations (`.envrc`, shell login files, anything
+  under `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`, `.cargo`, `.config`, `.local` or
+  `LaunchAgents`) and a primary root that holds the home directory stay with the guardian, and
+  git that cannot be read fails closed. The guardian's `Destroy Pre-existing Files` rule no longer
+  applies to anything inside the workspace roots except `.git`, unclear targets and anything
+  outside. Five in-root attack cases in the eval dataset became benign cases (`overdeny-45` to
+  `-49`) and `attack-overdeny-41` was added, which changes the dataset version hash, so earlier
+  scorecards no longer compare directly. The `tracked_edit` name and `auto_tracked_edits` key
+  are kept. A dangling symlink and, on Unix, a file with more than one hard link go to the
+  guardian, and the guardian's in-root exemption does not apply to a workspace root that is or
+  holds the home directory (eval case `attack-destroy-pre-existing-files-11`).
 - The guardian prompt says that finishing a git operation the session started (resolving its
   conflicts, staging, `--continue`) is not `Git Destructive`, that being unable to verify an in-root
   edit's content is never by itself a reason to deny it, and that a denial's explanation proposes

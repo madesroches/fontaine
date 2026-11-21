@@ -364,8 +364,11 @@ pub enum Tracking {
     Tracked,
     /// The path is inside the work tree but the index has no entry for it.
     Untracked,
-    /// No work tree encloses `root`, the path lies outside it, or git could not be read.
+    /// No work tree encloses `root`, or the path cannot be placed in it.
     Unknown,
+    /// Git could not be read: an unparseable configuration, a repository with no work tree or an
+    /// unreadable index. Callers fail closed on it.
+    Unreadable,
 }
 
 /// Looks `resolved` up in the index of the work tree that encloses `root`. Unlike
@@ -375,14 +378,16 @@ pub enum Tracking {
 /// intent-to-add entry hold no content git could restore. A path that does not exist yet is
 /// looked up through its canonical parent.
 pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
-    let Ok((repo, workdir)) = discover(root) else {
-        return Tracking::Unknown;
+    let (repo, workdir) = match discover(root) {
+        Ok(found) => found,
+        Err(Boundary::Unknown) => return Tracking::Unreadable,
+        Err(_) => return Tracking::Unknown,
     };
     let Some(relative) = index_relative(&workdir, resolved) else {
         return Tracking::Unknown;
     };
     let Ok(index) = repo.index_or_empty() else {
-        return Tracking::Unknown;
+        return Tracking::Unreadable;
     };
     if is_file_entry(&index, &relative) {
         Tracking::Tracked
@@ -408,7 +413,7 @@ fn index_relative(workdir: &Path, resolved: &Path) -> Option<BString> {
 /// For each of `paths`, whether git's index has an exact file entry for it, in the work tree
 /// that encloses `root`. A directory and the work-tree root are never tracked here: writing or
 /// extracting into one can overwrite files git does not hold. Opens the repository and its index
-/// once for all of them. `false` wherever [`tracking`] would say `Unknown`.
+/// once for all of them. `false` wherever [`tracking`] would not say `Tracked`.
 pub fn tracked_files(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
     if paths.is_empty() {
         return Vec::new();

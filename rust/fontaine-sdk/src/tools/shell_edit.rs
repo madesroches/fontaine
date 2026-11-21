@@ -1,5 +1,5 @@
 //! The classifier behind the `shell_edit` tier: whether a shell call is made only of read-only
-//! commands and in-root edits that git can undo, so `auto` need not ask the guardian.
+//! commands and in-root edits and deletions, so `auto` need not ask the guardian.
 //!
 //! The walk is over the parser's syntax tree and recognises a short list of constructs; anything
 //! else, however harmless, rejects the whole call and leaves it to the guardian. Every path the
@@ -137,6 +137,7 @@ impl Walk<'_> {
             "sed" => GNU_SED && self.sed(&argv[1..]),
             "mkdir" => self.mkdir(&argv[1..]),
             "mv" => self.mv(&argv[1..]),
+            "rm" => self.rm(&argv[1..]),
             "git" => self.git(argv),
             _ => self.read_only(argv, extras),
         }
@@ -279,6 +280,32 @@ impl Walk<'_> {
             })
     }
 
+    /// Only regular files: no recursion, no directory removal, no prompt, so every removed path
+    /// passes the per-path checks.
+    fn rm(&self, args: &[String]) -> bool {
+        let mut files = Vec::new();
+        let mut options_done = false;
+        for arg in args {
+            let arg = arg.as_str();
+            if options_done || !arg.starts_with('-') {
+                files.push(arg);
+            } else if arg == "--" {
+                options_done = true;
+            } else if let Some(name) = arg.strip_prefix("--") {
+                if !matches!(name, "force" | "verbose") {
+                    return false;
+                }
+            } else if arg.len() < 2 || !arg[1..].chars().all(|letter| matches!(letter, 'f' | 'v')) {
+                return false;
+            }
+        }
+        !files.is_empty()
+            && files.iter().all(|file| {
+                let path = self.abs(file);
+                !under_dot_git(&path) && self.check.edit_target(&path)
+            })
+    }
+
     fn mv(&self, args: &[String]) -> bool {
         let mut operands = Vec::new();
         let mut options_done = false;
@@ -405,7 +432,7 @@ impl Walk<'_> {
 
     fn git_rm(&self, args: &[String]) -> bool {
         let mut seen = Vec::new();
-        let Some(paths) = self.pathspecs(args, &['q'], &["cached"], &mut seen) else {
+        let Some(paths) = self.pathspecs(args, &['q', 'f'], &["cached", "force"], &mut seen) else {
             return false;
         };
         let cached = seen.iter().any(|flag| flag == "cached");
@@ -423,7 +450,7 @@ impl Walk<'_> {
 
     fn git_mv(&self, args: &[String]) -> bool {
         let mut seen = Vec::new();
-        let Some(paths) = self.pathspecs(args, &['v'], &[], &mut seen) else {
+        let Some(paths) = self.pathspecs(args, &['v', 'f'], &["force"], &mut seen) else {
             return false;
         };
         let [from, to] = paths.as_slice() else {
@@ -851,8 +878,15 @@ mod tests {
             "git add -u -v a.txt",
             "git add -- a.txt",
             "git rm a.txt",
+            "git rm -f a.txt",
+            "git rm --force a.txt",
             "git rm -q --cached a.txt b.txt",
             "git mv -v a.txt c.txt",
+            "git mv -f a.txt b.txt",
+            "rm a.txt",
+            "rm -f a.txt b.txt",
+            "rm -v -- a.txt",
+            "rm --force --verbose a.txt",
             "git commit -m msg",
             "git commit -m 'two words' -m 'second'",
             "git commit -am msg",
@@ -981,16 +1015,29 @@ mod tests {
             "git commit -C HEAD",
             "git commit -F /etc/passwd",
             "git commit -F -",
-            "git rm -f a.txt",
             "git rm -r src",
             "git rm -rf src",
+            "rm -r src",
+            "rm -R src",
+            "rm -d src",
+            "rm --recursive src",
+            "rm -i a.txt",
+            "rm --no-preserve-root a.txt",
+            "rm src",
+            "rm",
+            "rm -f",
+            "rm -",
+            "rm .git/x",
+            "rm $(ls)",
+            "rm *",
+            "rm missing.txt",
+            "rm a.txt && rm /tmp/x",
             "git rm src",
             "git rm --cached '.git*'",
             "git rm --cached ':/'",
             "git rm AGENTS.md",
             "git rm --cached .mcp.json",
             "git rm --cached",
-            "git mv -f a.txt b.txt",
             "git mv -k a.txt b.txt",
             "git mv a.txt",
             "git mv a.txt b.txt c.txt",
@@ -1033,7 +1080,6 @@ mod tests {
             "/usr/bin/git status",
             "./git status",
             // other commands
-            "rm a.txt",
             "rm -rf src",
             "touch a.txt",
             "cp a.txt b.txt",

@@ -935,9 +935,9 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 | `ask` | Rules that always prompt. | `[]` |
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
 | `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
-| `auto_tracked_edits` | In `auto`, edits to git-tracked files, new files and files the session created inside the primary root skip the guardian (after the floor). Project scope may only set `false`. | `true` |
+| `auto_tracked_edits` | In `auto`, edits to any file inside the primary root, tracked by git or not, skip the guardian (after the floor). Project scope may only set `false`. | `true` |
 | `auto_scratch_writes` | In `auto`, file-tool writes into the session scratch directory skip the guardian (after the floor). Project scope may only set `false`. | `true` |
-| `auto_shell_edits` | In `auto`, a shell call that Fontaine parses in full and that is made only of read-only commands and in-root edits or local git steps (`sed -i`, `mkdir`, `mv`, `git add`, `git commit`, `git rebase --continue` and the like) skips the guardian (after the floor). Project scope may only set `false`. See [the pipeline](permissions.md#the-pipeline). | `true` |
+| `auto_shell_edits` | In `auto`, a shell call that Fontaine parses in full and that is made only of read-only commands and in-root edits, deletions of files or local git steps (`sed -i`, `mkdir`, `mv`, `rm`, `git add`, `git commit`, `git rebase --continue` and the like) skips the guardian (after the floor). Project scope may only set `false`. See [the pipeline](permissions.md#the-pipeline). | `true` |
 
 `default_mode = "auto"` and `"afk"` load only from the user file and `--settings`. It is rejected from the shared
 project file and from `settings.local.toml`, trusted or not, because it loosens: those scopes accept

@@ -80,8 +80,8 @@ scanner = "off"                   # tool-result scanner: "off" | "pg2" | "llm" |
 default_mode = "auto"             # shipped default; config error before Phase 4 (default `manual`)
 deny = []                         # floor rules, every mode
 ask = []                          # always prompt, even in `auto`
-auto_tracked_edits = true         # `auto`: tracked/new/session-created file edits skip the guardian; project scope: false only
-auto_shell_edits = true           # `auto`: fully parsed in-root shell edits and local git steps skip the guardian; project scope: false only
+auto_tracked_edits = true         # `auto`: edits to any file in the primary root skip the guardian; project scope: false only
+auto_shell_edits = true           # `auto`: fully parsed in-root shell edits, deletions of files and local git steps skip the guardian; project scope: false only
 auto_scratch_writes = true        # `auto`: file-tool writes into scratch skip the guardian; project scope: false only
 allow = []                        # pre-approval rules, same grammar; user trust scopes only
                                   #   (user, untracked project-local, CLI); step 5a, after the
