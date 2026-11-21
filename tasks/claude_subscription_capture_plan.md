@@ -56,7 +56,10 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
   symlink, via `symlink_metadata`), create the file `<fontaine-session-id>-<short random token>.jsonl` with
   `owner_only::create_new` (`O_EXCL`, 0600; no symlink following since it is a fresh create), and
   create the `.bodies/` dir (below), and emit one `Warn` stating the path, that nothing is redacted,
-  and how to delete it.
+  and how to delete it. It runs once under the Capture's lock (or a `OnceLock`) and returns the same
+  paths to every caller: one `Arc<Cli>` serves root, guardian and subagent requests that can reach
+  first launch concurrently. A creation failure warns once through `Warn`, disables capture, and the
+  launch proceeds without `OTEL_LOG_RAW_API_BODIES` (never propagated as a launch error).
 - Concurrent conversations: one `Capture` and one file per `Cli`, shared by every conversation of
   the connection. A `Mutex` serialises appends; the capture keeps the previous-hash baseline and the
   request index per `translated.session_id` (a map inside `Capture`) and puts that id in each
@@ -82,10 +85,11 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
   index >= the length of the common prefix with the previous request's hashes, and `reassemble`
   returns the messages (not marker/reminder placement). If the new hash list does not extend the
   previous one, `diverged_at` is the index of the first differing frame (in delta mode frames from
-  there on are recorded). The first request records all frames.
-- `result`: `{kind:"result", session, index, at, usage, result}` (`session` and `index` from the
+  there on are recorded); if it is a strict prefix of the previous (shorter, no differing frame),
+  `diverged_at` is `new.len()`. The first request records all frames.
+- `result`: `{kind:"result", session, index, at, result}` (`session` and `index` from the
   handle `prepare` put on `Running`): the CLI's final `result` event
-  verbatim (usage included).
+  verbatim (usage is inside it).
 - Frames are stored as parsed JSON values via `serde_json` (`preserve_order` gives byte-stable
   replay). An empty thinking text with a
   signature serialises as `""` and survives unchanged.
@@ -101,19 +105,23 @@ When the switch is on, `Cli::environment` adds `OTEL_LOG_RAW_API_BODIES=file:<di
 is `<data_dir>/claude-capture/<file-stem>.bodies/`, created 0700 via
 `owner_only::create_dir` by `ensure_created()` (at the same lazy point as the file); the
 request-launch path passes the resolved `.bodies` dir into `Cli::environment`. Absence of output is non-fatal (verified manually, see Manual
-Verification). The mechanism is a bool on `launch`/`environment` (a request-launch variant used
-only by `transport.rs` `prepare`), so discovery, probe and reminder launches never get the
-variable.
+Verification). The mechanism is a separate `Cli::launch_request(scratch, args)` (calls `launch_with`
+internally with a request flag), called by `transport.rs` `prepare` (~line 218) instead of `launch`;
+`launch`/`launch_with` keep their signatures, so discovery, probe and reminder launches never get the
+variable. `command`/`environment` take the optional bodies dir via an internal options value, read
+from the `Cli`'s `Capture`.
 
 ### Reassemble and diff helper
 
 A dev example `rust/fontaine-sdk/examples/claude_capture_diff.rs`
-plus library functions: `capture::reassemble(path, index) -> Vec<Frame>` and `capture::diff(a, b)`
+plus library functions: `capture::reassemble(path, session, index) -> io::Result<Reassembled { frames: Vec<Frame>,
+diverged_at: Option<usize> }>` and `capture::diff(path, session, a_index, b_index)` (reads both and
+reports the later record's `diverged_at` first)
 (`mod.rs` declares `pub mod capture` with `reassemble` and `diff` `pub`, so the example can use
 them). `reassemble` returns the frames of a full record directly and replays deltas for delta
 records, honouring divergence markers. `diff`
 reports the divergence point first, then the first differing frame index and a JSON-path level diff
-of that frame. The example takes `<file> <index>` and prints the diff between request `index-1`
+of that frame. The example takes `<file> <session> <index>` and prints the diff between request `index-1`
 and `index`.
 
 ## Implementation Steps
@@ -121,14 +129,15 @@ and `index`.
 1. `capture.rs`: `Capture`, switch parsing, `ensure_created` (lazy directory/file/`.bodies`), warning, record writing,
    per-session baselines, full/delta/divergence logic, `reassemble`, `diff`.
 2. `cli.rs`: hold `Option<Arc<Capture>>`, attached by a builder/setter on `Cli` (not a new
-   `Cli::new` argument); add the request-launch bool to `launch_with` (which calls `Capture::ensure_created()` when
-   set) and the resolved `.bodies` dir to `environment` (adds the raw-bodies variable), default
-   false in `launch`; `transport.rs` `prepare` is the one caller
-   passing true; update the `cli.rs` test caller.
+   `Cli::new` argument); add `Cli::launch_request(scratch, args)` (calls `launch_with` with a request
+   flag, which calls `Capture::ensure_created()`); `command`/`environment` take the optional
+   `.bodies` dir via an internal options value from the `Cli`'s `Capture` (adds the raw-bodies
+   variable); `launch`/`launch_with` signatures and the `cli.rs` test caller are unchanged;
+   `transport.rs` `prepare` is the one `launch_request` caller.
 3. `mod.rs` `connect`: compute `session` first, read the switch from `ctx.env`, build the capture
    and attach it to the `Cli`.
 4. `transport.rs`: call `prints` pre-`apply` and record the request in `prepare` post-`apply`
-   (using the request-launch variant); add the
+   (launching via `Cli::launch_request`); add the
    capture handle and request index to `Running`; record the result in `stream` at
    `Event::Complete`.
 5. Example `claude_capture_diff.rs`.
@@ -137,9 +146,9 @@ and `index`.
 ## Files to Modify
 
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/{capture.rs (new), cli.rs, mod.rs,
-  transport.rs}`
+  transport.rs}` (`reminder.rs` not touched)
 - `rust/fontaine-sdk/examples/claude_capture_diff.rs` (new)
-- `docs/claude-subscription.md`, `docs/configuration.md` (env var table), `CHANGELOG.md`
+- `docs/claude-subscription.md`, `docs/configuration.md` (env var table, data-dir file table), `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Decisions
@@ -159,7 +168,8 @@ and `index`.
 
 - `docs/claude-subscription.md`: a "Capturing traffic" section with the limits, the warning, the
   file locations and how to delete them.
-- `docs/configuration.md`: the environment variable row.
+- `docs/configuration.md`: the environment variable row, and a `claude-capture/` row in the data-dir
+  file table (permissions 0700/0600, safe to delete).
 
 ## Testing Strategy
 
@@ -176,6 +186,10 @@ Unit tests in `capture/tests.rs` (no live CLI):
 - Two conversations (different `translated.session_id`) through one `Capture` keep separate
   baselines and indices; the baseline advances when a request is recorded, even if it is later cut
   or fails.
+- Concurrent first launch (several tasks calling `ensure_created()` at once): one file, one dir, one
+  warning, and the same paths returned to all callers.
+- Creation failure (e.g. unwritable data dir): one warning, capture disabled, the launch proceeds
+  without `OTEL_LOG_RAW_API_BODIES` and no launch error.
 - No file, directory or warning is created until the first request launch; `ensure_created()` then
   creates the file, `.bodies/` dir and warning before spawn.
 - A thinking block with empty text and a signature round-trips byte-for-byte through write and
