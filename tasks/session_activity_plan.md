@@ -22,7 +22,7 @@ The issue's file paths predate the SDK consolidation; the code now lives under
   `matcher_kind`, `handlers`, `project_scope`) lists 18 events. The runtime fires lifecycle events
   through `LifecycleHooks` (`core/user_hooks.rs`); `notify` (`:1836`) is the precedent for a
   fire-and-forget observational event (spawned on the tokio runtime, never awaited by the caller,
-  `discards_system_message` at `:599`). `core/agent/hooks.rs` is where the runtime decides when each
+  `discards_system_message` at `:596`). `core/agent/hooks.rs` is where the runtime decides when each
   one fires. `stop` is fired from `AgentRuntime::turn_ended`, called after `run_turn` returns
   (`fontaine-tui/src/ui/turn.rs:1592`, `run.rs:486`).
 - **Jobs.** `Jobs` (`tools/jobs.rs:793`) holds the registry behind one mutex
@@ -42,8 +42,9 @@ The issue's file paths predate the SDK consolidation; the code now lives under
   an `await`.
 - **Human waits.** `SessionState::wait_on_human(agent)` (`core/gate.rs:1779`) holds a counted
   guard and pokes the agent tree; `is_waiting(agent)` reads it. A child's `WaitingOnPermission`
-  status derives from it (`core/child_runner.rs:666`). Dialogs reaching it: permission prompts,
-  `ask_user` questions, MCP elicitation.
+  status derives from it (`core/child_runner.rs:666`). Only `core/permissions.rs:2293` (guardian
+  unavailable) and `:2874` (permission prompt) take it today; `ask_user` (`core/questions.rs`,
+  `HumanQuestions::ask`) and MCP elicitation (`tools/mcp/elicitation.rs`, `core/agent/mcp.rs`) do not.
 - **Turns.** `run_turn` (`core/turn.rs:264`) is the one entry for a root turn on every surface
   (TUI, headless, Claude-compat). It has no "a turn is running" state: the TUI keeps `app.running`
   and headless keeps its own loop. The end-of-turn work (`turn_ended`, goal evaluation,
@@ -90,8 +91,8 @@ definition (field names snake_case, `state` as `"active" | "waiting" | "idle"`).
    `pending_notifications`, `queued_prompts` is non-zero.
 3. else `idle`.
 
-Unattended runs (headless, AFK) never block on a human (permission asks resolve to deny), so they
-never report `waiting`. Excluded on purpose: idle wakeable subagents (their turn ended; they are
+Plain `-p` headless (`HumanChannel::Absent`) and AFK never block on a human (asks resolve to deny),
+so they never report `waiting`; Claude-compat and SDK hosts with an approver do, while the host decides. Excluded on purpose: idle wakeable subagents (their turn ended; they are
 woken by mail, and mail counts as pending), `/schedule` tasks and wake-ups (future work, already a
 separate status-line segment), and a goal waiting between check-ins.
 
@@ -103,10 +104,18 @@ no per-path hook, since each already changes the registry or tree and the next c
 `Sources` are `&Jobs`, `&AgentTree`, `&SessionState` (human waits), the steering queue, and the new
 turn counter below.
 
-**Read order is the false-idle fix.** `Shared::finish` records a job's end and posts its notice
-under the registry lock, so computing reads **jobs first, then the inbox**: a reader either sees
-the job running or sees it ended *and* its note queued. Reading the inbox first could see neither.
-This ordering is documented at the compute site and pinned by a test.
+**Read order is the false-idle fix:** jobs, then `running_agents`, then the turn counter, then the
+inbox, then the turn counter again; either counter read non-zero means `turn_running`.
+- `Shared::finish` records a job's end and posts its notice under the registry lock, so jobs are
+  read before the inbox: a reader sees the job running or sees it ended *and* its note queued.
+- Subagent reports are queued before the node leaves running (`agents/spawn.rs:557`,
+  `tree.finish`), so `running_agents` is read before the inbox.
+- `TurnClaim` is taken before the drain, so the counter is read after the inbox.
+- Goal-reminder (`core/agent/goal.rs:455` → `post_to_root`) and held-waiter job end
+  (`tools/jobs.rs` `WaitGuard::drop`, ~`:1257`) post to the inbox while a `TurnScope` is held and
+  drop it afterwards, so the counter is also read before the inbox.
+
+This ordering is documented at the compute site and pinned by a test per handoff.
 
 ### Turn accounting: `TurnScope` and `TurnClaim`
 
@@ -114,8 +123,9 @@ This ordering is documented at the compute site and pinned by a test.
 tokens bump it:
 
 - `TurnScope`: taken inside `run_turn` (so every surface is covered even if one forgets), and held
-  by the surfaces across `run_turn` **plus** `turn_ended`, goal evaluation and any `stop`
-  continuation, so the gap between a turn's answer and its end-of-turn hooks is not idle. Counter
+  by the surfaces around the whole turn loop (`Ui::turn`/`guarded_turn`, `run_one`/`continue_on_stop`),
+  so pre-turn compaction, usage-limit waits, `turn_ended`, goal evaluation and `stop`
+  continuation gaps are not idle. Counter
   based, so scopes nest. Dropped on interruption (the future is dropped at an await).
 - `TurnClaim`: taken by `AgentRuntime::notification_prompt()` **before** it drains the inbox and
   returned with the prompt (leak-proof RAII, released when the turn starts or the surface drops it
@@ -133,6 +143,10 @@ One task per `AgentRuntime`, spawned at runtime build, owns change detection and
 - Wakes on: a new public `Jobs::subscribe()` (wrapping the existing `watch`), `AgentTree::changed()`
   and `display_changed()` (`wait_on_human` already pokes the tree), the tracker's own `Notify`
   (turn counter, steering queue changes).
+- It registers every wake source before each compute (enable the `Notified` futures from
+  `AgentTree::changed()`/`display_changed()` and the tracker, mark the jobs watch seen), because
+  `AgentTree::changed` uses `notify_waiters` and stores no permit (precedent:
+  `fontaine-tui/src/ui/mod.rs:855-862`).
 - On each wake it recomputes, compares to the last published value ignoring `seq`, and if different
   increments `seq`, publishes on a `tokio::sync::watch<SessionActivity>` (what status line and
   tests read via `runtime.activity()`), and queues a hook delivery. **Deduplicated** by that
@@ -166,16 +180,19 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
   ordering and timing are untouched.
 - Teardown: the shutdown path (`core/agent/shutdown.rs`) terminates jobs, recomputes, and awaits
   one bounded `activity_changed` (reason `shutdown`) before `session_end`, because a fire-and-forget
-  task would be dropped with the runtime. The bound is the hook's own timeout. Headless exit
-  terminates jobs exactly as today and then emits the same final transition.
+  task would be dropped with the runtime. The bound is the hook's own timeout. `finish_final_shutdown`
+  (`core/agent/shutdown.rs:44-52`) runs `session_end` in a `tokio::join!` beside `jobs.wait_stopped`;
+  restructure it to await the job stop, recompute, deliver the shutdown transition, then `session_end`.
+  Every other exit does the same final-transition step: headless (`terminate_all` at
+  `run.rs:1121/1205/1240`, then `fire_session_end("other")` at `fontaine/src/headless.rs:291`),
+  Claude-compat (`claude_compat/mod.rs:362`), the embedded `Session` (`session.rs:777`) and the TUI
+  session switch (`fontaine-tui/src/lib.rs:727`, `session_end("resume")`).
 
 ### The status line
 
 `activity` joins the status-line JSON payload as the same `to_json()` object, read from
-`runtime.activity()` at render time. The TUI mirrors it into `app` in `draw()` (like
-`running_agents`); the `fontaine attach` wire struct (`remote/event.rs`) carries it with
-`#[serde(default)]` so older peers still decode. The Rune `StatuslineSnapshot` gains the typed
-field for future script accessors; exposing it in the Rune API is a follow-up (filed as an issue),
+`runtime.activity()` at render time, in `build_statusline_payload`
+(`fontaine-tui/src/ui/mod.rs:399-451`), which already holds the runtime. Rune accessor exposure is
 not part of this change.
 
 ## Implementation Steps
@@ -186,70 +203,81 @@ not part of this change.
 2. **Sources.** `Jobs::subscribe()`; `AgentTree::pending_notifications()` (root inbox plus the
    inboxes of running/idle subagents) and a "any child on permission" query beside `running_ids`;
    `SessionState::activity()` accessor; steering queue length source plus a change poke on
-   enqueue/dequeue.
-3. **Turn accounting wiring.** Take a `TurnScope` inside `run_turn`; hold an outer one across
-   `turn_ended` and goal evaluation at the two surface call sites (TUI `ui/turn.rs`, headless
-   `run.rs`) and Claude-compat; make `notification_prompt` take/return a `TurnClaim`.
+   enqueue/dequeue. Poke the tracker/tree from `take_notifications`, `discard_job_notifications`
+   and `discard_root_reminders` (`agents/tree.rs`), and from job registration/promotion
+   (`tools/jobs.rs` ~`:846-886`, `:956`), which notify nothing today. Take `state.wait_on_human(agent)`
+   around `HumanQuestions::ask` and the MCP elicitation prompt.
+3. **Turn accounting wiring.** Take a `TurnScope` inside `run_turn`; hold an outer one around the
+   whole turn loop in the TUI (`fontaine-tui/src/ui/turn.rs`, covering `turn_ended` at `:1592`) and
+   headless (`run_one`/`continue_on_stop`, covering `turn_ended` at `run.rs:331` and `:486`); add
+   scopes for TUI goal evaluation (`fontaine-tui/src/ui/goal.rs`), headless goal evaluation
+   (`run.rs:984`), `/compact` and `/btw` (`ui/commands/context.rs`) and `!` shell lines
+   (`ui/commands/workspace.rs`). Claude-compat runs through `run_session` and has no turn site. Make
+   `notification_prompt` take/return a `TurnClaim`; update its callers, including
+   `fontaine-sdk/tests/core_scanner.rs` and `tests/core_lsp.rs`.
 4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`),
    `AgentRuntime::activity()` (`watch::Receiver`), and the shutdown/clear reason overrides
    (`core/agent/shutdown.rs`, `clear_conversation`).
 5. **Hook plumbing.** `HookEvent::ActivityChanged` in every `match` and `ALL` (now 19),
    `MatcherKind::Values(["active","waiting","idle"])`, `COMMAND_HTTP`, `ProjectScope::Loads`,
-   `discards_system_message`; `LifecycleHooks::activity_changed`; the config catalog entry
-   (`core/config_catalog.rs`) and any hooks JSON/schema surface listing events; make sure
-   plugin/Claude-compat hook loading accepts the new name (and ignores it from Claude Code files
-   that cannot contain it).
-6. **Status line.** `activity` in the payload struct (`statusline/mod.rs`), `StatuslineSnapshot`
-   field, TUI `draw()` mirror, remote wire field.
-7. **Docs and Decisions** (below). File the Rune-accessor follow-up issue.
-8. `cargo fmt`, `clippy -D warnings`, `cargo test`, rustdoc, the choke-point test.
+   `discards_system_message`; `LifecycleHooks::activity_changed`; the config catalog row
+   `row!("hooks.activity_changed", …)` in `core/config_catalog.rs` and any hooks JSON/schema surface
+   listing events. Adding the event to `ALL` makes it registrable from plugins
+   (`core/plugins.rs:1285`) and SDK `initialize.hooks` (`claude_compat/hooks.rs:71`); document that in
+   `docs/plugins.md` and `docs/hooks.md`.
+6. **Status line.** `activity` in the payload struct (`statusline/mod.rs`), read from
+   `runtime.activity()` in `build_statusline_payload`.
+7. **Docs and Decisions** (below).
+8. `cargo fmt`, `clippy -D warnings`, `cargo test`, rustdoc.
 
 ## Files to Modify
 
 - New: `rust/fontaine-sdk/src/core/activity.rs`; `core.rs` (module)
-- `rust/fontaine-sdk/src/tools/jobs.rs` (`subscribe`), `agents/tree.rs` (queries)
+- `rust/fontaine-sdk/src/tools/jobs.rs` (`subscribe`, registration/promotion pokes), `agents/tree.rs`
+  (queries, drain pokes)
+- `rust/fontaine-sdk/src/core/questions.rs`, `tools/mcp/elicitation.rs`, `core/agent/mcp.rs`
+  (`wait_on_human`)
 - `rust/fontaine-sdk/src/core/gate.rs` (tracker on `SessionState`), `core/turn.rs` (`TurnScope`),
   `core/agent.rs` (`notification_prompt`, `activity()`, `clear_conversation`),
-  `core/agent/shutdown.rs`, `core/agent/build.rs` / `setup.rs` (monitor), `core/agent/hooks.rs`
+  `core/agent/shutdown.rs`, `core/agent/build.rs` / `setup.rs` (monitor), `core/agent/hooks.rs`,
+  `core/agent/goal.rs`, `session.rs`
 - `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `user_hooks.rs` (event + method)
-- `rust/fontaine-sdk/src/core/statusline/{mod,snapshot}.rs`, `run.rs`
-- `rust/fontaine-tui/src/ui/{mod,turn}.rs`, `statusbar.rs`, `remote/event.rs`
-- `rust/fontaine/src/claude_compat/mod.rs` (turn scope), `rust/fontaine/src/headless.rs` if needed
-- `docs/hooks.md`, `docs/configuration.md`, `docs/tui.md`, `docs/agents.md`; `CHANGELOG.md`;
+- `rust/fontaine-sdk/tests/core_scanner.rs`, `tests/core_lsp.rs` (`notification_prompt` callers)
+- `rust/fontaine-sdk/src/core/statusline/mod.rs`, `run.rs`
+- `rust/fontaine-tui/src/ui/{mod,turn,goal}.rs`, `ui/commands/{context,workspace}.rs`,
+  `fontaine-tui/src/lib.rs`
+- `rust/fontaine/src/claude_compat/mod.rs` (final transition), `rust/fontaine/src/headless.rs`
+- `docs/hooks.md`, `docs/configuration.md`, `docs/tui.md`, `docs/tools.md`, `docs/plugins.md`;
+  `CHANGELOG.md`;
   `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
 
-- **Derived snapshot over an event-sourced counter.** Mirroring every start/end/cancel path (what
-  the issue says consumers cannot do) is exactly what would drift; recomputing from the registries
-  makes every present and future path correct by construction.
-- **Own aggregate state over reusing `app.running`.** That flag drives interruption, queueing,
-  scheduling, spinner and timing; coupling would change all of them.
-- **`waiting` as its own state** over folding into `active`/`idle`: either fold would mislead a
-  scheduler (a stuck instance looks healthy or free).
-- **Observational hook over blocking.** No `prompt` handler, no decision output: it can never
-  force model spend or hold work.
 - **`TurnClaim` over a debounce/settle timer.** A timer makes idle detection probabilistic and
   tests time-dependent; an explicit claim is deterministic.
-- **Latest-wins hook delivery over a full queue.** Payloads are complete, so dropped intermediates
-  lose nothing and a slow hook cannot back up.
 
 ## Decisions
 
-(none yet)
+- 2026-11-21: new Fontaine-only `activity_changed` hook event, observational, `command`/`http` only.
+- 2026-11-21: state names are `active`, `waiting`, `idle`.
+- 2026-11-21: `waiting` takes precedence over `active`.
+- 2026-11-21: excluded from activity: idle wakeable subagents, `/schedule` tasks, goal check-ins.
+- 2026-11-21: `activity_changed` loads from project scope (cannot loosen anything, forces no model calls).
+- 2026-11-21: hook delivery is serial and latest-wins; each payload is the complete snapshot.
+- 2026-11-21: `activity_changed` is registrable from plugins and SDK `initialize.hooks`.
 
 ## Documentation
 
 - `docs/hooks.md`: the `activity_changed` row in the event table, matcher values, payload fields
   (`reason`, `previous_state`, `activity`), delivery semantics (background, serial, latest-wins,
-  teardown), what "active/waiting/idle" mean and what is excluded, and a scheduler example that
+  teardown), SDK/plugin registrability, what "active/waiting/idle" mean and what is excluded, and a scheduler example that
   hooks `idle`.
 - `docs/tui.md`: the `activity.*` rows in the status-line JSON table.
 - `docs/configuration.md`: add the event to the hook list at `:986` and to project-scope notes.
-- `docs/agents.md`: one line that `stop` is not idleness and points to the hook, in the
-  background-jobs section.
-- Master plan `## Decisions` (Extensibility / TUI subsections): the lines listed under Decisions to
-  record at ship time. `CHANGELOG.md` entry.
+- `docs/tools.md` "## Background jobs": one line that `stop` is not idleness and points to the hook.
+- `docs/plugins.md`: plugins can register `activity_changed`.
+- Master plan `## Decisions` (Extensibility / TUI subsections): the lines in this plan's Decisions.
+  `CHANGELOG.md` entry, noting the `HookEvent` variant addition (exhaustive stable enum) as breaking.
 
 ## Testing Strategy
 
@@ -263,12 +291,22 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
 - Timeout-promoted foreground command → active the same way.
 - Several jobs and agents → idle only after the last settles **and** the last notification is
   delivered and its turn finishes; the final-job-ends → notification-turn handoff never reports
-  idle (read-order test with the registry lock, plus a `TurnClaim` test that drains the inbox,
-  awaits, then starts the turn, sampling at every step).
+  idle (read-order tests pinning each handoff: job end, held-waiter interruption, subagent
+  report; plus a `TurnClaim` test that drains the inbox, awaits, then starts the turn, sampling at
+  every step).
+- Wake sources: a wake arriving between register and compute is not lost; `take_notifications`,
+  `discard_job_notifications`, `discard_root_reminders`, and job registration/promotion each
+  republish.
+- Per-site turn scopes: each of the TUI turn loop, headless `run_one`/`continue_on_stop`, TUI and
+  headless goal evaluation, `/compact`, `/btw` and `!` shell lines holds a scope across the whole
+  site (sampled never idle mid-site).
+- Shutdown/exit: the final transition is delivered after job stop and before `session_end` at
+  shutdown, headless, Claude-compat, embedded `Session` and TUI session switch.
 - Cancellation paths: model `job_cancel` (no note posted), panel `kill_by_user`, natural exit with
   completion consumed through `job_output`, `/clear` (`end_jobs` + discard), shutdown, each
   updating the snapshot with the right reason.
-- Waiting: a permission prompt (root and subagent) sets `waiting`; answering restores the previous
+- Waiting: a permission prompt, an `ask_user` question and an MCP elicitation prompt (root and
+  subagent) each set `waiting`; answering restores the previous
   state; a cancelled prompt drops it (guard).
 - Monitor: dedup (a burst returning to the same state publishes nothing), `seq` monotonic,
   latest-wins hook delivery with a slow hook, session_id carried.
@@ -276,10 +314,8 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   state, project-scope load, payload fields, system message discarded.
 - Regression pins: `stop` still fires at the same point with the same payload (existing hook
   tests), subagent idle/wake tests unchanged, headless integration tests still prove running jobs
-  are terminated at run end, and a TUI test shows `app.running`/queueing untouched.
-- Status line: payload includes `activity` identical to the hook object; remote wire decodes an old
-  peer with the field absent.
-- Choke point: a test that every root-turn path goes through `run_turn` and thus a `TurnScope`.
+  are terminated at run end.
+- Status line: payload includes `activity` identical to the hook object.
 
 ## Manual Verification
 
@@ -291,5 +327,4 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
 
 ## Open Questions
 
-None the code cannot settle; the choices above (state names, `waiting` precedence, excluded
-sources) are recorded as Decisions at ship time.
+None the code cannot settle; the choices above are recorded in `## Decisions`.
