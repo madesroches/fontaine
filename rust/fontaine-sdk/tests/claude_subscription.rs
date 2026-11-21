@@ -1983,3 +1983,95 @@ async fn a_search_the_request_did_not_offer_is_refused() {
         "{error}"
     );
 }
+
+// ---- opt-in capture ---------------------------------------------------------------------------
+
+fn capture_files(claude: &Claude) -> Vec<PathBuf> {
+    let dir = claude.w.data.join("claude-capture");
+    std::fs::read_dir(dir)
+        .map(|entries| entries.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn the_capture_records_requests_and_results_only_when_asked() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "a"}, {"text": "b"}]}));
+    claude.set_env("FONTAINE_CLAUDE_CAPTURE", "1");
+    let handle = main_handle(&claude).await;
+    assert!(
+        capture_files(&claude).is_empty(),
+        "nothing before a request"
+    );
+    for users in [1, 2] {
+        handle
+            .completion
+            .call(tagged_conversation("capture-on", users))
+            .await
+            .unwrap();
+    }
+    let files = capture_files(&claude);
+    let log = files
+        .iter()
+        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .expect("a capture file");
+    let records: Vec<Value> = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let kinds: Vec<_> = records
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["request", "result", "request", "result"]);
+    assert_eq!(records[2]["index"], 1);
+    assert_eq!(records[2]["diverged_at"], Value::Null);
+    assert_eq!(records[1]["result"]["type"], "result");
+    let session = records[0]["session"].as_str().unwrap();
+    let reassembled =
+        fontaine_sdk::core::providers::claude_subscription::capture::reassemble(log, session, 1)
+            .unwrap();
+    assert_eq!(reassembled.frames.len(), 3);
+
+    // Only the request launches carry the CLI's raw-body variable.
+    for invocation in claude.invocations() {
+        let has = invocation["env"]
+            .as_object()
+            .unwrap()
+            .contains_key("OTEL_LOG_RAW_API_BODIES");
+        assert_eq!(has, argv(&invocation).contains(&"--model".to_string()));
+    }
+    assert!(!claude.model_runs().is_empty());
+}
+
+#[test]
+fn a_project_scope_cannot_carry_the_capture_variable() {
+    let claude = Claude::new();
+    claude
+        .w
+        .project_file("[env]\nFONTAINE_CLAUDE_CAPTURE = \"1\"\n");
+    let error = claude.w.load().map(|_| ()).unwrap_err().to_string();
+    assert!(error.contains("user-trust scopes"), "{error}");
+}
+
+#[tokio::test]
+async fn the_capture_stays_off_when_the_process_environment_lacks_the_variable() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let handle = main_handle(&claude).await;
+    handle
+        .completion
+        .call(CompletionRequest::new("hi").max_tokens(16))
+        .await
+        .unwrap();
+    assert!(capture_files(&claude).is_empty());
+    for invocation in claude.invocations() {
+        assert!(
+            !invocation["env"]
+                .as_object()
+                .unwrap()
+                .contains_key("OTEL_LOG_RAW_API_BODIES")
+        );
+    }
+}

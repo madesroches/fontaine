@@ -32,6 +32,7 @@ use crate::core::quota::QuotaSource;
 use crate::tools::lock::{read, write};
 use usage::Usage;
 
+pub mod capture;
 pub mod cli;
 mod context;
 pub mod inventory;
@@ -288,6 +289,10 @@ impl Provider for ClaudeSubscription {
                 crate::tools::error_chain::chain(&e)
             )
         })?;
+        let session = ctx
+            .session_id
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
+        let capture = capture::Capture::from_env(&*ctx.env, &data_dir, &session, ctx.warn.clone());
         let cli = Cli::new(
             ctx.account.cli_path.clone(),
             ctx.account.claude_config_dir.clone(),
@@ -295,11 +300,9 @@ impl Provider for ClaudeSubscription {
             ctx.env.clone(),
             timeouts,
             ctx.warn.clone(),
-        );
+        )
+        .with_capture(capture);
         prepare_workdir(&data_dir, cli.workdir())?;
-        let session = ctx
-            .session_id
-            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
         let inventory = InventoryCommand::current_exe().map_err(|e| {
             format!(
                 "cannot locate the fontaine executable for model discovery: {}",

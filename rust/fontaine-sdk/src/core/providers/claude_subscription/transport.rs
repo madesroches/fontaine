@@ -19,6 +19,7 @@ use rig_core::providers::anthropic::Messages;
 use rig_core::wire::{Body, Encoded, WireFrame};
 use serde_json::json;
 
+use super::capture::Handle as CaptureHandle;
 use super::cli::{
     ChildFiles, Cli, CliChild, ModelRow, ReadFail, Scratch, fixed_args, initialize_id,
     initialize_request, scratch_error,
@@ -175,7 +176,7 @@ impl ClaudeTransport {
                 prepared
             }
         };
-        let (mut child, mut reader, sent, query) = prepared?;
+        let (mut child, mut reader, sent, query, capture) = prepared?;
 
         let idle = self.cli.timeouts.read_idle;
         reader.expect_response();
@@ -188,6 +189,7 @@ impl ClaudeTransport {
                 idle,
                 pending: VecDeque::new(),
                 sent: Some(sent),
+                capture,
                 warn: self.cli.warn().clone(),
                 verdicts: self.cli.verdicts().clone(),
             })
@@ -202,7 +204,7 @@ impl ClaudeTransport {
     async fn prepare(
         &self,
         mut translated: Translated,
-    ) -> Result<(CliChild, Reader, Sent, Frame), Failure> {
+    ) -> Result<(CliChild, Reader, Sent, Frame, Option<CaptureHandle>), Failure> {
         let selection = &*self.selection;
         let scratch = Scratch::new(self.cli.warn().clone()).map_err(scratch_failed)?;
         let files = self
@@ -215,7 +217,7 @@ impl ClaudeTransport {
             translated.effort.as_deref(),
         );
         let idle = self.cli.timeouts.read_idle;
-        let mut child = self.cli.launch(scratch, args, true).map_err(provider)?;
+        let mut child = self.cli.launch_request(scratch, args).map_err(provider)?;
         let mut reader = Reader::new(
             Expect {
                 models: vec![selection.canonical.clone(), selection.alias.clone()],
@@ -251,6 +253,11 @@ impl ClaudeTransport {
             }
             _ => None,
         };
+        let pre_frames = self
+            .cli
+            .traffic_capture()
+            .filter(|capture| capture.wants_pre_frames())
+            .map(|_| translated.frames.clone());
         let layout = context::layout(&listing.context, learned.as_ref(), self.cli.verdicts());
         context::apply(
             &mut translated.frames,
@@ -258,6 +265,14 @@ impl ClaudeTransport {
             learned.as_ref(),
             layout,
         );
+        let capture = self.cli.traffic_capture().map(|capture| {
+            capture.record_request(
+                &translated.session_id,
+                &prints,
+                pre_frames.as_deref(),
+                &translated.frames,
+            )
+        });
         let sent = Sent::new(
             &translated.session_id,
             listing.context.version,
@@ -302,7 +317,7 @@ impl ClaudeTransport {
                 }
             }
         }
-        Ok((child, reader, sent, query))
+        Ok((child, reader, sent, query, capture))
     }
 
     fn write_files(
@@ -432,6 +447,7 @@ struct Running {
     pending: VecDeque<WireFrame>,
     /// The request as sent, until its result is recorded.
     sent: Option<Sent>,
+    capture: Option<CaptureHandle>,
     warn: Warn,
     verdicts: Arc<Verdicts>,
 }
@@ -497,6 +513,11 @@ fn stream(
                     }
                     // A cut response has no result to cross-check, so the cache self-check
                     // drops its record instead of reading a missing result as evidence.
+                    if matches!(event, Event::Complete)
+                        && let Some(capture) = running.capture.take()
+                    {
+                        capture.record_result(&line);
+                    }
                     let cache_usage = match event {
                         Event::Complete => running.reader.cache_usage(),
                         _ => None,

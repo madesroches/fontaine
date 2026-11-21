@@ -293,6 +293,52 @@ loopback interface only): it goes to the same endpoint, and the
 adapter keeps it in memory for the request only, never in a log, the ledger or an error. The cost
 is about 170 tokens of context per user message, about 17000 tokens at 100 tool calls.
 
+### Capturing traffic
+
+To see why a replayed request missed the cache, set `FONTAINE_CLAUDE_CAPTURE` in the environment
+of the process that runs Fontaine. It is for development and is off unless set:
+
+| Value | Records |
+|---|---|
+| unset, empty, `0` | nothing |
+| `1`, `full` | each request's complete frame list as sent, cache marker and reminder included |
+| `delta` | only the messages that are new since the conversation's previous request |
+
+Any other value is off, with one warning that names the accepted ones. There is no config key at
+any scope, and `--debug-file` and `FONTAINE_LOG` never enable it, so a shared project file cannot
+turn it on.
+
+Nothing is created until the first request. Then Fontaine creates
+`<data dir>/claude-capture/<session>-<token>.jsonl` (the directory 0700, the file 0600), one file
+per process shared by every conversation of its connection (the root agent, the guardian and
+subagents), and warns once with its path. **The file is not redacted**: it holds every prompt, file
+content and tool result in the frames, plus the CLI's result events. Nothing is exported: it never
+reaches telemetry, the ledger or a remote device. If the files cannot be created or written, one
+warning is shown, the capture stops and the request goes on. Delete the whole
+`<data dir>/claude-capture/` directory when you are done.
+
+Each line is a `request` record (the conversation's session, a request index, a timestamp, the
+mode, a hash per frame taken before the cache layout, `diverged_at` and the frames) or a `result`
+record (the CLI's final `result` event, verbatim, with its usage). The hashes name the messages and
+not their layout, which moves the cache marker between requests, so `diverged_at` is `null` while a
+request extends the previous one, the index of the first changed message when history was edited,
+and the request's length when it is shorter. A `delta` record shows messages only, not where the
+marker or reminder sat.
+
+The capture also sets `OTEL_LOG_RAW_API_BODIES` for the CLI of each request, pointing at a
+`<name>.bodies/` directory (0700) beside the file, so the CLI's own raw-body capture lands there.
+That is an undocumented CLI feature that may write nothing and that redacts thinking text; an empty
+directory is not an error. Discovery, login probes and the reminder probe never get the variable.
+
+`reassemble` and `diff` in `fontaine_sdk::core::providers::claude_subscription::capture` rebuild a
+request's frames and compare two. The example prints the diff between request `index - 1` and
+`index` (the divergence point first, then the first differing frame and the JSON paths that changed
+in it):
+
+```sh
+cargo run -p fontaine-sdk --example claude_capture_diff -- <file> <session> <index>
+```
+
 ### Checking cache usage
 
 A cache miss changes no output, only usage, so the adapter's cache write is measured against

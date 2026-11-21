@@ -22,6 +22,13 @@ All notable changes are recorded here. The format follows
   `(no shell, no edit tools)` for `explore` and `(shell, edit tools)` for `worker`, computed from
   the type's tools, so the model stops sending shell tasks to a type that has no shell. The
   built-in `explore` description now says commands belong on `reviewer` or `worker`.
+- An opt-in capture of `claude-subscription` traffic for diagnosing cache misses (#737):
+  `FONTAINE_CLAUDE_CAPTURE=1` (or `full`, or `delta` for new messages only) writes the stream-json
+  frames sent to the CLI and the result events it returns to an owner-only file under
+  `<data dir>/claude-capture/`, unredacted, with one warning when it is created. It also points the
+  CLI's own raw-body capture at a private directory beside it. Nothing is exported, no config key
+  enables it, and the `claude_capture_diff` example reassembles two requests and diffs them. See
+  `docs/claude-subscription.md`.
 - `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
   process, per CLI version and account, a short probe launch points the CLI at a loopback listener
   that captures the reminder and answers with a canned reply, so no model is called and nothing
