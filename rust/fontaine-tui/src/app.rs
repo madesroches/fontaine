@@ -278,7 +278,7 @@ pub struct App {
     /// the status bar until the next input event. Kept apart from `refusal`, which shows only
     /// while a turn runs.
     pub attach_notice: Option<String>,
-    /// The screen wrote transcript rows into scrollback while the agents panel covered the live
+    /// The screen wrote transcript rows into scrollback while an overlay covered the live
     /// area, which leaves the last messages out of sight when it closes.
     pub committed_under_overlay: bool,
     /// The agents listed below the status line.
@@ -1519,12 +1519,27 @@ impl App {
         self.ticket_prompt.is_some() || self.covered_by_other_than_ticket()
     }
 
+    /// Whether a one-off dialog covers the live area. The per-call dialogs are left out: closing
+    /// one purges scrollback and reprints, which would happen on nearly every approval.
+    /// A one-off dialog counts even with a per-call dialog pending: it is drawn ahead of it. The
+    /// transcript view is the exception to "drawn": it is hidden while one is pending, yet counts.
+    pub(crate) fn overlay_open(&self) -> bool {
+        self.ticket_prompt.is_some()
+            || self.one_off_other_than_ticket()
+            || self.plugin_prompt.is_some()
+            || self.setup_composition.is_some()
+    }
+
     /// Whether an overlay other than the ticket dialog has the keyboard.
     pub(crate) fn covered_by_other_than_ticket(&self) -> bool {
         self.approval.is_some()
             || !self.questions.is_empty()
             || !self.elicitations.is_empty()
-            || self.denied.is_some()
+            || self.one_off_other_than_ticket()
+    }
+
+    fn one_off_other_than_ticket(&self) -> bool {
+        self.denied.is_some()
             || self.unavailable.is_some()
             || self.usage_pause_prompt.is_some()
             || self.server.is_some()

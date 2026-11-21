@@ -411,6 +411,8 @@ pub struct Screen<B: Backend + Anchor> {
     /// The terminal's size when the live area was last laid out.
     size: Size,
     notifier: Notifier,
+    /// An overlay covered the live area when the previous frame was drawn.
+    overlay_was_open: bool,
 }
 
 impl<B: Backend + Anchor> Screen<B> {
@@ -432,6 +434,7 @@ impl<B: Backend + Anchor> Screen<B> {
             repaint: false,
             size,
             notifier: Notifier::new(NotifyMethod::Off),
+            overlay_was_open: false,
         })
     }
 
@@ -467,6 +470,16 @@ impl<B: Backend + Anchor> Screen<B> {
     }
 
     fn draw_frame(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
+        // Rows committed while a dialog covered the live area leave a gap above the input once it
+        // closes, so the transcript is written again. Set directly rather than through
+        // `App::view`, which would also unfocus the agent list.
+        let overlay_open = app.overlay_open();
+        if mem::replace(&mut self.overlay_was_open, overlay_open)
+            && !overlay_open
+            && mem::take(&mut app.committed_under_overlay)
+        {
+            app.reprint = true;
+        }
         // ratatui's own resize of an inline viewport erases from the viewport's top (the whole
         // screen when it narrows), and tmux moves what is erased into its history, where the old
         // live area stays as a copy above the new one; the terminal's reflow scrambles the old
@@ -496,7 +509,7 @@ impl<B: Backend + Anchor> Screen<B> {
             let over = (held + chrome).saturating_sub(usize::from(terminal_height));
             let (shown, theme) = app.shown_with_theme();
             let released = shown.commit_within(columns, theme, over);
-            if !released.is_empty() && (app.agents.is_some() || app.transcript_view.is_some()) {
+            if !released.is_empty() && app.overlay_open() {
                 app.committed_under_overlay = true;
             }
             lines.extend(released);
@@ -2259,6 +2272,133 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert!(!app.reprint);
+    }
+
+    fn tall_transcript(screen: &mut Screen<TestBackend>, app: &mut App) {
+        for i in 0..12 {
+            app.transcript.notice(format!("n{i}"));
+        }
+        screen.render(app).unwrap();
+    }
+
+    fn assert_each_note_once(screen: &Screen<TestBackend>) {
+        let visible = rows(screen.backend().buffer());
+        assert!(
+            visible.iter().any(|row| row.contains("n11")),
+            "the last message is on the visible rows: {visible:?}"
+        );
+        let all = nonblank(everything(screen));
+        for i in 0..12 {
+            let text = format!("· n{i}");
+            let count = all.iter().filter(|row| **row == text).count();
+            assert_eq!(count, 1, "{text}: {all:?}");
+        }
+    }
+
+    fn ticket() -> crate::ticket_prompt::TicketPrompt {
+        crate::ticket_prompt::TicketPrompt::new(
+            "ticket-text".into(),
+            "qr".repeat(40),
+            "10 minutes".into(),
+        )
+    }
+
+    #[test]
+    fn issue_740_closing_the_ticket_dialog_after_a_commit_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        app.begin_ticket(ticket());
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        app.ticket_prompt = None;
+        screen.render(&mut app).unwrap();
+        assert_each_note_once(&screen);
+    }
+
+    #[test]
+    fn issue_740_a_pairing_prompt_replacing_the_ticket_dialog_reprints_once_answered() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        app.begin_ticket(ticket());
+        screen.render(&mut app).unwrap();
+        app.ticket_prompt = None;
+        app.begin_pairing(crate::guardian_prompt::pairing("node", "phone"));
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay, "no gap to close yet");
+        app.pairing_prompt = None;
+        screen.render(&mut app).unwrap();
+        assert_each_note_once(&screen);
+    }
+
+    #[test]
+    fn a_dialog_that_committed_nothing_does_not_reprint() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        app.transcript.notice("only");
+        screen.render(&mut app).unwrap();
+        app.begin_pairing(crate::guardian_prompt::pairing("node", "phone"));
+        screen.render(&mut app).unwrap();
+        app.pairing_prompt = None;
+        screen.render(&mut app).unwrap();
+        assert!(!app.reprint);
+        assert!(!app.committed_under_overlay);
+    }
+
+    #[test]
+    fn answering_an_approval_over_a_long_transcript_does_not_reprint() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        screen.render(&mut app).unwrap();
+        assert!(!app.committed_under_overlay);
+        assert!(
+            !nonblank(rows(screen.backend().scrollback())).is_empty(),
+            "the approval forced rows into scrollback"
+        );
+        app.approval = None;
+        screen.render(&mut app).unwrap();
+        assert!(!app.reprint);
+    }
+
+    #[test]
+    fn closing_the_agents_panel_over_a_pending_approval_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        let mut panel = crate::agents_panel::AgentsPanel::new();
+        panel.set_rows((1..=6).map(panel_row).collect());
+        app.agents = Some(panel);
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        screen.render(&mut app).unwrap();
+        assert!(app.approval.is_some());
+        assert_each_note_once(&screen);
+    }
+
+    #[test]
+    fn closing_the_ticket_dialog_over_a_pending_approval_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        app.begin_ticket(ticket());
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        app.ticket_prompt = None;
+        screen.render(&mut app).unwrap();
+        assert!(app.approval.is_some());
+        assert_each_note_once(&screen);
     }
 
     fn contains_in_order(haystack: &[u8], needles: &[&[u8]]) -> bool {
