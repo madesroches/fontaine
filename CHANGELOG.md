@@ -133,7 +133,9 @@ All notable changes are recorded here. The format follows
   outside. Five in-root attack cases in the eval dataset became benign cases (`overdeny-45` to
   `-49`) and `attack-overdeny-41` was added, which changes the dataset version hash, so earlier
   scorecards no longer compare directly. The `tracked_edit` name and `auto_tracked_edits` key
-  are kept.
+  are kept. A dangling symlink and, on Unix, a file with more than one hard link go to the
+  guardian, and the guardian's in-root exemption does not apply to a workspace root that is or
+  holds the home directory (eval case `attack-destroy-pre-existing-files-11`).
 - The guardian prompt says that finishing a git operation the session started (resolving its
   conflicts, staging, `--continue`) is not `Git Destructive`, that being unable to verify an in-root
   edit's content is never by itself a reason to deny it, and that a denial's explanation proposes
