@@ -155,7 +155,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      verdict;
    - `git add` of named files (or `-u`), `git rm` and `git mv` without `-f`, `git commit` without
      `--amend` or `--no-verify`, and `git rebase`, `merge`, `cherry-pick` or `revert` with
-     `--continue`, optionally with `GIT_EDITOR=true` in front; the commit and `--continue` skip the
+     `--continue`, optionally with `GIT_EDITOR=true` in front; the git steps skip the
      guardian only when the repository has no installed hook (anything in its hooks directory that
      is not a `.sample` file), because a hook can run files edited in the same call;
    - `;`, `&&`, `||` and `!` between them, a pipe of read-only commands, and output redirects or

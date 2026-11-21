@@ -254,7 +254,6 @@ async fn a_commit_or_continue_skips_the_guardian_only_without_an_installed_hook(
     write(&hooks.join("pre-commit"), "#!/bin/sh\nexit 0\n");
     write(&rig.work().join("a.txt"), "c\n");
     assert!(judged(&rig, &fake, "git add a.txt && git commit -m x").await);
-    assert!(skips(&rig, &fake, "git add a.txt").await);
 
     let fake = fake_guardian(allow_verdict());
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
@@ -270,6 +269,21 @@ async fn a_commit_or_continue_skips_the_guardian_only_without_an_installed_hook(
         )
         .await
     );
+}
+
+#[tokio::test]
+async fn a_git_add_skips_the_guardian_only_without_an_installed_hook() {
+    let (rig, fake) = repo_rig(&["f", "g"]);
+    let hooks = rig.work().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    write(&hooks.join("post-index-change.sample"), "#!/bin/sh\n");
+    write(&rig.work().join("f"), "b\n");
+    assert!(skips(&rig, &fake, "git add f").await);
+    write(&hooks.join("post-index-change"), "#!/bin/sh\nexit 0\n");
+    write(&rig.work().join("f"), "c\n");
+    assert!(judged(&rig, &fake, "git add f").await);
+    assert!(judged(&rig, &fake, "git mv f h").await);
+    assert!(judged(&rig, &fake, "git rm g").await);
 }
 
 #[tokio::test]

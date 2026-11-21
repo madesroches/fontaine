@@ -338,9 +338,11 @@ impl Walk<'_> {
         }
         let args = &argv[2..];
         match sub {
-            "add" => self.git_add(args),
-            "rm" => self.git_rm(args),
-            "mv" => self.git_mv(args),
+            // Staging runs `post-index-change`, so every verb that touches the index needs the
+            // same hook check as a commit.
+            "add" => self.git_add(args) && self.check.hooks_inactive(),
+            "rm" => self.git_rm(args) && self.check.hooks_inactive(),
+            "mv" => self.git_mv(args) && self.check.hooks_inactive(),
             "commit" => self.git_commit(args) && self.check.hooks_inactive(),
             op if CONTINUABLE.contains(&op) => {
                 args == ["--continue"] && self.check.hooks_inactive()
