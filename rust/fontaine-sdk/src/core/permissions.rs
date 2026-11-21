@@ -1902,6 +1902,13 @@ impl PermissionPipeline {
         if std::fs::symlink_metadata(resolved).is_ok_and(|meta| meta.is_symlink()) {
             return None;
         }
+        // Another name for the inode may sit outside the root, and a write changes the inode.
+        #[cfg(unix)]
+        if std::fs::symlink_metadata(resolved)
+            .is_ok_and(|meta| meta.is_file() && std::os::unix::fs::MetadataExt::nlink(&meta) > 1)
+        {
+            return None;
+        }
         match trust::tracking(primary, resolved) {
             Tracking::Unreadable => return None,
             Tracking::Tracked => return Some(TargetState::Tracked),

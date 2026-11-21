@@ -495,6 +495,20 @@ async fn paths_that_reach_past_the_primary_root_or_a_symlink_go_to_the_guardian(
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hard_link_to_a_file_outside_the_root_goes_to_the_guardian() {
+    let (rig, fake) = repo_rig(&["a.txt"]);
+    let outside = tempfile::tempdir().unwrap();
+    write(&outside.path().join("o.txt"), "a\n");
+    std::fs::hard_link(outside.path().join("o.txt"), rig.work().join("linked.txt")).unwrap();
+    assert!(judged(&rig, &fake, "cat >> linked.txt <<'EOF'\nmore\nEOF").await);
+    assert!(judged(&rig, &fake, "sed -i 's/a/b/' linked.txt").await);
+    git(rig.work(), &["add", "linked.txt"]);
+    assert!(judged(&rig, &fake, "cat >> linked.txt <<'EOF'\nmore\nEOF").await);
+    assert!(skips(&rig, &fake, "cat >> a.txt <<'EOF'\nmore\nEOF").await);
+}
+
 fn git_operation_of(rig: &Rig) -> Option<fontaine_sdk::guardian::GitOperation> {
     fontaine_sdk::core::adjudication::build(
         &rig.state,
