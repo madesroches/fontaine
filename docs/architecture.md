@@ -157,7 +157,7 @@ decision before anything else sees it:
  4. shell pre-classifier: one literal simple command of the curated set -> allow
  5. allow rules (user trust scopes, session grants, always-allow rules) -> allow
  6. `auto` only: scratch write (file tool inside the session scratch directory) -> allow, then
-    tracked edit (file tool on a tracked, new or session-created file in the primary root) -> allow
+    workspace edit (file tool on any file in the primary root, tracked or not) -> allow
  6b. any other `agent` spawn (never guardian-judged): auto allows (`spawn`), manual / acceptEdits
     ask, dontAsk denies
  6c. `send_message` / `board_update` (never guardian-judged): allow in every mode (`coordination`)

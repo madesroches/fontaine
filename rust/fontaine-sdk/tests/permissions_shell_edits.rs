@@ -111,10 +111,100 @@ async fn each_local_verb_in_its_allowed_form_skips_the_guardian() {
 }
 
 #[tokio::test]
-async fn an_untracked_file_that_predates_the_session_goes_to_the_guardian() {
+async fn an_untracked_file_that_predates_the_session_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt"]);
     write(&rig.work().join("untracked.txt"), "a\n");
-    assert!(judged(&rig, &fake, "sed -i 's/a/b/' untracked.txt").await);
+    assert!(skips(&rig, &fake, "sed -i 's/a/b/' untracked.txt").await);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn in_root_deletions_and_forced_git_steps_skip_the_guardian() {
+    let (rig, fake) = repo_rig(&["tracked.rs", "modified.rs", "a.md", "gone.rs"]);
+    write(&rig.work().join("untracked.txt"), "a\n");
+    write(&rig.work().join("b.md"), "b\n");
+    write(&rig.work().join("modified.rs"), "changed\n");
+    std::fs::remove_file(rig.work().join("gone.rs")).unwrap();
+    for command in [
+        "rm untracked.txt",
+        "rm tracked.rs",
+        "git rm --cached gone.rs",
+        "git rm -f modified.rs",
+        "mv a.md b.md",
+    ] {
+        assert!(skips(&rig, &fake, command).await, "{command}");
+    }
+    write(&rig.work().join("a.md"), "a\n");
+    write(&rig.work().join("c.md"), "c\n");
+    git(rig.work(), &["add", "a.md", "c.md"]);
+    assert!(skips(&rig, &fake, "git mv -f a.md c.md").await);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn an_edit_and_a_deletion_in_a_root_with_no_repository_skip_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
+    write(&rig.work().join("a.txt"), "a\n");
+    write(&rig.work().join("b.txt"), "a\n");
+    assert!(skips(&rig, &fake, "sed -i 's/a/b/' a.txt").await);
+    assert!(skips(&rig, &fake, "rm b.txt").await);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn deletions_the_classifier_or_the_floor_will_not_vouch_for_go_to_the_guardian() {
+    let (rig, fake) = repo_rig(&["a.txt", "dir/x.txt", "AGENTS.md", ".githooks/pre-commit"]);
+    for path in [".env", ".envrc", ".ssh/config"] {
+        write(&rig.work().join(path), "a\n");
+    }
+    for command in [
+        "rm -r dir",
+        "rm .env",
+        "rm .envrc",
+        "sed -i 's/a/b/' .ssh/config",
+        "rm AGENTS.md",
+        "rm .githooks/pre-commit",
+    ] {
+        assert!(judged(&rig, &fake, command).await, "{command}");
+    }
+}
+
+#[tokio::test]
+async fn a_deletion_under_an_edit_rule_or_in_a_child_without_edit_goes_to_the_guardian() {
+    let (rig, fake) = repo_rig_with(
+        &["a.txt"],
+        "[permissions]\ndeny = [\"edit(a.txt)\"]\n",
+        Auto,
+        |_| {},
+    );
+    assert!(judged(&rig, &fake, "rm a.txt").await);
+
+    let (rig, fake) = repo_rig(&["a.txt"]);
+    let id = rig
+        .agents
+        .reserve(
+            fontaine_sdk::tools::gate::ROOT_AGENT,
+            "worker",
+            "m",
+            ["read", "shell"].iter().map(|t| t.to_string()).collect(),
+            fontaine_sdk::agents::mode::Ladder::Auto,
+        )
+        .unwrap();
+    rig.check_as(&id, "shell", shell("rm a.txt")).await;
+    assert_ne!(last_tier(&rig), Tier::ShellEdit);
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn the_asking_modes_keep_prompting_for_a_deletion() {
+    for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+        let (rig, fake) = repo_rig_with(&["a.txt"], "", mode, |_| {});
+        rig.check("shell", shell("rm a.txt")).await;
+        assert_ne!(last_tier(&rig), Tier::ShellEdit, "{mode:?}");
+        assert_eq!(rig.approver.asked(), 1, "{mode:?}");
+        assert_eq!(fake.calls(), 0);
+    }
 }
 
 #[tokio::test]

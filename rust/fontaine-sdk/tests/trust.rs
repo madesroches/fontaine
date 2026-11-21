@@ -276,6 +276,16 @@ fn tracking_outside_any_repo_is_unknown() {
 }
 
 #[test]
+fn tracking_in_a_repository_git_cannot_read_is_unreadable() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.work.join("a.txt"), "a");
+    write(&w.work.join(".git/config"), "[core\n\tbroken = = =\n");
+    let work = std::fs::canonicalize(&w.work).unwrap();
+    assert_eq!(tracking(&work, &work.join("a.txt")), Tracking::Unreadable);
+}
+
+#[test]
 fn tracked_files_answers_for_exact_file_entries_only() {
     let w = World::new();
     git_init(&w.work);

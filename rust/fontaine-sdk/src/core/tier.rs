@@ -16,11 +16,11 @@ pub enum Tier {
     ProtectedPath,
     Hook,
     ReadOnlyFastPath,
-    /// `auto` only: an edit to a tracked, new or session-created file, after the floor.
+    /// `auto` only: an edit to any file in the primary root, after the floor.
     TrackedEdit,
     /// `auto` only: a file-tool write inside the session scratch directory, after the floor.
     ScratchWrite,
-    /// `auto` only: a fully parsed in-root shell edit or local git step, after the floor.
+    /// `auto` only: a fully parsed in-root shell edit, deletion or local git step, after the floor.
     ShellEdit,
     Tier05,
     /// An `agent` spawn after the floor: the child's own calls are gated, so the spawn is not

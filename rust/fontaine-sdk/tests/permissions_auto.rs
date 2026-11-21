@@ -1087,9 +1087,9 @@ async fn a_file_the_session_created_is_not_destructive_to_write_again() {
 async fn a_shell_command_that_only_names_a_missing_path_does_not_make_it_session_created() {
     let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
     let rig = auto_rig(&fake, "");
-    rig.check("shell", shell("cat ./notes.txt")).await;
-    std::fs::write(rig.work().join("notes.txt"), "k").unwrap();
-    let d = rig.check("write", write_args("notes.txt")).await;
+    rig.check("shell", shell("cat ./.envrc")).await;
+    std::fs::write(rig.work().join(".envrc"), "k").unwrap();
+    let d = rig.check("write", write_args(".envrc")).await;
     assert!(denied_message(&d).contains("[LowConfidence]"), "{d:?}");
     let sent: String = fake
         .mock
@@ -1097,16 +1097,16 @@ async fn a_shell_command_that_only_names_a_missing_path_does_not_make_it_session
         .iter()
         .map(|r| format!("{r:?}"))
         .collect();
-    assert!(!sent.contains("notes.txt [created_this_session]"), "{sent}");
+    assert!(!sent.contains(".envrc [created_this_session]"), "{sent}");
 }
 
 #[tokio::test]
 async fn an_edit_of_a_missing_path_does_not_make_it_session_created() {
     let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
     let rig = auto_rig(&fake, "");
-    rig.check("edit", write_args("ghost.txt")).await;
-    std::fs::write(rig.work().join("ghost.txt"), "k").unwrap();
-    let d = rig.check("write", write_args("ghost.txt")).await;
+    rig.check("edit", write_args(".envrc")).await;
+    std::fs::write(rig.work().join(".envrc"), "k").unwrap();
+    let d = rig.check("write", write_args(".envrc")).await;
     assert!(denied_message(&d).contains("[LowConfidence]"), "{d:?}");
 }
 

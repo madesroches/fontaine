@@ -60,10 +60,12 @@ all tests pass:
   hosted Jev screen with a margin for its nondeterminism, or on a local model a steering-hardened
   one), a verdict of the composed guardian and never before the floor, and never for a call with a
   non-empty `critical_deletions`. And in `auto`, after the
-  floor and hooks, file-tool and fully parsed shell edits (`sed -i`, `mkdir`, `mv`, local git
-  steps) to git-tracked, new or session-created files in the primary
-  root (`tracked_edit`, `shell_edit`) and file-tool writes into the session scratch directory (`scratch_write`);
-  instruction files, `.github/` and hook-runner config are excluded, and project scope can only switch them off. And in every mode, an `agent` spawn whose
+  floor and hooks, file-tool and fully parsed shell edits and deletions (`sed -i`, `mkdir`, `mv`,
+  `rm` of files, local git steps) of any file in the primary root, tracked by git or not
+  (`tracked_edit`, `shell_edit`), and file-tool writes into the session scratch directory (`scratch_write`);
+  instruction files, `.github/`, hook-runner config, secret files and persistence locations (`.envrc`, `.ssh/`,
+  `.config/`, `.cargo/` and the like) are excluded, a primary root that holds the home directory gets neither tier,
+  git that cannot be read fails closed, and project scope can only switch them off. And in every mode, an `agent` spawn whose
   Fontaine-computed toolset holds only read-only, non-destructive tools (plus the coordination tools)
   takes the read-only fast path; MCP tools never count as read-only for this. And every other
   `agent` spawn, after the floor, is never guardian-judged (`spawn`): `auto`/`afk` allow it,

@@ -139,6 +139,54 @@ pub fn is_hook_config_path(path: &Path, fold: bool) -> bool {
         || parents.iter().any(|n| same(n, ".githooks", fold))
 }
 
+/// Files a shell, direnv or a login manager runs or trusts later, which the protected lists do
+/// not cover.
+const PERSISTENCE_FILES: &[&str] = &[
+    ".envrc",
+    ".zshenv",
+    ".zlogin",
+    ".zlogout",
+    ".bash_login",
+    ".bash_logout",
+    ".xprofile",
+    ".xinitrc",
+    ".xsessionrc",
+    ".pam_environment",
+];
+
+/// Directories whose contents a service manager, cargo, ssh or a cloud CLI runs or trusts later.
+const PERSISTENCE_DIRS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".docker",
+    ".kube",
+    ".cargo",
+    ".config",
+    ".local",
+    "LaunchAgents",
+];
+
+/// Whether `path` (relative to a root) is a persistence or code-execution location: a file that a
+/// shell, direnv or a login manager runs later, or anything under a directory a service manager,
+/// cargo, ssh or a cloud CLI reads. By path component, at any depth, never by pattern.
+pub fn is_persistence_path(path: &Path, fold: bool) -> bool {
+    let names: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let Some((last, parents)) = names.split_last() else {
+        return false;
+    };
+    PERSISTENCE_FILES.iter().any(|f| same(last, f, fold))
+        || parents
+            .iter()
+            .any(|n| PERSISTENCE_DIRS.iter().any(|d| same(n, d, fold)))
+}
+
 /// Windows and macOS file systems are case-insensitive by default, so `.MCP.json` names the
 /// protected file there even before it exists.
 pub(crate) const FOLD_CASE: bool = cfg!(any(windows, target_os = "macos"));
@@ -362,6 +410,47 @@ mod tests {
             assert!(!hit(path), "{path}");
         }
         assert!(is_hook_config_path(Path::new("LEFTHOOK.YML"), true));
+    }
+
+    #[test]
+    fn persistence_locations_are_named_by_component() {
+        let hit = |path: &str| is_persistence_path(Path::new(path), false);
+        for path in [
+            ".envrc",
+            "sub/.zshenv",
+            ".zlogin",
+            ".zlogout",
+            ".bash_login",
+            ".bash_logout",
+            ".xprofile",
+            ".xinitrc",
+            ".xsessionrc",
+            ".pam_environment",
+            ".ssh/config",
+            "a/.gnupg/x",
+            ".aws/credentials",
+            ".docker/config.json",
+            ".kube/config",
+            ".cargo/config.toml",
+            ".config/systemd/user/x.service",
+            ".local/bin/x",
+            "Library/LaunchAgents/x.plist",
+        ] {
+            assert!(hit(path), "{path}");
+        }
+        for path in [
+            "src/config.rs",
+            "local/x",
+            "cargo/x",
+            "docs/envrc.md",
+            ".ssh",
+            "src/.local.rs",
+        ] {
+            assert!(!hit(path), "{path}");
+        }
+        assert!(!hit(".ENVRC"));
+        assert!(is_persistence_path(Path::new(".ENVRC"), true));
+        assert!(is_persistence_path(Path::new(".SSH/x"), true));
     }
 
     #[test]

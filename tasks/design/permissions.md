@@ -87,14 +87,17 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               reach of its own, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            6a. mode == auto/afk, after the floor, hooks and rules → `unjudged_edit`: a file-tool
-              edit of a tracked, new or session-created file in the primary root is
+              edit of any file in the primary root is
               `tracked_edit`, a file-tool write into scratch is `scratch_write`, and a `shell`
               call that `tools::shell_edit::classify` parses in full (read-only commands, `sed -i`
-              with `d`/`s` only, `mkdir`, `mv`, `git add`/`rm`/`mv`/`commit` and
+              with `d`/`s` only, `mkdir`, `mv`, `rm` of files, `git add`/`rm`/`mv`/`commit` and
               `git <op> --continue`, every path through the pipeline's `TargetCheck`: the same
               target rule as `tracked_edit` plus read/edit/write rules, child restrictions and a
-              symlink-free path; no file-tool hook matcher) is `shell_edit`. Hook-runner config
-              is excluded from all three. Anything else → step 7.
+              symlink-free path; no file-tool hook matcher) is `shell_edit`. Tracking, session
+              creation and git history make no difference to the target rule; hook-runner config,
+              instruction/CI paths, secret files, persistence locations, a primary root that
+              holds the home directory and unreadable git are excluded from the file and shell
+              tiers. Anything else → step 7.
            7. mode == auto → the composed guardian (`fontaine_sdk::guardian::composition::adjudicate`):
               the Rune script of `[guardian.composition]` (the `screen` preset by default) over
               the host leaves, the LLM guardian and the logprob reads ──▶ Verdict, inside a

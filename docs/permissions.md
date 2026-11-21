@@ -17,7 +17,7 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | `manual` | The human is asked. |
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
 | `dontAsk` | Denied, except `send_message` and `board_update`. Only other calls that are pre-approved run. |
-| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch, every `agent` spawn and the coordination tools `send_message` and `board_update` (step 7 below), skip it. |
+| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to any file in the primary root and file-tool writes into scratch, every `agent` spawn and the coordination tools `send_message` and `board_update` (step 7 below), skip it. |
 | `afk` | [AFK mode](afk.md): decides exactly as `auto` does, and every outcome that would ask you is a denial instead. It is a valid `default_mode` (user file and `--settings` only, as `auto`) and `--permission-mode`; `--afk` is shorthand for `--permission-mode afk`, and the last stop of the Shift+Tab cycle enters it. |
 
 In the terminal UI, `/permissions` shows the mode and the effective rules with the scope each came
@@ -123,13 +123,17 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    write whose resolved target is inside the session scratch directory is audited as
    `tier = scratch_write`; a shell command that touches scratch is not a file-tool call and goes
    to the guardian. An edit inside the primary workspace root is audited as `tier = tracked_edit`
-   when the target is a file git tracks (an exact file entry in the index for the resolved path; a
-   submodule or an intent-to-add entry is not one), a path
-   that does not exist yet in a git work tree, or a file this session created. Symlinks are
-   resolved first, so a link is judged by its target. These go to the guardian as before: an
-   existing file git does not track, such as `.env` or uncommitted work that predates the
-   session; any path in a root that is not a git work tree; the auto-memory store and `/add-dir`
-   roots; the protected paths above; instruction files (`FONTAINE.md`,
+   when the target is any file in that root or a path under it that does not exist yet, whether
+   or not git tracks it: workspace files are assumed to be backed up, so tracking makes no
+   difference inside the root. Symlinks are resolved first, so a link is judged by its target.
+   These go to the guardian as before: a path in a root that holds your home directory (the root
+   is `$HOME`, `/home` or `/`) and any path when git cannot be read (an unparseable repository
+   configuration or index); the auto-memory store and `/add-dir`
+   roots; the protected paths above; credential files (`.env`, key files); persistence and
+   code-execution locations (`.envrc`, `.zshenv`, `.zlogin`, `.bash_login`, `.xprofile` and
+   similar login files, and anything under a `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`,
+   `.cargo`, `.config`, `.local` or `LaunchAgents` directory), which a shell, direnv, a service
+   manager or cargo runs later; instruction files (`FONTAINE.md`,
    `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`), anything under a `rules`
    directory and anything under `.github`, because an edit there changes later decisions or what
    CI runs; hook-runner configuration (`.pre-commit-config.yaml`, `lefthook.yml`,
@@ -152,8 +156,10 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    - `sed -i` on Linux (GNU sed) with only `d` and `s` commands (no `e`, `w`, `r`, blocks, branches or
      bracket expressions), on files an `edit` would change without a verdict;
    - `mkdir`, and `mv` of such files onto a path a `write` would create or overwrite without a
-     verdict;
-   - `git add` of named files (or `-u`), `git rm` and `git mv` without `-f`, `git commit` without
+     verdict, which includes an existing file;
+   - `rm` of such files, with `-f` and `-v` only (never `-r`, `-d` or a prompt flag), so a
+     directory, a symlink and a missing path still go to the guardian;
+   - `git add` of named files (or `-u`), `git rm` and `git mv` (`-f` allowed, never `-r`), `git commit` without
      `--amend` or `--no-verify`, and `git rebase`, `merge`, `cherry-pick` or `revert` with
      `--continue`, optionally with `GIT_EDITOR=true` in front; the git steps skip the
      guardian only when the repository has no installed hook (anything in its hooks directory that
