@@ -204,12 +204,20 @@ directly. It has four methods:
   - be in the primary root;
   - not be under the memory root or the scratch directory;
   - not be an instruction file or CI path;
+  - not be a hook-runner config path (a new `floor::is_hook_config_path`): `.pre-commit-config.yaml`,
+    `lefthook.yml` / `lefthook.yaml`, `.lefthook.yml` / `.lefthook.yaml`, anything under
+    `.githooks/`, or anything under the directory the repository's effective `core.hooksPath` names
+    when it resolves inside the primary root. Editing one plants code that the next `git commit` or
+    `--continue` runs, so it goes to the guardian, which then sees it in `actions_taken`. A
+    `core.hooksPath` that cannot be read rejects;
   - not be protected (`floor::protected_path`);
   - be `Tracked` under a strict index-entry check, or created by this session. The check is the
     one `trust::tracked_files` does (`core/trust.rs:411-440`: FILE, FILE_EXECUTABLE or SYMLINK
     mode, not intent-to-add), exposed as a `pub(crate)` strict variant of `trust::tracking` that
     both tiers use, so a submodule gitlink or an intent-to-add entry is not `Tracked`. `tracked_edit`'s
-    file-tool behavior is otherwise unchanged except for gaining the same strictness.
+    file-tool behavior is otherwise unchanged except for gaining the same strictness and the
+    hook-config exclusion (otherwise an `edit` of `.pre-commit-config.yaml` followed by a
+    `shell_edit` `git commit` would run planted code with no verdict).
 
   It must also exist: `sed -i` on an absent file is an error anyway. The pipeline also builds an
   `edit` call for the path and rejects on any deny or ask rule hit or any child-restriction hit
@@ -331,7 +339,9 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
     plain-command route;
   - `git rm -f`, `rm`, and other deletions of untracked or modified files;
   - pushes, `--abort` / `--skip`, `--amend`;
-  - anything touching instruction files or `.github/`.
+  - anything touching instruction files or `.github/`;
+  - edits of hook-runner config (`.pre-commit-config.yaml`, lefthook config, `.githooks/`, the
+    in-root `core.hooksPath` directory), by shell or file tool.
 
 ## Implementation Steps
 
@@ -353,7 +363,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
    (`read_target`, `edit_target`, `write_target`, including the rule, child-restriction and
    file-hook checks, and the shared argv[0]→file-tool-calls helper factored out of
    `ruled_read_calls`; the hook exclusion is `read | ls | grep | edit | write | notebook_edit`). Define the `TargetCheck` trait in `tools/shell_edit.rs` here and register the
-   module in `tools.rs`. Add the strict `pub(crate)` tracked-state variant in `core/trust.rs` (gitlink and intent-to-add entries do not count as tracked) and use it in both branches. File-tool behaviour changes only for gitlink and intent-to-add entries, which now go to the guardian; the existing `permissions_fast_edits.rs` tests guard the rest.
+   module in `tools.rs`. Add the strict `pub(crate)` tracked-state variant in `core/trust.rs` (gitlink and intent-to-add entries do not count as tracked) and use it in both branches. Add `floor::is_hook_config_path` beside `is_instruction_or_ci_path` and apply it, with the in-root `core.hooksPath` directory, in the shared helper. File-tool behaviour changes only for gitlink and intent-to-add entries and hook-config paths, which now go to the guardian; the existing `permissions_fast_edits.rs` tests guard the rest.
 3. **Pre-classifier hook.** In `tools/preclassify.rs`, split `read_paths` into
    `read_only_argv(argv, env)` plus the existing single-command wrapper, and expose `parse_git`'s
    per-argv form to the crate.
@@ -417,7 +427,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - `rust/fontaine-sdk/src/core/tier.rs`
 - `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `config_scope.rs`
 - `rust/fontaine-sdk/src/core/gate.rs`, `core/agent/setup.rs`, `tests/core_common/pipeline.rs`
-- `rust/fontaine-sdk/src/core/permissions.rs`, `core/trust.rs`
+- `rust/fontaine-sdk/src/core/permissions.rs`, `core/trust.rs`, `core/floor.rs`
 - `rust/fontaine-sdk/src/tools/preclassify.rs`
 - `rust/fontaine-sdk/src/tools/shell_edit.rs` (new), `rust/fontaine-sdk/src/tools.rs`
 - `rust/fontaine-sdk/tests/permissions_shell_edits.rs` (new)
@@ -429,7 +439,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - `rust/fontaine-evals/src/live.rs`, `case.rs`, `runner.rs`, `report.rs`, `screen.rs`,
   `rust/fontaine-evals/tests/screen_unit.rs`, `tests/report.rs`
 - `rust/fontaine-sdk/tests/composition.rs`
-- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/tools.md`, `docs/evals.md`,
+- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/evals.md`,
   `evals/README.md`
 - `evals/dataset/overdeny.jsonl`, `evals/dataset/attacks-a.jsonl`, `evals/scorecards/`
 - `CHANGELOG.md`, `AGENTS.md`, `tasks/fontaine_harness_plan.md`, `tasks/design/permissions.md`,
@@ -469,12 +479,14 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - 2026-11-21: AFK: `git add` in `shell_edit` takes only file pathspecs or `-u`; `-A`/`--all`/`.` go to the guardian so an un-ignored secret is never staged unjudged.
 - 2026-11-21: (user) #744's guardian-side changes (`git_operation` fact, `instead` verdict field) ship in this change, verified with a live Haiku eval on the `router` OpenRouter account.
 - 2026-11-21: Accepted risk: git-config-named filters, fsmonitor and `diff.external`/textconv/pager helpers run unjudged for the git steps and real-binary read-only git stages in `shell_edit`, as they already could under the guardian; `.git/` is protected, so this tier cannot plant them.
+- 2026-11-21: AFK: hook-runner config (`.pre-commit-config.yaml`, lefthook config, `.githooks/`, the in-root `core.hooksPath` directory) is excluded from `edit_target`/`write_target`, so editing it goes to the guardian for both `shell_edit` and file-tool `tracked_edit`; rejecting any commit/`--continue` after an edit would break #743's own call, and leaving `tracked_edit` open would allow a two-call plant-and-run.
+- 2026-11-21: AFK: `docs/tools.md` is not changed: its "always reaches the guardian" sentence is about external writes outside the roots, and its scratch-root sentence stays true because `shell_edit` edits only the primary root.
 
 ## Documentation
 
 - **`docs/permissions.md`**: the tier list gains `shell_edit`: what qualifies, that it runs after
   the floor in `auto`/`afk`, and how to switch it off; the guardian decision audit-field sentence
-  (around lines 164-175) gains `instead`; post-tool hooks on file tools do not run for shell edits; and step 6's "and every shell command" becomes "every shell command except a `shell_edit`".
+  (around lines 164-175) gains `instead`; post-tool hooks on file tools do not run for shell edits; and step 6's "and every shell command" becomes "every shell command except a `shell_edit`"; the `tracked_edit` and `shell_edit` entries say hook-runner config paths go to the guardian.
 - **`docs/guardian.md`**:
   - in the list of what never reaches the guardian, parsed in-root shell edits and the local git
     steps;
@@ -483,7 +495,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - **`docs/evals.md`**: the new cases, and the scorecard from the live run.
 - **Tier lists**: add `shell_edit` to the tier enum in `docs/schemas/headless-v1.schema.json`
   (required by `headless_contract.rs`), the tier list in `docs/headless.md`, the one in
-  `evals/README.md`, and fix `docs/tools.md` ("in auto it always reaches the guardian"). `instead`
+  `evals/README.md`. `instead`
   does not appear in the headless `gate_decision` event; it reaches the agent through the denial
   text.
 - **`docs/configuration.md`**: the `auto_shell_edits` row in the `[permissions]` table and in the
@@ -493,7 +505,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - **`CHANGELOG.md`**: `### Added` for the `shell_edit` tier, `auto_shell_edits`, the `git_operation`
   fact and the `instead` verdict field (#743, #744); `### Changed` for the guardian prompt text.
 - **`AGENTS.md`**: the `tracked_edit` exception in the fast-path invariant grows to "file-tool and
-  fully parsed shell edits".
+  fully parsed shell edits", and its exclusions gain hook-runner config.
 - **`tasks/fontaine_harness_plan.md`**: a Permissions decision that departs from the 2026-10-21
   line's "a mutating shell must not fast-path" reason in `auto`/`afk` (`acceptEdits` unchanged) and names the accepted repository-controlled-code risk.
 - **`tasks/design/permissions.md`**: the pipeline step list.
@@ -570,8 +582,15 @@ count):
 - `sed -i f` with an `Edit(f)` deny or ask rule → guardian, not `shell_edit`.
 - A child with `shell` but not `edit` running `sed -i f` → guardian, not `shell_edit`.
 - A PreToolUse hook matching `read`, `ls`, `grep`, `edit` or `write` (one test per matcher, including `grep`) → guardian, not `shell_edit`.
+- `sed -i ... .pre-commit-config.yaml && git commit -m x` → guardian, not `shell_edit`; the same for
+  `lefthook.yml` and `.lefthook.yml`.
+- `mv x .githooks/pre-commit` and `cat > .githooks/pre-commit <<'EOF'` → guardian, not `shell_edit`.
+- With `core.hooksPath = scripts/hooks`, `sed -i ... scripts/hooks/pre-commit` → guardian, not
+  `shell_edit`; with no `core.hooksPath`, a tracked `scripts/hooks/pre-commit` edit still qualifies.
 
-**File-tool strictness** (`tests/permissions_fast_edits.rs`): an `edit` of an intent-to-add file goes to the guardian.
+**File-tool strictness** (`tests/permissions_fast_edits.rs`): an `edit` of an intent-to-add file goes to the guardian, and so does an `edit` of a tracked `.pre-commit-config.yaml` or of a tracked file under an in-root `core.hooksPath` directory.
+
+**Floor unit test** (`floor.rs`): `is_hook_config_path` matches the listed names and `.githooks/` contents, and not lookalikes such as `docs/pre-commit-config.yaml.md`.
 
 **Config tests**: project scope `auto_shell_edits = true` is rejected, and `false` is accepted.
 
