@@ -53,42 +53,54 @@ treating instructions inside tool results as data.
 
 ### 2. Scrub the account email from shared model-authored text
 
-`Redactor` gains the account email as a known value for sessions on `claude-subscription`.
-`session_secrets` already builds the list from config and stores; the email is known only from the
-CLI's `initialize` answer (`CliContext.email`, `cli.rs`). Expose the learned email from the
-provider module (the `Reminders`/listing memo already holds it per data dir) through a small
-function that returns `Option<String>`, and have `draft_tool` add it as a `Secret`. If the
-listing has not run yet there is no email to scrub and none in the model's context either, so the
-absence is correct, not a gap. `MIN_SECRET_LEN` (8) already admits any realistic address.
+`Redactor` gains the account emails as known values for sessions on `claude-subscription`.
+`session_secrets` (`core/redact.rs`, which already takes the data dir) builds the list from config
+and stores; the email is known only from the CLI's `initialize` answer (`CliContext.email`,
+`cli.rs`). No existing memo holds the plaintext email: `Reminders` and the verdict memo key by
+`sha256(email)`, the template stores `{email}`, and the listing's `CliContext` is a local in
+`ClaudeTransport::prepare` that is dropped. So the provider module gains new per-data-dir state
+that `prepare` writes whenever a listing returns an email (a set of learned emails next to
+`Reminders`), and a small accessor returning every email learned for the data dir
+(`Vec<String>`). Several accounts can share one data dir (each with its own
+`claude_config_dir`), so all of them are scrubbed. `session_secrets` adds each as a `Secret`, so
+both `draft_tool` drafts and `/bug` (`fontaine-tui/src/ui/commands/bug.rs`, which builds its own
+`Redactor` via `session_secrets` and includes transcript text at full level) get them.
+`MIN_SECRET_LEN` (8) already admits any realistic address.
 
 Out of scope: the audit log and ledger record tool-call arguments and decisions, not model
 context; they hold the email only if the model echoes it into a tool call, which change 1 makes
-unlikely. Scrubbing them would add a regex-free but wide-reaching redaction pass over permission
-records, which the security invariants say not to touch lightly.
+unlikely.
 
 ## Implementation Steps
 
 1. `rust/fontaine-sdk/prompts/core/system_prompt.md`: add the paragraph; keep the PowerShell
    variant substitution in `core/prompt.rs` unaffected.
-2. `claude_subscription/mod.rs` (or `reminder.rs`): add `pub fn known_account_email(data_dir) ->
-   Option<String>` reading the memoised listing context; no new I/O.
-3. `core/agent/build.rs` `draft_tool`: push `Secret::new(email)` when it is `Some`.
-4. Docs: `docs/claude-subscription.md` (the paragraph around line 279 listing the reminder) states
-   the model is told what the block is and that drafts scrub the email; `CHANGELOG.md` entry.
+2. `claude_subscription/mod.rs` (or `reminder.rs`): add per-data-dir state holding the learned
+   emails, written by `ClaudeTransport::prepare` when a listing returns an email, and
+   `pub fn known_account_emails(data_dir) -> Vec<String>` reading it. The accessor applies
+   `std::path::absolute` to its `data_dir` argument before lookup, as connect does when keying
+   the memo (`mod.rs:284-291`).
+3. `core/redact.rs` `session_secrets`: push a `Secret::new(email)` for each learned email, so
+   `draft_tool` (`core/agent/build.rs`) and `/bug` both get them; `fontaine-tui` changes only if
+   the call site needs it. When the emails are read is an open question below.
+4. Docs: `docs/claude-subscription.md` (the paragraph around line 279 listing the reminder, and
+   the "drafts scrub the email" wording at lines ~288-292) states the model is told what the
+   block is and that drafts and `/bug` scrub the emails; `docs/tui.md` (~line 805, the `/bug`
+   row's list of what is scrubbed) adds the account emails; `CHANGELOG.md` entry.
 
 ## Files to Modify
 
 - `rust/fontaine-sdk/prompts/core/system_prompt.md`
-- `rust/fontaine-sdk/src/core/providers/claude_subscription/mod.rs` (accessor)
-- `rust/fontaine-sdk/src/core/agent/build.rs`
-- `docs/claude-subscription.md`, `CHANGELOG.md`
+- `rust/fontaine-sdk/src/core/providers/claude_subscription/mod.rs` (learned-email state and accessor)
+- `rust/fontaine-sdk/src/core/providers/claude_subscription/transport.rs` (`prepare` records the email)
+- `rust/fontaine-sdk/src/core/redact.rs` (`session_secrets`)
+- `rust/fontaine-sdk/src/core/agent/build.rs` (only if the lookup timing needs it)
+- `docs/claude-subscription.md`, `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
-- **Move the reminder out of the tool result:** rejected; it breaks byte-identical replay and
-  multiplies cache writes roughly threefold.
 - **Drop the reminder entirely (legacy layout always):** rejected; the legacy layout also loses
-  the replay's cache gains and the CLI adds its own reminder to the final message regardless.
+  the replay's cache gains.
 - **Provider-conditional prompt layer:** rejected; the model can switch mid-session and a
   conditional layer would change the cached prefix on a switch for one sentence.
 - **Mark the block trusted in the prompt:** rejected; a tool can emit the same text.
@@ -99,19 +111,24 @@ records, which the security invariants say not to touch lightly.
 
 ## Documentation
 
-`docs/claude-subscription.md` and `CHANGELOG.md`, as in step 4.
+`docs/claude-subscription.md`, `docs/tui.md` and `CHANGELOG.md`, as in step 4.
 
 ## Testing Strategy
 
-- Unit: `Redactor` built with the account email replaces it in a draft title and body (extend the
-  `bug_drafts` tests).
-- Unit: the accessor returns `None` before a listing and `Some` after, using the CLI double.
-- Unit: the base prompt contains the new paragraph and the assembled prompt for the PowerShell
-  variant still carries it (`core/prompt.rs` tests).
+- Unit: `Redactor` built with the account emails replaces each in a draft title and body (extend
+  the `bug_drafts` tests); `session_secrets` includes them for `/bug`.
+- Unit: the accessor returns empty before a listing and every learned email after, as an
+  in-module unit test using an inline-script listing stub (as `cli.rs:1322`), not the CLI double.
+- Unit: in `rust/fontaine-sdk/tests/system_prompt.rs`, add one needle to
+  `the_base_steers_toward_the_dedicated_tools_and_explains_denials_and_secrets` and update the
+  insta snapshot `the_assembled_prompt_is_stable`.
 - The existing `claude_subscription` integration tests stay green, confirming the wire layout is
   unchanged.
+- No main-model eval exists (evals only score guardian, pipeline and scanner kinds; nothing
+  references `BASE_PROMPT`); none is added.
 
 ## Open Questions
 
-- Does the existing model-eval for prompt wording need a case showing the model not echoing the
-  email? Left to the implementer to judge; a live eval is not a CI gate.
+- When the learned emails are read: `draft_tool` builds its Redactor once at agent build, before
+  any listing has run, so a build-time read misses the email; the lookup must happen when
+  redaction runs (e.g. `FileDrafts::save` or a lazy secrets source on `Redactor`).
