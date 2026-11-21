@@ -287,6 +287,19 @@ async fn symlinks_are_judged_by_their_resolved_target() {
     assert_eq!(fake.calls(), 3);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dangling_symlink_out_of_the_root_goes_to_the_guardian() {
+    use std::os::unix::fs::symlink;
+    let (rig, fake) = repo_rig(&["tracked.txt"], "", false);
+    let work = rig.work().to_path_buf();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path().join("missing.txt"), work.join("dangling")).unwrap();
+    rig.check("write", write_args("dangling")).await;
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 1);
+}
+
 #[tokio::test]
 async fn a_new_file_in_a_root_that_is_not_a_git_work_tree_skips_the_guardian() {
     let fake = fake_guardian(allow_verdict());

@@ -1897,6 +1897,11 @@ impl PermissionPipeline {
         {
             return None;
         }
+        // Resolution canonicalizes every link that has a target, so a link still standing here
+        // is dangling and a write through it creates the target wherever it points.
+        if std::fs::symlink_metadata(resolved).is_ok_and(|meta| meta.is_symlink()) {
+            return None;
+        }
         match trust::tracking(primary, resolved) {
             Tracking::Unreadable => return None,
             Tracking::Tracked => return Some(TargetState::Tracked),
