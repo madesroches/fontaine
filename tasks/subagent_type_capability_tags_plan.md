@@ -27,24 +27,25 @@ Specifier `disallowed` entries never count:
 - Shell (`shell` or `powershell` entry, bare or with specifier): none → `no shell` (both `shell` and
   `powershell` must be gone, since bare `disallowed: ["shell"]` only removes `powershell` when the
   parent lacks POSIX shell); every shell
-  entry has a specifier → `shell limited to listed commands`; any bare entry → `shell`.
+  entry has a specifier → `limited shell`; any bare entry → `shell`.
 - File edits (`edit`, `write`, `notebook_edit`): all gone → `no file edits`; else `edits files`.
-- `tools: None` (inherits): `your tools`, `your tools, no shell`, or `your tools, no shell, no file
-  edits`, the suffixes applying per the same classification.
+- `tools: None` (inherits): `your tools`, with each suffix (`no shell`, `no file edits`) added independently per the same
+  classification: `your tools, no shell`, `your tools, no file edits`, `your tools, no shell, no file edits`.
 
-Tag form: `no shell, no file edits`, `shell limited to listed commands, no file edits`,
+Tag form: `no shell, no file edits`, `limited shell, no file edits`,
 `shell, edits files`. The classification is one private helper on `AgentType` reused by
 `describe`; no new config. User-defined types get the tag automatically.
 
 Built-in `explore` description becomes: "Reads and searches the workspace; cannot change anything
-or run commands (use `worker` for those)." Tags state facts; the description carries the routing
-advice, so the two do not duplicate.
+or run commands (use `reviewer` to run review commands, `worker` for anything else)." Tags are
+computed facts; descriptions carry routing advice.
 
 ## Implementation Steps
 1. `registry.rs`: add `AgentType::capabilities(&self) -> String` and use it in `describe`.
 2. `registry.rs`: update the `explore` description.
 3. `docs/agents.md`: note the tag in "Agent types" and show the routing hint; mention user-defined
-   types are tagged too.
+   types are tagged too, and that a tag describes the type's declared tools, not what a child gets
+   from a narrower parent (e.g. `reviewer` on Windows without Git Bash).
 4. Tests (below). `CHANGELOG.md` entry.
 5. `tasks/fontaine_harness_plan.md`: add a dated one-line Decision at the end of the `### Agents`
    subsection of `## Decisions`: the `agent` tool's type listing carries computed capability flags
@@ -71,7 +72,7 @@ advice, so the two do not duplicate.
 
 ## Testing Strategy
 Unit tests in `registry.rs`: `describe()` for the builtins names `no shell` on `explore`,
-`shell limited to listed commands` on `reviewer`, `shell, edits files` on `worker`, `your tools` on `fork`; a user type
+`limited shell` on `reviewer`, `shell, edits files` on `worker`, `your tools` on `fork`; a user type
 with `tools: None` and `disallowed: ["shell","powershell"]` shows `your tools, no shell`; with
 `disallowed: ["shell"]` alone it does not show `no shell`; `["shell","powershell","edit","write","notebook_edit"]`
 shows `your tools, no shell, no file edits`; a type listing `powershell` counts as shell.
