@@ -129,8 +129,8 @@ tools its own tool set holds, and what it loads never reaches its parent's reque
 How a loaded tool reaches the model depends on the provider:
 
 - **`anthropic` accounts** use Anthropic's own tool search. Every deferred tool's definition is sent
-  once, in every request, marked `defer_loading`, so the model cannot call it until a search loads
-  it, and `tool_search` answers with `tool_reference` blocks that name the tools it loaded. The
+  once, in every request, marked `defer_loading`, so the model does not see its definition until a
+  search loads it, and `tool_search` answers with `tool_reference` blocks that name the tools it loaded. The
   request prefix never changes when a tool is loaded, so loading no longer restarts the provider's
   prompt cache. The references stay in the conversation, so a resumed session does not have to
   search again. A compaction that summarises a search result away, or a context-editing
