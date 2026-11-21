@@ -20,14 +20,17 @@ commands belong on `worker`, and document it. `explore` itself stays read-only.
 - `docs/agents.md` ("Agent types") tabulates the built-ins.
 
 ## Design
-`describe` appends ` (<tag>)` to each type's line, derived from the type's declared `tools` and
-`disallowed` (never from a parent, which the description cannot see):
+`describe` appends ` (<tag>)` to each type's line, derived from the tools a type declares, minus its
+bare (specifier-free) `disallowed` entries (never from a parent, which the description cannot see).
+Specifier `disallowed` entries never count:
 
-- Shell (`shell` or `powershell` entry, bare or with specifier): none → `no shell`; every shell
+- Shell (`shell` or `powershell` entry, bare or with specifier): none → `no shell` (both `shell` and
+  `powershell` must be gone, since bare `disallowed: ["shell"]` only removes `powershell` when the
+  parent lacks POSIX shell); every shell
   entry has a specifier → `shell limited to listed commands`; any bare entry → `shell`.
-- File edits (`edit`, `write`, `notebook_edit`): none → `no file edits`; else `edits files`.
-- `tools: None` (inherits): a tag `your tools` with `disallowed` shell/edit/write entries named as
-  `no shell` / `no file edits` when they apply (via the same classification).
+- File edits (`edit`, `write`, `notebook_edit`): all gone → `no file edits`; else `edits files`.
+- `tools: None` (inherits): `your tools`, `your tools, no shell`, or `your tools, no shell, no file
+  edits`, the suffixes applying per the same classification.
 
 Tag form: `no shell, no file edits`, `shell limited to listed commands, no file edits`,
 `shell, edits files`. The classification is one private helper on `AgentType` reused by
@@ -43,27 +46,32 @@ advice, so the two do not duplicate.
 3. `docs/agents.md`: note the tag in "Agent types" and show the routing hint; mention user-defined
    types are tagged too.
 4. Tests (below). `CHANGELOG.md` entry.
+5. `tasks/fontaine_harness_plan.md`: add a dated one-line Decision at the end of the `### Agents`
+   subsection of `## Decisions`: the `agent` tool's type listing carries computed capability flags
+   in place of Claude Code's per-type tool list, for token and noise reasons.
 
 ## Files to Modify
 - `rust/fontaine-sdk/src/agents/registry.rs`
 - `docs/agents.md`
 - `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md` (`### Agents` Decision)
 
 ## Trade-offs
-- Full tool list per type: more tokens, repeated every turn, and `lsp`/`send_message` noise the
-  model doesn't route on. Flags carry the decision.
+- Full tool list per type (Claude Code's form): see the `### Agents` Decision in the master plan.
 - Giving `explore` a guardian-gated shell: rejected in the issue (shell cannot be proven read-only
   without argument matching).
 
 ## Decisions
 - 2026-11-20: Tags describe the declared toolset, not the effective one; a child's toolset is
-  never wider than its parent's, so a tag can overstate but never understate a restriction.
+  never wider than its parent's, so a tag can claim a tool the parent lacks (e.g. `reviewer`'s shell on
+  Windows without Git Bash) but never hides one the type has.
 
 ## Documentation
 `docs/agents.md` (Agent types).
 
 ## Testing Strategy
 Unit tests in `registry.rs`: `describe()` for the builtins names `no shell` on `explore`,
-`shell limited to listed commands` on `reviewer`, `shell, edits files` on `worker`; a user type
-with `tools: None` and `disallowed: ["shell"]` shows `no shell`; a type listing `powershell`
-counts as shell.
+`shell limited to listed commands` on `reviewer`, `shell, edits files` on `worker`, `your tools` on `fork`; a user type
+with `tools: None` and `disallowed: ["shell","powershell"]` shows `your tools, no shell`; with
+`disallowed: ["shell"]` alone it does not show `no shell`; `["shell","powershell","edit","write","notebook_edit"]`
+shows `your tools, no shell, no file edits`; a type listing `powershell` counts as shell.
