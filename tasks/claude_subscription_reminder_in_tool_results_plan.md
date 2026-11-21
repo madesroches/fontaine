@@ -7,8 +7,7 @@
 With `claude-subscription`, the model sees a `<system-reminder>` carrying the signed-in account's
 email address appended to the last tool result of a user turn. It cannot tell the block from
 content a tool injected, and the email can leak into subagent reports, commit or PR text and
-bug-report drafts. The placement is not ours to change: it is where the CLI puts the reminder, and
-replaying it byte-for-byte is what keeps the prompt cache warm. This plan closes the remaining
+bug-report drafts. This plan closes the remaining
 gaps without touching placement: tell the model what the block is and not to repeat it, and scrub
 the account email from the places Fontaine writes model-authored text for sharing.
 
@@ -16,12 +15,7 @@ the account email from the places Fontaine writes model-authored text for sharin
 
 The issue's four checks, answered from the code and the research notes:
 
-1. **Wording drift / verdict fallback.** Already fixed by #732: `reminder.rs` learns the wording
-   from the CLI per `(version, account)`, `context.rs` keys the persisted broken verdict to
-   `(version, wording hash)`, and a reminder that is not in the expected shape (email once, no
-   section beyond `# userEmail`) takes the legacy layout. Nothing to do.
-4. **Compare wording, not only version.** Same: `Verdicts::contains(version, &learned.wording)`.
-   Nothing to do.
+1. Checks 1 and 4, wording drift and comparing wording, are done by #732.
 2. **Placement.** `context::apply` runs on the wire frames built per request
    (`claude_subscription/context.rs`), never on Fontaine's stored history. Moving the reminder out
    of the tool result (placement rule 2 in `research/claude-subscription-cli-context/README.md`)
@@ -82,13 +76,14 @@ unlikely. `/export` scrubs no secrets today and is left unchanged.
    `Cli::initialize`/`discover` when a listing returns an email, and
    `pub fn known_account_emails(data_dir) -> Vec<String>` reading it. The accessor applies
    `std::path::absolute` to its `data_dir` argument before lookup, as connect does when keying
-   the memo (`mod.rs:284-291`).
+   the memo (`mod.rs:284-291`). `mod.rs` re-exports it with `pub use reminder::known_account_emails;`
+   (the module is private and its items are `pub(super)`).
 3. `core/redact.rs` `session_secrets`: push a `Secret::new(email)` for each learned email, so
    `/bug` (which calls `session_secrets` at command time) gets them with no further change.
    `core/bug_drafts.rs` `FileDrafts::save`: `FileDrafts` already holds `data_dir`, so `save` adds
    `known_account_emails(&self.data_dir)` to its `Redactor` before redacting title, area and
-   details; the read happens at save time because the agent-build `Redactor` is created before
-   any listing has run. Subagents never get `draft_bug_report`.
+   details; the read happens at save time so emails learned after the agent is built (a later
+   account, a failed discovery) are scrubbed too. Subagents never get `draft_bug_report`.
 4. Docs: `docs/claude-subscription.md` (the paragraph around line 279 listing the reminder; lines
    ~241 and ~290-294, which say the email is kept "in memory for the request only") states the
    model is told what the block is, and that the email is held in memory for the process, to
@@ -99,6 +94,7 @@ unlikely. `/export` scrubs no secrets today and is left unchanged.
 
 - `rust/fontaine-sdk/prompts/core/system_prompt.md`
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/reminder.rs` (learned-email state and accessor)
+- `rust/fontaine-sdk/src/core/providers/claude_subscription/mod.rs` (re-export `known_account_emails`)
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/transport.rs` (`prepare` records the email)
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/cli.rs` (discovery records the email)
 - `rust/fontaine-sdk/src/core/redact.rs` (`session_secrets`)
