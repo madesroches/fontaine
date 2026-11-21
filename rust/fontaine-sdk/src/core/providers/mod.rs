@@ -20,6 +20,7 @@ use crate::core::config::{Account, CacheTtl};
 use crate::core::credentials::StoredCredential;
 use crate::core::models::SharedEnv;
 use crate::core::quota::QuotaSource;
+use crate::tools::mcp::Deferral;
 use crate::tools::tls::LoadedNetwork;
 
 pub mod anthropic;
@@ -28,6 +29,7 @@ mod cache_wire;
 pub mod claude_subscription;
 pub mod context_editing;
 pub mod databricks;
+mod defer_wire;
 pub mod derived_facts;
 pub mod device_flow;
 pub(crate) mod gateway;
@@ -163,6 +165,13 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether the kind's API loads deferred tool definitions itself: every deferred MCP tool is
+    /// sent once, marked, and a search answers with references to them, so loading one never
+    /// changes the request prefix.
+    fn native_deferral(&self) -> bool {
+        false
+    }
+
     /// Whether the account may set `quota`.
     fn accepts_quota(&self) -> bool {
         false
@@ -286,6 +295,17 @@ pub trait AccountClient: Send + Sync {
     /// [`AccountClient::completion`] for the agent `namespace`, for kinds that derive per-caller
     /// state from it. The default ignores it.
     fn completion_for_agent(&self, model: &str, _namespace: &str) -> DynModel<Completion> {
+        self.completion(model)
+    }
+    /// [`AccountClient::completion`] with the provider's own deferred tool loading, for a kind
+    /// that has it. `native` is the calling agent's decision (kind and model); the default
+    /// ignores both.
+    fn deferring_completion(
+        &self,
+        model: &str,
+        _deferral: &Deferral,
+        _native: bool,
+    ) -> DynModel<Completion> {
         self.completion(model)
     }
     /// [`AccountClient::guardian_completion`] for the agent `namespace`.

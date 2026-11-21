@@ -26,6 +26,7 @@ use crate::core::preview::DiffPreview;
 use crate::core::usage_ledger::{CacheWrites, Served, UsageSource};
 use crate::core::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
 use crate::cost::CostBasis;
+use crate::tools::mcp::Deferral;
 
 /// A retry's prompt. The failed attempt's committed messages are already saved by the
 /// recovery hook, so the run only needs to be told to go on. Model context, never a ledger
@@ -181,6 +182,9 @@ pub struct TurnParams<'a> {
     pub provider: String,
     /// Whether the request carries the provider's built-in search tool.
     pub native_search: bool,
+    /// The session's deferral state, so a host that rejects the provider-side tool loading
+    /// fields can be retried without them; `None` when the run has no MCP deferral.
+    pub deferral: Option<Deferral>,
     /// The turn's reasoning effort, from `ModelHandle::generation_options` on the current model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
@@ -286,6 +290,7 @@ pub async fn run_turn(
             model: params.model,
             provider: params.provider,
             native_search: params.native_search,
+            deferral: params.deferral,
             generation_options: params.generation_options,
             max_tokens: params.max_tokens,
             served: params.served,
@@ -410,6 +415,8 @@ pub struct Drive<'a> {
     pub provider: String,
     /// Whether the request carries the provider's built-in search tool.
     pub native_search: bool,
+    /// See [`TurnParams::deferral`].
+    pub deferral: Option<Deferral>,
     /// The reasoning effort this run's model calls send, already checked against the model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
@@ -478,6 +485,36 @@ fn retryable(error: &PromptError) -> bool {
         PromptError::Report(report) => report.is_retryable(),
         _ => false,
     }
+}
+
+/// Whether a failed request is the endpoint refusing the fields of provider-side deferred tool
+/// loading: a 400 that names `defer_loading`, or one that does not know the `tool_reference`
+/// block. A reference to a tool the request does not define, and the rule that one tool must stay
+/// non-deferred, are Fontaine's own mistakes and do not match.
+fn rejects_native_deferral(error: &PromptError) -> bool {
+    if error
+        .provider_response_status()
+        .is_none_or(|status| status.as_u16() != 400)
+    {
+        return false;
+    }
+    let body = error.provider_response_body().unwrap_or("").to_lowercase();
+    if body.contains("at least one") || body.contains("not found") {
+        return false;
+    }
+    body.contains("defer_loading")
+        || (body.contains("tool_reference")
+            && [
+                "extra inputs",
+                "not permitted",
+                "unknown",
+                "unexpected",
+                "does not match",
+                "not supported",
+                "unrecognized",
+            ]
+            .iter()
+            .any(|phrase| body.contains(phrase)))
 }
 
 /// The wait a failed call's `Retry-After` header asks for, when it has one.
@@ -638,6 +675,7 @@ pub async fn drive(
     let mut waited = std::time::Duration::ZERO;
     let policy = params.state.retry_policy();
     let mut attempt: u32 = 0;
+    let mut fell_back = false;
     loop {
         // A retry continues on a note: the failed attempt's message, attachments included,
         // is already saved by the recovery hook, so the retry sends the note alone.
@@ -659,6 +697,7 @@ pub async fn drive(
                 model: params.model.clone(),
                 provider: params.provider.clone(),
                 native_search: params.native_search,
+                deferral: params.deferral.clone(),
                 generation_options: params.generation_options.clone(),
                 max_tokens: params.max_tokens,
                 served: params.served.clone(),
@@ -672,6 +711,25 @@ pub async fn drive(
             DriveEnd::Outcome(outcome) => return outcome,
             DriveEnd::Failed(error) => error,
         };
+        // A host that rejects the provider-side tool loading fields gets the client-side route
+        // from here on. Not a transport retry: no backoff, and `max_retries` is not spent. One
+        // fall back per run, so a host that keeps naming the fields cannot loop it.
+        if !fell_back
+            && let Some(deferral) = &params.deferral
+            && rejects_native_deferral(&error)
+        {
+            if deferral.disable_native() {
+                params.state.warn(&format!(
+                    "{}: the endpoint rejected provider-side tool loading; deferred tools load \
+                     through tool_search from here on (set `native_tool_search = false` under \
+                     `[mcp]` to skip the attempt)",
+                    params.agent_id
+                ));
+            }
+            fell_back = true;
+            params.prompt = RETRY_NOTE.to_string();
+            continue;
+        }
         // A spent window is not retried with a backoff however retryable its status says it is,
         // and a provider that never retries still reaches here: the list's owner decides.
         let usage_limit = prompt_usage_limit(&error, std::time::SystemTime::now());
@@ -1080,6 +1138,38 @@ mod tests {
         PromptError::Provider(ProviderError::ProviderResponse(ProviderResponseError::new(
             status, "boom",
         )))
+    }
+
+    fn bad_request(body: &str) -> PromptError {
+        PromptError::Provider(ProviderError::ProviderResponse(ProviderResponseError::new(
+            StatusCode::BAD_REQUEST,
+            body,
+        )))
+    }
+
+    #[test]
+    fn only_a_400_naming_the_native_deferral_fields_triggers_the_fallback() {
+        assert!(rejects_native_deferral(&bad_request(
+            "tools.3.custom.defer_loading: Extra inputs are not permitted"
+        )));
+        assert!(rejects_native_deferral(&bad_request(
+            "messages.2.content.0.tool_result.content.0: Input tag 'tool_reference' found using \
+             'type' does not match any of the expected tags"
+        )));
+        for ours in [
+            "Tool reference 'mcp__x' not found in available tools",
+            "At least one tool must be non-deferred (defer_loading)",
+            "max_tokens: field required",
+        ] {
+            assert!(!rejects_native_deferral(&bad_request(ours)), "{ours}");
+        }
+        assert!(!rejects_native_deferral(&provider_error(
+            StatusCode::INTERNAL_SERVER_ERROR
+        )));
+        let not_a_400 = PromptError::Provider(ProviderError::ProviderResponse(
+            ProviderResponseError::new(StatusCode::FORBIDDEN, "defer_loading"),
+        ));
+        assert!(!rejects_native_deferral(&not_a_400));
     }
 
     #[test]

@@ -11,6 +11,32 @@ use crate::tools::mcp::deferral::{Deferral, LoadedSets, TOOL_SEARCH, search};
 
 const TARGET: &str = "fontaine::telemetry";
 
+const LOADED_PREFIX: &str = "Loaded ";
+const LOADED_SUFFIX: &str = " tool(s); call them by name from your next turn.";
+
+/// The names a `tool_search` result loaded, or `None` when `output` is anything else: a miss, a
+/// result with notes appended after the array, or text that is not this tool's own. The wire
+/// wrapper that turns a result into `tool_reference` blocks reads it through here, so the format
+/// has one owner.
+pub fn loaded_names(output: &str) -> Option<Vec<String>> {
+    let (header, body) = output.split_once('\n')?;
+    let count: usize = header
+        .strip_prefix(LOADED_PREFIX)?
+        .strip_suffix(LOADED_SUFFIX)?
+        .parse()
+        .ok()?;
+    let mut stream = serde_json::Deserializer::from_str(body).into_iter::<Vec<serde_json::Value>>();
+    let entries = stream.next()?.ok()?;
+    if !body[stream.byte_offset()..].trim().is_empty() {
+        return None;
+    }
+    let names: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.get("name")?.as_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    (names.len() == count && !names.is_empty()).then_some(names)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSearchArgs {
@@ -114,7 +140,7 @@ impl Tool for ToolSearchTool {
         let body = serde_json::to_string_pretty(&rendered)
             .map_err(|e| ToolExecutionError::other(crate::tools::error_chain::chain(&e)))?;
         Ok(format!(
-            "Loaded {} tool(s); call them by name from your next turn.\n{body}",
+            "{LOADED_PREFIX}{}{LOADED_SUFFIX}\n{body}",
             found.len()
         ))
     }
@@ -151,6 +177,38 @@ mod tests {
             loaded: LoadedSets::default(),
             reveal_names: false,
         }
+    }
+
+    #[tokio::test]
+    async fn loaded_names_round_trips_the_tools_own_output() {
+        let tool = tool(crate::tools::mcp::DeferMode::On);
+        let out = tool
+            .call(
+                &mut ToolContext::default(),
+                ToolSearchArgs {
+                    query: "open".into(),
+                    max_results: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded_names(&out),
+            Some(vec![
+                "mcp__gh__issue".to_string(),
+                "mcp__gh__pr".to_string()
+            ])
+        );
+        assert_eq!(
+            loaded_names(&format!("{out}\n\n[a trailing note]")),
+            None,
+            "a result with text after the array stays text"
+        );
+        assert_eq!(loaded_names("No deferred tool matches `x`."), None);
+        assert_eq!(
+            loaded_names("Loaded 2 tool(s); call them by name from your next turn.\n[]"),
+            None
+        );
     }
 
     #[test]

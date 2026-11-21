@@ -540,6 +540,10 @@ pub const KEYS: &[KeyRow] = &[
         .tool_search
         .as_str()
         .to_string()),
+    row!("mcp.native_tool_search", Scalar, |c, _| c
+        .mcp
+        .native_tool_search
+        .to_string()),
     row!("lsp.servers", Map, |c, _| names(
         c.lsp_table().servers.iter().map(|(name, _)| name)
     )),

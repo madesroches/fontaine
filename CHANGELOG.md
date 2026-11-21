@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Anthropic's native deferred tool loading for `anthropic` accounts (#628): with MCP tools deferred,
+  every deferred tool's definition is sent once, marked `defer_loading`, and `tool_search` answers
+  with `tool_reference` blocks, so loading a tool no longer restarts the prompt cache and the
+  references persist across a resume. `[mcp] native_tool_search = false` keeps the client-side
+  route; Claude 3, Opus 4/4.1 and Sonnet 4 models use it automatically, and a host that rejects the
+  fields is warned about once and retried without them for the session. `tool_search` is in context
+  editing's default `exclude_tools`.
 - `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
   process, per CLI version and account, a short probe launch points the CLI at a loopback listener
   that captures the reminder and answers with a canned reply, so no model is called and nothing

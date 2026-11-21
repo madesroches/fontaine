@@ -122,19 +122,36 @@ definitions it needs by calling the built-in [`tool_search`](tools.md#built-in-t
 - `on` always defers them. `off` never does.
 
 When tools are deferred, `tool_search` takes `query`, either keywords matched against tool names and
-descriptions or `select:name1,name2` for exact names, and `max_results`. The matching tools'
-descriptions and input schemas come back as the result, and from the next request on those tools
-are advertised like any other. A loaded tool appears at its usual position in the tool list, which is
-sorted by name within each server, not after the tools loaded earlier; the provider's prompt cache
-restarts from the first position that changed. Loaded tools are remembered for the session only:
-after a resume or a compaction the model searches again. A subagent sees and loads only the
-deferred tools its own tool set holds, and what it loads never reaches its parent's requests or the
-reverse. `/context` lists the deferred names and the loaded definitions separately.
+descriptions or `select:name1,name2` for exact names, and `max_results`. `/context` lists the
+deferred names and the loaded definitions separately. A subagent sees and loads only the deferred
+tools its own tool set holds, and what it loads never reaches its parent's requests or the reverse.
+
+How a loaded tool reaches the model depends on the provider:
+
+- **`anthropic` accounts** use Anthropic's own tool search. Every deferred tool's definition is sent
+  once, in every request, marked `defer_loading`, so the model cannot call it until a search loads
+  it, and `tool_search` answers with `tool_reference` blocks that name the tools it loaded. The
+  request prefix never changes when a tool is loaded, so loading no longer restarts the provider's
+  prompt cache. The references stay in the conversation, so a resumed session does not have to
+  search again. A compaction that summarises a search result away, or a context-editing
+  `exclude_tools` list that drops `tool_search` (it is in the default list), lets the references go,
+  and the model searches again. Claude 3 and the first Opus 4, Opus 4.1 and Sonnet 4 models do not
+  support the feature and use the route below. `[mcp] native_tool_search = false` turns it off for
+  every account. If a host behind an `anthropic` account rejects the fields (a gateway that does not
+  know `defer_loading` or `tool_reference`), Fontaine warns once, resends that request without them,
+  and uses the route below for the rest of the session. The fallback is not saved.
+- **Every other provider** loads definitions on the client side: from the next request on, the loaded
+  tools are advertised like any other. A loaded tool appears at its usual position in the tool list,
+  which is sorted by name within each server, not after the tools loaded earlier, so the provider's
+  prompt cache restarts from the first position that changed. Loaded tools are remembered for the
+  session only: after a resume or a compaction the model searches again.
 
 Deferral changes nothing about permissions. Deferred tools are registered and guarded exactly like
 loaded ones: they are `arbitrary` tools, your rules and hooks match their `mcp__<server>__<tool>`
 names, and every call is judged by the same gate. A call to a deferred tool whose definition was
-never loaded is not run and is not judged: the model gets a note to search first. `tool_search`
+never loaded is not run and is not judged: the model gets a note to search first. On the
+`anthropic` route every deferred tool is advertised, so such a call is run and judged like any other
+call. `tool_search`
 itself is read-only (it reads only the in-memory list of definitions), and loading a definition
 grants nothing. The setting is not a loosening key, so a repository's settings may set it. When the main
 model uses the `claude-subscription` provider Fontaine never defers, because the Claude CLI owns the tool list

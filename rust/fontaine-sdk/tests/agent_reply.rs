@@ -39,6 +39,7 @@ async fn run(
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            deferral: None,
             generation_options: None,
             max_tokens: None,
         },

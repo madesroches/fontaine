@@ -5,7 +5,7 @@
 //! the name goes through.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use rig_core::completion::ToolDefinition;
@@ -67,6 +67,10 @@ struct State {
 struct Inner {
     state: RwLock<State>,
     connections: AtomicU64,
+    /// `[mcp] native_tool_search = false`; inverted so the default is on.
+    native_config_off: AtomicBool,
+    /// Set for the session when a host rejected the native fields; never persisted.
+    native_retry_off: AtomicBool,
 }
 
 /// The connection-scoped view of every MCP tool the session registered: its names, descriptions
@@ -125,6 +129,24 @@ impl Deferral {
         let mut state = write_recovering(&self.0.state);
         state.mode = mode;
         state.window = window;
+    }
+
+    /// Applies `[mcp] native_tool_search`.
+    pub fn set_native_config(&self, enabled: bool) {
+        self.0.native_config_off.store(!enabled, Ordering::Relaxed);
+    }
+
+    /// Whether the provider-side deferral route may be used right now: the setting allows it and
+    /// no host has rejected its fields this session. Read live on every request.
+    pub fn native_allowed(&self) -> bool {
+        !self.0.native_config_off.load(Ordering::Relaxed)
+            && !self.0.native_retry_off.load(Ordering::Relaxed)
+    }
+
+    /// Turns the provider-side route off for the rest of the session; returns whether this call
+    /// was the one that did.
+    pub fn disable_native(&self) -> bool {
+        !self.0.native_retry_off.swap(true, Ordering::Relaxed)
     }
 
     /// Whether MCP definitions are deferred right now.
@@ -438,6 +460,24 @@ mod tests {
         assert!(!deferral.is_registered("mcp__gh__old"));
         deferral.forget("gh", old);
         assert!(deferral.is_registered("mcp__gh__new"));
+    }
+
+    #[test]
+    fn native_is_allowed_until_the_setting_or_a_rejection_turns_it_off() {
+        let deferral = Deferral::default();
+        assert!(deferral.native_allowed());
+        deferral.set_native_config(false);
+        assert!(!deferral.native_allowed());
+        deferral.set_native_config(true);
+        assert!(deferral.native_allowed());
+        assert!(deferral.disable_native());
+        assert!(!deferral.disable_native(), "only the first call reports");
+        assert!(!deferral.native_allowed());
+        deferral.set_native_config(true);
+        assert!(
+            !deferral.native_allowed(),
+            "the setting does not undo a rejection"
+        );
     }
 
     #[test]

@@ -71,7 +71,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 enabled = true
 trigger_tokens = 100000
 keep = 3
-exclude_tools = ["board_show", "board_update", "memory", "todo_write"]
+exclude_tools = ["board_show", "board_update", "memory", "todo_write", "tool_search"]
 ```
 
 ## `openai`
