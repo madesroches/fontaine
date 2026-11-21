@@ -110,6 +110,8 @@ async fn each_local_verb_in_its_allowed_form_skips_the_guardian() {
     assert_eq!(fake.calls(), 0);
 }
 
+// Only GNU `sed -i` is modelled, so a `sed` edit takes the tier on Linux alone.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_untracked_file_that_predates_the_session_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt"]);
@@ -147,6 +149,8 @@ async fn an_edit_and_a_deletion_in_a_root_with_no_repository_skip_the_guardian()
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
     write(&rig.work().join("a.txt"), "a\n");
     write(&rig.work().join("b.txt"), "a\n");
+    // Only GNU `sed -i` is modelled, so a `sed` edit takes the tier on Linux alone.
+    #[cfg(target_os = "linux")]
     assert!(skips(&rig, &fake, "sed -i 's/a/b/' a.txt").await);
     assert!(skips(&rig, &fake, "rm b.txt").await);
     assert_eq!(fake.calls(), 0);
