@@ -43,18 +43,25 @@ method on `Provider`. Native is on for every `anthropic` account whose model sup
 per-model check runs in each advertiser from its own model: Claude models released on or before
 Opus 4.1 (2025-08-05), i.e. Opus 4/4.1, Sonnet 4 and 3.x, are not native; unknown or undated ids
 are native, with the retry as backstop.
-A `[mcp] native_tool_search = true|false` (default `true`) turns it off; it only selects a wire
-shape, so project scope may set it too. Any other host behind an `anthropic` account relies on
+A `[mcp] native_tool_search = true|false` (default `true`) turns it off. Any other host behind an `anthropic` account relies on
 the retry; `databricks` and `opencode-go` stay client-side.
 
 **Wire wrapper `DeferWire<W>`** (new `core/providers/defer_wire.rs`, modeled on `CacheWire`),
-applied at agent build time (`core/agent/build.rs`, `core/child_runner.rs`) where the
-session `Deferral` is available, for the conversation scope only (not the guardian). It is not
-applied in `Connected::model`/`ConnectContext`, which are built at startup before MCP and
-`Deferral` exist. The Anthropic provider exposes only the `native_deferral` capability and a way
-to wrap its `Model<Messages>`. `DeferWire` holds a clone of the session's `Deferral` and the
-session retry-off flag (below). In `encode`, after the inner wire encodes, and only when the
-encoded `tools[]` contains `tool_search` (otherwise the body is left untouched):
+applied inside the Anthropic provider before the model is erased: `build.rs` and
+`child_runner.rs` only hold an erased `DynModel<Completion>` (`build.rs:433`,
+`child_runner.rs:802`, `models.rs:155`), so they cannot wrap it themselves. `AccountClient` gains a
+method taking the session `Deferral` and that agent's native decision, defaulting to plain
+`completion()`; the Anthropic client overrides it to wrap its `Model<Messages>` in `DeferWire`
+(modeled on `AccountClient::completion_for_agent`, `providers/mod.rs:286-293`, and
+`ModelHandle::for_agent`, `models.rs:241-255`). `build.rs` and `child_runner.rs` call it through
+`ModelHandle`, for the conversation scope only (not the guardian). A `ModelHandle` with no client
+(`ModelHandle::new`) stays non-native. It is not applied in `Connected::model`/`ConnectContext`,
+which are built at startup before MCP and `Deferral` exist. `DeferWire` acts only when the
+native decision passed in holds (account capability plus the per-model check, the same predicate
+that agent's advertiser uses); otherwise it passes the body through untouched. It holds a clone of
+the session's `Deferral`, which carries the retry-off flag (below). In `encode`, after the inner
+wire encodes, and only when the encoded `tools[]` contains `tool_search` (otherwise the body is
+left untouched):
 
 1. For every tool in `tools[]` whose name `Deferral::is_registered`, insert `defer_loading: true`.
    `tool_search` and all non-MCP tools stay non-deferred, which satisfies "at least one
@@ -63,13 +70,15 @@ encoded `tools[]` contains `tool_search` (otherwise the body is left untouched):
    400. `DeferWire` therefore moves `cache_control` off every tool it defers onto the last
    remaining non-deferred tool (if none carried one and a tools cache marker was present, it
    keeps one marker on the last non-deferred tool).
-2. For each `tool_result` block whose `tool_use_id` belongs to a `tool_use` named `tool_search`,
-   rewrite `content` into `tool_reference` blocks (`{"type":"tool_reference","tool_name":…}`),
-   one per loaded name. Names are read from the JSON array that directly follows the
-   `Loaded N tool(s)` header in the existing `tool_search` output, so nothing new is stored in
-   history and a resumed session re-derives the references for free. When any text trails the
-   array (the result pipeline appends notification, scanner and hook notes as `\n\n{note}`), or
-   there is no array (miss, "no tools deferred"), the result stays plain text.
+2. For each `tool_result` block whose `tool_use_id` belongs to a `tool_use` named `tool_search`
+   and whose `content` holds exactly one text block (rig encodes a `String` output as an array of
+   `{"type":"text"}` blocks; empty output is a plain string), rewrite `content` into `tool_reference` blocks (`{"type":"tool_reference","tool_name":…}`),
+   one per loaded name. Names are read from the JSON array that directly follows the full header
+   line `Loaded N tool(s); call them by name from your next turn.` in the existing `tool_search`
+   output, so nothing new is stored in history and a resumed session re-derives the references for
+   free. When any text trails the array (the result pipeline appends notification, scanner and
+   hook notes as `\n\n{note}`), there is no array (miss, "no tools deferred"), or the content has
+   any other shape, the result stays text.
 3. A referenced name absent from `tools[]` (tool vanished in a `list_changed` refresh) is dropped
    from the blocks, because the API rejects references without a definition; the text fallback is
    used if none remain.
@@ -92,11 +101,14 @@ its request carries only its own registered tools, so its references can only na
 shipped, so no generic mechanism exists). Add a narrow one here: the retry-off flag is an
 `AtomicBool` on the shared `Deferral` (read/disable methods), read live by `DeferWire` and the
 advertisers on each request (not set once at build). The retry point is `turn::drive` in
-`core/turn.rs`, which gets the `Deferral` via a new field on `Drive`/`TurnParams`, filled from
-`core/agent.rs` and `child_runner` `context.deferral`. On a 400 naming `defer_loading` or
-`tool_reference`, on any request (not just the first), flip the flag, emit `Approver::warn` once,
-and re-drive; the check runs before the `!retryable` branch, with no backoff, and does not consume
-`max_retries`. The flag is never persisted and no gate decision
+`core/turn.rs`, which gets the `Deferral` via a new field on `Drive`/`TurnParams` (built at
+`run.rs:426`), filled from `run.rs` and `child_runner` `context.deferral`. The match is
+field-rejection errors only: a 400 whose message names `defer_loading`, or a `tool_reference`
+rejection such as the field/type being unknown. "Tool reference 'x' not found" and the
+at-least-one-non-deferred error are Fontaine bugs and do not match. On a match, on any request
+(not just the first), flip the flag, emit `Approver::warn` once, and re-drive through drive's
+existing continuation path (`core/turn.rs` ~629-648); the check runs before the `!retryable`
+branch, with no backoff, and does not consume `max_retries`. The flag is never persisted and no gate decision
 depends on it.
 
 **Fallback and `claude-subscription`.** Non-Anthropic providers, `native_tool_search = false`, and
@@ -104,26 +116,33 @@ the retry state keep today's behavior byte for byte. `claude-subscription` still
 
 ## Implementation Steps
 
-1. `providers/mod.rs`, `providers/anthropic.rs`: add the `native_deferral` capability and a way
-   to wrap the provider's `Model<Messages>`.
-2. `providers/defer_wire.rs`: `DeferWire` with the body rewrites above (including the cache-marker
+1. `tools/mcp/deferral.rs`: the retry-off flag on `Deferral` (read/disable methods).
+2. `providers/mod.rs`, `providers/anthropic.rs`, `core/models.rs`: add the `native_deferral`
+   capability and the `AccountClient` method (taking the `Deferral` and the agent's native
+   decision) that wraps the provider's `Model<Messages>` in `DeferWire`, reached via `ModelHandle`.
+3. `providers/defer_wire.rs`: `DeferWire` with the body rewrites above (including the cache-marker
    move and the `tool_search`-present guard).
-3. `core/agent/deferred.rs`, `core/agent/build.rs`, `core/child_runner.rs`: per-advertiser
-   native decision; apply `DeferWire` at build; skip the `active_tools` patch when native.
-4. `core/config.rs`, `core/config_catalog.rs`, `core/config_scope.rs`: `[mcp] native_tool_search`,
+4. `core/agent/deferred.rs`, `core/agent/build.rs`, `core/child_runner.rs`: per-advertiser
+   native decision; build the model through the `ModelHandle` method; skip the `active_tools`
+   patch when native.
+5. `core/config.rs`, `core/config_catalog.rs`, `core/config_scope.rs`: `[mcp] native_tool_search`,
    with a `Rule::any("mcp.native_tool_search")` (precedent `mcp.tool_search`).
-5. `core/turn.rs`: retry-without in `turn::drive`; the session flag.
-6. `tool_search.rs`: tool description text stays accurate for both routes ("callable from your
+6. `core/turn.rs`, `core/run.rs`: retry-without in `turn::drive`; the `Deferral` field on
+   `TurnParams`.
+7. `tool_search.rs`: tool description text stays accurate for both routes ("callable from your
    next turn" holds on both); add a helper, shared by the wire wrapper so the format has one
-   owner, that parses the loaded names from the array directly following the `Loaded N tool(s)`
-   header and reports trailing text so the caller keeps the result as text.
-7. Docs and changelog (below).
+   owner, that parses the loaded names from the array directly following the full
+   `Loaded N tool(s); call them by name from your next turn.` header line and reports trailing
+   text so the caller keeps the result as text.
+8. `core/providers/context_editing.rs`: add `tool_search` to `DEFAULT_EXCLUDE_TOOLS` (line 13) so
+   `clear_tool_uses` does not clear its references.
+9. Docs and changelog (below).
 
 ## Files to Modify
 
-- `rust/fontaine-sdk/src/core/providers/{mod,anthropic}.rs`, new `defer_wire.rs`
-- `rust/fontaine-sdk/src/core/agent/{deferred,build}.rs`, `core/{child_runner,turn}.rs`
-- `rust/fontaine-sdk/src/tools/tool_search.rs`
+- `rust/fontaine-sdk/src/core/providers/{mod,anthropic,context_editing}.rs`, new `defer_wire.rs`
+- `rust/fontaine-sdk/src/core/agent/{deferred,build}.rs`, `core/{child_runner,turn,run,models}.rs`
+- `rust/fontaine-sdk/src/tools/tool_search.rs`, `tools/mcp/deferral.rs`
 - `rust/fontaine-sdk/src/core/{config,config_catalog,config_scope}.rs`
 - `docs/mcp.md`, `docs/configuration.md`, `CHANGELOG.md`, master plan `## Decisions`
 
@@ -136,6 +155,7 @@ the retry state keep today's behavior byte for byte. `claude-subscription` still
 
 - AFK: default `native_tool_search = true` on `anthropic` accounts (conservative on correctness:
   retry-without falls back safely), user and project scope may both set it.
+- AFK: the retry-off flag is session-wide: one agent's 400 turns native off for every agent.
 - AFK: the retry covers only this feature's two field names, not a general capability set (#169).
 - AFK: cache savings are not measured in this change; run `cache-bench` (#498) before and after and
   record the numbers in the PR as a measurement, not a merge gate.
@@ -145,7 +165,9 @@ the retry state keep today's behavior byte for byte. `claude-subscription` still
 - `docs/mcp.md` "Tool search": describe the Anthropic route (definitions sent once, deferred;
   loads no longer restart the cache), keep the cache-restart text for other providers, and revise
   the resume/compaction limitation (references persist; after a compaction that summarises them
-  away the model searches again). Also `docs/mcp.md:137` ("A call to a deferred tool whose
+  away the model searches again). Note that `tool_search` is in context editing's default
+  `exclude_tools`; a user `exclude_tools` override that drops it lets `clear_tool_uses` clear the
+  references, and the model searches again. Also `docs/mcp.md:137` ("A call to a deferred tool whose
   definition was never loaded is not run and is not judged") and the `core/agent/deferred.rs`
   module doc: that statement holds on the client-side route only.
 - `docs/configuration.md` `[mcp]`: `native_tool_search`, with a scope-table row beside
@@ -171,6 +193,8 @@ All unit tests, no live API:
   request carries no `defer_loading` and text results; the same on a later (not first) request.
 - `child_runner`: a child on a non-native account gets a non-native advertiser while the parent
   stays native.
+- `defer_wire`/`child_runner`: a non-native model on an `anthropic` account (per-model check
+  fails) leaves the body untouched; a `ModelHandle` with no client stays non-native.
 - Config: key parsing, scope placement (a new `mcp.native_tool_search` row in the
   `core/config_scope.rs` per-key scope test table, `config_scope.rs:648`), catalog test stays green.
 - The gate choke-point test stays green: no tool gains or loses a risk class.
