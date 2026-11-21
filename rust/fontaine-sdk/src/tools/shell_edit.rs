@@ -126,7 +126,7 @@ impl Walk<'_> {
             return false;
         }
         match name {
-            "sed" => self.sed(&argv[1..]),
+            "sed" => GNU_SED && self.sed(&argv[1..]),
             "mkdir" => self.mkdir(&argv[1..]),
             "mv" => self.mv(&argv[1..]),
             "git" => self.git(argv),
@@ -565,10 +565,19 @@ fn under_dot_git(path: &str) -> bool {
     })
 }
 
+/// BSD `sed -i` takes the next argument as a backup suffix, so the classifier and sed would
+/// read different scripts; only GNU sed is modelled.
+const GNU_SED: bool = cfg!(target_os = "linux");
+
 /// Whether `script` holds only `d` and `s` commands, each with an optional address. GNU `sed`
 /// runs a command for `e` and writes a file for `w`, so the grammar is a whitelist: anything
 /// else, including blocks, labels, `y` and the text commands, rejects.
 pub fn sed_script_ok(script: &str) -> bool {
+    // GNU sed does not end a regex at a delimiter inside a bracket expression, which this
+    // grammar does not model; a hidden `e` or `w` flag would follow.
+    if script.contains('[') {
+        return false;
+    }
     let chars: Vec<char> = script.chars().collect();
     let mut at = 0;
     loop {
@@ -823,14 +832,17 @@ mod tests {
             "grep x a.txt > /dev/null 2>&1",
             "sed -i 's/a/b/' a.txt && git add a.txt && git commit -m x && git status",
         ] {
-            assert!(accepts(&f, command), "{command}");
+            assert_eq!(
+                accepts(&f, command),
+                GNU_SED || !command.contains("sed "),
+                "{command}"
+            );
         }
     }
 
     #[test]
     fn the_golden_adversarial_set_is_rejected() {
         let f = fixture();
-        let outside = "/etc/hosts";
         for command in [
             // sed constructs that run a command or write a file
             "sed -i 'e echo x' a.txt",
@@ -838,6 +850,8 @@ mod tests {
             "sed -i 'r a.txt' a.txt",
             "sed -i 's/a/b/e' a.txt",
             "sed -i 's/a/b/w out' a.txt",
+            "sed -i 's/[/]/;sdx/e;d;d' a.txt",
+            "sed -i 's/[/]/;sdx/w PWN2;d;d' a.txt",
             "sed -i 's/a/b/p' a.txt",
             "sed -i 's/a/b/m' a.txt",
             "sed -i '/a/{d}' a.txt",
@@ -1007,7 +1021,6 @@ mod tests {
         ] {
             assert!(!accepts(&f, command), "{command:?} must not take the tier");
         }
-        let _ = outside;
     }
 
     #[test]
@@ -1027,12 +1040,15 @@ mod tests {
             scope: &f.scope,
             cwd: Some("src"),
         };
-        assert!(classify(
-            "sed -i 's/a/b/' x.rs && git add x.rs",
-            &env,
-            &Preclassifier::default(),
-            &f.stub
-        ));
+        assert_eq!(
+            classify(
+                "sed -i 's/a/b/' x.rs && git add x.rs",
+                &env,
+                &Preclassifier::default(),
+                &f.stub
+            ),
+            GNU_SED
+        );
     }
 
     #[test]
@@ -1098,6 +1114,8 @@ mod tests {
             "s\\a\\b\\",
             "dd",
             "d p",
+            "s/[/]/;sdx/e;d;d",
+            "s/[/]/;sdx/w PWN2;d;d",
         ] {
             assert!(!sed_script_ok(script), "{script:?}");
         }

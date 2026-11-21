@@ -1204,29 +1204,23 @@ impl PermissionPipeline {
         })
     }
 
-    fn hooks_name_file_reads(&self) -> bool {
+    fn hooks_name_tools(&self, tools: &[&str]) -> bool {
         let layer = self.plugin_hooks.get();
         self.hooks.iter().chain(layer.pre.iter()).any(|hook| {
             hook.matcher()
                 .and_then(|text| parse_rule(&text).ok())
-                .is_some_and(|rule| matches!(rule.tool.as_str(), "read" | "ls" | "grep"))
+                .is_some_and(|rule| tools.contains(&rule.tool.as_str()))
         })
+    }
+
+    fn hooks_name_file_reads(&self) -> bool {
+        self.hooks_name_tools(&["read", "ls", "grep"])
     }
 
     /// Whether a pre-tool-use hook is scoped to a file tool. Such a hook never fires for a shell
     /// call, so a shell edit it would have seen must not skip the verdict it stands in front of.
     fn hooks_name_file_tools(&self) -> bool {
-        let layer = self.plugin_hooks.get();
-        self.hooks.iter().chain(layer.pre.iter()).any(|hook| {
-            hook.matcher()
-                .and_then(|text| parse_rule(&text).ok())
-                .is_some_and(|rule| {
-                    matches!(
-                        rule.tool.as_str(),
-                        "read" | "ls" | "grep" | "edit" | "write" | "notebook_edit"
-                    )
-                })
-        })
+        self.hooks_name_tools(&["read", "ls", "grep", "edit", "write", "notebook_edit"])
     }
 
     async fn run_hooks(

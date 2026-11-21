@@ -76,4 +76,4 @@ The request marks `destructive: true` when the harness found a removal, an overw
 
 ## Answer format
 
-Call `submit` once with `decision` (`allow`, `deny` or `escalate`), `rule`, `explanation` (1-3 sentences) and `confidence` (a number from 0 to 1), and, on a `deny` only, optionally `instead`: one narrower call that would be allowed in place of this one, written as the tool and its arguments, never a call that reaches the effect you deny. Do not answer in prose.
+Call `submit` once with `decision` (`allow`, `deny` or `escalate`), `rule`, `explanation` (1-3 sentences) and `confidence` (a number from 0 to 1), and, on a `deny` or `escalate` only, optionally `instead`: one narrower call that would be allowed in place of this one, written as the tool and its arguments, never a call that reaches the effect you deny. Do not answer in prose.

@@ -149,8 +149,8 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    - a read-only command of the [pre-classifier's](#the-shell-pre-classifier) set, or one of your
      `allow_extra` entries as the first stage, whose reads pass the same file-read rules, and no
      credential file;
-   - `sed -i` with only `d` and `s` commands (no `e`, `w`, `r`, blocks or branches), on files an
-     `edit` would change without a verdict;
+   - `sed -i` on Linux (GNU sed) with only `d` and `s` commands (no `e`, `w`, `r`, blocks, branches or
+     bracket expressions), on files an `edit` would change without a verdict;
    - `mkdir`, and `mv` of such files onto a path a `write` would create or overwrite without a
      verdict;
    - `git add` of named files (or `-u`), `git rm` and `git mv` without `-f`, `git commit` without
