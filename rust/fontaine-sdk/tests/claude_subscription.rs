@@ -946,6 +946,23 @@ async fn discovery_learns_the_account_email_in_memory_only() {
 }
 
 #[tokio::test]
+async fn a_request_learns_an_account_email_discovery_did_not_see() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "ok"}]}));
+    let handle = main_handle(&claude).await;
+    claude.scenario(json!({
+        "account": {"email": "other@example.com", "subscriptionType": "max"},
+        "responses": [{"text": "ok"}],
+    }));
+    handle.completion.call(conversation(1)).await.unwrap();
+    let known = known_account_emails(&claude.w.data);
+    assert!(
+        known.contains(&"other@example.com".to_string()),
+        "{known:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_native_layout_replays_the_reminder_and_marks_only_the_final_frame() {
     let claude = Claude::new();
     claude.scenario(json!({"responses": [{"text": "ok"}]}));
