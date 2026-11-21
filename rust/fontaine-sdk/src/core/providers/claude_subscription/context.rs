@@ -300,23 +300,39 @@ fn mark(frame: &mut Frame) {
 }
 
 /// What a request's result said about the prompt cache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct CacheUsage {
     pub read: u64,
     pub write_1h: u64,
+    // The rest is for the log: a write that landed in the 5-minute bucket looks like a missing
+    // read, and the check compares only `read` and `write_1h`.
+    pub input: u64,
+    pub write_total: u64,
+    pub write_5m: u64,
 }
 
 impl CacheUsage {
     /// Absent when the result carries no cache read count.
     pub(super) fn from_result(usage: &Value) -> Option<Self> {
+        let count = |value: Option<&Value>| value.and_then(Value::as_u64).unwrap_or(0);
+        let creation = usage.get("cache_creation");
         Some(CacheUsage {
             read: usage.get("cache_read_input_tokens")?.as_u64()?,
-            write_1h: usage
-                .get("cache_creation")
-                .and_then(|creation| creation.get("ephemeral_1h_input_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            write_1h: count(creation.and_then(|c| c.get("ephemeral_1h_input_tokens"))),
+            input: count(usage.get("input_tokens")),
+            write_total: count(usage.get("cache_creation_input_tokens")),
+            write_5m: count(creation.and_then(|c| c.get("ephemeral_5m_input_tokens"))),
         })
+    }
+}
+
+impl std::fmt::Display for CacheUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "read={} input={} write={} write_1h={} write_5m={}",
+            self.read, self.input, self.write_total, self.write_1h, self.write_5m
+        )
     }
 }
 
@@ -329,6 +345,7 @@ pub(super) struct Record {
     unreplayable_tail: bool,
     usage: CacheUsage,
     settings: u64,
+    thinking: bool,
     at: Instant,
 }
 
@@ -345,6 +362,7 @@ pub(super) struct Sent {
     merged_tail: bool,
     unreplayable_tail: bool,
     settings: u64,
+    thinking: bool,
 }
 
 /// A hash of what the API's message cache is keyed on besides the messages: the effort level and
@@ -391,6 +409,18 @@ impl Sent {
             && is_user(&frames[frames.len() - 2])
             && is_user(&frames[frames.len() - 1]);
         let unreplayable_tail = frames.last().is_some_and(unreplayable);
+        let thinking = frames.iter().any(|frame| {
+            frame.value["message"]["content"]
+                .as_array()
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        matches!(
+                            block.get("type").and_then(Value::as_str),
+                            Some("thinking" | "redacted_thinking")
+                        )
+                    })
+                })
+        });
         Sent {
             session_id: session_id.to_string(),
             version,
@@ -401,6 +431,7 @@ impl Sent {
             merged_tail,
             unreplayable_tail,
             settings: 0,
+            thinking,
         }
     }
 
@@ -411,18 +442,54 @@ impl Sent {
 }
 
 /// What a broken replay was judged on, kept so the verdict can be audited.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Evidence {
     pub read: u64,
     pub expected: u64,
     pub gap: Duration,
+    pub prev_read: u64,
+    pub prev_write_1h: u64,
+    pub thinking: bool,
+}
+
+/// Why a pair of requests gave no verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Skip {
+    FirstRequest,
+    /// Where the two requests' frame fingerprints first differ, and how many each has.
+    NotExtended {
+        first_diff: usize,
+        prev_len: usize,
+        now_len: usize,
+    },
+    MergedTail,
+    UnreplayableTail,
+    SettingsChanged,
+    ColdPrevious,
+    GapTooLong,
+    TooManyAdded,
+}
+
+impl std::fmt::Display for Skip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Skip::FirstRequest => "first_request",
+            Skip::NotExtended { .. } => "not_extended",
+            Skip::MergedTail => "merged_tail",
+            Skip::UnreplayableTail => "unreplayable_tail",
+            Skip::SettingsChanged => "settings_changed",
+            Skip::ColdPrevious => "cold_previous",
+            Skip::GapTooLong => "gap_too_long",
+            Skip::TooManyAdded => "too_many_added",
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
     Broken(Evidence),
     Healthy,
-    NoVerdict,
+    Skipped(Skip),
 }
 
 /// Whether `now` shows a replay the cache did not read back. Anything that makes the comparison
@@ -430,20 +497,39 @@ enum Outcome {
 fn check(prev: &Record, now: &Record) -> Outcome {
     let extends =
         now.prints.len() > prev.prints.len() && now.prints[..prev.prints.len()] == prev.prints[..];
-    if !extends || prev.merged_tail || prev.unreplayable_tail || prev.settings != now.settings {
-        return Outcome::NoVerdict;
+    if !extends {
+        let first_diff = prev
+            .prints
+            .iter()
+            .zip(&now.prints)
+            .position(|(a, b)| a != b)
+            .unwrap_or(prev.prints.len().min(now.prints.len()));
+        return Outcome::Skipped(Skip::NotExtended {
+            first_diff,
+            prev_len: prev.prints.len(),
+            now_len: now.prints.len(),
+        });
+    }
+    if prev.merged_tail {
+        return Outcome::Skipped(Skip::MergedTail);
+    }
+    if prev.unreplayable_tail {
+        return Outcome::Skipped(Skip::UnreplayableTail);
+    }
+    if prev.settings != now.settings {
+        return Outcome::Skipped(Skip::SettingsChanged);
     }
     // A request that read nothing was a cold start: its write is not evidence the prefix replays.
     if prev.usage.read == 0 {
-        return Outcome::NoVerdict;
+        return Outcome::Skipped(Skip::ColdPrevious);
     }
     let gap = now.at.saturating_duration_since(prev.at);
     if gap >= MAX_GAP {
-        return Outcome::NoVerdict;
+        return Outcome::Skipped(Skip::GapTooLong);
     }
     let added: usize = now.blocks[prev.prints.len()..].iter().sum();
     if added > MAX_ADDED_BLOCKS {
-        return Outcome::NoVerdict;
+        return Outcome::Skipped(Skip::TooManyAdded);
     }
     let expected = prev.usage.read + prev.usage.write_1h;
     if now.usage.read + READ_SLACK < expected {
@@ -451,6 +537,9 @@ fn check(prev: &Record, now: &Record) -> Outcome {
             read: now.usage.read,
             expected,
             gap,
+            prev_read: prev.usage.read,
+            prev_write_1h: prev.usage.write_1h,
+            thinking: now.thinking,
         })
     } else {
         Outcome::Healthy
@@ -497,6 +586,9 @@ struct Entry {
     at: u64,
     read: Option<u64>,
     expected: Option<u64>,
+    prev_read: Option<u64>,
+    prev_write_1h: Option<u64>,
+    thinking: Option<bool>,
 }
 
 impl Entry {
@@ -553,6 +645,9 @@ fn parse(text: &str, now: u64) -> Result<BTreeMap<Key, Entry>, serde_json::Error
                 at: entry.get("at")?.as_u64()?,
                 read: entry.get("read").and_then(Value::as_u64),
                 expected: entry.get("expected").and_then(Value::as_u64),
+                prev_read: entry.get("prev_read").and_then(Value::as_u64),
+                prev_write_1h: entry.get("prev_write_1h").and_then(Value::as_u64),
+                thinking: entry.get("thinking").and_then(Value::as_bool),
             };
             parsed.fresh(now).then_some(((version, wording), parsed))
         })
@@ -647,6 +742,9 @@ impl Verdicts {
             at: now,
             read: Some(evidence.read),
             expected: Some(evidence.expected),
+            prev_read: Some(evidence.prev_read),
+            prev_write_1h: Some(evidence.prev_write_1h),
+            thinking: Some(evidence.thinking),
         };
         {
             let mut broken = lock_recovering(&self.broken);
@@ -692,6 +790,15 @@ impl Verdicts {
                 }
                 if let Some(expected) = entry.expected {
                     value["expected"] = expected.into();
+                }
+                if let Some(prev_read) = entry.prev_read {
+                    value["prev_read"] = prev_read.into();
+                }
+                if let Some(prev_write_1h) = entry.prev_write_1h {
+                    value["prev_write_1h"] = prev_write_1h.into();
+                }
+                if let Some(thinking) = entry.thinking {
+                    value["thinking"] = thinking.into();
                 }
                 value
             })
@@ -746,6 +853,21 @@ pub(super) fn finished(
         (sent.layout, sent.version, sent.wording.as_deref(), usage)
     else {
         records.take(&sent.session_id);
+        let missing = if sent.layout != Layout::Native {
+            "layout"
+        } else if sent.version.is_none() {
+            "version"
+        } else if sent.wording.is_none() {
+            "wording"
+        } else {
+            "usage"
+        };
+        tracing::debug!(
+            session = %sent.session_id,
+            outcome = "no_record",
+            missing,
+            "claude cache self-check"
+        );
         return None;
     };
     let previous = records.take(&sent.session_id);
@@ -756,35 +878,108 @@ pub(super) fn finished(
         unreplayable_tail: sent.unreplayable_tail,
         settings: sent.settings,
         usage,
+        thinking: sent.thinking,
         at,
     };
-    let outcome = previous.map_or(Outcome::NoVerdict, |prev| check(&prev, &now));
-    records.put(sent.session_id, now);
+    let outcome = match &previous {
+        Some(prev) => check(prev, &now),
+        None => Outcome::Skipped(Skip::FirstRequest),
+    };
+    let diff = match outcome {
+        Outcome::Skipped(Skip::NotExtended {
+            first_diff,
+            prev_len,
+            now_len,
+        }) => Some((first_diff, prev_len, now_len)),
+        _ => None,
+    };
+    let report = Report {
+        session: &sent.session_id,
+        version,
+        wording,
+        now: &now,
+        previous: previous.as_ref(),
+        diff,
+    };
+    records.put(sent.session_id.clone(), now.clone());
     drop(records);
-    let evidence = match outcome {
+    match outcome {
         Outcome::Healthy => {
             verdicts.clear_strike(version, wording);
-            return None;
+            report.emit("healthy", "");
+            None
         }
-        Outcome::NoVerdict => return None,
-        Outcome::Broken(evidence) => evidence,
-    };
-    if !verdicts.strike(version, wording) {
-        return None;
+        Outcome::Skipped(skip) => {
+            report.emit(&format!("skipped:{skip}"), "");
+            None
+        }
+        Outcome::Broken(evidence) => {
+            if !verdicts.strike(version, wording) {
+                report.emit("broken", "strike");
+                return None;
+            }
+            let mark = verdicts.mark(version, wording, &evidence);
+            verdicts.clear_strike(version, wording);
+            report.emit("broken", "verdict");
+            match mark {
+                Mark::Known => None,
+                Mark::Saved | Mark::Unsaved => Some(Finding {
+                    version,
+                    wording: wording.to_string(),
+                    saved: mark == Mark::Saved,
+                    evidence,
+                }),
+            }
+        }
     }
-    let mark = verdicts.mark(version, wording, &evidence);
-    verdicts.clear_strike(version, wording);
-    let saved = match mark {
-        Mark::Known => return None,
-        Mark::Saved => true,
-        Mark::Unsaved => false,
-    };
-    Some(Finding {
-        version,
-        wording: wording.to_string(),
-        saved,
-        evidence,
-    })
+}
+
+/// What the per-request debug event is built from.
+struct Report<'a> {
+    session: &'a str,
+    version: (u32, u32, u32),
+    wording: &'a str,
+    now: &'a Record,
+    previous: Option<&'a Record>,
+    /// First differing index and both lengths, for a pair whose prefix did not extend.
+    diff: Option<(usize, usize, usize)>,
+}
+
+impl Report<'_> {
+    /// Counts, hashes and tokens only: no message content. A module-target event never reaches an
+    /// export backend.
+    fn emit(&self, outcome: &str, strike: &str) {
+        let (a, b, c) = self.version;
+        let wording: String = self.wording.chars().take(8).collect();
+        let previous_usage = self
+            .previous
+            .map_or_else(|| "none".to_string(), |p| p.usage.to_string());
+        let gap = self
+            .previous
+            .map(|p| self.now.at.saturating_duration_since(p.at).as_secs());
+        let added = self
+            .previous
+            .and_then(|p| self.now.blocks.get(p.prints.len()..))
+            .map(|blocks| blocks.iter().sum::<usize>());
+        tracing::debug!(
+            session = %self.session,
+            cli = %format!("{a}.{b}.{c}"),
+            wording = %wording,
+            layout = "native",
+            frames = self.now.prints.len(),
+            added = ?added,
+            usage = %self.now.usage,
+            previous_usage = %previous_usage,
+            gap_secs = ?gap,
+            thinking = self.now.thinking,
+            outcome,
+            strike = strike,
+            first_diff = ?self.diff.map(|d| d.0),
+            prev_frames = ?self.diff.map(|d| d.1),
+            now_frames = ?self.diff.map(|d| d.2),
+            "claude cache self-check"
+        );
+    }
 }
 
 #[cfg(test)]

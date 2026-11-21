@@ -29,6 +29,12 @@ All notable changes are recorded here. The format follows
   CLI's own raw-body capture at a private directory beside it. Nothing is exported, no config key
   enables it, and the `claude_capture_diff` example reassembles two requests and diffs them. See
   `docs/claude-subscription.md`.
+- `claude-subscription` logs its prompt-cache self-check (#735): with `--debug-file`, every finished
+  request writes one debug event with its cache usage (including the 5-minute write bucket), the
+  previous request's usage, and the outcome, with the reason when the pair gave no verdict and the
+  prefix divergence when the prefix did not extend. A persisted verdict in
+  `claude-cache-verdicts.json` also records the previous request's read and 1 h write and whether
+  the conversation held a thinking block.
 - `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
   process, per CLI version and account, a short probe launch points the CLI at a loopback listener
   that captures the reminder and answers with a canned reply, so no model is called and nothing
