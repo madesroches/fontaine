@@ -70,12 +70,12 @@ SessionActivity {
     seq: u64,                          // increments on every published change
     state: ActivityState,              // Active | Waiting | Idle
     turn_running: bool,                // a root turn, its end-of-turn hooks, or a claimed notification turn
-    waiting_on_human: bool,            // the root or any running subagent is blocked on a human answer
+    waiting_on_human: bool,            // the root is blocked on a prompt, question or elicitation, or a running subagent on a permission prompt
     running_agents: usize,             // subagents whose status is running (incl. waiting on permission)
     running_background_jobs: usize,    // background shells + monitors still running
     running_monitors: usize,           // the monitor subset of the above (the split the TUI already has)
     pending_notifications: usize,      // undelivered inbox entries for the root and for live subagents
-    queued_prompts: usize,             // human messages queued behind the running turn
+    queued_prompts: usize,             // human messages queued behind the running turn (the root queue only)
 }
 ```
 
@@ -102,7 +102,8 @@ The snapshot is **derived, never event-sourced**: a pure `compute(&Sources) -> S
 over the authoritative stores, so "natural exit, model cancel, panel kill, `/clear`, teardown" need
 no per-path hook, since each already changes the registry or tree and the next compute sees it.
 `Sources` are `&Jobs`, `&AgentTree`, `&SessionState` (human waits), the steering queue, and the new
-turn counter below.
+turn counter below. `waiting_on_human` is sourced from a new `SessionState::any_waiting()` over the
+`waiting` map (`core/gate.rs:1779-1795`), because `AgentTree` sees only children, never the root.
 
 **Read order is the false-idle fix:** jobs, then `running_agents`, then the turn counter, then the
 inbox, then the turn counter again; either counter read non-zero means `turn_running`.
@@ -120,25 +121,34 @@ This ordering is documented at the compute site and pinned by a test per handoff
 ### Turn accounting: `TurnScope` and `TurnClaim`
 
 `SessionState` gains an `ActivityTracker` holding a counter (`turns`) and a `Notify`. Two RAII
-tokens bump it:
+tokens bump it; each owns an `Arc` of the tracker rather than borrowing, so it can be held across
+`&mut AgentRuntime` calls:
 
 - `TurnScope`: taken inside `run_turn` (so every surface is covered even if one forgets), and held
   by the surfaces around the whole turn loop (`Ui::turn`/`guarded_turn`, `run_one`/`continue_on_stop`),
   so pre-turn compaction, usage-limit waits, `turn_ended`, goal evaluation and `stop`
   continuation gaps are not idle. Counter
   based, so scopes nest. Dropped on interruption (the future is dropped at an await).
-- `TurnClaim`: taken by `AgentRuntime::notification_prompt()` **before** it drains the inbox and
-  returned with the prompt (leak-proof RAII, released when the turn starts or the surface drops it
+- `TurnClaim`: taken in the `AgentRuntime::notification_prompt()` wrapper only (never in
+  `child_runner::notification_prompt`, which also serves subagents via `join_news`), **before** it
+  drains the inbox and only when the inbox is non-empty (headless `wait_for_news` polls every 100 ms,
+  so an empty poll must not touch the counter), and returned with the prompt (leak-proof RAII, released when the turn starts or the surface drops it
   without running one). This closes the drained-but-not-yet-a-turn window, i.e. "no false-idle gap
   between the final job ending and its notification turn". `run_turn` upgrades a claim by taking its
-  own scope before the claim drops.
+  own scope before the claim drops. Headless carries the claim in `News::Prompt` and holds it across
+  `keep_unsettled_turn` into `run_one` (`run.rs:566,:605,:797-803`); the TUI keeps it as a local
+  through `self.turn`.
 
 `app.running` is not read or written by any of this; interruption, queueing, scheduling, spinner
 and turn timing are unchanged.
 
 ### Publishing: `ActivityMonitor`
 
-One task per `AgentRuntime`, spawned at runtime build, owns change detection and the hook:
+One task per `AgentRuntime`, spawned at runtime build through `Handle::try_current()` like the other
+background spawns (`AgentRuntime::new` is synchronous and called from test helpers), owns change
+detection and the hook. `AgentRuntime` keeps an abort-on-drop handle, and the monitor is stopped
+after the final transition, so it cannot fire after `session_end` or outlive a TUI session switch or
+an SDK `Session` drop:
 
 - Wakes on: a new public `Jobs::subscribe()` (wrapping the existing `watch`), `AgentTree::changed()`
   and `display_changed()` (`wait_on_human` already pokes the tree), the tracker's own `Notify`
@@ -178,15 +188,22 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
   `session_id`).
 - Fired from the monitor, not from a turn path, so `stop`, `subagent_stop` and `teammate_idle`
   ordering and timing are untouched.
-- Teardown: the shutdown path (`core/agent/shutdown.rs`) terminates jobs, recomputes, and awaits
-  one bounded `activity_changed` (reason `shutdown`) before `session_end`, because a fire-and-forget
-  task would be dropped with the runtime. The bound is the hook's own timeout. `finish_final_shutdown`
-  (`core/agent/shutdown.rs:44-52`) runs `session_end` in a `tokio::join!` beside `jobs.wait_stopped`;
-  restructure it to await the job stop, recompute, deliver the shutdown transition, then `session_end`.
-  Every other exit does the same final-transition step: headless (`terminate_all` at
-  `run.rs:1121/1205/1240`, then `fire_session_end("other")` at `fontaine/src/headless.rs:291`),
-  Claude-compat (`claude_compat/mod.rs:362`), the embedded `Session` (`session.rs:777`) and the TUI
-  session switch (`fontaine-tui/src/lib.rs:727`, `session_end("resume")`).
+- Teardown: the final transition is delivered once, inside `AgentRuntime::fire_session_end`
+  (`core/agent/hooks.rs:44`), which every exit uses: it recomputes after jobs are stopped and awaits
+  one `activity_changed` (reason `shutdown`) before `session_end`, because a fire-and-forget task
+  would be dropped with the runtime. The delivery is bounded by a fixed slice of the remaining
+  final-shutdown deadline (as `MCP_GRACEFUL_CLOSE` is a slice; the TUI budget is 2 s,
+  `FINAL_SHUTDOWN_BUDGET` in `fontaine-tui/src/shutdown.rs:11`, while a hook's default timeout is
+  30 s except `session_end` at 1.5 s, `config.rs:903-907`), and `session_end` stays inside the overall
+  deadline (`finish_final_shutdown`, `shutdown.rs:38-55`). Jobs are already force-stopped in
+  `begin_final_shutdown`, so only awaiting `wait_stopped` remains before the transition;
+  `finish_final_shutdown` (`core/agent/shutdown.rs:44-52`), which runs `session_end` in a
+  `tokio::join!` beside it, awaits the job stop first. The other exits already stop jobs before
+  `fire_session_end`: headless (`terminate_all` at `run.rs:1121/1205/1240`, then
+  `fire_session_end("other")` at `fontaine/src/headless.rs:291`), Claude-compat
+  (`claude_compat/mod.rs:362`) and the embedded `Session` (`session.rs:777`). The TUI session switch
+  (`fontaine-tui/src/lib.rs:727-732`, `session_end("resume")`) is reordered to stop jobs before
+  calling it.
 
 ### The status line
 
@@ -201,28 +218,40 @@ not part of this change.
    aggregate fn), `ActivityTracker` (turn counter + `Notify`), `TurnScope`, `TurnClaim`, and the
    pure `compute`. Unit tests (below).
 2. **Sources.** `Jobs::subscribe()`; `AgentTree::pending_notifications()` (root inbox plus the
-   inboxes of running/idle subagents) and a "any child on permission" query beside `running_ids`;
-   `SessionState::activity()` accessor; steering queue length source plus a change poke on
-   enqueue/dequeue. Poke the tracker/tree from `take_notifications`, `discard_job_notifications`
+   inboxes of running/idle subagents) and `SessionState::any_waiting()`; `SessionState::activity()`
+   accessor; steering queue length source (the root queue only) plus a change poke on every
+   `Steering` mutation (`core/steering.rs`: delivery drain, `retract`, `retract_typed`,
+   `drain_remote`, `requeue`, `queue_remote`). Poke the tracker/tree from `take_notifications`, `discard_job_notifications`
    and `discard_root_reminders` (`agents/tree.rs`), and from job registration/promotion
    (`tools/jobs.rs` ~`:846-886`, `:956`), which notify nothing today. Take `state.wait_on_human(agent)`
-   around `HumanQuestions::ask` and the MCP elicitation prompt.
+   around `HumanQuestions::ask`, and around the inner `elicit`/`elicit_url` calls in `HookElicitor`
+   (`core/agent/mcp.rs:520-620`, after hooks run) with `wait_on_human(ROOT_AGENT)`; both guards are
+   taken only when a human can answer, using the `no_human()`/AFK check the permission sites use
+   (`core/permissions.rs:2272-2275`, `:2862-2873`).
 3. **Turn accounting wiring.** Take a `TurnScope` inside `run_turn`; hold an outer one around the
    whole turn loop in the TUI (`fontaine-tui/src/ui/turn.rs`, covering `turn_ended` at `:1592`) and
-   headless (`run_one`/`continue_on_stop`, covering `turn_ended` at `run.rs:331` and `:486`); add
+   headless (`run_one`/`continue_on_stop`, covering `turn_ended` at `run.rs:331` and `:486`). In
+   headless, scope all of `handle_message` (`run.rs:837`) and the goal loop including
+   `stop_before_call`/`compact_if_needed` (`run.rs:717,:749,:979`) and `goal_prompt`. In the TUI,
+   scope prompt submission from the `user_prompt_submit` hook (`ui/turn.rs:~850,:884,:1618-1632`)
+   through `Ui::turn`, including skill expansion (`turn.rs:610-634`) and the MCP prompt fetch, and
+   wrap `scheduled_turn` from `scheduled_prompt`/`screened_text` on (the scheduler fire is already
+   consumed at `ui/mod.rs:903-906`). Add
    scopes for TUI goal evaluation (`fontaine-tui/src/ui/goal.rs`), headless goal evaluation
    (`run.rs:984`), `/compact` and `/btw` (`ui/commands/context.rs`) and `!` shell lines
    (`ui/commands/workspace.rs`). Claude-compat runs through `run_session` and has no turn site. Make
-   `notification_prompt` take/return a `TurnClaim`; update its callers, including
+   the `AgentRuntime::notification_prompt` wrapper take/return a `TurnClaim`; update its callers, including
    `fontaine-sdk/tests/core_scanner.rs` and `tests/core_lsp.rs`.
-4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`),
-   `AgentRuntime::activity()` (`watch::Receiver`), and the shutdown/clear reason overrides
+4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`) through
+   `Handle::try_current()`, with an abort-on-drop handle on `AgentRuntime` and a stop after the final
+   transition, `AgentRuntime::activity()` (`watch::Receiver`), and the shutdown/clear reason overrides
    (`core/agent/shutdown.rs`, `clear_conversation`).
 5. **Hook plumbing.** `HookEvent::ActivityChanged` in every `match` and `ALL` (now 19),
    `MatcherKind::Values(["active","waiting","idle"])`, `COMMAND_HTTP`, `ProjectScope::Loads`,
    `discards_system_message`; `LifecycleHooks::activity_changed`; the config catalog row
-   `row!("hooks.activity_changed", …)` in `core/config_catalog.rs` and any hooks JSON/schema surface
-   listing events. Adding the event to `ALL` makes it registrable from plugins
+   `row!("hooks.activity_changed", …)` in `core/config_catalog.rs`, and the per-event project-scope rule in
+   `core/config_scope.rs` (~`:215-232`) with its test-table entry (~`:600-650`); the hooks JSON schema
+   is generated from `ALL`. Adding the event to `ALL` makes it registrable from plugins
    (`core/plugins.rs:1285`) and SDK `initialize.hooks` (`claude_compat/hooks.rs:71`); document that in
    `docs/plugins.md` and `docs/hooks.md`.
 6. **Status line.** `activity` in the payload struct (`statusline/mod.rs`), read from
@@ -235,13 +264,14 @@ not part of this change.
 - New: `rust/fontaine-sdk/src/core/activity.rs`; `core.rs` (module)
 - `rust/fontaine-sdk/src/tools/jobs.rs` (`subscribe`, registration/promotion pokes), `agents/tree.rs`
   (queries, drain pokes)
-- `rust/fontaine-sdk/src/core/questions.rs`, `tools/mcp/elicitation.rs`, `core/agent/mcp.rs`
-  (`wait_on_human`)
+- `rust/fontaine-sdk/src/core/questions.rs`, `core/agent/mcp.rs` (`wait_on_human`),
+  `core/steering.rs` (change pokes)
 - `rust/fontaine-sdk/src/core/gate.rs` (tracker on `SessionState`), `core/turn.rs` (`TurnScope`),
   `core/agent.rs` (`notification_prompt`, `activity()`, `clear_conversation`),
   `core/agent/shutdown.rs`, `core/agent/build.rs` / `setup.rs` (monitor), `core/agent/hooks.rs`,
   `core/agent/goal.rs`, `session.rs`
-- `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `user_hooks.rs` (event + method)
+- `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `config_scope.rs`, `user_hooks.rs`
+  (event + method)
 - `rust/fontaine-sdk/tests/core_scanner.rs`, `tests/core_lsp.rs` (`notification_prompt` callers)
 - `rust/fontaine-sdk/src/core/statusline/mod.rs`, `run.rs`
 - `rust/fontaine-tui/src/ui/{mod,turn,goal}.rs`, `ui/commands/{context,workspace}.rs`,
@@ -270,7 +300,9 @@ not part of this change.
 
 - `docs/hooks.md`: the `activity_changed` row in the event table, matcher values, payload fields
   (`reason`, `previous_state`, `activity`), delivery semantics (background, serial, latest-wins,
-  teardown), SDK/plugin registrability, what "active/waiting/idle" mean and what is excluded, and a scheduler example that
+  teardown; a Claude-compat SDK-registered `activity_changed` misses the shutdown transition when the
+  session ends by stdin EOF, `claude_compat/router.rs:194` returns `Disconnected`), the "Hooks a
+  repository defines" project-scope table, the "SDK callback hooks" section, SDK/plugin registrability, what "active/waiting/idle" mean and what is excluded, and a scheduler example that
   hooks `idle`.
 - `docs/tui.md`: the `activity.*` rows in the status-line JSON table.
 - `docs/configuration.md`: add the event to the hook list at `:986` and to project-scope notes.
@@ -297,17 +329,23 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
 - Wake sources: a wake arriving between register and compute is not lost; `take_notifications`,
   `discard_job_notifications`, `discard_root_reminders`, and job registration/promotion each
   republish.
-- Per-site turn scopes: each of the TUI turn loop, headless `run_one`/`continue_on_stop`, TUI and
-  headless goal evaluation, `/compact`, `/btw` and `!` shell lines holds a scope across the whole
-  site (sampled never idle mid-site).
-- Shutdown/exit: the final transition is delivered after job stop and before `session_end` at
-  shutdown, headless, Claude-compat, embedded `Session` and TUI session switch.
+- Per-site turn scopes: each of the TUI turn loop, headless `run_one`/`continue_on_stop`, headless
+  `handle_message` and the goal loop (`stop_before_call`/`compact_if_needed`, `goal_prompt`), TUI
+  prompt submission (`user_prompt_submit` hook, skill expansion, MCP prompt fetch), `scheduled_turn`,
+  TUI and headless goal evaluation, `/compact`, `/btw` and `!` shell lines holds a scope across the
+  whole site (sampled never idle mid-site). A `TurnClaim` is never taken by an empty inbox poll or by
+  the subagent `join_news` path.
+- Shutdown/exit: the final transition is delivered once, inside `fire_session_end`, after job stop
+  and before `session_end` at shutdown, headless, Claude-compat, embedded `Session` and TUI session
+  switch; a slow `activity_changed` hook cannot starve `session_end`.
+- Monitor lifetime: built without a tokio runtime it does not panic; it does not fire after
+  `session_end`, and does not outlive a dropped runtime.
 - Cancellation paths: model `job_cancel` (no note posted), panel `kill_by_user`, natural exit with
   completion consumed through `job_output`, `/clear` (`end_jobs` + discard), shutdown, each
   updating the snapshot with the right reason.
-- Waiting: a permission prompt, an `ask_user` question and an MCP elicitation prompt (root and
-  subagent) each set `waiting`; answering restores the previous
-  state; a cancelled prompt drops it (guard).
+- Waiting: a permission prompt (root and subagent) sets `waiting`; an `ask_user` question and an
+  MCP elicitation prompt (root only, subagents cannot ask or elicit) each set it; none sets it when
+  no human can answer; answering restores the previous state; a cancelled prompt drops it (guard).
 - Monitor: dedup (a burst returning to the same state publishes nothing), `seq` monotonic,
   latest-wins hook delivery with a slow hook, session_id carried.
 - Hook: config parse of the new event, `command`/`http` accepted and `prompt` rejected, matcher on
