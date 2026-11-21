@@ -96,6 +96,15 @@ its place; a type of your own that lists `shell` does too, and one that disallow
 command tool. `reviewer` gets none there: its `shell` entries carry specifiers, which do not cover
 `powershell`, so it behaves like `explore`.
 
+The `agent` tool's description lists each type with a tag computed from its tools, such as
+`explore: ... (no shell, no edit tools)`, `reviewer: ... (limited shell, no edit tools)` and
+`worker: ... (shell, edit tools)`, so the model sees which type can run commands. A type that
+inherits its parent's tools reads `your tools`, plus `no shell` or `no edit tools` when its
+`disallowedTools` remove them. Types you define are tagged the same way. The built-in `explore`
+description also points command-running work at `reviewer` and `worker`. A tag describes the type's
+declared tools, not what a child gets from a narrower parent: `reviewer` is tagged `limited shell`
+on Windows without Git Bash even though it gets no command tool there.
+
 An application using [Agent SDK mode](agent-sdk.md) can add types for the session through
 `initialize`'s `agents`. They run as a tightened scope: `tools` and `disallowedTools` cannot exceed
 the parent's, `model` is absent or `inherit` (the session model) or a configured role, `effort` is

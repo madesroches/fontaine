@@ -177,7 +177,62 @@ fn entry_covers(entry_tool: &str, tool: &str) -> bool {
         .is_some_and(|t| t.starts_with("__"))
 }
 
+const SHELL_TOOLS: [&str; 3] = ["shell", "powershell", "monitor"];
+const EDIT_TOOLS: [&str; 3] = ["edit", "write", "notebook_edit"];
+
 impl AgentType {
+    /// The capability tag the `agent` tool's listing shows, from the declared tools minus the bare
+    /// `disallowed` entries. It never looks at a parent, so on a narrower parent the child may
+    /// hold less than the tag says.
+    pub fn capabilities(&self) -> String {
+        let bare: Vec<&str> = self
+            .disallowed
+            .iter()
+            .filter(|entry| !entry_has_specifier(entry))
+            .map(String::as_str)
+            .collect();
+        let removed = |tool: &str| bare.iter().any(|r| entry_covers(r, tool));
+        let (shell, edit, inherits): (Vec<&str>, Vec<&str>, bool) = match &self.tools {
+            Some(tools) => {
+                let live: Vec<&String> = tools
+                    .iter()
+                    .filter(|entry| !removed(entry_tool(entry)))
+                    .collect();
+                let of = |group: &[&str]| -> Vec<&str> {
+                    live.iter()
+                        .filter(|entry| group.contains(&entry_tool(entry)))
+                        .map(|entry| entry.as_str())
+                        .collect()
+                };
+                (of(&SHELL_TOOLS), of(&EDIT_TOOLS), false)
+            }
+            None => {
+                let gone = |group: &[&str]| group.iter().all(|t| removed(t));
+                let some = |gone: bool| if gone { Vec::new() } else { vec!["bare"] };
+                (some(gone(&SHELL_TOOLS)), some(gone(&EDIT_TOOLS)), true)
+            }
+        };
+        let mut parts: Vec<&str> = Vec::new();
+        if inherits {
+            parts.push("your tools");
+        }
+        if shell.is_empty() {
+            parts.push("no shell");
+        } else if !inherits {
+            parts.push(if shell.iter().all(|e| entry_has_specifier(e)) {
+                "limited shell"
+            } else {
+                "shell"
+            });
+        }
+        if edit.is_empty() {
+            parts.push("no edit tools");
+        } else if !inherits {
+            parts.push("edit tools");
+        }
+        parts.join(", ")
+    }
+
     /// The tools a child of this type gets from a parent holding `parent`: the type's own set
     /// (every parent tool when it names none), cut down to the parent's, minus the ones it
     /// disallows outright. Never a tool the parent lacks.
@@ -284,7 +339,7 @@ impl AgentTypes {
         let mut types = AgentTypes::default();
         types.insert(AgentType {
             name: "explore".to_string(),
-            description: "Reads and searches the workspace; cannot change anything.".to_string(),
+            description: "Reads and searches the workspace; cannot change anything or run commands (use `reviewer` to run review commands, `worker` for anything else).".to_string(),
             prompt: None,
             tools: Some(EXPLORE_TOOLS.map(String::from).to_vec()),
             disallowed: Vec::new(),
@@ -398,7 +453,7 @@ impl AgentTypes {
     pub fn describe(&self) -> String {
         self.types
             .values()
-            .map(|t| format!("- `{}`: {}", t.name, t.description))
+            .map(|t| format!("- `{}`: {} ({})", t.name, t.description, t.capabilities()))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -798,5 +853,89 @@ mod tests {
         assert_eq!(entry_tool("read"), "read");
         assert!(entry_has_specifier("shell(git *)"));
         assert!(!entry_has_specifier("shell"));
+    }
+
+    fn tagged(tools: Option<&[&str]>, disallowed: &[&str]) -> String {
+        let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
+        ty.tools = tools.map(names);
+        ty.disallowed = names(disallowed);
+        ty.capabilities()
+    }
+
+    #[test]
+    fn the_built_in_types_carry_capability_tags() {
+        let listing = AgentTypes::builtin().describe();
+        let line = |name: &str| {
+            listing
+                .lines()
+                .find(|l| l.starts_with(&format!("- `{name}`")))
+                .unwrap()
+                .to_string()
+        };
+        assert!(line("explore").ends_with("(no shell, no edit tools)"));
+        assert!(line("explore").contains("`worker`"));
+        assert!(line("reviewer").ends_with("(limited shell, no edit tools)"));
+        assert!(line("worker").ends_with("(shell, edit tools)"));
+        assert!(line("fork").ends_with("(your tools)"));
+    }
+
+    #[test]
+    fn an_inheriting_type_is_no_shell_only_when_every_shell_tool_is_disallowed() {
+        assert_eq!(
+            tagged(None, &["shell", "powershell", "monitor"]),
+            "your tools, no shell"
+        );
+        assert_eq!(tagged(None, &["shell", "powershell"]), "your tools");
+        assert_eq!(tagged(None, &["shell"]), "your tools");
+        assert_eq!(
+            tagged(None, &["shell(git *)", "powershell", "monitor"]),
+            "your tools"
+        );
+        assert_eq!(
+            tagged(
+                None,
+                &[
+                    "shell",
+                    "powershell",
+                    "monitor",
+                    "edit",
+                    "write",
+                    "notebook_edit"
+                ]
+            ),
+            "your tools, no shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(None, &["edit", "write", "notebook_edit"]),
+            "your tools, no edit tools"
+        );
+    }
+
+    #[test]
+    fn a_declared_shell_tool_of_any_kind_counts() {
+        assert_eq!(
+            tagged(Some(&["read", "monitor"]), &[]),
+            "shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(Some(&["read", "powershell"]), &[]),
+            "shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(Some(&["shell(git *)", "monitor"]), &[]),
+            "shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(Some(&["shell(git *)"]), &["shell"]),
+            "no shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(Some(&["shell(git *)"]), &["shell(git push *)"]),
+            "limited shell, no edit tools"
+        );
+        assert_eq!(
+            tagged(Some(&["read", "edit"]), &["write"]),
+            "no shell, edit tools"
+        );
     }
 }

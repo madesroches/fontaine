@@ -15,6 +15,11 @@ All notable changes are recorded here. The format follows
   route, which Claude 3, Opus 4/4.1 and Sonnet 4 models use automatically; a host that rejects the
   fields is warned about once and retried without them for the session. `tool_search` is in context
   editing's default `exclude_tools`.
+
+- The `agent` tool's type listing carries a capability tag per type (#219), such as
+  `(no shell, no edit tools)` for `explore` and `(shell, edit tools)` for `worker`, computed from
+  the type's tools, so the model stops sending shell tasks to a type that has no shell. The
+  built-in `explore` description now says commands belong on `reviewer` or `worker`.
 - `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
   process, per CLI version and account, a short probe launch points the CLI at a loopback listener
   that captures the reminder and answers with a canned reply, so no model is called and nothing
