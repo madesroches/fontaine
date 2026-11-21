@@ -115,6 +115,11 @@ inbox, then the turn counter again; either counter read non-zero means `turn_run
 - Goal-reminder (`core/agent/goal.rs:455` → `post_to_root`) and held-waiter job end
   (`tools/jobs.rs` `WaitGuard::drop`, ~`:1257`) post to the inbox while a `TurnScope` is held and
   drop it afterwards, so the counter is also read before the inbox.
+- An owner reminder posted from `slot_freed` outside any turn (`agents/spawn.rs:410-451,520-544`;
+  `release_tasks_of` at `:389`) can follow the node leaving running when the last subagent is
+  killed (report skipped, `spawn.rs:559`). The gap is held inside `agents`, which never imports
+  `core`: the tree counts the not-yet-posted reminder as pending until it is posted, under the
+  same lock that takes the node out of running.
 
 This ordering is documented at the compute site and pinned by a test per handoff.
 
@@ -172,7 +177,8 @@ an SDK `Session` drop:
 - **Reason** is derived from the field diff by fixed priority (`waiting_changed`, `turn_started`,
   `turn_ended`, `agent_started`, `agent_ended`, `job_started`, `job_ended`, `notification_queued`,
   `notification_delivered`, `queue_changed`), plus two explicit overrides: `clear`
-  (`clear_conversation`, after `end_jobs`) and `shutdown`, which teardown computes itself
+  (set at the start of `clear_conversation` and released after `end_jobs`, so `clear_ended`,
+  `settle_retired`, `discard_root_reminders` and `end_jobs` all carry it) and `shutdown`, which teardown computes itself
   (see the hook's Teardown). Reasons are a closed enum
   with stable wire strings.
 - Hook delivery is **serial and latest-wins**: one in-flight hook run at a time, and while it runs
@@ -218,7 +224,11 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
 `runtime.activity()` at render time, in `build_statusline_payload`
 (`fontaine-tui/src/ui/mod.rs:399-451`), which already holds the runtime. The monitor publishes after
 the draw that follows a turn end and `refresh_interval_secs` is off by default, so the TUI loop
-redraws the status line on `runtime.activity().changed()`. Rune accessor exposure is
+redraws the status line on `changed()` of a receiver stored once as a `Ui` field (set from
+`runtime.activity()` next to `afk_stops`, `fontaine-tui/src/lib.rs:~389/592` and the `ui/tests.rs`
+setup), borrowed `&mut` in the `select!` and marked seen with `borrow_and_update` (precedent:
+`afk_stops`, `quota_rx`), so a publish made while the loop is not parked is not dropped and the arm
+does not spin. Rune accessor exposure is
 not part of this change.
 
 ## Implementation Steps
@@ -257,7 +267,7 @@ not part of this change.
 4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`) through
    `Handle::try_current()`, with an abort-on-drop handle on `AgentRuntime` and a `quiesce` that teardown
    calls, `AgentRuntime::activity()` (`watch::Receiver`), the `clear` reason override
-   (`clear_conversation`) and the teardown transition in `fire_session_end` (`core/agent/hooks.rs`,
+   (`clear_conversation`, from its start through `end_jobs`) and the teardown transition in `fire_session_end` (`core/agent/hooks.rs`,
    `core/agent/shutdown.rs`). `begin_final_shutdown`'s `abort_all`/`force_stop_all` wake the monitor,
    so it is quiesced before the transition.
 5. **Hook plumbing.** `HookEvent::ActivityChanged` in every `match` and `ALL` (now 19),
@@ -269,8 +279,10 @@ not part of this change.
    (`core/plugins.rs:1285`) and SDK `initialize.hooks` (`claude_compat/hooks.rs:71`); document that in
    `docs/plugins.md` and `docs/hooks.md`.
 6. **Status line.** `activity` in the payload struct (`statusline/mod.rs`), read from
-   `runtime.activity()` in `build_statusline_payload`; add a `runtime.activity().changed()` arm to
-   the TUI loop's `select!` (`fontaine-tui/src/ui/mod.rs:~959-1021`) calling
+   `runtime.activity()` in `build_statusline_payload`; store the receiver as a `Ui` field set once
+   from `runtime.activity()` next to `afk_stops` (`fontaine-tui/src/lib.rs:~389/592`, and in
+   `ui/tests.rs` setup) and add a `changed()` arm on it, marked seen with `borrow_and_update`, to
+   the TUI loop's `select!` (`fontaine-tui/src/ui/mod.rs:~946-1020`) calling
    `trigger_statusline(StatuslineTrigger::Draw)`.
 7. **Docs and Decisions** (below).
 8. `cargo fmt`, `clippy -D warnings`, `cargo test`, rustdoc.
@@ -374,7 +386,10 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   completion consumed through `job_output`, `/clear` (`end_jobs` + discard), shutdown, each
   updating the snapshot with the right reason.
 - Waiting: a permission prompt (root and subagent) sets `waiting`; an `ask_user` question and an
-  MCP elicitation prompt (root only, subagents cannot ask or elicit) each set it; none sets it when
+  MCP elicitation prompt each set it (a subagent `ask_user` case: a user-defined agent type
+  inheriting `ask_user_question` can ask, `agents/registry.rs:257-291,340`, guard taken with the
+  child's id; MCP elicitation goes through the session-wide `HookElicitor`, which receives no agent
+  id, and is attributed to `ROOT_AGENT`); none sets it when
   no human can answer; answering restores the previous state; a cancelled prompt drops it (guard).
 - Monitor: dedup (a burst returning to the same state publishes nothing), `seq` monotonic,
   latest-wins hook delivery with a slow hook, session_id carried.
