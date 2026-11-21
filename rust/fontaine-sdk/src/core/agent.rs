@@ -84,6 +84,7 @@ pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use goal::{PreparedSuggestion, SUGGESTION_BACKOFF, SuggestionInputs, should_suggest};
+pub use hooks::TRANSITION_CAP;
 pub use mcp::{
     HookElicitor, McpOutcome, McpResourceSummary, McpServerPlan, McpStatesReader,
     headers_helper_refusal, mcp_plan, probe_server, resolved_server, server_digest, server_spec,
@@ -205,6 +206,28 @@ pub struct AgentSetup {
     pub explicit_budget_cap: bool,
 }
 
+/// Starts publishing the session's activity, and wakes it on every change of the steering queue.
+fn start_activity(
+    state: &Arc<SessionState>,
+    setup: &Setup,
+    steering: &Steering,
+) -> crate::core::activity::ActivityMonitor {
+    steering.attach_activity(state.activity().notify());
+    crate::core::activity::ActivityMonitor::spawn(
+        state,
+        &setup.jobs,
+        steering,
+        setup.lifecycle.clone(),
+    )
+}
+
+/// A prompt for a turn on the root's notifications, with the claim that keeps the session active
+/// until the turn runs under a scope of its own or the surface drops the prompt.
+pub struct NotificationTurn {
+    pub prompt: String,
+    pub claim: crate::core::activity::TurnClaim,
+}
+
 /// The MCP servers of a host program driving the session, reached through `factory`.
 #[derive(Clone)]
 pub struct HostMcp {
@@ -232,6 +255,9 @@ pub struct AgentRuntime {
     origin: SessionOrigin,
     /// Messages typed while a turn runs, delivered with the next tool result.
     pub steering: Steering,
+    /// Publishes the session's activity and delivers `activity_changed`; see
+    /// [`AgentRuntime::activity`].
+    activity: crate::core::activity::ActivityMonitor,
     /// The workspace files `@` completion offers: the session-start index, rebuilt by
     /// [`AgentRuntime::refresh_files`].
     pub files: Arc<RwLock<Arc<Vec<String>>>>,
@@ -319,6 +345,8 @@ pub(crate) struct Setup {
     scheduling: bool,
     /// Nothing can be asked, so nothing is queued for the user either.
     headless: bool,
+    /// Who answers a prompt, which decides whether a dialog leaves the session waiting.
+    human: HumanChannel,
     /// The agent types a host program defined, which every rebuild of the types includes.
     session_agents: Vec<AgentType>,
     host_mcp: Option<HostMcp>,
@@ -401,8 +429,9 @@ impl AgentRuntime {
             mcp: &mcp,
         })?;
         setup::rebuild_agents(&state, &setup.session, &tree, &agent_types.get());
-        let guardian_quota = models::guardian_quota_slot(setup.models.guardian.as_ref(), &state);
         Ok(AgentRuntime {
+            guardian_quota: models::guardian_quota_slot(setup.models.guardian.as_ref(), &state),
+            activity: start_activity(&state, &gates.retained, &steering),
             agent,
             prompt_pieces: pieces,
             launch_instructions: loaded,
@@ -410,7 +439,6 @@ impl AgentRuntime {
             start_mode: state.mode(),
             state,
             session: setup.session,
-            guardian_quota,
             models: setup.models,
             config: setup.config,
             guardian_profile: setup.guardian_profile,
@@ -690,8 +718,25 @@ impl AgentRuntime {
 
     /// The reports, messages and job notes queued for the main conversation, as a prompt for a
     /// turn of its own.
-    pub async fn notification_prompt(&self) -> Option<String> {
-        crate::core::child_runner::notification_prompt(&self.state, &self.results, ROOT_AGENT).await
+    ///
+    /// The turn is claimed before the inbox is drained and the claim travels with the prompt, so
+    /// the session never reads idle between the drain and the turn. An empty inbox takes nothing.
+    pub async fn notification_prompt(&self) -> Option<NotificationTurn> {
+        if !self.state.agents().has_notifications(ROOT_AGENT) {
+            return None;
+        }
+        let claim = self.state.activity().turn_claim();
+        let prompt =
+            crate::core::child_runner::notification_prompt(&self.state, &self.results, ROOT_AGENT)
+                .await?;
+        Some(NotificationTurn { prompt, claim })
+    }
+
+    /// The session's activity as last published: whether the model, an agent, a background job or
+    /// a human holds the instance busy. Each change publishes once, with the same object the
+    /// `activity_changed` hook and the status line carry.
+    pub fn activity(&self) -> tokio::sync::watch::Receiver<crate::core::activity::SessionActivity> {
+        self.activity.subscribe()
     }
 
     /// The prompt for a turn on a scheduled task that came due. It is a harness note, not the
@@ -1169,6 +1214,12 @@ impl AgentRuntime {
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
         let _wakes = self.hold_idle_subagents("the conversation is being cleared")?;
+        // Set before the first mutation and released after the jobs and notes are gone, so every
+        // transition in between carries the `clear` reason.
+        let clearing = self
+            .state
+            .activity()
+            .override_reason(crate::core::activity::ActivityReason::Clear);
         self.setup.lifecycle.session_end("clear").await;
         self.session.clear().await?;
         // Context queued for the conversation that just ended has nothing to attach to.
@@ -1185,6 +1236,7 @@ impl AgentRuntime {
         // emptied one.
         self.mcp.loaded.clear_all();
         self.end_jobs().await;
+        drop(clearing);
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});
         if let Err(e) = self.session.todos().clear() {

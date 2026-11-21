@@ -29,6 +29,7 @@ A handler is a shell [`command`](#command-handlers), an [`http`](#http-handlers)
 | `post_compact` | After a compaction saved its summary. | Nothing: it is told. | command, http |
 | `notification` | When an approval or a question waits for you in the terminal UI. | Nothing: it is told. | command, http |
 | `elicitation` | When an MCP server asks for input, before any dialog, on every surface. | Accept, decline or cancel the request. | command, http |
+| `activity_changed` | When the session's [activity](#session-activity-activity_changed) changes between `active`, `waiting` and `idle`. | Nothing: it is told. | command, http |
 
 In the terminal UI, `/hooks` lists the configured hooks by event with their type and scope, marks
 the ones that do not run and why, and names the events that have none.
@@ -77,6 +78,7 @@ workspace root.
 | `pre_compact`, `post_compact` | `manual` (`/compact`) or `auto` (the threshold). |
 | `notification` | `permission_prompt` (an approval) or `elicitation_dialog` (a question). |
 | `elicitation` | The MCP server's name. |
+| `activity_changed` | The new state: `active`, `waiting` or `idle`. |
 | `user_prompt_submit`, `stop`, `task_created`, `task_completed`, `teammate_idle` | Nothing: a `matcher` is a load error. |
 
 Outside the tool events a matcher is a `|`-separated list of exact names; an omitted matcher, `""`
@@ -105,6 +107,7 @@ One JSON object on standard input:
 | `error` | `post_tool_use_failure` only: the error text the agent reads. |
 | `reason`, `tier` | `permission_denied` only: why, and which part of the pipeline denied it. |
 | `mcp_server_name`, `message`, `mode`, `url`, `elicitation_id`, `requested_schema` | `elicitation` only: the server, its message (untrusted text), `form` or `url`, the link (URL mode), the request id, and the form's JSON schema (form mode). |
+| `reason`, `previous_state`, `activity` | `activity_changed` only: why the snapshot changed, the state of the last snapshot delivered, and the complete [activity object](#session-activity-activity_changed). |
 
 The task-board events send only `session_id`, `cwd`, `hook_event_name` and `agent_id` (for `task_completed`, the agent completing the task, which is not always its owner), plus their own
 field (see [below](#task-boards-task_created-task_completed-and-teammate_idle)): they carry no
@@ -330,6 +333,7 @@ can never become the intent the guardian reads.
 | `pre_compact` | When a compaction has something to summarize, just before the model is asked. Nothing fires when the conversation is under the threshold. | `trigger`, `custom_instructions` (the `/compact` focus, or null) | Block (the compaction is skipped, with a warning), or write plain standard output, which is added to the summary request as `Additional focus: ...`. |
 | `post_compact` | After the summary was saved. | `trigger`, `compact_summary` | Nothing. |
 | `notification` | When an approval or a question starts waiting for you in the terminal UI, whatever `[tui] notify` is set to. It runs in the background. | `message`, `title`, `notification_type` | Nothing. |
+| `activity_changed` | When the session becomes `active`, `waiting` or `idle`; see [below](#session-activity-activity_changed). It runs in the background. | `reason`, `previous_state`, `activity` | Nothing. |
 
 A `user_prompt_submit` hook does not fire for turns Fontaine starts itself (a scheduled task, a
 subagent's report, a goal or stop continuation), for text you steer a running turn with, for text
@@ -337,6 +341,76 @@ typed to a subagent, or for the free-text "Other" answer to a question.
 
 In a headless run, a blocked `user_prompt_submit` ends the run before any model call with exit code
 0 and a `success` result: the block message followed by `Original prompt: <the prompt>`.
+
+### Session activity: `activity_changed`
+
+`stop` fires when the model's turn ends, which is not when the instance is idle: a twenty-minute
+background test may still run. `activity_changed` fires when the session's activity changes, so a
+program that schedules work can tell the two apart. It is a new, Fontaine-only event with no
+Claude Code equivalent, and, like `notification`, observational: it takes `command` and `http`
+handlers, decides nothing and its output is ignored. It runs in the background, never delaying the
+turn or the job that changed the state.
+
+Every payload carries the complete snapshot in `activity`, so a consumer needs no history:
+
+| Field | Meaning |
+|---|---|
+| `session_id` | The session id. |
+| `seq` | Increases with every published change. A gap between two deliveries means snapshots in between were skipped. |
+| `state` | `active`, `waiting` or `idle`; the matcher selects on it. |
+| `turn_running` | A root turn, its end-of-turn work (the `stop` hooks, a goal evaluation) or a turn on a notification is under way. |
+| `waiting_on_human` | The main agent is blocked on a permission prompt, an `ask_user_question` dialog or an MCP elicitation, or a running subagent is blocked on a permission prompt. |
+| `running_agents` | Subagents whose status is running, those waiting on a permission prompt included. |
+| `running_background_jobs` | Background shells and monitors still running. |
+| `running_monitors` | The monitors among them. |
+| `pending_notifications` | Notes some surface will deliver and none has yet. |
+| `queued_prompts` | Messages you typed (or a connected host sent) that wait behind the running turn. |
+
+`waiting` when `waiting_on_human`: some agent cannot progress until a person answers, which a
+scheduler must tell from busy. It wins over `active` even while jobs run. Otherwise `active` when
+any of `turn_running`, `running_agents`, `running_background_jobs`, `pending_notifications` or
+`queued_prompts` is non-zero, and `idle` when none is. A run with nobody to answer (plain `-p`, or
+AFK mode) never reports `waiting`: a question there resolves to a denial.
+
+Not counted: an idle subagent (its turn ended; mail for it counts as pending), a
+[scheduled](tui.md#scheduled-prompts) task or wake-up that has not fired, and a goal waiting
+between check-ins. Notes no surface will deliver are not pending either: while AFK mode is stopped
+or paused by the denial breaker, held notes stay out of the count and return to it when AFK resumes.
+The terminal UI starts a turn on a job's note by itself, so the session stays `active` until that
+turn ends. A headless `-p` run, [Agent SDK mode](agent-sdk.md) and an embedded `Session` read a
+note with the next message instead, so a note that arrives between messages leaves the state
+`idle`.
+
+The payload also carries `reason`, the cause of the transition: `waiting_changed`, `turn_started`,
+`turn_ended`, `agent_started`, `agent_ended`, `job_started`, `job_ended`, `notification_queued`,
+`notification_delivered`, `queue_changed`, `clear` (a `/clear` or a conversation `/rewind`) or
+`shutdown`; and `previous_state`.
+
+Deliveries are serial and latest-wins: one hook run at a time, and while it runs only the newest
+snapshot waits, so a slow hook never reorders or backs up and the last state is always delivered.
+Intermediate states can be skipped. `reason` and `previous_state` are relative to the last snapshot
+delivered, not the last one published, and a skipped snapshot's reason is dropped (a `clear`
+survives a skip). A burst of changes that returns to the state it started from delivers nothing.
+
+When the session ends, one more delivery with reason `shutdown` goes out before `session_end`, after
+the agents and jobs were stopped, so the final snapshot reads idle. It is always delivered, even
+when nothing differs, and waits for any delivery in flight. It has at most 1.5 seconds (a slice of
+the exit's budget on a quit), so a slow hook cannot delay `session_end`. A callback an
+Agent SDK host registered misses this transition when the session ends by the host closing stdin,
+since the host cannot be called back by then.
+
+```toml
+# Tell a scheduler the instance is free.
+[[hooks.activity_changed]]
+matcher = "idle"
+type = "http"
+url = "http://localhost:8080/instances/main/idle"
+```
+
+A [repository](#hooks-a-repository-defines) may define a `command` hook for it, as for any event
+that forces no model calls. A [plugin](plugins.md) can register it, and so can an
+[SDK callback](#sdk-callback-hooks) as `ActivityChanged`. The terminal UI's custom
+[status line](tui.md#status-bar) receives the same object as `activity`.
 
 ### Loop bounds
 
@@ -378,6 +452,9 @@ repository chose:
 | `.fontaine/settings.toml` | after workspace trust | ignored | ignored |
 | A plugin | runs | runs | runs |
 
+`activity_changed` forces no model call, so a repository's `command` hook for it loads like any
+other event's; its `http` hook is ignored, like every repository `http` hook.
+
 ## Hooks a plugin defines
 
 A [plugin's](plugins.md) `hooks/hooks.json` loads as hooks and starts without the
@@ -403,6 +480,9 @@ name mapped to a Fontaine tool; a name that cannot be mapped fails `initialize`,
 `*` matcher runs for every call. The timeout is the matcher's, or the command-hook default. When a
 callback fails or times out, `onFailure: block` denies the call, with a reason that says so;
 otherwise it is a non-blocking error.
+
+`ActivityChanged` registers like any other event, with an optional `active`, `waiting` or `idle`
+matcher.
 
 Callbacks only tighten, like a repository's hooks: `deny`, `ask` and `updatedInput` count, and an
 `allow` is ignored, unlike Claude Code's PreToolUse `allow`. Events with no equivalent here fail

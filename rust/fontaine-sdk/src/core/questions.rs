@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 
 use crate::core::gate::SessionState;
 use crate::core::ledger::{MessageOrigin, Record};
-use crate::core::permissions::Approver;
+use crate::core::permissions::{Approver, HumanChannel};
 
 /// What every recorded dialog answer starts with; the guardian's prompt and the evals name it.
 pub const ANSWER_LINE_PREFIX: &str = "Answered the agent's question";
@@ -53,11 +53,20 @@ fn answer_line(asked: &[Question], answer: &QuestionAnswer) -> String {
 pub struct HumanQuestions {
     approver: Arc<dyn Approver>,
     state: Arc<SessionState>,
+    human: HumanChannel,
 }
 
 impl HumanQuestions {
-    pub fn new(approver: Arc<dyn Approver>, state: Arc<SessionState>) -> HumanQuestions {
-        HumanQuestions { approver, state }
+    pub fn new(
+        approver: Arc<dyn Approver>,
+        state: Arc<SessionState>,
+        human: HumanChannel,
+    ) -> HumanQuestions {
+        HumanQuestions {
+            approver,
+            state,
+            human,
+        }
     }
 }
 
@@ -65,7 +74,10 @@ impl QuestionSource for HumanQuestions {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async move {
             let asked = questions.clone();
+            // Dropped with the future, so a cancelled question ends the wait too.
+            let waiting = self.state.wait_on_answer(agent, self.human);
             let (reply, by) = self.approver.ask_user_as(agent, questions).await;
+            drop(waiting);
             if let QuestionReply::Answered(answers) = &reply {
                 let lines: Vec<String> = answers
                     .iter()
@@ -160,7 +172,11 @@ mod tests {
             effort: None,
             retry: crate::core::retry::RetryPolicy::default(),
         }));
-        (HumanQuestions::new(approver, state), ledger, dir)
+        (
+            HumanQuestions::new(approver, state, HumanChannel::Present),
+            ledger,
+            dir,
+        )
     }
 
     fn question() -> Question {

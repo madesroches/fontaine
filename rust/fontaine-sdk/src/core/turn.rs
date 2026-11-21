@@ -273,6 +273,10 @@ pub async fn run_turn(
         model.priced = params.cost.counted(),
         model.estimated = params.cost.estimated(),
     );
+    // Surfaces hold a scope around the whole turn loop; this one covers a caller that forgot, and
+    // is the claim's hand-over when the turn is a notification's.
+    params.state.activity().assert_scoped("a root turn");
+    let _scope = params.state.activity().turn_scope();
     let mut feed = params.state.feed().await;
     // A guard, not a trailing call: an interrupted turn drops this future at an await point.
     let _grants = EndTurnOnDrop(params.state);

@@ -12,7 +12,7 @@ use common::pipeline::Rig;
 use fontaine_sdk::core::agent::HookElicitor;
 use fontaine_sdk::core::config::PermissionMode::Manual;
 use fontaine_sdk::core::config::{Hook, HookEvent, Origin, Slot};
-use fontaine_sdk::core::permissions::ElicitationHook;
+use fontaine_sdk::core::permissions::{ElicitationHook, HumanChannel};
 use fontaine_sdk::core::user_hooks::{BuiltHooks, HookDeps, HookProcess, LivePlugins, UserHook};
 use fontaine_sdk::tools::live::Live;
 use fontaine_sdk::tools::mcp::elicitation::ElicitationSchema;
@@ -111,7 +111,13 @@ fn link() -> ElicitUrl {
 }
 
 fn elicitor(rig: &Rig, hooks: Vec<Arc<dyn ElicitationHook>>) -> HookElicitor {
-    HookElicitor::new(hooks, no_plugins(), rig.approver.clone(), rig.state.clone())
+    HookElicitor::new(
+        hooks,
+        no_plugins(),
+        rig.approver.clone(),
+        rig.state.clone(),
+        HumanChannel::Present,
+    )
 }
 
 fn name(text: &str) -> ElicitReply {
@@ -227,6 +233,7 @@ async fn a_plugin_hook_answers_like_a_repository_hook_does() {
         Arc::new(Live::new(layer)),
         rig.approver.clone(),
         rig.state.clone(),
+        HumanChannel::Present,
     );
     assert_eq!(e.elicit(form()).await, ElicitReply::Cancel);
 }
@@ -352,7 +359,15 @@ async fn a_hook_never_accepts_a_link_but_may_decline_or_cancel_it() {
     }
     let rig = Rig::new(Manual);
     let approver = Arc::new(Urls(Default::default()));
-    let make = |hooks| HookElicitor::new(hooks, no_plugins(), approver.clone(), rig.state.clone());
+    let make = |hooks| {
+        HookElicitor::new(
+            hooks,
+            no_plugins(),
+            approver.clone(),
+            rig.state.clone(),
+            HumanChannel::Present,
+        )
+    };
     let url_accept = hook(None, &["--reply", &answer("accept", json!({}))], user());
     assert_eq!(
         make(vec![url_accept]).elicit_url(link()).await,

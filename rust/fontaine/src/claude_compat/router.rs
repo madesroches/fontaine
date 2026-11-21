@@ -17,6 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::wire::{self, Inbound};
+use fontaine_sdk::core::activity::ActivityTracker;
 use fontaine_sdk::run::Cancel;
 
 /// Why a request to the host got no answer. Every one is a denial for the caller.
@@ -105,6 +106,8 @@ pub struct Router {
     handlers: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     steering: Mutex<Option<Steering>>,
     steer_mid_turn: AtomicBool,
+    /// The session's activity tracker, which counts the inputs queued here.
+    activity: Mutex<Option<Arc<ActivityTracker>>>,
 }
 
 /// Cancels a request that is dropped before the host answered, so the host stops waiting for
@@ -154,6 +157,7 @@ impl Router {
             handlers: Mutex::default(),
             steering: Mutex::new(None),
             steer_mid_turn: AtomicBool::new(true),
+            activity: Mutex::new(None),
         });
         tokio::spawn(write_loop(router.clone(), stdout, rx));
         tokio::spawn(read_loop(router.clone(), stdin, handler));
@@ -280,6 +284,23 @@ impl Router {
         *lock(&self.steering, "router steering") = Some(steering);
     }
 
+    /// Hands the session's activity tracker to the router, which publishes how many inputs wait
+    /// in its own queue each time that changes.
+    pub fn attach_activity(&self, tracker: Arc<ActivityTracker>) {
+        *lock(&self.activity, "router activity") = Some(tracker);
+    }
+
+    fn publish_queue(&self, inbox: &Inbox) {
+        if let Some(tracker) = lock(&self.activity, "router activity").as_ref() {
+            tracker.set_queued_inputs(inbox.queue.len());
+        }
+    }
+
+    /// How many inputs wait in the router's own queue, behind the running turn.
+    pub fn queued_count(&self) -> usize {
+        lock(&self.inbox, "router inbox").queue.len()
+    }
+
     fn push_user(&self, text: String) {
         {
             let mut inbox = lock(&self.inbox, "router inbox");
@@ -291,7 +312,10 @@ impl Router {
                 {
                     steering.queue(Queued::Message(text));
                 }
-                _ => inbox.queue.push_back(text),
+                _ => {
+                    inbox.queue.push_back(text);
+                    self.publish_queue(&inbox);
+                }
             }
         }
         self.wake.notify_waiters();
@@ -340,6 +364,7 @@ impl Router {
                     for text in undelivered.into_iter().rev() {
                         inbox.queue.push_front(text);
                     }
+                    self.publish_queue(&inbox);
                 }
                 if let Some(command) = inbox.commands.pop_front() {
                     return Next::Command(command);
@@ -347,6 +372,7 @@ impl Router {
                 if let Some(text) = inbox.queue.pop_front() {
                     inbox.turn_active = true;
                     self.cancel.reset();
+                    self.publish_queue(&inbox);
                     return Next::Message(text);
                 }
                 if let Some(why) = inbox.failed.clone() {
@@ -385,6 +411,7 @@ impl Router {
             let mut inbox = lock(&self.inbox, "router inbox");
             inbox.queue.clear();
             inbox.shutdown = true;
+            self.publish_queue(&inbox);
         }
         self.cancel.trigger();
         self.end_input(None);
@@ -544,6 +571,29 @@ mod tests {
 
     fn user(text: &str) -> Value {
         json!({"type":"user","message":{"role":"user","content":text}})
+    }
+
+    #[tokio::test]
+    async fn inputs_queued_behind_a_turn_are_counted_and_published() {
+        let mut rig = rig();
+        let tracker = ActivityTracker::new();
+        rig.router.attach_activity(tracker.clone());
+        say(&mut rig.host_in, user("one")).await;
+        assert!(matches!(rig.router.next().await, Next::Message(text) if text == "one"));
+        // No steering is attached, so a message that arrives during the turn queues here.
+        say(&mut rig.host_in, user("two")).await;
+        say(&mut rig.host_in, user("three")).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while rig.router.queued_count() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both messages queue");
+        assert_eq!(tracker.queued_inputs(), 2);
+        assert!(matches!(rig.router.next().await, Next::Message(text) if text == "two"));
+        assert_eq!(rig.router.queued_count(), 1);
+        assert_eq!(tracker.queued_inputs(), 1);
     }
 
     #[tokio::test]

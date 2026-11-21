@@ -173,6 +173,17 @@ mod tests {
     }
 
     #[test]
+    fn the_activity_event_registers_as_a_callback_with_a_state_matcher() {
+        let hooks = built(
+            json!({"ActivityChanged": [{"matcher": "idle|waiting", "hookCallbackIds": ["a"]}]}),
+        )
+        .unwrap();
+        let matchers: Vec<_> = hooks.iter().map(|h| h.matcher.clone()).collect();
+        assert_eq!(matchers, [Some("idle|waiting".to_string())]);
+        assert!(hooks.iter().all(|h| h.event == HookEvent::ActivityChanged));
+    }
+
+    #[test]
     fn a_timeout_too_large_for_a_duration_is_an_error_not_a_panic() {
         let error = built(json!({"PreToolUse": [{"hookCallbackIds": ["a"], "timeout": 1e300}]}))
             .unwrap_err();

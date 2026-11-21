@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::core::RuntimeError;
 use crate::core::afk_report::{AfkOutcome, AfkReport, AfkSource};
-use crate::core::agent::AgentRuntime;
+use crate::core::agent::{AgentRuntime, NotificationTurn};
 use crate::core::audit::Decision;
 use crate::core::config::{OnUsageLimit, PermissionMode};
 use crate::core::gate::UsageWait;
@@ -134,6 +134,11 @@ pub trait InputSource {
     /// A message is already waiting, so notification turns hold back.
     fn pending(&self) -> bool {
         false
+    }
+    /// How many messages the source holds in a queue of its own, behind the running turn. They
+    /// count in the session's activity.
+    fn queued_count(&self) -> usize {
+        0
     }
     /// A session the host keeps open: a failed turn is reported and the next message still runs,
     /// and an input that ends without a message is a normal end.
@@ -565,7 +570,7 @@ fn announce(runtime: &AgentRuntime, sink: &mut dyn EventSink) {
 /// What a headless run learns after the main conversation's answer while subagents still run.
 enum News {
     /// Reports or messages for the main conversation, as the prompt of a further turn.
-    Prompt(String),
+    Prompt(NotificationTurn),
     OverBudget,
     /// The AFK temperature ceiling stopped the session.
     Stopped,
@@ -602,8 +607,8 @@ async fn wait_for_news(
         if host_waiting() {
             return News::Done;
         }
-        if let Some(prompt) = runtime.notification_prompt().await {
-            return News::Prompt(prompt);
+        if let Some(turn) = runtime.notification_prompt().await {
+            return News::Prompt(turn);
         }
         if goal && runtime.goal_checkin_wait(false) == Some(std::time::Duration::ZERO) {
             return News::Done;
@@ -613,7 +618,7 @@ async fn wait_for_news(
             // A report is queued before its child is marked finished, so nothing is missed
             // between the check above and this one.
             return match runtime.notification_prompt().await {
-                Some(prompt) => News::Prompt(prompt),
+                Some(turn) => News::Prompt(turn),
                 None => News::Done,
             };
         }
@@ -794,13 +799,14 @@ async fn settle(
         )
         .await
         {
-            News::Prompt(prompt) => {
+            News::Prompt(NotificationTurn { prompt, claim }) => {
                 // A turn an earlier fold failed to keep goes before this one; the record
                 // run_one writes must not be read as this turn's fallback first.
                 runtime
                     .keep_unsettled_turn(Unsettled::SessionEnded, None)
                     .await;
                 let (next, note) = run_one(runtime, ctx, prompt).await;
+                drop(claim);
                 let next = continue_on_stop(runtime, ctx, next, note).await;
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
@@ -833,8 +839,18 @@ struct Handled {
 }
 
 /// One user message. `/goal <condition>` keeps running turns after the first until the
-/// evaluator finds the condition met, or the goal ends or pauses.
+/// evaluator finds the condition met, or the goal ends or pauses. The session is active for all
+/// of it: the prompt hook, compaction, the goal loop and the wait for notifications included.
 async fn handle_message(runtime: &mut AgentRuntime, ctx: &mut Ctx<'_>, text: String) -> Handled {
+    let _scope = runtime.state.activity().turn_scope();
+    handle_message_scoped(runtime, ctx, text).await
+}
+
+async fn handle_message_scoped(
+    runtime: &mut AgentRuntime,
+    ctx: &mut Ctx<'_>,
+    text: String,
+) -> Handled {
     let options = ctx.options;
     let session_id = runtime.session.id.clone();
     // A stream-json line can be written before the previous reply arrives, so only the one
@@ -1088,6 +1104,8 @@ pub async fn run_session<I: InputSource + Sync>(
     }
 
     let session_id = runtime.session.id.clone();
+    let activity = runtime.state.activity().clone();
+    activity.require_scopes();
     runtime.record_session_start().await;
     announce(runtime, sink);
     sink.session_start(runtime, data_dir);
@@ -1112,21 +1130,30 @@ pub async fn run_session<I: InputSource + Sync>(
     let mut last_usage_limit: Option<Value> = None;
     let mut usage_warned = HashSet::new();
     loop {
+        activity.set_queued_inputs(input.queued_count());
         let text = match input.next(&mut *runtime).await {
             Ok(Some(text)) => text,
             Ok(None) => break,
             Err(message) => {
                 sink.notice(&message);
                 sink.input_failed(&session_id, &message);
+                // The same stop as every other exit, so the final snapshot shows no agent
+                // running.
+                runtime.state.agents().kill_all();
+                runtime.state.agents().settled(KILL_SETTLE).await;
                 runtime.jobs().terminate_all().await;
                 runtime.lsp().shutdown_all().await;
                 return input.failure_code();
             }
         };
+        activity.set_queued_inputs(input.queued_count());
         sink.turn_start(runtime, data_dir);
         let mut handled = match runtime.refresh_before_turn() {
             Ok(()) => {
-                let pending = || input.pending();
+                let pending = || {
+                    activity.set_queued_inputs(input.queued_count());
+                    input.pending()
+                };
                 let mut ctx = Ctx {
                     options: &options,
                     sink: &mut *sink,

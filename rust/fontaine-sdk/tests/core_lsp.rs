@@ -334,7 +334,7 @@ async fn late_diagnostics_stay_out_of_a_notification_prompt_and_ride_the_next_re
         .state
         .agents()
         .notify_report("root", "agent-7", "Done.".to_string());
-    let prompt = runtime.notification_prompt().await.unwrap();
+    let prompt = runtime.notification_prompt().await.unwrap().prompt;
     assert!(prompt.contains("Done."), "{prompt}");
     assert!(!prompt.contains("Late diagnostics"), "{prompt}");
 

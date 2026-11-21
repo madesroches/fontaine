@@ -542,6 +542,7 @@ fn after_end(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, parent: &str, 
     // free, and the reminder key, unchanged between its turn end and its idle end, keeps a
     // reminder it did get from repeating.
     slot_freed(tree, ledger, None);
+    tree.end_settled(id);
 }
 
 /// Queues a run's report for its parent and concludes the run.
@@ -689,6 +690,8 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
     if !tree.is_idle(id) || !tree.has_notifications(id) {
         return;
     }
+    // Held until the agent runs or the notes are back, so they are never in neither.
+    let _flight = tree.flight();
     let notes = tree.take_notifications(id);
     match wake_idle(tree, ledger, id, render_notes(&notes), notes.clone(), None) {
         Ok(()) => {}

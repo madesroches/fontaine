@@ -52,6 +52,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 return Some(Continue(()));
             }
         };
+        // The evaluation, its retract of the queue and the prompt of the turn it leads to are all
+        // work the session is doing.
+        let _scope = runtime.state.activity().turn_scope();
         self.app.set_running(true);
         let mut evaluation = Box::pin(runtime.evaluate_goal(&pending));
         let result = self

@@ -82,6 +82,19 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
     Ui {
         hook_notifier: crate::notify::Notifier::new(fontaine_sdk::core::config::NotifyMethod::Off),
         afk_stops: tokio::sync::watch::channel(0).1,
+        activity: tokio::sync::watch::channel(fontaine_sdk::core::activity::SessionActivity {
+            session_id: "test".into(),
+            seq: 0,
+            state: fontaine_sdk::core::activity::ActivityState::Idle,
+            turn_running: false,
+            waiting_on_human: false,
+            running_agents: 0,
+            running_background_jobs: 0,
+            running_monitors: 0,
+            pending_notifications: 0,
+            queued_prompts: 0,
+        })
+        .1,
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
         prompts,

@@ -597,6 +597,7 @@ fn discards_system_message(event: HookEvent) -> bool {
     matches!(
         event,
         HookEvent::Notification
+            | HookEvent::ActivityChanged
             | HookEvent::SessionEnd
             | HookEvent::StopFailure
             | HookEvent::PreCompact
@@ -1832,6 +1833,26 @@ impl LifecycleHooks {
         self.run(HookEvent::PostCompact, Some(trigger), extra).await;
     }
 
+    /// `activity_changed`: the hooks' answers are ignored, so a caller only waits for the
+    /// delivery.
+    pub async fn activity_changed(
+        &self,
+        state: &str,
+        reason: &str,
+        previous_state: &str,
+        activity: Value,
+    ) {
+        if !self.has(HookEvent::ActivityChanged) {
+            return;
+        }
+        let mut extra = Map::new();
+        extra.insert("reason".into(), json!(reason));
+        extra.insert("previous_state".into(), json!(previous_state));
+        extra.insert("activity".into(), activity);
+        self.run(HookEvent::ActivityChanged, Some(state), extra)
+            .await;
+    }
+
     /// `notification`, started in the background: the surface that raised it never waits.
     pub fn notify(&self, kind: &str, message: &str, title: &str) {
         if !self.has(HookEvent::Notification) {
@@ -1958,7 +1979,8 @@ impl BuiltHooks {
             | HookEvent::StopFailure
             | HookEvent::PreCompact
             | HookEvent::PostCompact
-            | HookEvent::Notification => self.lifecycle.entry(event).or_default().push(user),
+            | HookEvent::Notification
+            | HookEvent::ActivityChanged => self.lifecycle.entry(event).or_default().push(user),
         }
     }
 
@@ -2067,6 +2089,11 @@ mod tests {
 
     fn allowed(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn the_activity_event_discards_a_system_message() {
+        assert!(discards_system_message(HookEvent::ActivityChanged));
     }
 
     #[test]

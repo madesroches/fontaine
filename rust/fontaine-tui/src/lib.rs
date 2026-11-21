@@ -387,6 +387,9 @@ struct Ui<R> {
     /// Sees each AFK temperature stop, so a stop that lands while a turn runs, or while the
     /// session is idle with a subagent working, is acted on at once.
     afk_stops: tokio::sync::watch::Receiver<u64>,
+    /// Sees each published change of the session's activity, so the status line is redrawn when
+    /// a job or agent ends while the loop is parked.
+    activity: tokio::sync::watch::Receiver<fontaine_sdk::core::activity::SessionActivity>,
     input: UnboundedReceiver<Input>,
     prompts: UnboundedReceiver<Prompt>,
     /// What every subagent run does, for the agents' own transcripts.
@@ -587,9 +590,14 @@ pub async fn drive(
         .map(StatuslineProgram::compile)
         .transpose()
         .expect("config validation has compiled the status line script");
+    // The interface starts a turn on a note itself, between messages, and holds a scope around
+    // every turn it runs.
+    runtime.state.activity().set_delivers_between_messages(true);
+    runtime.state.activity().require_scopes();
     let mut ui = Ui {
         hook_notifier: notify::Notifier::new(fontaine_sdk::core::config::NotifyMethod::Off),
         afk_stops: runtime.state.afk_stop_signal(),
+        activity: runtime.activity(),
         app: App::new(mode, model),
         input,
         prompts,
@@ -723,13 +731,15 @@ pub async fn drive(
     // still queued are dropped, never delivered across the boundary.
     ui.remote_shutdown(&runtime, "the session ended").await;
     if ui.switch.is_some() {
-        // The hooks hear of the end before what runs for the session is stopped.
-        runtime.fire_session_end("resume").await;
-        // Whatever is still running is stopped with the session.
+        // Whatever is still running is stopped with the session, before the hooks hear of the
+        // end, so the final activity snapshot shows an idle session.
         runtime.state.agents().kill_all();
         runtime.state.agents().settled(KILL_SETTLE).await;
         runtime.jobs().terminate_all().await;
         runtime.lsp().shutdown_all().await;
+        runtime
+            .fire_session_end("resume", fontaine_sdk::core::agent::TRANSITION_CAP)
+            .await;
     } else {
         // An input that closed with no quit request still starts the clock here.
         ui.request_quit(&runtime);

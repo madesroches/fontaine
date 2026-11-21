@@ -820,6 +820,12 @@ impl Jobs {
         }
     }
 
+    /// A receiver that sees a change each time a job starts, is promoted to the background,
+    /// ends or is removed. The registry, not the signal, says what changed.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.shared.changed.subscribe()
+    }
+
     pub fn set_sink(&self, sink: Arc<dyn JobSink>) {
         *lock(&self.shared.sink, "job sink") = Some(sink);
     }
@@ -884,6 +890,7 @@ impl Jobs {
             inner.prune();
             id
         };
+        self.shared.wake();
         let shared = self.shared.clone();
         let thread_id = id.clone();
         let spawned = thread::Builder::new()
@@ -957,6 +964,7 @@ impl Jobs {
                             let chunk = job.buffer.since(0);
                             job.cursor = chunk.end;
                             guard.armed = false;
+                            self.shared.wake();
                             return Foreground {
                                 id: id.to_owned(),
                                 chunk,

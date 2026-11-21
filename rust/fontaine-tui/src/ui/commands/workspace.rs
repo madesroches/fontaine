@@ -34,6 +34,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         command: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        let _scope = runtime.state.activity().turn_scope();
         self.app.set_running(true);
         self.app.shell_running = true;
         let started = Instant::now();

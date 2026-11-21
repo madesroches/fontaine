@@ -90,3 +90,48 @@ async fn a_command_and_a_script_put_the_commands_line_where_the_script_asks() {
     })
     .await;
 }
+
+/// Prints the session's activity state from the payload on stdin.
+const ACTIVITY_COMMAND: &str = "[statusline]\ncommand = '''\nsed -n 's/.*\"activity\":{[^}]*\"state\":\"\\([a-z]*\\)\".*/ACT-\\1/p'\n'''\n";
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_line_follows_the_activity_a_background_job_holds() {
+    use common::routed::{Route, Turn, start};
+    use ratatui::crossterm::event::KeyCode;
+    use serde_json::json;
+
+    let server = start(vec![Route::new(
+        "root task",
+        vec![
+            Turn::tool(
+                "c1",
+                "shell",
+                json!({"command": "sleep 120", "run_in_background": true}),
+            ),
+            Turn::text("job started"),
+            Turn::text("saw the kill"),
+        ],
+    )])
+    .await;
+    let w = World::routed(
+        &server.uri(),
+        &format!(
+            "\n[permissions]\nallow = [\"shell\"]\n\n[keybindings]\n\"f2\" = \"agents_panel\"\n\n{ACTIVITY_COMMAND}"
+        ),
+    );
+    w.run(|ui| async move {
+        ui.wait_for("ACT-idle").await;
+        ui.send("root task");
+        ui.wait_for("job started").await;
+        // The turn is over, and no refresh interval is set: only the activity publish can
+        // redraw the line, and the job keeps the session active.
+        ui.wait_for("ACT-active").await;
+        ui.press(KeyCode::F(2));
+        ui.wait_for("Background jobs").await;
+        ui.press(KeyCode::Char('x'));
+        ui.wait_for("saw the kill").await;
+        ui.wait_for("ACT-idle").await;
+    })
+    .await;
+}

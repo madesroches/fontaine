@@ -774,7 +774,9 @@ impl Session {
         };
         let result = match exit {
             Exit::Done(runtime, code) => {
-                runtime.fire_session_end("other").await;
+                runtime
+                    .fire_session_end("other", crate::core::agent::TRANSITION_CAP)
+                    .await;
                 drop(runtime);
                 if code == 0 {
                     Ok(())

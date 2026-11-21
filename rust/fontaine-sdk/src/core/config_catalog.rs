@@ -534,6 +534,9 @@ pub const KEYS: &[KeyRow] = &[
     row!("hooks.elicitation", List, |c, _| entries(
         c.hooks.get(HookEvent::Elicitation).len()
     )),
+    row!("hooks.activity_changed", List, |c, _| entries(
+        c.hooks.get(HookEvent::ActivityChanged).len()
+    )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
     row!("mcp.tool_search", Scalar, |c, _| c
         .mcp

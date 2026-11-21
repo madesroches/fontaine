@@ -75,6 +75,9 @@ pub struct Payload {
     /// AFK mode: whether it is on, and whether the temperature ceiling has stopped the session.
     pub afk: AfkInfo,
     pub account_usage: Vec<serde_json::Value>,
+    /// The session's activity, the object the `activity_changed` hook carries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<ContextWindowInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,6 +118,12 @@ impl Payload {
     /// The payload with the AFK fields set; `build_payload` leaves them off.
     pub fn with_afk(mut self, on: bool, stopped: bool) -> Payload {
         self.afk = AfkInfo { on, stopped };
+        self
+    }
+
+    /// The payload with the session's activity set; `build_payload` leaves it off.
+    pub fn with_activity(mut self, activity: &crate::core::activity::SessionActivity) -> Payload {
+        self.activity = Some(activity.to_json());
         self
     }
 }
@@ -323,6 +332,7 @@ pub fn build_payload(
         recent_verdicts,
         afk: AfkInfo::default(),
         account_usage: account_usage.iter().map(AccountUsage::json).collect(),
+        activity: None,
         context_window: context_used
             .zip(context_window)
             .and_then(|(used, window)| used_percentage(used, window))

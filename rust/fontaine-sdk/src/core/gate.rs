@@ -441,6 +441,7 @@ pub struct SessionState {
     reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
     waiting: Mutex<HashMap<String, usize>>,
+    activity: Arc<crate::core::activity::ActivityTracker>,
     agent_sink: Mutex<Option<AgentEventSink>>,
     guardian: RwLock<Arc<Guardian>>,
     composition: RwLock<Option<CompositionStage>>,
@@ -510,6 +511,7 @@ impl SessionState {
             reveal_mcp_names: params.reveal_mcp_names,
             auto_edits: params.auto_edits,
             waiting: Mutex::default(),
+            activity: crate::core::activity::ActivityTracker::new(),
             agent_sink: Mutex::default(),
             inner: RwLock::new(Inner {
                 scope: params.scope,
@@ -660,6 +662,7 @@ impl SessionState {
             to = to.as_str(),
             "permission_mode_changed"
         );
+        self.activity.poke();
         Ok(ModeChanged {
             changed: true,
             closed_stretch,
@@ -829,6 +832,7 @@ impl SessionState {
             Decision::Deny,
         );
         self.afk_stops.send_modify(|stops| *stops += 1);
+        self.activity.poke();
         true
     }
 
@@ -847,6 +851,7 @@ impl SessionState {
         } else {
             drop(afk);
         }
+        self.activity.poke();
         self.record_session_event(
             "afk",
             serde_json::json!({ "stop_seq": stop.seq }),
@@ -1228,12 +1233,16 @@ impl SessionState {
 
     /// Notes one guardian denial. Returns whether it paused `auto`.
     pub fn guardian_denied(&self) -> bool {
-        lock(&self.breaker, "loop breaker").denied()
+        let paused = lock(&self.breaker, "loop breaker").denied();
+        // A breaker pause holds notes back while AFK runs.
+        self.activity.poke();
+        paused
     }
 
     /// The guardian allowed a call, or the human did: a run of denials is over.
     pub fn guardian_allowed(&self) {
         lock(&self.breaker, "loop breaker").allowed();
+        self.activity.poke();
     }
 
     /// Whether repeated denials have handed the session back to the human.
@@ -1244,6 +1253,7 @@ impl SessionState {
     /// The human approved a call: `auto` resumes.
     pub fn resume_auto(&self) {
         lock(&self.breaker, "loop breaker").resume();
+        self.activity.poke();
     }
 
     pub fn record_denied(&self, call: DeniedCall) {
@@ -1785,6 +1795,28 @@ impl SessionState {
             state: self.clone(),
             agent: agent.to_string(),
         }
+    }
+
+    /// [`wait_on_human`](Self::wait_on_human) for a dialog only a person or a host can answer:
+    /// none when nobody can answer, or AFK mode would answer for them, since the call resolves to
+    /// a denial at once and nothing waits.
+    pub fn wait_on_answer(
+        self: &Arc<Self>,
+        agent: &str,
+        human: crate::core::permissions::HumanChannel,
+    ) -> Option<WaitGuard> {
+        (human != crate::core::permissions::HumanChannel::Absent && !self.afk_on())
+            .then(|| self.wait_on_human(agent))
+    }
+
+    /// Whether any agent, the root included, waits on a human.
+    pub fn any_waiting(&self) -> bool {
+        lock(&self.waiting, "waiting").values().any(|n| *n > 0)
+    }
+
+    /// The session's turn accounting, which the activity snapshot reads.
+    pub fn activity(&self) -> &Arc<crate::core::activity::ActivityTracker> {
+        &self.activity
     }
 
     pub fn is_waiting(&self, agent: &str) -> bool {

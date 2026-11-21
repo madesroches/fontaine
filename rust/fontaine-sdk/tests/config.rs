@@ -2677,6 +2677,12 @@ mod hook_validation {
         user_ok("[[hooks.session_start]]\nmatcher = \"*\"\ncommand = \"true\"\n");
         user_ok("[[hooks.subagent_stop]]\nmatcher = \"my-agent|worker\"\ncommand = \"true\"\n");
         user_ok("[[hooks.notification]]\nmatcher = \"permission_prompt\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.activity_changed]]\nmatcher = \"idle\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.activity_changed]]\nmatcher = \"active|waiting\"\ncommand = \"true\"\n");
+        rejected(
+            "[[hooks.activity_changed]]\nmatcher = \"busy\"\ncommand = \"true\"\n",
+            "`busy` is not a value this event matches",
+        );
         user_ok("[[hooks.elicitation]]\nmatcher = \"github|my-server\"\ncommand = \"true\"\n");
         user_ok("[[hooks.elicitation]]\nmatcher = \"*\"\ncommand = \"true\"\n");
         rejected(
@@ -2702,6 +2708,12 @@ mod hook_validation {
             "[[hooks.notification]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
             "not `prompt`",
         );
+        rejected(
+            "[[hooks.activity_changed]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
+            "not `prompt`",
+        );
+        user_ok("[[hooks.activity_changed]]\ntype = \"http\"\nurl = \"https://example.test\"\n");
+        user_ok("[[hooks.activity_changed]]\ncommand = \"true\"\n");
         user_ok("[[hooks.stop]]\ntype = \"prompt\"\nprompt = \"ok?\"\n");
         user_ok("[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\n");
     }

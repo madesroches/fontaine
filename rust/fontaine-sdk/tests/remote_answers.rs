@@ -165,7 +165,11 @@ async fn a_denial_by_a_device_names_it_in_the_ledger_and_the_audit_explanation()
 #[tokio::test]
 async fn a_question_answered_by_a_device_marks_the_dialog_message() {
     let (rig, late) = rig_answered_by(Answer::AllowOnce);
-    let questions = HumanQuestions::new(late.clone(), rig.state.clone());
+    let questions = HumanQuestions::new(
+        late.clone(),
+        rig.state.clone(),
+        fontaine_sdk::core::permissions::HumanChannel::Present,
+    );
     let reply = questions.ask(ROOT_AGENT, vec![question()]).await;
     assert!(matches!(reply, QuestionReply::Answered(_)));
     let ledger = rig.session.ledger.read().unwrap();

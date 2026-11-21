@@ -206,6 +206,7 @@ impl AgentRuntime {
     /// like [`compact_if_needed`](Self::compact_if_needed). A role's list falls through to its
     /// next entry when the summary request runs out of quota.
     pub async fn compact_with(&self, reason: CompactReason) -> CompactResult {
+        self.state.activity().assert_scoped("a compaction");
         let trigger = match reason {
             CompactReason::Asked { .. } => "manual",
             CompactReason::Threshold | CompactReason::Overflow => "auto",

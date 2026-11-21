@@ -86,6 +86,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         focus: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        let _scope = runtime.state.activity().turn_scope();
         // Compaction rewrites `main`, which a still-pending journal's fold mark relies on
         // for its counts; resolve the journal first, and skip the compaction rather than
         // fold the turn twice.
@@ -135,6 +136,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         question: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        let _scope = runtime.state.activity().turn_scope();
         if question.is_empty() {
             self.app.transcript.error("usage: /btw <question>");
             return Continue(());
@@ -163,6 +165,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &AgentRuntime,
         mut run: F,
     ) -> (Option<F::Output>, bool) {
+        let _scope = runtime.state.activity().turn_scope();
         self.app.set_running(true);
         let mut closed = false;
         let result = match self.serve_while(runtime, &mut run, Serve::Queueing).await {

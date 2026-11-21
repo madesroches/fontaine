@@ -303,7 +303,9 @@ plugin.
   not know skips its entry. `timeout` seconds map to `timeout_secs`.
   - **Events.** The events Fontaine fires load by their Claude Code names (`PreToolUse`,
     `PostToolUseFailure`, `SessionStart`, `Stop`, `SubagentStop`, `PreCompact`, `Notification`,
-    `TaskCreated`, ...). An event Fontaine does not build (see
+    `TaskCreated`, ...), and `ActivityChanged`, a Fontaine-only event that reports the session's
+    [activity](hooks.md#session-activity-activity_changed) and takes `command` and `http` hooks.
+    An event Fontaine does not build (see
     [what is not built](hooks.md#what-is-not-built)) is skipped with one warning per plugin and event.
   - **Types.** `command`, `http` and `prompt` hooks load, on the events that take them. `agent`
     and `mcp_tool` hooks are skipped with one warning per plugin, so a plugin that also ships them

@@ -603,6 +603,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.app.covered() || !runtime.steering.has_remote_ready() {
             return ControlFlow::Continue(());
         }
+        // Taken before the retract, so the queue emptying never reads idle.
+        let _scope = runtime.state.activity().turn_scope();
         let submissions: Vec<Submission> = group(runtime.steering.retract());
         self.converse(
             runtime,

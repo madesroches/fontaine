@@ -448,6 +448,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             cost_total_usd,
         )
         .with_afk(self.app.afk, self.app.afk_stopped)
+        .with_activity(&runtime.activity().borrow())
     }
 
     /// Runs the configured command with the given payload, publishing the result back to
@@ -947,6 +948,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let mut statusline_rx = self.statusline_rx.as_mut();
             let statusline_result_rx = &mut self.statusline_result_rx;
             let afk_stops = &mut self.afk_stops;
+            let activity = &mut self.activity;
+            let mut activity_changed = false;
             let mut suggestion_reply = self
                 .app
                 .pending_suggestion
@@ -1012,6 +1015,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     _ = &mut display => Action::None,
                     Ok(()) = main_quota.changed() => Action::None,
                     Ok(()) = guardian_quota.changed() => Action::None,
+                    // Marked seen here, so a publish made while the loop was not parked is
+                    // not seen twice and the arm does not spin.
+                    Ok(()) = activity.changed() => {
+                        activity.borrow_and_update();
+                        activity_changed = true;
+                        Action::None
+                    }
                     () = async {
                         match tick {
                             Some(wait) => tokio::time::sleep(wait).await,
@@ -1020,6 +1030,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     } => Action::None,
                 }
             };
+            if activity_changed {
+                self.trigger_statusline(StatuslineTrigger::Draw);
+            }
             if stopped {
                 self.afk_stopped(runtime).await;
             }
@@ -1177,6 +1190,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         attachments: Vec<PendingAttachment>,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        // From the prompt hook and a skill's expansion through the turn that follows.
+        let _scope = runtime.state.activity().turn_scope();
         match parse_command(&text) {
             // /loop is never dispatched here or queued: it needs the loop's own
             // first-iteration bookkeeping.

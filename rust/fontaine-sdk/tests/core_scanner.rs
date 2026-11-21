@@ -225,7 +225,7 @@ async fn a_subagent_report_is_flagged_before_the_parent_reads_it() {
     };
     let built = build_with_scanner(&world, Manual, Vec::new(), false, start);
     queue_report(&built.runtime);
-    let prompt = built.runtime.notification_prompt().await.unwrap();
+    let prompt = built.runtime.notification_prompt().await.unwrap().prompt;
     assert!(prompt.contains(REPORT), "{prompt}");
     let at_report = prompt.find(REPORT).unwrap();
     let at_note = prompt.find("flagged as possible prompt injection").unwrap();
@@ -249,7 +249,7 @@ async fn a_job_note_is_screened_like_a_tool_result_and_carries_the_job_header() 
         NotificationKind::Job,
         format!("[Background job job-3f2a ended (exit code 0) after 4s.]\n{REPORT}"),
     );
-    let prompt = built.runtime.notification_prompt().await.unwrap();
+    let prompt = built.runtime.notification_prompt().await.unwrap().prompt;
     assert!(
         prompt.contains("agents or background jobs you started have news"),
         "{prompt}"
@@ -319,7 +319,7 @@ async fn with_the_scanner_off_a_report_is_delivered_as_it_was() {
     let world = World::new();
     let built = build(&world, Manual, Vec::new(), false);
     queue_report(&built.runtime);
-    let prompt = built.runtime.notification_prompt().await.unwrap();
+    let prompt = built.runtime.notification_prompt().await.unwrap().prompt;
     assert!(prompt.contains(REPORT), "{prompt}");
     assert!(!prompt.contains("Fontaine scanner"), "{prompt}");
     assert!(built.runtime.scanner_notices().is_empty());
@@ -341,7 +341,7 @@ async fn the_llm_scanner_follows_a_guardian_installed_after_startup() {
     };
     let built = build_with_scanner(&world, Manual, Vec::new(), false, start);
     queue_report(&built.runtime);
-    let before = built.runtime.notification_prompt().await.unwrap();
+    let before = built.runtime.notification_prompt().await.unwrap().prompt;
     assert!(before.contains("test/gone is unavailable"), "{before}");
 
     let model = MockCompletionModel::from_turns(vec![MockTurn::text("not a verdict"); 4]);
@@ -353,7 +353,7 @@ async fn the_llm_scanner_follows_a_guardian_installed_after_startup() {
             model.into(),
         )));
     queue_report(&built.runtime);
-    let after = built.runtime.notification_prompt().await.unwrap();
+    let after = built.runtime.notification_prompt().await.unwrap().prompt;
     assert!(!after.contains("test/gone is unavailable"), "{after}");
     assert!(after.contains("no usable verdict"), "{after}");
 }

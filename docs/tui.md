@@ -273,6 +273,8 @@ data, plus Fontaine extensions:
 | `afk.on`, `afk.stopped` | Whether [AFK mode](afk.md) is on, and whether the temperature ceiling has stopped the session |
 | `recent_verdicts` | Last 5 gate decisions with a guardian verdict: `{tool, decision, rule, guardian_verdict}` |
 | `account_usage` | Main and guardian account usage windows, in the same shape as headless output |
+| `activity.state` | `active`, `waiting` or `idle`: whether the session is working, blocked on you, or free. A job that outlives the turn keeps it `active`; see [`activity_changed`](hooks.md#session-activity-activity_changed) |
+| `activity.seq`, `activity.turn_running`, `activity.waiting_on_human`, `activity.running_agents`, `activity.running_background_jobs`, `activity.running_monitors`, `activity.pending_notifications`, `activity.queued_prompts` | The rest of the activity snapshot, the same object the hook receives |
 | `context_window.used_percentage` | Context used as a percentage of the model's window, when known |
 | `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced; for a run priced by estimate (a `databricks` account) this is a list-price estimate |
 
