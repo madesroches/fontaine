@@ -21,11 +21,13 @@ All notable changes are recorded here. The format follows
   session as waiting on a human, as permission prompts already did. See `docs/hooks.md`.
 - A `shell_edit` permission tier (#743): in `auto` and AFK, after the floor and hooks, a shell call
   that Fontaine parses in full and that is made only of read-only commands, in-root edits (`sed -i`
-  with `d`/`s` commands, `mkdir`, `mv`, a non-expanding heredoc or redirect into a file an `edit`
-  or `write` would change without a verdict) and local git steps (`git add` of named files,
-  `git rm` and `git mv` without `-f`, `git commit` without `--amend` or `--no-verify`,
-  `git rebase|merge|cherry-pick|revert --continue`) no longer waits for a guardian verdict, so a
-  conflict resolution that was denied for scope reasons runs. Deny and ask rules, child
+  with `d`/`s` commands and no bracket expression, on Linux only; `mkdir`, `mv`, a non-expanding
+  heredoc or redirect into a file an `edit` or `write` would change without a verdict) and local
+  git steps (`git add` of named files, `git rm` and `git mv` without `-f`, `git commit` without
+  `--amend` or `--no-verify`, `git rebase|merge|cherry-pick|revert --continue`, all only when the
+  repository has no installed git hook) no longer waits for a guardian verdict, so a conflict
+  resolution that was denied for scope reasons runs. The calling agent must hold `edit` and
+  `write`. Deny and ask rules, child
   restrictions, file-tool hooks and credential files still send the call to the guardian, and so
   does hook-runner config (`.pre-commit-config.yaml`, lefthook config, `.githooks/`, the
   `core.hooksPath` directory), which is now also excluded from `tracked_edit`. A submodule or
@@ -123,7 +125,8 @@ All notable changes are recorded here. The format follows
 - The guardian prompt says that finishing a git operation the session started (resolving its
   conflicts, staging, `--continue`) is not `Git Destructive`, that being unable to verify an in-root
   edit's content is never by itself a reason to deny it, and that a denial's explanation proposes
-  nothing: any permitted narrower call goes in `instead` (#743, #744).
+  nothing: any permitted narrower call goes in `instead` (#743, #744). Expiring the reflog or
+  pruning unreachable objects the user did not ask for is named under `Destroy Pre-existing Files`.
 - The `claude-subscription` cache self-check is harder to trip on a false positive (#718): a
   previous request that read nothing gives no verdict, a version needs two consecutive shortfalls
   before the native layout is turned off for it, the warning names the read, expected and gap
