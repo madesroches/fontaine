@@ -253,6 +253,36 @@ impl ModelHandle {
         handle
     }
 
+    /// Whether this model's account loads deferred tools itself and the model takes it. A handle
+    /// built without a client never does.
+    pub fn native_deferral(&self) -> bool {
+        self.client.is_some()
+            && self.kind.provider().native_deferral()
+            && crate::core::providers::anthropic::model_defers_natively(&self.reference.model)
+    }
+
+    /// This model's conversation completion with the account's own deferred tool loading, for
+    /// the main agent or a subagent that runs on it. Unchanged for a model that has none; the
+    /// guardian's scope is never touched.
+    pub fn deferring(&self, deferral: &crate::tools::mcp::Deferral) -> Self {
+        let (Some(client), Some(scopes)) = (&self.client, &self.scopes) else {
+            return self.clone();
+        };
+        if !self.native_deferral() {
+            return self.clone();
+        }
+        let conversation = client
+            .0
+            .deferring_completion(&self.reference.model, deferral, true);
+        let mut handle = self.clone();
+        handle.completion = conversation.clone();
+        handle.scopes = Some(Scopes {
+            conversation,
+            guardian: scopes.guardian.clone(),
+        });
+        handle
+    }
+
     /// A handle for the guardian: the same model, with only the static prefix cacheable.
     pub fn guardian_from_client(reference: ModelRef, kind: AccountKind, client: &Client) -> Self {
         let guardian = client.guardian_completion(&reference.model);

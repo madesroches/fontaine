@@ -1411,6 +1411,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     model,
                     provider,
                     native_search: runtime.native_search_active(),
+                    deferral: Some(runtime.deferral()),
                     generation_options: runtime.turn_generation_options(),
                     max_tokens: runtime.turn_max_tokens(),
                     served: runtime.served(),

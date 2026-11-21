@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use rig_core::DynModel;
 use rig_core::completion::ProviderOptions;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
@@ -10,7 +9,8 @@ use rig_core::providers::anthropic::extension::{
     AnthropicOptions, CONTEXT_MANAGEMENT_BETA, ContextManagement,
 };
 use rig_core::providers::anthropic::wire::Auth;
-use rig_core::providers::anthropic::{Anthropic as Client, AnthropicConfig};
+use rig_core::providers::anthropic::{Anthropic as Client, AnthropicConfig, Messages};
+use rig_core::{DynModel, Model};
 
 use rig_core::providers::registry::ProviderId;
 
@@ -19,13 +19,16 @@ use std::collections::BTreeMap;
 use rig_core::catalog::Catalog;
 
 use super::context_editing;
+use super::defer_wire::DeferWire;
 use super::derived_facts::{Price, facts_as, no_facts_notice, notice, unlisted, unlisted_facts};
+use super::warn::Warn;
 use super::{
     AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
 };
 use crate::core::config::{Account, AnthropicAuth};
 use crate::core::transport::caused_client;
 use crate::tools::error_chain::chain;
+use crate::tools::mcp::Deferral;
 
 pub struct Anthropic;
 
@@ -56,6 +59,10 @@ impl Provider for Anthropic {
     }
 
     fn accepts_context_editing(&self) -> bool {
+        true
+    }
+
+    fn native_deferral(&self) -> bool {
         true
     }
 
@@ -114,6 +121,7 @@ impl Provider for Anthropic {
             caching: PromptCaching::of(ctx.account),
             account_name: ctx.account_name.to_string(),
             model_facts: ctx.account.model_facts.clone().unwrap_or_default(),
+            warn: ctx.warn.clone(),
         }))
     }
 }
@@ -124,10 +132,33 @@ pub(super) struct Connected {
     context_edit: Option<serde_json::Value>,
     account_name: String,
     model_facts: BTreeMap<String, String>,
+    warn: Warn,
+}
+
+/// Whether `model` takes `defer_loading` tools and `tool_reference` results. Claude 3 and the
+/// first Opus 4, Opus 4.1 and Sonnet 4 models do not; every other id is assumed to, and a host
+/// that rejects the fields anyway is caught by the request retry. An explicit list because the
+/// catalog carries no release date for those entries.
+pub(crate) fn model_defers_natively(model: &str) -> bool {
+    if model.starts_with("claude-3") {
+        return false;
+    }
+    let opus = model.strip_prefix("claude-opus-4");
+    let sonnet = model.strip_prefix("claude-sonnet-4");
+    let Some(rest) = opus.or(sonnet) else {
+        return true;
+    };
+    let Some(segment) = rest.strip_prefix('-') else {
+        // The bare family name is the first release.
+        return !rest.is_empty();
+    };
+    let dated = segment.len() == 8 && segment.bytes().all(|b| b.is_ascii_digit());
+    let first_minor = |minor: &str| segment == minor || segment.starts_with(&format!("{minor}-"));
+    !(dated || first_minor("0") || (opus.is_some() && first_minor("1")))
 }
 
 impl Connected {
-    fn model(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
+    fn built(&self, model: &str, scope: CacheScope) -> Model<Messages> {
         let mut built = self.client.completion(model);
         let anthropic = vendor("anthropic");
         let mapped = self
@@ -138,7 +169,11 @@ impl Connected {
         if let Some(facts) = mapped.or_else(|| unlisted_facts(anthropic, model)) {
             built.wire = built.wire.with_facts(facts);
         }
-        self.caching.apply(built, scope).erase()
+        self.caching.apply(built, scope)
+    }
+
+    fn model(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
+        self.built(model, scope).erase()
     }
 }
 
@@ -149,6 +184,20 @@ impl AccountClient for Connected {
 
     fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
         self.model(model, CacheScope::StaticPrefix)
+    }
+
+    fn deferring_completion(
+        &self,
+        model: &str,
+        deferral: &Deferral,
+        native: bool,
+    ) -> DynModel<Completion> {
+        let built = self.built(model, CacheScope::Conversation);
+        Model::new(
+            DeferWire::new(built.wire, deferral.clone(), native, self.warn.clone()),
+            built.transport,
+        )
+        .erase()
     }
 
     fn provider_options(&self) -> Option<ProviderOptions> {
@@ -185,5 +234,42 @@ impl AccountClient for Connected {
             Ok(list.data.into_iter().map(|m| m.id).collect())
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_defers_natively;
+
+    #[test]
+    fn models_without_native_deferral_are_named_in_alias_and_dated_form() {
+        for model in [
+            "claude-3-5-haiku-latest",
+            "claude-3-7-sonnet-20250219",
+            "claude-opus-4-0",
+            "claude-opus-4-1",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-0",
+            "claude-sonnet-4-20250514",
+        ] {
+            assert!(!model_defers_natively(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn every_other_id_is_assumed_to_defer_natively() {
+        for model in [
+            "claude-opus-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-opus-4-10",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5",
+            "claude-sonnet-5-5",
+            "some-gateway-model",
+        ] {
+            assert!(model_defers_natively(model), "{model}");
+        }
     }
 }

@@ -373,6 +373,8 @@ impl McpServers {
             .and_then(|spec| spec.context_window)
             .map(u64::from);
         self.deferral.set_policy(mode, window);
+        self.deferral
+            .set_native_config(config.mcp.native_tool_search);
     }
 
     /// The deferred tool names the root's prompt lists, grouped by server; empty while deferral

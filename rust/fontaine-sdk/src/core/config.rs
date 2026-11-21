@@ -1072,6 +1072,7 @@ impl McpServer {
 pub struct McpSection {
     pub servers: Option<BTreeMap<String, McpServer>>,
     pub tool_search: Option<ToolSearch>,
+    pub native_tool_search: Option<bool>,
 }
 
 /// Whether MCP tool definitions wait behind the `tool_search` tool instead of riding every
@@ -2963,9 +2964,21 @@ pub struct Shell {
 }
 
 /// The merged `[mcp]` settings beside the server table.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mcp {
     pub tool_search: ToolSearch,
+    /// Whether an `anthropic` account loads deferred tools through the API's own tool loading,
+    /// which keeps the prompt cache across a load.
+    pub native_tool_search: bool,
+}
+
+impl Default for Mcp {
+    fn default() -> Self {
+        Mcp {
+            tool_search: ToolSearch::default(),
+            native_tool_search: true,
+        }
+    }
 }
 
 /// The merged `[feedback]` section.
@@ -3559,6 +3572,9 @@ impl Config {
         }
         if let Some(v) = s.mcp.as_ref().and_then(|m| m.tool_search) {
             self.mcp.tool_search = v;
+        }
+        if let Some(v) = s.mcp.as_ref().and_then(|m| m.native_tool_search) {
+            self.mcp.native_tool_search = v;
         }
         if let Some(sl) = &s.statusline {
             if let Some(v) = &sl.command {

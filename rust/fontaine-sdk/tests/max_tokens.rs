@@ -127,6 +127,7 @@ async fn root_turn(runtime: &fontaine_sdk::core::agent::AgentRuntime) {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            deferral: None,
             generation_options: runtime.turn_generation_options(),
             max_tokens: runtime.turn_max_tokens(),
         },

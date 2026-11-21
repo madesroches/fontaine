@@ -752,6 +752,7 @@ async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,
+                deferral: None,
                 generation_options: None,
                 max_tokens: None,
             },

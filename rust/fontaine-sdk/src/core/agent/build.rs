@@ -430,7 +430,8 @@ fn schedule_tools(p: &Parts<'_>) -> [ExtensionTool; 4] {
 
 /// The agent, and whether it carries the provider's search tool.
 fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
-    let builder = AgentBuilder::new(p.models.main.completion.clone())
+    let main = p.models.main.deferring(&p.mcp.deferral);
+    let builder = AgentBuilder::new(main.completion.clone())
         .preamble(preamble)
         .memory(p.session.store())
         .conversation(CONVERSATION_LOG);
@@ -449,6 +450,7 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
             tools: p.tool_server.clone(),
             deferral: p.mcp.deferral.clone(),
             loaded: p.mcp.loaded.clone(),
+            native_route: main.native_deferral(),
         })
         .add_hook(InflightHook::root(
             p.session.store(),

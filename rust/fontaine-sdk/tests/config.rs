@@ -794,6 +794,23 @@ fn tool_search_defaults_to_auto_and_either_scope_may_set_it() {
 }
 
 #[test]
+fn native_tool_search_defaults_on_and_either_scope_may_set_it() {
+    let w = World::new();
+    assert!(w.load().unwrap().mcp.native_tool_search);
+    w.user_file("[mcp]\nnative_tool_search = false\n");
+    assert!(!w.load().unwrap().mcp.native_tool_search);
+    w.project_file("[mcp]\nnative_tool_search = true\n");
+    assert!(w.load().unwrap().mcp.native_tool_search);
+    for bad in ["\"off\"", "1"] {
+        let text = format!("[mcp]\nnative_tool_search = {bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn allow_extra_entries_are_flag_free_command_pairs() {
     user_ok("[shell_preclassifier]\nallow_extra = [\"tree\", \"cargo metadata\"]\n");
     for bad in ["ls -la", "a b c", "-x", ""] {

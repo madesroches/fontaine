@@ -631,6 +631,7 @@ async fn root_turn(runtime: &AgentRuntime) {
             model: LISTED.to_string(),
             provider: "anthropic".to_string(),
             native_search: false,
+            deferral: None,
             generation_options: runtime.turn_generation_options(),
             max_tokens: runtime.turn_max_tokens(),
         },
@@ -667,7 +668,13 @@ async fn context_editing_rides_the_main_agents_request_with_the_beta_header() {
     );
     assert_eq!(
         edit["exclude_tools"],
-        json!(["board_show", "board_update", "memory", "todo_write"])
+        json!([
+            "board_show",
+            "board_update",
+            "memory",
+            "todo_write",
+            "tool_search"
+        ])
     );
     assert!(
         beta_of(request).is_some_and(|b| b.contains(CONTEXT_BETA)),

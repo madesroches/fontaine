@@ -491,7 +491,7 @@ impl ChildContext {
             }
         };
         Ok(Resolved {
-            handle: handle.for_agent(id),
+            handle: handle.for_agent(id).deferring(&self.deferral),
             list,
         })
     }
@@ -505,7 +505,7 @@ impl ChildContext {
             .main(&reference.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        Ok(handle.for_agent(id))
+        Ok(handle.for_agent(id).deferring(&self.deferral))
     }
 
     /// Tells the user once per model that a child runs on derived facts. The main model and the
@@ -814,6 +814,7 @@ fn build_child_agent(
             tools: tools.clone(),
             deferral: context.deferral.clone(),
             loaded: context.loaded.clone(),
+            native_route: model.native_deferral(),
         })
         .add_hook(RecoveryHook::new(
             store.clone(),
@@ -1131,6 +1132,7 @@ async fn run_child(
                 model: model.model.clone(),
                 provider: model.provider.clone(),
                 native_search: false,
+                deferral: Some(shared.context.deferral.clone()),
                 generation_options: model.generation_options.clone(),
                 max_tokens: model.max_tokens,
                 served: model.served.clone(),

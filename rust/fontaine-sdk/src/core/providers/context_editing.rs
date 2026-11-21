@@ -10,7 +10,15 @@ const DEFAULT_KEEP: u32 = 3;
 const DEFAULT_CLEAR_AT_LEAST_TOKENS: u32 = 20_000;
 
 /// Tools whose results carry state the model reads back later, so clearing them would lose it.
-const DEFAULT_EXCLUDE_TOOLS: [&str; 4] = ["board_show", "board_update", "memory", "todo_write"];
+/// `tool_search` is one: on the native deferral route its result holds the `tool_reference`
+/// blocks that keep deferred tools callable.
+const DEFAULT_EXCLUDE_TOOLS: [&str; 5] = [
+    "board_show",
+    "board_update",
+    "memory",
+    "todo_write",
+    "tool_search",
+];
 
 /// The trigger, the kept tool uses and the minimum freed size, with defaults filled in.
 pub(crate) fn thresholds(editing: &ContextEditing) -> (u32, u32, u32) {
@@ -61,7 +69,7 @@ mod tests {
                 "trigger": {"type": "input_tokens", "value": 100000},
                 "keep": {"type": "tool_uses", "value": 3},
                 "clear_at_least": {"type": "input_tokens", "value": 20000},
-                "exclude_tools": ["board_show", "board_update", "memory", "todo_write"],
+                "exclude_tools": ["board_show", "board_update", "memory", "todo_write", "tool_search"],
             })
         );
     }

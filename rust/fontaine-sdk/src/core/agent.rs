@@ -552,6 +552,11 @@ impl AgentRuntime {
         self.native_search
     }
 
+    /// The session's deferral state, for a turn that retries without provider-side tool loading.
+    pub fn deferral(&self) -> crate::tools::mcp::Deferral {
+        self.mcp.deferral.clone()
+    }
+
     fn output_style_text(&self) -> Option<(String, String)> {
         let name = self.output_style.as_deref()?;
         let style = self.extensions.get().output_style(name)?.clone();

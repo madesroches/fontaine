@@ -3,6 +3,11 @@
 //! tool is registered and wrapped like any other, and a call that reaches it takes the same
 //! decision. The hook only narrows the advertised set, which rig-agent also uses as the set
 //! of tools it will dispatch.
+//!
+//! That is the client-side route. On a model whose provider loads deferred tools itself, every
+//! deferred tool is advertised and the wire marks it deferred, so a call to a name whose
+//! definition was never loaded is dispatched and gated like any other call; the narrowing and
+//! the "search first" reply apply to the client-side route only.
 
 use crate::tools::mcp::{Deferral, LoadedSets, TOOL_SEARCH};
 use rig_agent::agent::hook::{
@@ -18,9 +23,16 @@ pub(crate) struct DeferredAdvertiser {
     pub(crate) tools: ToolServerHandle,
     pub(crate) deferral: Deferral,
     pub(crate) loaded: LoadedSets,
+    /// Whether this agent's account and model load deferred tools themselves; the session-wide
+    /// setting and the retry state are read live in `native`.
+    pub(crate) native_route: bool,
 }
 
 impl DeferredAdvertiser {
+    fn native(&self) -> bool {
+        self.native_route && self.deferral.native_allowed()
+    }
+
     fn registered(&self) -> Vec<String> {
         self.tools.snapshot().names().map(str::to_owned).collect()
     }
@@ -41,12 +53,13 @@ impl DeferredAdvertiser {
             self.loaded.clear(&self.agent);
         }
         let loaded = self.loaded.loaded(&self.agent, &self.deferral);
+        let native = self.native();
         registered
             .iter()
             .filter(|name| {
                 if name.as_str() == TOOL_SEARCH {
                     active
-                } else if active && self.deferral.is_registered(name) {
+                } else if active && !native && self.deferral.is_registered(name) {
                     loaded.contains(name)
                 } else {
                     true
@@ -76,7 +89,7 @@ impl AgentHook for DeferredAdvertiser {
         _ctx: &HookContext,
         event: &InvalidToolCallContext,
     ) -> Option<InvalidToolCallAction> {
-        if event.reason != InvalidToolCallReason::UnknownTool {
+        if event.reason != InvalidToolCallReason::UnknownTool || self.native() {
             return None;
         }
         let name = event.tool_name.as_str();
@@ -174,6 +187,7 @@ mod tests {
             tools,
             deferral,
             loaded: LoadedSets::default(),
+            native_route: false,
         }
     }
 
@@ -191,6 +205,33 @@ mod tests {
         let mut loaded = names(&hook);
         loaded.sort();
         assert_eq!(loaded, ["mcp__gh__b", "read", "tool_search"]);
+    }
+
+    #[test]
+    fn on_the_native_route_every_registered_tool_is_advertised_while_deferral_is_active() {
+        let mut hook = advertiser(DeferMode::On, true);
+        hook.native_route = true;
+        let mut all = names(&hook);
+        all.sort();
+        assert_eq!(all, ["mcp__gh__a", "mcp__gh__b", "read", "tool_search"]);
+        hook.deferral.set_native_config(false);
+        assert_eq!(
+            names(&hook).len(),
+            2,
+            "the setting restores the client-side route"
+        );
+        hook.deferral.set_native_config(true);
+        hook.deferral.disable_native();
+        assert_eq!(names(&hook).len(), 2, "a rejection restores it too");
+    }
+
+    #[test]
+    fn a_native_agent_with_deferral_off_still_drops_tool_search() {
+        let mut hook = advertiser(DeferMode::Off, true);
+        hook.native_route = true;
+        let mut all = names(&hook);
+        all.sort();
+        assert_eq!(all, ["mcp__gh__a", "mcp__gh__b", "read"]);
     }
 
     #[test]
