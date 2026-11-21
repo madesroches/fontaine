@@ -32,14 +32,11 @@ Centralise rather than patch each close path (many, and new overlays would regre
 2. `Screen` remembers `overlay_was_open` from the previous frame. At the top of `draw_frame`,
    when it was open, no overlay is open now, and `committed_under_overlay` is set, set
    `app.reprint = true; app.committed_under_overlay = false;` directly, before the existing
-   `reprint` check below, which recommits and reprints. Update `overlay_was_open` each frame.
+   `reprint` check below, which recommits and reprints. Update `overlay_was_open` at the top of `draw_frame`, before any `?` return, so an early error return cannot leave it stale.
 3. The existing agents-panel/transcript close paths stay as they are (they reprint immediately and
    clear the flag, so the central path is a no-op for them).
 4. Reword the stale doc comment on `committed_under_overlay` (app.rs:281-282) to "while an overlay
    covered the live area".
-
-A dialog replaced by another (ticket → pairing) never reaches "no overlay open", so the rewrite
-happens once, when the last one closes.
 
 ## Implementation Steps
 1. `app.rs`: add `pub(crate) fn overlay_open(&self) -> bool` (`covered() || plugin_prompt.is_some()
@@ -55,14 +52,16 @@ happens once, when the last one closes.
    blank run above the input.
 5. Docs: `docs/tui.md`: add closing any dialog that pushed rows into scrollback to the list of what
    erases it (~l.20-25: it reprints the transcript, which erases the scrollback first), and widen
-   ~l.1234-1236, which says only closing a tall transcript view does. `docs/remote.md` (ticket
-   dialog section, ~l.70-90): one sentence that closing the dialog redraws the transcript.
+   ~l.1234-1236, which says only closing a tall transcript view does. `docs/remote.md` (l.26-27, where
+   the ticket dialog closing is described): one sentence that closing the dialog redraws the transcript.
    `CHANGELOG.md`: entry under `## [Unreleased]` / `### Fixed`, ending "(#740)".
 
 ## Files to Modify
 - `rust/fontaine-tui/src/app.rs`
 - `rust/fontaine-tui/src/screen.rs`
 - `rust/fontaine-tui/examples/live_area.rs`
+- `docs/tui.md`
+- `docs/remote.md`
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -82,9 +81,6 @@ by regression tests):
   see app.rs:3523), since ui/remote.rs:503-513 is unreachable from screen tests.
 - A dialog that committed nothing does not set `reprint`.
 - Existing agents-panel and transcript-view tests stay green.
-
-## Documentation
-See Implementation Step 5.
 
 ## Decisions
 - 2026-11-21: the transition check sets `reprint`/`committed_under_overlay` directly instead of
