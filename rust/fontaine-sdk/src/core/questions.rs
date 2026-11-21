@@ -356,6 +356,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_dialog_holds_the_human_wait_guard_only_when_a_human_can_answer() {
+        struct Probe {
+            state: Mutex<Option<Arc<SessionState>>>,
+            seen: Mutex<Vec<bool>>,
+        }
+        impl Approver for Probe {
+            fn approve<'a>(
+                &'a self,
+                _request: crate::core::permissions::ApprovalRequest,
+            ) -> BoxFuture<'a, crate::core::permissions::Answer> {
+                Box::pin(async { crate::core::permissions::Answer::Deny { feedback: None } })
+            }
+
+            fn ask_user<'a>(
+                &'a self,
+                _agent: &'a str,
+                _questions: Vec<Question>,
+            ) -> BoxFuture<'a, QuestionReply> {
+                let waiting = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("set before asking")
+                    .any_waiting();
+                self.seen.lock().unwrap().push(waiting);
+                Box::pin(async { QuestionReply::Declined })
+            }
+        }
+
+        let probe = Arc::new(Probe {
+            state: Mutex::new(None),
+            seen: Mutex::new(Vec::new()),
+        });
+        let (present, _ledger, _dir) = rig(probe.clone());
+        *probe.state.lock().unwrap() = Some(present.state.clone());
+        present.ask(ROOT_AGENT, vec![question()]).await;
+        assert!(
+            !present.state.any_waiting(),
+            "the guard is dropped with the dialog"
+        );
+        let absent =
+            HumanQuestions::new(probe.clone(), present.state.clone(), HumanChannel::Absent);
+        absent.ask(ROOT_AGENT, vec![question()]).await;
+        assert_eq!(*probe.seen.lock().unwrap(), vec![true, false]);
+    }
+
+    #[tokio::test]
     async fn typed_text_is_escaped_too() {
         let reply = QuestionReply::Answered(vec![answer("Which?", &[], Some("a\"\nb"))]);
         let (questions, ledger, _dir) = rig(Arc::new(Answers(Mutex::new(Some(reply)))));

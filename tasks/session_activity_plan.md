@@ -365,6 +365,7 @@ not part of this change.
 - 2026-11-21: AFK: turn-scope coverage is proven by mechanism tests (scope/claim nesting, claim upgrade, retract read-order) plus a debug-build `debug_assert` tripwire for turns, compaction and model requests run with no scope held, not per-site never-idle sampling.
 - 2026-11-21: AFK: `Steering` (including `queue`) pokes the tracker through an optional `Notify` handle from `state.activity()`, unset under `Default`; the router shares it via attach.
 - 2026-11-21: AFK: `HumanChannel` is passed into `HumanQuestions` and `HookElicitor`; their `wait_on_human` guards require a human channel and `!state.afk_on()`.
+- 2026-11-21: AFK: a TUI dialog the person opens themselves (`/login`, `/bug`, `/guardian-disable`, `/plugin`, `/skills` trust, `/afk` review, queued `/resume` `/model` `/rewind` pickers) runs under a held `TurnScope` and reports `active`; reporting idle would let an idle-matched scheduler inject work into an open dialog, and `waiting` stays reserved for prompts that block an agent.
 
 ## Documentation
 
@@ -431,10 +432,10 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   completion consumed through `job_output`, `/clear` (`end_jobs` + discard), shutdown, each
   updating the snapshot with the right reason.
 - Waiting: a permission prompt (root and subagent) sets `waiting`; an `ask_user` question and an
-  MCP elicitation prompt each set it (a subagent `ask_user` case: a user-defined agent type
-  inheriting `ask_user_question` can ask, `agents/registry.rs:257-291,340`, guard taken with the
-  child's id; MCP elicitation goes through the session-wide `HookElicitor`, which receives no agent
-  id, and is attributed to `ROOT_AGENT`); none sets it when
+  MCP elicitation prompt each set it for the root only (a subagent's `ask_user_question` returns
+  `Unavailable` in `AskUserTool::call` before `HumanQuestions::ask`, so it never takes the guard;
+  MCP elicitation goes through the session-wide `HookElicitor`, which receives no agent id, and is
+  attributed to `ROOT_AGENT`); none sets it when
   no human can answer; answering restores the previous state; a cancelled prompt drops it (guard).
 - Monitor: dedup (a burst returning to the same state publishes nothing), `seq` monotonic,
   latest-wins hook delivery with a slow hook, session_id carried.

@@ -395,3 +395,52 @@ async fn an_unhooked_unattended_request_still_cancels() {
     let e = elicitor(&rig, Vec::new());
     assert_eq!(e.elicit(form()).await, ElicitReply::Cancel);
 }
+
+#[tokio::test]
+async fn the_dialog_holds_the_human_wait_guard_only_when_a_human_can_answer() {
+    use fontaine_sdk::core::gate::SessionState;
+    use std::sync::Mutex;
+
+    struct Probe {
+        state: Arc<SessionState>,
+        seen: Mutex<Vec<bool>>,
+    }
+    impl fontaine_sdk::core::permissions::Approver for Probe {
+        fn approve<'a>(
+            &'a self,
+            _: fontaine_sdk::core::permissions::ApprovalRequest,
+        ) -> futures::future::BoxFuture<'a, fontaine_sdk::core::permissions::Answer> {
+            Box::pin(async { fontaine_sdk::core::permissions::Answer::Deny { feedback: None } })
+        }
+        fn warn(&self, _: &str) {}
+        fn elicit<'a>(&'a self, _: ElicitForm) -> futures::future::BoxFuture<'a, ElicitReply> {
+            self.seen.lock().unwrap().push(self.state.any_waiting());
+            Box::pin(async { ElicitReply::Cancel })
+        }
+        fn elicit_url<'a>(&'a self, _: ElicitUrl) -> futures::future::BoxFuture<'a, ElicitReply> {
+            self.seen.lock().unwrap().push(self.state.any_waiting());
+            Box::pin(async { ElicitReply::Cancel })
+        }
+    }
+    let rig = Rig::new(Manual);
+    for (human, expected) in [(HumanChannel::Present, true), (HumanChannel::Absent, false)] {
+        let approver = Arc::new(Probe {
+            state: rig.state.clone(),
+            seen: Mutex::new(Vec::new()),
+        });
+        let e = HookElicitor::new(
+            Vec::new(),
+            no_plugins(),
+            approver.clone(),
+            rig.state.clone(),
+            human,
+        );
+        e.elicit(form()).await;
+        e.elicit_url(link()).await;
+        assert_eq!(*approver.seen.lock().unwrap(), vec![expected, expected]);
+        assert!(
+            !rig.state.any_waiting(),
+            "the guard is dropped with the dialog"
+        );
+    }
+}

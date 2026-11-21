@@ -366,6 +366,8 @@ Every payload carries the complete snapshot in `activity`, so a consumer needs n
 | `pending_notifications` | Notes some surface will deliver and none has yet. |
 | `queued_prompts` | Messages you typed (or a connected host sent) that wait behind the running turn. |
 
+A dialog you opened yourself, such as a login or a plugin command, counts as `active`, not `waiting`: only a prompt that blocks an agent sets `waiting`.
+
 `waiting` when `waiting_on_human`: some agent cannot progress until a person answers, which a
 scheduler must tell from busy. It wins over `active` even while jobs run. Otherwise `active` when
 any of `turn_running`, `running_agents`, `running_background_jobs`, `pending_notifications` or

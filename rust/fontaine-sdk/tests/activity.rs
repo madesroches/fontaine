@@ -798,3 +798,75 @@ fn the_shared_object_is_what_the_status_line_carries() {
     assert_eq!(json["activity"], activity.to_json());
     assert_eq!(ActivityReason::Clear.as_str(), "clear");
 }
+
+struct Failing;
+
+impl fontaine_sdk::run::InputSource for Failing {
+    fn is_exhausted(&self) -> bool {
+        false
+    }
+
+    async fn next(&mut self, _runtime: &mut AgentRuntime) -> Result<Option<String>, String> {
+        Err("the input broke".into())
+    }
+}
+
+struct Quiet;
+
+impl fontaine_sdk::run::EventSink for Quiet {
+    fn notice(&mut self, _message: &str) {}
+    fn session_start(&mut self, _runtime: &AgentRuntime, _data_dir: &std::path::Path) {}
+    fn event(&mut self, _session_id: &str, _event: &fontaine_sdk::core::turn::SessionEvent) {}
+    fn wants_account_usage(&self) -> bool {
+        false
+    }
+    fn result(&mut self, _result: &fontaine_sdk::run::ResultInfo<'_>) {}
+    fn usage_observer(&self, _session_id: &str) -> Option<fontaine_sdk::run::PauseObserver> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn a_headless_input_error_exit_delivers_a_final_snapshot_without_running_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("events.jsonl");
+    let world = World::new();
+    let path = log.to_string_lossy().into_owned();
+    world.user_file(&hook_toml("activity_changed", "", &["--append", &path]));
+    let mut runtime = runtime(&world);
+    runtime
+        .state
+        .agents()
+        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
+        .unwrap();
+
+    let code = fontaine_sdk::run::run_session(
+        fontaine_sdk::run::Options {
+            prompt: None,
+            input_format: fontaine_sdk::run::InputFormat::Text,
+            output_format: fontaine_sdk::run::OutputFormat::StreamJson,
+            include_partial_messages: false,
+            max_turns: None,
+            max_budget_usd: None,
+            on_usage_limit: None,
+            max_usage_wait: None,
+            json_schema: None,
+        },
+        &mut runtime,
+        &world.data,
+        None,
+        Failing,
+        &mut Quiet,
+        &fontaine_sdk::run::Cancel::default(),
+    )
+    .await;
+    assert_ne!(code, 0);
+    runtime.fire_session_end("other", TRANSITION_CAP).await;
+
+    let shutdown = recorded(&log)
+        .into_iter()
+        .rfind(|e| e["reason"] == "shutdown")
+        .expect("the shutdown transition is delivered");
+    assert_eq!(shutdown["activity"]["running_agents"], 0, "{shutdown}");
+    assert_eq!(shutdown["activity"]["state"], "idle", "{shutdown}");
+}
