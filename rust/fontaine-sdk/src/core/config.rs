@@ -405,9 +405,10 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
-    /// `databricks` only: whether the guardian's and the scanner's forced-call requests carry the
-    /// Chat wire's thinking-off parameter, so a model that thinks by default can give a verdict.
-    /// Unset sends it; `false` leaves it out, for a workspace that refuses it.
+    /// `databricks` and `openrouter` only: whether the guardian's and the scanner's forced-call
+    /// requests carry the thinking-off parameter, so a model that thinks by default can give a
+    /// verdict. On `databricks`, unset sends it and `false` leaves it out, for a workspace that
+    /// refuses it; on `openrouter`, it is opt-in and unset sends nothing.
     pub thinking_off: Option<bool>,
     /// `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry
     /// cache breakpoints. Unset means the kind's default.
