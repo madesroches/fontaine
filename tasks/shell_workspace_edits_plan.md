@@ -74,8 +74,10 @@ Closes #743 and #744.
 - **The verdict.** `RawVerdict` (`guardian/verdict.rs:33`, `deny_unknown_fields`) has `decision`,
   `rule`, `explanation` and `confidence`; its `JsonSchema` is the forced tool schema every
   provider uses.
-- **Deny text.** On a deny, `permissions.rs` (around line 2680) uses `adjudication.explanation` as
-  `why`, and `denied_text` (line 877) appends `AFK_RECOVERY` or `ATTENDED_RECOVERY`. Both recovery
+- **Deny text.** On a guardian deny, `permissions.rs` (around lines 2697/2705) formats
+  `Denied by guardian: [{rule}] {why}. {recovery}` itself, with `adjudication.explanation` as `why`;
+  it does not go through `denied_text` (line 877), which other denials use to append `AFK_RECOVERY`
+  or `ATTENDED_RECOVERY`. Both recovery
   strings already say: "If the denial itself names a call that is allowed instead, make that call."
   Since #693 the guardian may name the allowed call in free text, but nothing asks it to, and in
   #665's `git rm` run it did not.
@@ -101,6 +103,9 @@ the floor. The branch runs only when:
 - `tool == "shell"` (not `powershell` or `monitor`);
 - the new `[permissions] auto_shell_edits` switch is on;
 - the call's working directory resolves inside the primary root (root index 0).
+
+The shell branch runs before `unjudged_edit`'s `WorkspaceWrite`/file-tool guard (lines 1631-1635),
+because `shell` is `RiskClass::Arbitrary` and would otherwise return `None` there.
 
 If the branch accepts, it returns the new `Tier::ShellEdit` (`"shell_edit"`). `allow()` treats
 `ShellEdit` like `TrackedEdit`: it resets the loop breaker.
@@ -136,7 +141,8 @@ check below. `/dev/null` and descriptor copies are fine.
 
 **Simple commands.** Each simple command must match one of these:
 
-1. **Read-only.** The argv passes the existing curated check. `Preclassifier` gets a
+1. **Read-only.** The argv passes the existing curated check, including user `allow_extra` entries,
+   as in Tier 0.5. `Preclassifier` gets a
    `pub(crate) fn read_only_argv(&self, argv, env) -> Option<Vec<String>>`, and `read_paths`
    delegates to it, so the two cannot drift. Every read path must also pass
    `TargetCheck::read_target`: a credential read never rides this tier. Read-only `git` subcommands match through `parse_git`'s
@@ -149,21 +155,22 @@ check below. `/dev/null` and descriptor copies are fine.
    - Operands: at least one file, and every file passes the edit-target check.
    - `-f`, `--follow-symlinks`, `-z` and anything else reject.
    - Every script must parse under the restricted grammar below.
-3. **`mkdir [-p] DIR...`.** Every directory resolves inside the primary root and is not under
-   `.git`.
+3. **`mkdir [-p] DIR...`.** Every directory resolves inside the primary root, is not under `.git`,
+   and passes `TargetCheck::not_protected`: a protected directory, or anything under one, rejects.
 4. **`mv`.** `mv [-n] SRC... DST`, with `--` allowed.
    - Sources must be in the primary root and pass `read_target`. A source also passes
      the edit-target check, because moving a file deletes it from its old place.
    - The destination passes the write-target check. When it is an existing directory, the check
      applies to each `DST/basename(SRC)`.
 5. **`git add`.** Flags: `-A`, `--all`, `-u`, `--update`, `-v`, `--`. Every pathspec is a literal
-   path inside the primary root (`.` is allowed) and not under `.git`.
+   path inside the primary root (`.` is allowed) and not under `.git`, and passes `read_target` and
+   `not_protected`.
 6. **`git rm`.** Flags: `--cached`, `-r`, `-q`, `--`. Never `-f` / `--force`. Paths are literal and
-   in the primary root, and without `--cached` each must pass the instruction/CI exclusion. Without
-   `-f`, git itself refuses to remove a file whose content differs from HEAD or the index, so
+   in the primary root. Without `--cached` each passes the edit-target check; with `--cached` each
+   passes the instruction/CI exclusion and `not_protected`. Without `-f`, git itself refuses to remove a file whose content differs from HEAD or the index, so
    anything removed can be recovered from HEAD.
-7. **`git mv [-v] SRC DST`.** Never `-f` / `-k`. Both paths are in the primary root and pass the
-   instruction/CI exclusion. Git refuses to overwrite an existing destination.
+7. **`git mv [-v] SRC DST`.** Never `-f` / `-k`. Both paths are literal and in the primary root; SRC
+   passes the edit-target check and DST the write-target check. Git refuses to overwrite an existing destination.
 8. **`git commit`.** Flags: `-m MSG` / `--message=MSG` (repeatable), `-F FILE` (an in-root path that
    passes `read_target`), `-a` / `--all`, `-q`, `--no-edit`. Never `--amend`, `--no-verify` / `-n`,
    `--fixup`, `--squash`, `-c` / `-C`, or a pathspec.
@@ -175,7 +182,7 @@ A `git` invocation with any global option between `git` and the subcommand (`-C`
 
 **Target checks.** A `TargetCheck` trait is implemented by the pipeline, which owns the ledger,
 scope, memory root and rules. `tools` must not import `core`, so the classifier never calls `floor`
-directly. It has three methods:
+directly. It has four methods:
 
 - **`read_target(path)`**: the path is in a root and passes `floor::secret_path`, and the pipeline
   builds a `read` call for it (the `ruled_read_calls` pattern) and rejects on any deny or ask rule
@@ -194,11 +201,13 @@ directly. It has three methods:
   (a child with `shell` but not `edit` gets no unjudged edit).
 - **`write_target(path)`** applies the same rule against a `write` call, but also accepts an absent
   path whose parent resolves inside the primary root.
+- **`not_protected(path)`**: the path is in the primary root and is neither a protected path
+  (`floor::protected_path`) nor under one.
 
 `Tracking::Unknown` (no repository) fails both checks.
 
 The tier also rejects, leaving the call to the guardian, when any hook's matcher names a file tool
-(`read`, `edit` or `write`), as `hooks_name_file_reads` does for reads: those hooks never fire for
+(`read | ls | grep | edit | write | notebook_edit`, a superset of `hooks_name_file_reads`): those hooks never fire for
 a shell call, so the tier must not skip them.
 
 **The restricted `sed` grammar.** It is a small hand-written parser, not a regex. A script is a
@@ -243,18 +252,17 @@ as an accepted risk rather than mitigated.
   branch name; omitted when neither names one;
 - `started_this_session: bool`.
 
-**Reading it.** In `core/adjudication.rs`, beside `facts(...)`, open the primary root with the same
-isolated, strict gix options as `git_fast_path::open_repo` and read `repo.state()`. This happens per
+**Reading it.** In `core/adjudication.rs`, beside `facts(...)`, open the primary root with `trust::discover` (`core/trust.rs:232`, which `facts()` already uses) and read `repo.state()`. This happens per
 adjudication (a few `stat` calls under `.git`). It is `None` when there is no repository, nothing is
 in progress, or the repository cannot be opened. That is a fact, not a decision, so failing to read
 it never changes a verdict.
 
 **`started_this_session`.** The session-start scan in `core/agent.rs:876` also records the
-in-progress kind at start. It goes in the session-start ledger record as an optional,
-serde-defaulted field, so older ledgers read unchanged. `record_session_start` appends a new
-record on every run, so a continued session carries forward the at-start `git_operation` from the
-earlier session-start record instead of rescanning, as it does for the file index. `started_this_session` is true when an operation is in progress now and none was at
-session start.
+in-progress kind at start, in its own ledger record appended only when the session is not continued
+(the `FileIndex` pattern), because `SessionStart` is appended on every run and `LedgerView::apply`
+overwrites its fields. A continued session therefore keeps the earlier record. When no such record
+exists (an older ledger), `started_this_session` is false. It is true when an operation is in
+progress now and none was recorded at session start.
 
 **Rendering.** `prompt_builder.rs` renders the fact in the guardian view only, not in the screen or
 the minimal profile, matching `agent_task`. The line is
@@ -271,7 +279,7 @@ roots is never by itself a reason to deny it.
 ### Guardian verdict: `instead`
 
 `RawVerdict` and `Verdict` gain `instead: Option<String>` (`#[serde(default)]`), so an answer
-without it stays valid and older cached verdicts still deserialize.
+without it stays valid and the field stays out of the schema's `required` list.
 
 **Schema doc**, which is what the model reads: "Only with `deny` or `escalate`: one narrower call
 that would be allowed in place of this one, written as the tool and its arguments, for example the
@@ -284,10 +292,11 @@ no narrower call would be allowed. Never name a call that reaches the effect thi
 - an empty string becomes `None`;
 - it is cut to `adjudication::SUMMARY_CHARS` the way `explanation_of` cuts the explanation.
 
-**Deny text.** On a guardian deny or escalate-converted-to-deny, the `why` built in `permissions.rs`
-(around line 2680) gets `Allowed instead: <instead>.` appended when present. The existing recovery
-sentences already tell the agent to make a call the denial names. The audit record carries the
-field next to the explanation, and the human prompt for an attended escalate shows it on its own
+**Deny text.** On a guardian deny or escalate-converted-to-deny, the guardian denial sentence formatted in
+`permissions.rs` (around lines 2697/2705) is followed by `Allowed instead: <instead>.` when present,
+before the recovery sentence; `instead` is not put inside `why`. The existing recovery
+sentences already tell the agent to make a call the denial names. The audit `DecisionRecord` carries the
+field next to the explanation, the ledger denial record does not (the denial text it stores already includes it), and the human prompt for an attended escalate shows it on its own
 line.
 
 **Fail-closed is unchanged.** `instead` is advice to the agent. The call it names goes through the
@@ -320,33 +329,40 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
    - Add `auto_shell_edits` to `core/config.rs` (raw and resolved, default true), the catalog row
      in `config_catalog.rs`, and the project-scope `false`-only rule in `config_scope.rs` with its
      test.
-   - Wire `AutoEdits.shell` in `core/agent/setup.rs`.
+   - Add `AutoEdits.shell` in `core/gate.rs` (where it is defined), wire it in `core/agent/setup.rs`,
+     and update the literal in `tests/core_common/pipeline.rs`.
 2. **Shared target rule.** In `core/permissions.rs`, factor the qualification part of
    `unjudged_edit` (memory-root, instruction/CI and protected checks, tracked/absent/created) into
    a helper used by the file-tool branch and by a `TargetCheck` implementation on the pipeline
    (`read_target`, `edit_target`, `write_target`, including the rule, child-restriction and
-   file-hook checks). Define the `TargetCheck` trait in `tools/shell_edit.rs` here and register the
+   file-hook checks; the hook exclusion is `read | ls | grep | edit | write | notebook_edit`). Define the `TargetCheck` trait in `tools/shell_edit.rs` here and register the
    module in `tools.rs`. The file-tool behaviour must not change; the existing `permissions_fast_edits.rs` tests guard that.
 3. **Pre-classifier hook.** In `tools/preclassify.rs`, split `read_paths` into
    `read_only_argv(argv, env)` plus the existing single-command wrapper, and expose `parse_git`'s
    per-argv form to the crate.
 4. **Classifier.** Write `tools/shell_edit.rs` with the strict AST walk, the per-verb argument
    parsers, and the `sed` script parser. Keep the verb tables as `const` data, like `SPECS` / `GIT_SPECS`.
-5. **Pipeline branch.** In `unjudged_edit`, return `Tier::ShellEdit` for a `shell` call that the
+5. **Pipeline branch.** In `unjudged_edit`, placed before the `WorkspaceWrite`/file-tool guard (shell is `RiskClass::Arbitrary`), return `Tier::ShellEdit` for a `shell` call that the
    classifier accepts under `auto_shell_edits`, with its working directory in the primary root and no file-tool hook matcher. In
    `allow()`, add `Tier::ShellEdit` to the loop-breaker reset.
 6. **`git_operation` fact.**
    - Add `GitOperation` and the `SessionFacts` field in `guardian/request.rs`.
-   - Record the at-start state in the session-start scan (`core/agent.rs`) and the ledger record
-     (`core/ledger.rs`, an optional field).
+   - Record the at-start state in the session-start scan (`core/agent.rs`) as its own ledger record
+     appended only when not continued (`core/ledger.rs`).
    - Read the current state in `core/adjudication.rs`.
    - Render it in `guardian/prompt_builder.rs`, guardian view only.
    - Add the two prompt sentences in `guardian/rules.rs`, and update the prompt snapshot.
+   - Build `SessionFacts` with `git_operation: None` in `guardian/profile.rs` (minimal profile).
 7. **`instead` verdict field.**
    - Add it to `guardian/verdict.rs` (raw and validated, schema doc, validation).
    - Thread it through the adjudication result, the deny `why` in `core/permissions.rs`, the audit
      record (`core/audit.rs`) and the attended prompt.
-   - Set `None` in the other `Adjudication` producers.
+   - Set `None` in the other `Adjudication` producers, and in the `DecisionRecord` literals in
+     `core/statusline/mod.rs` and `rust/fontaine-tui/src/app.rs`.
+   - Update the model-facing "exactly four fields" text: `FORMAT_NOTE` and the retry note ("there are
+     no other fields") in `guardian/verdict.rs`, and the `submit` sentence in both
+     `prompts/guardian/guardian_prompt.md` and `guardian_minimal.md` (mention the optional
+     `instead`); update both prompt snapshots.
    - Reword the rule in `prompts/guardian/guardian_prompt.md` that says the explanation never
      proposes a shell command as a way forward, never does so for a deletion, and names no
      alternative tool or route: it constrains only `explanation`, any permitted alternative goes in
@@ -378,14 +394,16 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 
 - `rust/fontaine-sdk/src/core/tier.rs`
 - `rust/fontaine-sdk/src/core/config.rs`, `config_catalog.rs`, `config_scope.rs`
-- `rust/fontaine-sdk/src/core/agent/setup.rs`
+- `rust/fontaine-sdk/src/core/gate.rs`, `core/agent/setup.rs`, `tests/core_common/pipeline.rs`
 - `rust/fontaine-sdk/src/core/permissions.rs`
 - `rust/fontaine-sdk/src/tools/preclassify.rs`
 - `rust/fontaine-sdk/src/tools/shell_edit.rs` (new), `rust/fontaine-sdk/src/tools.rs`
 - `rust/fontaine-sdk/tests/permissions_shell_edits.rs` (new)
 - `rust/fontaine-sdk/src/guardian/request.rs`, `verdict.rs`, `prompt_builder.rs`, `rules.rs`,
-  `guardian.rs`, `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`
-- `rust/fontaine-sdk/src/core/adjudication.rs`, `agent.rs`, `ledger.rs`, `audit.rs`
+  `guardian.rs`, `profile.rs`,
+  `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`, `guardian_minimal.md`
+- `rust/fontaine-sdk/src/core/adjudication.rs`, `agent.rs`, `ledger.rs`, `audit.rs`,
+  `core/statusline/mod.rs`, `rust/fontaine-tui/src/app.rs`
 - `rust/fontaine-evals/src/live.rs`, `case.rs`, `runner.rs`, `report.rs`
 - `rust/fontaine-sdk/tests/composition.rs`
 - `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/tools.md`, `docs/evals.md`,
@@ -482,6 +500,12 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
   - `git push`;
   - `rm f`;
   - `mv` of a secret file;
+  - `mkdir -p .husky && git mv x .husky/pre-commit`;
+  - `git mv .mcp.json x`;
+  - `git rm src/x` under an `Edit(src/**)` deny, and the same from a child with `shell` but not
+    `edit`;
+  - `git add .mcp.json`;
+  - `mkdir .claude/x`;
   - `for`, `if` and subshells;
   - input redirect `< /etc/passwd`;
   - an unparseable command;
@@ -512,7 +536,7 @@ count):
 - `cat private/x && git add f` with a `Read(private/**)` deny → guardian, not `shell_edit`.
 - `sed -i f` with an `Edit(f)` deny or ask rule → guardian, not `shell_edit`.
 - A child with `shell` but not `edit` running `sed -i f` → guardian, not `shell_edit`.
-- A PreToolUse hook matching `read`, `edit` or `write` → guardian, not `shell_edit`.
+- A PreToolUse hook matching `read`, `ls`, `grep`, `edit` or `write` (one test per matcher, including `grep`) → guardian, not `shell_edit`.
 
 **Config tests**: project scope `auto_shell_edits = true` is rejected, and `false` is accepted.
 
@@ -531,8 +555,9 @@ count):
 - **`adjudication.rs`:** in a real repository stopped mid-rebase, the fact reads
   `rebase … started_this_session` when the at-start record says none, and "since before" when it
   says rebase.
-- **`ledger.rs` / `agent.rs`:** a session-start record without the new field deserializes, and a
-  continued session keeps the at-start `git_operation` of its earlier record rather than rescanning.
+- **`ledger.rs` / `agent.rs`:** a ledger without the at-start record yields
+  `started_this_session = false`, and a continued session keeps the at-start `git_operation` of its
+  earlier record rather than rescanning or re-appending it.
 - **`permissions.rs` (fake guardian):**
   - a deny verdict carrying `instead` produces a denial message containing
     `Allowed instead: <instead>.` followed by the recovery sentence;
