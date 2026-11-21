@@ -21,7 +21,12 @@ points the CLI's own undocumented raw-body capture at a private directory (the i
 - `Cli` (`cli.rs`) owns `data_dir`, a `Warn` sink (`providers/warn.rs`, the `Approver::warn`
   route) and builds the child's environment in `Cli::environment`. `command()` does `env_clear`
   and `environment` passes only `PASSTHROUGH_ENV` plus explicit vars.
-- `launch` has three callers: `transport.rs` `prepare`, and `cli.rs` discovery and probe.
+- `launch` has three callers: `transport.rs` `prepare`, and `cli.rs` discovery and probe (plus a
+  test caller in `cli.rs`).
+- One `Cli` serves every conversation of a connection (`Connected` holds one `Arc<Cli>`;
+  `completion`, `guardian_completion` and `completion_for_agent` share it), each request with its own
+  derived `translated.session_id`. `connect` is also reached from `client_for` in `models.rs` for
+  login checks.
 - `preserve_order` is enabled for `serde_json` in `rust/Cargo.toml`; `sha2` is already a
   `fontaine-sdk` dependency.
 - `owner_only::create_new` / `create_dir` (`core/owner_only.rs`) create 0600 / 0700 entries with
@@ -34,8 +39,9 @@ points the CLI's own undocumented raw-body capture at a private directory (the i
 
 ### Switch
 
-A user-level environment variable `FONTAINE_CLAUDE_CAPTURE`: unset/empty/`0` is off, `1` records
-deltas, `full` records full frames per request. It is read from `ctx.env` in `connect` only. There
+A user-level environment variable `FONTAINE_CLAUDE_CAPTURE`: unset/empty/`0` is off, `1` (or `full`)
+records the full post-`apply` frame list of every request, `delta` records only the new
+message-level frames (pre-`apply`; it does not show cache-marker or reminder placement). It is read from `ctx.env` in `connect` only. There
 is no config key at any scope, so project scope cannot enable it (the project-scope loader never
 sees the variable; a project `[env]` table does not feed `ctx.env` for this read, which a test
 pins). `--debug-file` / `FONTAINE_LOG` never enable it.
@@ -43,47 +49,52 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 ### New module `claude_subscription/capture.rs`
 
 - `Capture` (held as `Option<Arc<Capture>>` on `Cli`; `None` when off, so nothing is created).
-- On `connect` with the switch on: create `<data_dir>/claude-capture/` with
+- On the first recorded request (lazily, never in `connect`: `connect` is also reached for login
+  checks): create `<data_dir>/claude-capture/` with
   `owner_only::create_dir` tolerating `AlreadyExists` (verifying it is a real directory, not a
-  symlink, via `symlink_metadata`), create the per-session file `<session-id>.jsonl` with
+  symlink, via `symlink_metadata`), create the file `<fontaine-session-id>-<short random token>.jsonl` with
   `owner_only::create_new` (`O_EXCL`, 0600; no symlink following since it is a fresh create), and
   emit one `Warn` stating the path, that nothing is redacted, and how to delete it.
-- Concurrent conversations: one file per `Capture`; a `Capture` is created per `connect` (one per
-  session/child account client), and its session id suffix includes a short random token so two
-  clients with the same session never collide. A `Mutex` serialises appends inside one capture and
-  the request index is a counter on it. Subagents get their own `connect` and therefore their own
-  file; the switch is read from the host's env and is never forwarded to the CLI child environment
-  (`command()` does `env_clear` and `environment` passes only `PASSTHROUGH_ENV`), so the child
-  CLI never sees it.
+- Concurrent conversations: one `Capture` and one file per `Cli`, shared by every conversation of
+  the connection. A `Mutex` serialises appends; the capture keeps the previous-hash baseline and the
+  request index per `translated.session_id` (a map inside `Capture`) and puts that id in each
+  record. The baseline updates only when a request is recorded: a cut/failed request does not
+  advance it. The switch is read from the host's env and is never forwarded to the CLI child
+  environment, so the child CLI never sees it.
 - No export: the module never touches telemetry, the ledger or remote events; records go only to
   the file. A write failure is reported once through `Warn` and capture stops for that file
   (never fails the request).
 
 ### Record format (JSON Lines, one object per line)
 
-- `request`: `{kind:"request", session, index, at (unix ms), hashes:[hex per frame],
-  diverged_at: null | n, frames:[{i, frame}]}`. `frames` are the post-`apply` frames as sent.
-  `hashes` are the pre-`apply` fingerprints, as `context::fingerprints` takes (context.rs ~362):
-  a sha256 prefix (hex) of each frame's `message` JSON. They are layout-neutral because `apply`
-  moves the cache marker/reminder between requests; delta and divergence use them. In delta mode `frames` holds only frames with index >=
-  the length of the common prefix with the previous request's hashes; in `full` mode all frames.
-  If the new hash list does not extend the previous one (the common prefix is shorter than the
-  previous list), `diverged_at` is the index of the first differing frame and frames from there on
-  are recorded. The first request records all frames.
-- `result`: `{kind:"result", session, index, at, usage, result}`: the CLI's final `result` event
+- `request`: `{kind:"request", session (the request's `translated.session_id`), index, at (unix ms),
+  mode, hashes:[hex per frame], diverged_at: null | n, frames:[{i, frame}]}`.
+  `hashes` are computed by capture.rs itself: a sha256 prefix (hex) of
+  `frame.value["message"].to_string()` per pre-`apply` frame, at the point `context::fingerprints`
+  is called (it returns `u64` `DefaultHasher` values, so it is not reused). They are
+  layout-neutral because `apply` moves the cache marker/reminder between requests; divergence and
+  delta use them.
+  In full mode (default) `frames` holds all post-`apply` frames exactly as sent, so
+  `reassemble` returns what was sent. In delta mode `frames` holds the pre-`apply` frames with
+  index >= the length of the common prefix with the previous request's hashes, and `reassemble`
+  returns the messages (not marker/reminder placement). If the new hash list does not extend the
+  previous one, `diverged_at` is the index of the first differing frame (in delta mode frames from
+  there on are recorded). The first request records all frames.
+- `result`: `{kind:"result", session, index, at, usage, result}` (`session` and `index` from the
+  handle `prepare` put on `Running`): the CLI's final `result` event
   verbatim (usage included).
 - Frames are stored as parsed JSON values via `serde_json` (`preserve_order` gives byte-stable
   replay). An empty thinking text with a
   signature serialises as `""` and survives unchanged.
 - The capture hook points: `prepare` (after `apply`, before writing, with the full frame list
-  including the popped query frame) and `stream` on `Event::Complete`, where the result `line`
+  including the popped query frame; delta mode also needs the pre-`apply` frames) and `stream` on `Event::Complete`, where the result `line`
   is already in hand and is parsed there.
 
 ### CLI's own capture (supplement)
 
 When the switch is on, `Cli::environment` adds `OTEL_LOG_RAW_API_BODIES=file:<dir>` where `<dir>`
-is `<data_dir>/claude-capture/<session-file-stem>.bodies/`, created 0700 via
-`owner_only::create_dir`. Absence of output is non-fatal (verified manually, see Manual
+is `<data_dir>/claude-capture/<file-stem>.bodies/`, created 0700 via
+`owner_only::create_dir` (at the same lazy point as the file). Absence of output is non-fatal (verified manually, see Manual
 Verification). The mechanism is a bool on `launch`/`environment` (a request-launch variant used
 only by `transport.rs` `prepare`), so discovery, probe and reminder launches never get the
 variable.
@@ -92,22 +103,26 @@ variable.
 
 A dev example `rust/fontaine-sdk/examples/claude_capture_diff.rs`
 plus library functions: `capture::reassemble(path, index) -> Vec<Frame>` and `capture::diff(a, b)`
-(also pub(crate) for tests). `reassemble` replays deltas, honouring divergence markers. `diff`
+(`mod.rs` declares `pub mod capture` with `reassemble` and `diff` `pub`, so the example can use
+them). `reassemble` returns the frames of a full record directly and replays deltas for delta
+records, honouring divergence markers. `diff`
 reports the divergence point first, then the first differing frame index and a JSON-path level diff
 of that frame. The example takes `<file> <index>` and prints the diff between request `index-1`
 and `index`.
 
 ## Implementation Steps
 
-1. `capture.rs`: `Capture`, switch parsing, directory/file creation, warning, record writing,
-   delta/divergence logic, `reassemble`, `diff`.
+1. `capture.rs`: `Capture`, switch parsing, lazy directory/file creation, warning, record writing,
+   per-session baselines, full/delta/divergence logic, `reassemble`, `diff`.
 2. `cli.rs`: hold `Option<Arc<Capture>>`, attached by a builder/setter on `Cli` (not a new
-   `Cli::new` argument); `launch`/`environment` take a request-launch bool that adds the
-   raw-bodies variable.
+   `Cli::new` argument); add the request-launch bool to `launch_with` and `environment` (adds the
+   raw-bodies variable), default false in `launch`; `transport.rs` `prepare` is the one caller
+   passing true; update the `cli.rs` test caller.
 3. `mod.rs` `connect`: compute `session` first, read the switch from `ctx.env`, build the capture
    and attach it to the `Cli`.
-4. `transport.rs`: record the request in `prepare` (using the request-launch variant), the result
-   in `stream` at `Event::Complete`.
+4. `transport.rs`: record the request in `prepare` (using the request-launch variant); add the
+   capture handle and request index to `Running`; record the result in `stream` at
+   `Event::Complete`.
 5. Example `claude_capture_diff.rs`.
 6. Docs and changelog; master plan Decisions line.
 
@@ -122,8 +137,9 @@ and `index`.
 ## Trade-offs
 
 - Own capture primary because the CLI's capture redacts thinking text, the suspect field.
-- Delta plus pre-`apply` hashes keeps size linear while keeping requests reassemblable; full mode is a flag
-  for cases where the append-only assumption is itself suspect.
+- Full post-`apply` frames per request is the default because only it reassembles exactly what was
+  sent (`apply` rewrites earlier frames); the cost is size quadratic in conversation length. `delta`
+  keeps size linear but is message-level only.
 - Env var rather than config key: a config key invites project-scope enabling and persistence.
 
 ## Decisions
@@ -132,6 +148,8 @@ and `index`.
   the startup warning and no export path.
 - 2026-11-20: AFK: divergence/delta comparison uses the layout-neutral pre-`apply` message hash, as
   the self-check does, because `apply` moves the cache marker between requests.
+- 2026-11-20: AFK: the capture records full post-`apply` frames by default (`delta` is opt-in and
+  message-level), because `apply` rewrites earlier frames so deltas cannot reassemble what was sent.
 - 2026-11-20: AFK: the CLI raw-body supplement is kept (the issue requires it), non-fatal and
   verified manually.
 
@@ -149,10 +167,13 @@ Unit tests in `capture/tests.rs` (no live CLI):
   `Warn`; `O_EXCL` refuses an existing file.
 - Project scope cannot enable it: a project `[env]` / config carrying the variable leaves the
   capture off.
-- A scripted conversation of three requests: deltas reassemble to exactly the frames sent; the
-  hash list matches; the cache marker moving between consecutive requests does not report
-  divergence; an edited history produces `diverged_at` with the right index; `full` mode
-  records all frames.
+- A scripted conversation of three requests: default (full) mode reassembles to exactly the frames
+  sent, including a moved cache marker and an inserted reminder; `delta` mode reassembles the
+  messages; the hash list matches; the cache marker moving between consecutive requests does not
+  report divergence; an edited history produces `diverged_at` with the right index.
+- Two conversations (different `translated.session_id`) through one `Capture` keep separate
+  baselines and indices; a request that is not recorded does not advance the baseline.
+- No file or warning is created until the first recorded request.
 - A thinking block with empty text and a signature round-trips byte-for-byte through write and
   reassemble.
 - `diff` reports the divergence point first, then the first differing frame.
