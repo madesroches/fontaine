@@ -127,6 +127,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- The terminal UI no longer leaves part of the screen blank after a device pairs through
+  `/remote-control` (#740): closing the ticket or pairing dialog, or any other one-off dialog that
+  rows were committed under, prints the transcript again.
 - `cargo nextest run -p fontaine-tui` no longer has four `agents` tests exceeding the 60 s slow
   threshold (#723): a nextest setup script builds the helper example binaries once before the tests
   start, instead of every test process running its own nested `cargo build`. No test was reported as

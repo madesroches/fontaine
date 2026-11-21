@@ -4,7 +4,8 @@
 //! `tasks/design/testing.md`, "Reproducing terminal layout bugs"). `live_area popup` holds the `/`
 //! menu open mid-turn so a tmux resize can be tried. `live_area spinner` runs the working
 //! indicator through one long tool call, so a resize can be tried while it animates. `live_area user`
-//! commits user messages at the top of the screen and then reprints, as an agent switch does.
+//! commits user messages at the top of the screen and then reprints, as an agent switch does. `live_area pairing` opens the `/remote-control` ticket dialog and then a
+//! pairing prompt while notices commit under them, then dismisses both.
 
 use fontaine_sdk::core::config::PermissionMode;
 use fontaine_sdk::core::preview::{DiffKind, DiffLine, DiffPreview};
@@ -39,6 +40,14 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some("user") {
         user_and_reprint(&mut app, &mut screen, &draw);
+        app.flush = true;
+        screen.commit_all(&mut app).expect("final commit");
+        disable_raw_mode().expect("restore the terminal");
+        println!("\nDONE");
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("pairing") {
+        pairing(&mut app, &mut screen, &draw);
         app.flush = true;
         screen.commit_all(&mut app).expect("final commit");
         disable_raw_mode().expect("restore the terminal");
@@ -190,6 +199,33 @@ where
     for _ in 0..4000 {
         draw(app, screen);
     }
+}
+
+/// Issue 740: notices commit while the ticket dialog and then the pairing prompt cover the live
+/// area, and closing them must not leave a blank run above the input.
+fn pairing<S, D>(app: &mut App, screen: &mut S, draw: &D)
+where
+    D: Fn(&mut App, &mut S),
+{
+    app.begin_ticket(fontaine_tui::ticket_prompt::TicketPrompt::new(
+        "ticket-text".into(),
+        "qr".repeat(40),
+        "10 minutes".into(),
+    ));
+    draw(app, screen);
+    for i in 0..4 {
+        app.transcript.notice(format!("while ticket {i}"));
+        draw(app, screen);
+    }
+    app.ticket_prompt = None;
+    app.begin_pairing(fontaine_tui::guardian_prompt::pairing("node", "phone"));
+    draw(app, screen);
+    for i in 0..4 {
+        app.transcript.notice(format!("while pairing {i}"));
+        draw(app, screen);
+    }
+    app.pairing_prompt = None;
+    draw(app, screen);
 }
 
 /// The working indicator across a long shell call: the row appears, animates for about twenty

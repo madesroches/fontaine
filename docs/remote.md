@@ -24,7 +24,8 @@ fontaine --remote                       start with remote control on and a ticke
 ```
 
 The ticket is shown once, in a dialog over the input. `c` copies it and Enter dismisses it for good; the dialog also closes
-when a device presents the ticket and the pairing confirmation opens.
+when a device presents the ticket and the pairing confirmation opens. Closing the dialog redraws
+the transcript, so rows that scrolled away while it was open are not left as a gap.
 A ticket lives 10 minutes unless you give `--ttl` (for example `--ttl 2h`), and at most 24 hours. The
 status bar says `remote: ticket live`, `remote: no live ticket` or `remote: N device(s)`.
 

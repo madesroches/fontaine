@@ -278,7 +278,7 @@ pub struct App {
     /// the status bar until the next input event. Kept apart from `refusal`, which shows only
     /// while a turn runs.
     pub attach_notice: Option<String>,
-    /// The screen wrote transcript rows into scrollback while the agents panel covered the live
+    /// The screen wrote transcript rows into scrollback while an overlay covered the live
     /// area, which leaves the last messages out of sight when it closes.
     pub committed_under_overlay: bool,
     /// The agents listed below the status line.
@@ -1517,6 +1517,17 @@ impl App {
     /// Whether an overlay has the keyboard.
     pub fn covered(&self) -> bool {
         self.ticket_prompt.is_some() || self.covered_by_other_than_ticket()
+    }
+
+    /// Whether a one-off dialog covers the live area. The per-call dialogs are left out: closing
+    /// one purges scrollback and reprints, which would happen on nearly every approval.
+    pub(crate) fn overlay_open(&self) -> bool {
+        (self.covered()
+            && self.approval.is_none()
+            && self.questions.is_empty()
+            && self.elicitations.is_empty())
+            || self.plugin_prompt.is_some()
+            || self.setup_composition.is_some()
     }
 
     /// Whether an overlay other than the ticket dialog has the keyboard.
