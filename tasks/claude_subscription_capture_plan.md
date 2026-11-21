@@ -49,17 +49,19 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 ### New module `claude_subscription/capture.rs`
 
 - `Capture` (held as `Option<Arc<Capture>>` on `Cli`; `None` when off, so nothing is created).
-- On the first recorded request (lazily, never in `connect`: `connect` is also reached for login
-  checks): create `<data_dir>/claude-capture/` with
+- On the first request launch (lazily, never in `connect`: `connect` is also reached for login
+  checks): `Capture::ensure_created()` runs when `launch`/`launch_with` is called with the request
+  flag, so the stem and `.bodies/` dir exist before the CLI spawns. It creates `<data_dir>/claude-capture/` with
   `owner_only::create_dir` tolerating `AlreadyExists` (verifying it is a real directory, not a
   symlink, via `symlink_metadata`), create the file `<fontaine-session-id>-<short random token>.jsonl` with
   `owner_only::create_new` (`O_EXCL`, 0600; no symlink following since it is a fresh create), and
-  emit one `Warn` stating the path, that nothing is redacted, and how to delete it.
+  create the `.bodies/` dir (below), and emit one `Warn` stating the path, that nothing is redacted,
+  and how to delete it.
 - Concurrent conversations: one `Capture` and one file per `Cli`, shared by every conversation of
   the connection. A `Mutex` serialises appends; the capture keeps the previous-hash baseline and the
   request index per `translated.session_id` (a map inside `Capture`) and puts that id in each
-  record. The baseline updates only when a request is recorded: a cut/failed request does not
-  advance it. The switch is read from the host's env and is never forwarded to the CLI child
+  record. The baseline advances when a request is recorded (in `prepare`, before the replay), even if
+  the request is later cut or fails. The switch is read from the host's env and is never forwarded to the CLI child
   environment, so the child CLI never sees it.
 - No export: the module never touches telemetry, the ledger or remote events; records go only to
   the file. A write failure is reported once through `Warn` and capture stops for that file
@@ -70,8 +72,9 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 - `request`: `{kind:"request", session (the request's `translated.session_id`), index, at (unix ms),
   mode, hashes:[hex per frame], diverged_at: null | n, frames:[{i, frame}]}`.
   `hashes` are computed by capture.rs itself: a sha256 prefix (hex) of
-  `frame.value["message"].to_string()` per pre-`apply` frame, at the point `context::fingerprints`
-  is called (it returns `u64` `DefaultHasher` values, so it is not reused). They are
+  `frame.value["message"].to_string()` per pre-`apply` frame, via `Capture::prints(&frames)` called
+  where `context::fingerprints` is called (it returns `u64` `DefaultHasher` values, so it is not
+  reused). `hashes` and `diverged_at` appear in every record in both modes. They are
   layout-neutral because `apply` moves the cache marker/reminder between requests; divergence and
   delta use them.
   In full mode (default) `frames` holds all post-`apply` frames exactly as sent, so
@@ -86,15 +89,18 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 - Frames are stored as parsed JSON values via `serde_json` (`preserve_order` gives byte-stable
   replay). An empty thinking text with a
   signature serialises as `""` and survives unchanged.
-- The capture hook points: `prepare` (after `apply`, before writing, with the full frame list
-  including the popped query frame; delta mode also needs the pre-`apply` frames) and `stream` on `Event::Complete`, where the result `line`
+- The capture hook points: `prepare` calls `Capture::prints(&frames)` pre-`apply` (in delta mode
+  the caller also keeps the pre-`apply` frames), then, post-`apply` and before writing,
+  `Capture::record_request(session, prints, pre_frames_if_delta, &post_frames_including_query)`
+  with the full frame list including the popped query frame; and `stream` on `Event::Complete`, where the result `line`
   is already in hand and is parsed there.
 
 ### CLI's own capture (supplement)
 
 When the switch is on, `Cli::environment` adds `OTEL_LOG_RAW_API_BODIES=file:<dir>` where `<dir>`
 is `<data_dir>/claude-capture/<file-stem>.bodies/`, created 0700 via
-`owner_only::create_dir` (at the same lazy point as the file). Absence of output is non-fatal (verified manually, see Manual
+`owner_only::create_dir` by `ensure_created()` (at the same lazy point as the file); the
+request-launch path passes the resolved `.bodies` dir into `Cli::environment`. Absence of output is non-fatal (verified manually, see Manual
 Verification). The mechanism is a bool on `launch`/`environment` (a request-launch variant used
 only by `transport.rs` `prepare`), so discovery, probe and reminder launches never get the
 variable.
@@ -112,15 +118,17 @@ and `index`.
 
 ## Implementation Steps
 
-1. `capture.rs`: `Capture`, switch parsing, lazy directory/file creation, warning, record writing,
+1. `capture.rs`: `Capture`, switch parsing, `ensure_created` (lazy directory/file/`.bodies`), warning, record writing,
    per-session baselines, full/delta/divergence logic, `reassemble`, `diff`.
 2. `cli.rs`: hold `Option<Arc<Capture>>`, attached by a builder/setter on `Cli` (not a new
-   `Cli::new` argument); add the request-launch bool to `launch_with` and `environment` (adds the
-   raw-bodies variable), default false in `launch`; `transport.rs` `prepare` is the one caller
+   `Cli::new` argument); add the request-launch bool to `launch_with` (which calls `Capture::ensure_created()` when
+   set) and the resolved `.bodies` dir to `environment` (adds the raw-bodies variable), default
+   false in `launch`; `transport.rs` `prepare` is the one caller
    passing true; update the `cli.rs` test caller.
 3. `mod.rs` `connect`: compute `session` first, read the switch from `ctx.env`, build the capture
    and attach it to the `Cli`.
-4. `transport.rs`: record the request in `prepare` (using the request-launch variant); add the
+4. `transport.rs`: call `prints` pre-`apply` and record the request in `prepare` post-`apply`
+   (using the request-launch variant); add the
    capture handle and request index to `Running`; record the result in `stream` at
    `Event::Complete`.
 5. Example `claude_capture_diff.rs`.
@@ -134,16 +142,10 @@ and `index`.
 - `docs/claude-subscription.md`, `docs/configuration.md` (env var table), `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
-## Trade-offs
-
-- Own capture primary because the CLI's capture redacts thinking text, the suspect field.
-- Full post-`apply` frames per request is the default because only it reassembles exactly what was
-  sent (`apply` rewrites earlier frames); the cost is size quadratic in conversation length. `delta`
-  keeps size linear but is message-level only.
-- Env var rather than config key: a config key invites project-scope enabling and persistence.
-
 ## Decisions
 
+- 2026-11-20: Own capture is primary because the CLI's raw-body capture redacts thinking text, the
+  suspect field.
 - 2026-11-20: The capture records frames unredacted by design; protection is opt-in, 0600/0700,
   the startup warning and no export path.
 - 2026-11-20: AFK: divergence/delta comparison uses the layout-neutral pre-`apply` message hash, as
@@ -172,8 +174,10 @@ Unit tests in `capture/tests.rs` (no live CLI):
   messages; the hash list matches; the cache marker moving between consecutive requests does not
   report divergence; an edited history produces `diverged_at` with the right index.
 - Two conversations (different `translated.session_id`) through one `Capture` keep separate
-  baselines and indices; a request that is not recorded does not advance the baseline.
-- No file or warning is created until the first recorded request.
+  baselines and indices; the baseline advances when a request is recorded, even if it is later cut
+  or fails.
+- No file, directory or warning is created until the first request launch; `ensure_created()` then
+  creates the file, `.bodies/` dir and warning before spawn.
 - A thinking block with empty text and a signature round-trips byte-for-byte through write and
   reassemble.
 - `diff` reports the divergence point first, then the first differing frame.
@@ -185,9 +189,10 @@ Unit tests in `capture/tests.rs` (no live CLI):
 
 Not automated: it depends on the undocumented behaviour of the external binary.
 
-1. Run `FONTAINE_CLAUDE_CAPTURE=1 cargo run -p fontaine -- -p "say hi"` from `rust/` with a
-   `claude-subscription` main model, then resume the same session with a second prompt.
-2. Check `<data_dir>/claude-capture/` holds the session `.jsonl` with request and result records
-   for both turns.
+1. Run `FONTAINE_CLAUDE_CAPTURE=1 cargo run -p fontaine` from `rust/` (the TUI) with a
+   `claude-subscription` main model and send two prompts in the same process.
+2. Check `<data_dir>/claude-capture/` holds one `.jsonl` for the process with request and result
+   records for both turns (a `--resume` in a second process makes a second file with no cross-turn
+   diff).
 3. Check the `.bodies/` directory next to it is 0700 and whether the CLI wrote raw bodies into it;
    empty is acceptable and does not fail the run.
