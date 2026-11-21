@@ -1076,6 +1076,8 @@ async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
     {
         return None;
     }
+    // The review is a guardian round-trip that must not read as an idle session.
+    let _scope = runtime.state.activity().turn_scope();
     runtime.finish_afk().await.map(ended)
 }
 

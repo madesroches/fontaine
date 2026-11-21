@@ -712,6 +712,35 @@ async fn the_final_exit_delivers_the_transition_after_the_jobs_are_stopped() {
     assert_eq!(events[n - 2]["activity"]["state"], "idle");
 }
 
+#[tokio::test]
+async fn the_final_snapshot_ignores_the_exits_own_turn_scope_and_the_unread_root_inbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("events.jsonl");
+    let world = World::new();
+    let path = log.to_string_lossy().into_owned();
+    world.user_file(&hook_toml("activity_changed", "", &["--append", &path]));
+    let runtime = runtime(&world);
+    let _scope = runtime.state.activity().turn_scope();
+    runtime
+        .state
+        .agents()
+        .post_to_root("job-1", NotificationKind::Job, "ended".into());
+    assert_eq!(now(&runtime).state, ActivityState::Active);
+
+    runtime.begin_final_shutdown();
+    runtime
+        .finish_final_shutdown(std::time::Instant::now() + Duration::from_secs(5))
+        .await;
+
+    let shutdown = recorded(&log)
+        .into_iter()
+        .rfind(|e| e["reason"] == "shutdown")
+        .expect("the shutdown transition is delivered");
+    assert_eq!(shutdown["activity"]["state"], "idle", "{shutdown}");
+    assert_eq!(shutdown["activity"]["turn_running"], false);
+    assert_eq!(shutdown["activity"]["pending_notifications"], 0);
+}
+
 // ---- monitor lifetime ----
 
 #[test]

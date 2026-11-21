@@ -1046,6 +1046,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::Quit => return,
                 Action::CycleMode => {
                     self.cycle_mode(runtime, false);
+                    // The review is a guardian round-trip that must not read as an idle session.
+                    let _scope = runtime.state.activity().turn_scope();
                     self.review_afk_exits(runtime).await;
                 }
                 Action::Submit(text, attachments) => {

@@ -349,6 +349,12 @@ pub struct Sources<'a> {
 /// too. An idle subagent's notes move from its inbox into a run, so the running count is read
 /// again last, after the in-flight count that bridges the move.
 pub fn compute(sources: &Sources<'_>) -> SessionActivity {
+    compute_reading(sources, false)
+}
+
+/// `closing` is the session's last reading: the exit's own turn scopes and the root inbox, which
+/// nothing will read any more, are ignored so the final snapshot says idle.
+fn compute_reading(sources: &Sources<'_>, closing: bool) -> SessionActivity {
     let state = sources.state;
     let agents = state.agents();
     let tracker = state.activity();
@@ -364,13 +370,13 @@ pub fn compute(sources: &Sources<'_>) -> SessionActivity {
     let pending = agents.pending_notes();
     let turns_after = tracker.turns();
     let agents_after = agents.running_count();
-    let turn_running = turns_before > 0 || turns_after > 0;
+    let turn_running = !closing && (turns_before > 0 || turns_after > 0);
     let held = state.unattended_blocked().is_some();
     let delivers = tracker.delivers_between_messages.load(Ordering::SeqCst);
     let pending_notifications = if held {
         0
     } else {
-        let root = if delivers || turn_running {
+        let root = if !closing && (delivers || turn_running) {
             pending.root
         } else {
             0
@@ -414,6 +420,9 @@ pub struct ActivityMonitor {
     tx: watch::Sender<SessionActivity>,
     stop: Arc<Notify>,
     task: Mutex<Option<JoinHandle<Quiesced>>>,
+    // Kept apart from `task` because `quiesce` takes the handle out and awaits it, and a timeout
+    // there drops that future with the task still running.
+    abort: Option<tokio::task::AbortHandle>,
     ended: AtomicBool,
 }
 
@@ -447,6 +456,7 @@ impl ActivityMonitor {
         ActivityMonitor {
             tx,
             stop,
+            abort: task.as_ref().map(JoinHandle::abort_handle),
             task: Mutex::new(task),
             ended: AtomicBool::new(false),
         }
@@ -463,6 +473,7 @@ impl ActivityMonitor {
         // Taken out, so a second caller finds nothing to wait for.
         let handle = lock_recovering(&self.task).take()?;
         self.stop.notify_one();
+        let _abort_on_cancel = self.abort.clone().map(AbortOnDrop);
         handle.await.ok()
     }
 
@@ -481,7 +492,8 @@ impl ActivityMonitor {
                 (last.seq, last.state)
             }
         };
-        let mut now = compute(sources);
+        let closing = sources.state.agents().shutting_down();
+        let mut now = compute_reading(sources, closing);
         now.seq = seq + 1;
         self.tx.send_replace(now.clone());
         hooks
@@ -497,9 +509,19 @@ impl ActivityMonitor {
 
 impl Drop for ActivityMonitor {
     fn drop(&mut self) {
-        if let Some(handle) = lock_recovering(&self.task).take() {
-            handle.abort();
+        if let Some(abort) = &self.abort {
+            abort.abort();
         }
+    }
+}
+
+/// Aborts the monitor's task when dropped (a no-op once it finished), so a cancelled `quiesce`
+/// does not leave it running.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -604,6 +626,7 @@ async fn run(
             }
         };
         tokio::select! {
+            biased;
             () = stop.notified() => {
                 if let Some(delivery) = in_flight.take() {
                     delivery.await;

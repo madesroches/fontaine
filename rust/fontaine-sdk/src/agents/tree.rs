@@ -1076,6 +1076,9 @@ impl AgentTree {
         if let Some(node) = inner.nodes.remove(id) {
             inner.names.remove(&node.info.name);
         }
+        // A kill that landed while the runner was starting the child marked it ending, and
+        // with no child there is no watcher to settle it.
+        inner.ending.remove(id);
         inner.order.retain(|existing| existing != id);
         drop(inner);
         self.changed.notify_waiters();
@@ -3670,6 +3673,15 @@ mod tests {
         let late = tokio::spawn(std::future::pending::<()>());
         tree.set_watcher("agent-2", late.abort_handle());
         assert!(late.await.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn a_kill_during_reserve_leaves_nothing_pending_once_released() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.kill(&a);
+        tree.release(&a);
+        assert_eq!(tree.pending_notes().subagents, 0);
     }
 
     #[test]
