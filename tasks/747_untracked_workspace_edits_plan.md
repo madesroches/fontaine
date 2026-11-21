@@ -127,6 +127,8 @@ it for the guardian's facts.
    - flags: `-f`, `-v`, `--force`, `--verbose`, `--`, in short clusters of those letters;
    - anything else rejects, including `-r`/`-R`/`--recursive`, `-d`/`--dir`, `-i`/`-I`,
      `--interactive`, `--no-preserve-root`, `--one-file-system`;
+   - flags parse in the `mkdir`/`mv` style, not through `pathspecs` (the operands are filesystem
+     paths, so no `literal_pathspec`); a lone `-` operand rejects;
    - at least one operand; each one, joined to the base, is not under `.git` and passes
      `edit_target` (an existing regular file, so a directory, a symlink and a missing path reject).
 2. **`git rm -f`.** `git_rm` adds `f` and `force` to its accepted flags. `-r` stays rejected. The
@@ -173,8 +175,10 @@ Matching edits:
 - **`guardian_prompt.md:103`.** Keep the status definitions. Replace the in-root split (the
   sentences from "Truncating a pre-existing or unindexed path…" through "…judged like any other
   move.") with one in-root sentence matching the new rule and one sentence keeping the rule for
-  `.git`, unclear targets and anything outside the roots. The `git_tracked` and `absent` marks
-  still help the guardian judge out-of-root targets.
+  `.git`, unclear targets and anything outside the roots. Keep the sentence "The `absent` and
+  `git_tracked` marks appear only on a single-command shell call or a file tool, so a missing mark
+  says nothing either way." alongside the two new sentences. Only the `absent` mark helps the
+  guardian judge out-of-root targets (`git_tracked` is never true outside the primary root).
 - **`rules.rs` test** `the_in_workspace_edit_clause_does_not_depend_on_the_path_status`: also
   assert that the entry no longer contains "onto a `pre_existing` path that is not `git_tracked`".
 - **Snapshots:** update the prompt snapshots
@@ -206,7 +210,10 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
      "in-root edits and deletions");
    - update the unit tests (see Testing Strategy).
 3. **Tier doc comments** (`core/tier.rs`): `TrackedEdit` becomes "an edit to any file in the
-   primary root"; `ShellEdit` becomes "in-root shell edit, deletion or local git step".
+   primary root"; `ShellEdit` becomes "in-root shell edit, deletion or local git step". Also update
+   the `core/config.rs` doc comments (~:2601, "In `auto`, edits to tracked files, new files and
+   files this session created skip the guardian." and `auto_shell_edits` at ~:2606, "a fully parsed
+   in-root shell edit or local git step") to cover any in-root file and deletions.
 4. **Guardian text:** apply the rule rewrites in `guardian/rules.rs` and
    `prompts/guardian/guardian_prompt.md`, the test assertion, and the snapshots
    (`cargo insta review` or accept the updated `.snap` files).
@@ -231,7 +238,7 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 
 ## Files to Modify
 
-- `rust/fontaine-sdk/src/core/permissions.rs`, `core/tier.rs`
+- `rust/fontaine-sdk/src/core/permissions.rs`, `core/tier.rs`, `core/config.rs`
 - `rust/fontaine-sdk/src/tools/shell_edit.rs`
 - `rust/fontaine-sdk/src/guardian/rules.rs`, `prompts/guardian/guardian_prompt.md`,
   `src/guardian/snapshots/*.snap`
@@ -274,7 +281,9 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 - **`tasks/design/permissions.md`** (lines 90-96): the tier description.
 - **`tasks/design/testing.md`** (line 43): the golden adversarial set drops `git rm -f`,
   `git mv -f` and `rm` and gains `rm -r`, `rm -d`, `rm` of a directory, a symlink, a secret and an
-  instruction file.
+  instruction file. The secret and instruction-file cases are pinned by
+  `tests/permissions_shell_edits.rs`, not the classifier's unit golden set (its stub
+  `TargetCheck::edit_target` does not model secrets).
 - **`tasks/design/config.md`** (line 83): the `auto_tracked_edits` comment.
 - **`docs/permissions.md`**: the `auto` row (line 20), the `tracked_edit`/`shell_edit`
   descriptions (lines 108-150) and the `shell_edit` list (lines 151-171, including line 156
@@ -291,9 +300,11 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 - **`docs/afk.md`** line 56: deletions and untracked files.
 - **`docs/evals.md`**: line 117 (move onto an existing untracked file, forced `git mv`), lines
   164-168 (the cp/truncate/shred attack counterparts, "mv/cp clobbers … stay pinned"), line 180
-  (the `git rm -f` case is now about its command substitution) and the converted cases.
+  (the `git rm -f` case is now about its command substitution) and the converted cases. Converting cases changes the dataset version hash, so earlier scorecards
+  no longer compare directly (see the note near lines 168 and 273).
 - **`CHANGELOG.md`**: `### Changed`, with the tiers widened to any in-root file and in-root
-  deletions, and the narrowed guardian rule (#747).
+  deletions, and the narrowed guardian rule (#747). Note that the converted eval cases change the
+  dataset version hash, so earlier scorecards no longer compare directly.
 
 ## Testing Strategy
 
