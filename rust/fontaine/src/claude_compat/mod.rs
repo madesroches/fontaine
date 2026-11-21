@@ -173,6 +173,10 @@ impl InputSource for SdkInput {
         self.router.pending()
     }
 
+    fn queued_count(&self) -> usize {
+        self.router.queued_count()
+    }
+
     fn failure_code(&self) -> u8 {
         1
     }
@@ -345,6 +349,7 @@ pub async fn run(
         mcp: runtime.mcp_states_reader(),
     });
     router.attach(runtime.steering.clone(), true);
+    router.attach_activity(runtime.state.activity().clone());
 
     let mut sink = ClaudeSink::new(router.clone(), partial);
     let code = run_session(
@@ -359,7 +364,9 @@ pub async fn run(
         &cancel,
     )
     .await;
-    runtime.fire_session_end("other").await;
+    runtime
+        .fire_session_end("other", fontaine_sdk::core::agent::TRANSITION_CAP)
+        .await;
     router.close();
     router.flush().await;
     code

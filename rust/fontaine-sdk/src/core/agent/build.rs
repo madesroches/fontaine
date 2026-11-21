@@ -356,7 +356,11 @@ fn extension_tools(
             ledger: ledger_window.clone(),
         }),
         ExtensionTool::new(AskUserTool {
-            source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
+            source: Arc::new(HumanQuestions::new(
+                p.approver.clone(),
+                p.state.clone(),
+                p.setup.human,
+            )),
         }),
         ExtensionTool::new(TodoTool {
             store: Arc::new(ReportedTodos {

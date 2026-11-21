@@ -604,7 +604,13 @@ async fn a_trusted_elicitation_hook_answers_while_afk_and_with_no_hook_it_cancel
     let afk: Arc<dyn Approver> =
         Arc::new(AfkApprover::new(rig.approver.clone(), rig.state.clone()));
     let live = || Arc::new(fontaine_sdk::tools::live::Live::new(Default::default()));
-    let bare = HookElicitor::new(Vec::new(), live(), afk.clone(), rig.state.clone());
+    let bare = HookElicitor::new(
+        Vec::new(),
+        live(),
+        afk.clone(),
+        rig.state.clone(),
+        fontaine_sdk::core::permissions::HumanChannel::Present,
+    );
     assert_eq!(bare.elicit(elicit_form()).await, ElicitReply::Cancel);
 
     let reply = r#"{"hookSpecificOutput":{"hookEventName":"Elicitation","action":"accept","content":{"name":"Ada"}}}"#;
@@ -621,7 +627,13 @@ async fn a_trusted_elicitation_hook_answers_while_afk_and_with_no_hook_it_cancel
         &Hook::command(None, &command),
         &HookDeps::new(process),
     );
-    let hooked = HookElicitor::new(vec![Arc::new(hook)], live(), afk, rig.state.clone());
+    let hooked = HookElicitor::new(
+        vec![Arc::new(hook)],
+        live(),
+        afk,
+        rig.state.clone(),
+        fontaine_sdk::core::permissions::HumanChannel::Present,
+    );
     let mut map = serde_json::Map::new();
     map.insert("name".into(), serde_json::json!("Ada"));
     assert_eq!(hooked.elicit(elicit_form()).await, ElicitReply::Accept(map));

@@ -3,7 +3,7 @@
 //! the permission pipeline (which asks it for an agent's posture) and the surfaces.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -415,6 +415,9 @@ struct Inner {
     wake_hold: Option<String>,
     /// Total time the session has spent in a usage pause.
     pause_clock: Option<PauseClock>,
+    /// Agents whose run ended but whose end has not yet handed its slot on, which may still post
+    /// an owner reminder. Inserted under the lock that takes the node out of running.
+    ending: HashSet<String>,
 }
 
 type PauseClock = Arc<dyn Fn() -> Duration + Send + Sync>;
@@ -485,6 +488,7 @@ impl Inner {
         handles: &mut Vec<Arc<dyn ChildHandle>>,
     ) -> Vec<Retired> {
         let mut retired = Vec::new();
+        let mut running = Vec::new();
         let paused = self.paused();
         for below in self.descendants(id) {
             let Some(node) = self.nodes.get_mut(&below) else {
@@ -495,10 +499,12 @@ impl Inner {
                 node.ended = Some(Instant::now());
                 node.paused_end = Some(paused);
                 handles.extend(node.handle.clone());
+                running.push(below);
             } else if is_idle(node) {
                 retired.push(retire_node(node, why));
             }
         }
+        self.ending.extend(running);
         retired
     }
 
@@ -620,6 +626,31 @@ pub struct AgentTree {
     lifecycle: RwLock<Arc<dyn LifecycleGate>>,
     warn: RwLock<Option<WarnSink>>,
     runner: RwLock<Option<Weak<dyn ChildRunner>>>,
+    /// Notes taken from an inbox that are not yet in a run or back in the inbox.
+    in_flight: AtomicUsize,
+}
+
+/// Notes taken out of an inbox and on their way to a run; see [`AgentTree::flight`].
+#[must_use]
+pub struct Flight<'a> {
+    tree: &'a AgentTree,
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        self.tree.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.tree.poke();
+    }
+}
+
+/// The notes waiting to be read, split by who reads them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PendingNotes {
+    /// Queued for the root.
+    pub root: usize,
+    /// Queued for running or idle subagents, in flight to one, or about to be posted as an owner
+    /// reminder.
+    pub subagents: usize,
 }
 
 type WarnSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -671,6 +702,7 @@ impl AgentTree {
                 last_writing_wake: None,
                 wake_hold: None,
                 pause_clock: None,
+                ending: HashSet::new(),
             }),
             root_mode: RwLock::new(Arc::new(|| Ladder::Manual)),
             root_tools: RwLock::new(None),
@@ -686,6 +718,7 @@ impl AgentTree {
             lifecycle: RwLock::new(Arc::new(NoLifecycle)),
             warn: RwLock::new(None),
             runner: RwLock::new(None),
+            in_flight: AtomicUsize::new(0),
         }
     }
 
@@ -1043,6 +1076,9 @@ impl AgentTree {
         if let Some(node) = inner.nodes.remove(id) {
             inner.names.remove(&node.info.name);
         }
+        // A kill that landed while the runner was starting the child marked it ending, and
+        // with no child there is no watcher to settle it.
+        inner.ending.remove(id);
         inner.order.retain(|existing| existing != id);
         drop(inner);
         self.changed.notify_waiters();
@@ -1144,6 +1180,7 @@ impl AgentTree {
                     node.ended = Some(Instant::now());
                     node.paused_end = Some(paused);
                     handles.extend(node.handle.clone());
+                    inner.ending.insert(orphan.clone());
                 }
             }
         }
@@ -1151,9 +1188,11 @@ impl AgentTree {
         let mut keeps_tasks = false;
         let mut final_end = false;
         let mut status = None;
+        let mut left_running = false;
         if let Some(node) = inner.nodes.get_mut(id) {
             if node.status.is_running() {
                 node.status = report.status;
+                left_running = true;
             }
             node.ended = Some(Instant::now());
             node.paused_end = Some(paused);
@@ -1164,6 +1203,9 @@ impl AgentTree {
                 ChildStatus::Killed | ChildStatus::BudgetExhausted
             ) || node.exhausted.is_some();
             status = Some(node.status);
+        }
+        if left_running {
+            inner.ending.insert(id.to_string());
         }
         let retired = if final_end {
             inner.end_below(id, &format!("its ancestor {name} ended"), &mut handles)
@@ -1419,6 +1461,9 @@ impl AgentTree {
                 handles.extend(node.handle.clone());
                 (Killed::Running, Vec::new())
             };
+            if killed == Killed::Running {
+                inner.ending.insert(id.to_string());
+            }
             let retired = inner.end_below(id, &why, &mut handles);
             (
                 handles,
@@ -1546,6 +1591,8 @@ impl AgentTree {
         for id in ids {
             self.kill(&id);
         }
+        // The aborted watchers never hand their slots on.
+        self.lock().ending.clear();
         self.changed.notify_waiters();
     }
 
@@ -1837,6 +1884,50 @@ impl AgentTree {
         if let Some(node) = self.lock().nodes.get_mut(ROOT_AGENT) {
             node.inbox.retain(|note| note.kind != NotificationKind::Job);
         }
+        self.poke();
+    }
+
+    /// Marks notes as on their way from an inbox to a run, from before they are taken until the
+    /// run has started or they are back in the inbox, so the tree never shows them in neither.
+    pub fn flight(&self) -> Flight<'_> {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        Flight { tree: self }
+    }
+
+    /// Records that `id`'s end has handed its slot on and posted whatever reminder it owed.
+    pub fn end_settled(&self, id: &str) {
+        self.lock().ending.remove(id);
+        self.poke();
+    }
+
+    /// The notes waiting to be read. The inboxes and the reminders still owed are read under one
+    /// lock, and the in-flight count after it: a taker raises the count before it takes.
+    pub fn pending_notes(&self) -> PendingNotes {
+        let (root, mut subagents) = {
+            let inner = self.lock();
+            let owed = if self.shutting_down() {
+                0
+            } else {
+                inner.ending.len()
+            };
+            let mut root = 0;
+            let mut subagents = owed;
+            for (id, node) in &inner.nodes {
+                if id == ROOT_AGENT {
+                    root = node.inbox.len();
+                } else if node.status.is_running() || is_idle(node) {
+                    subagents += node.inbox.len();
+                }
+            }
+            (root, subagents)
+        };
+        subagents += self.in_flight.load(Ordering::SeqCst);
+        PendingNotes { root, subagents }
+    }
+
+    /// How many subagents are running, those waiting on a permission prompt included.
+    pub fn running_count(&self) -> usize {
+        Self::running_children(&self.lock()) as usize
     }
 
     /// Whether the root's inbox holds a message or report from an agent.
@@ -1937,6 +2028,7 @@ impl AgentTree {
             node.inbox
                 .retain(|note| note.kind != NotificationKind::Reminder);
         }
+        self.poke();
         // The dedup key would otherwise keep the next turn end silent about released tasks.
         if let Some(teams) = self.teams() {
             teams.boards.clear_reminder(ROOT_AGENT);
@@ -2007,11 +2099,14 @@ impl AgentTree {
 
     /// Empties `agent`'s inbox.
     pub fn take_notifications(&self, agent: &str) -> Vec<Notification> {
-        self.lock()
+        let taken = self
+            .lock()
             .nodes
             .get_mut(agent)
             .map(|n| n.inbox.drain(..).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.poke();
+        taken
     }
 
     /// Puts notifications taken for `agent` back at the front of its inbox, in their order, when
@@ -2143,6 +2238,7 @@ impl AgentWaits for AgentTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     fn tree(max_parallel: u32) -> AgentTree {
         AgentTree::new(
@@ -3577,5 +3673,106 @@ mod tests {
         let late = tokio::spawn(std::future::pending::<()>());
         tree.set_watcher("agent-2", late.abort_handle());
         assert!(late.await.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn a_kill_during_reserve_leaves_nothing_pending_once_released() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.kill(&a);
+        tree.release(&a);
+        assert_eq!(tree.pending_notes().subagents, 0);
+    }
+
+    #[test]
+    fn pending_notes_split_by_reader_and_count_only_agents_that_can_read() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.post_to_root("job-1", NotificationKind::Job, "ended".into());
+        tree.push(&a, "main", NotificationKind::Message, "hello".into());
+        assert_eq!(
+            tree.pending_notes(),
+            PendingNotes {
+                root: 1,
+                subagents: 1
+            }
+        );
+        assert_eq!(tree.running_count(), 1);
+        // A killed agent reads nothing, so its mail is not waiting; only the pass its watcher
+        // owes is.
+        tree.kill(&a);
+        tree.end_settled(&a);
+        assert_eq!(tree.pending_notes().subagents, 0);
+    }
+
+    #[test]
+    fn a_flight_keeps_notes_pending_while_they_are_in_no_inbox() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&a, done("x"));
+        tree.end_settled(&a);
+        tree.push(&a, "main", NotificationKind::Message, "hello".into());
+        let flight = tree.flight();
+        let taken = tree.take_notifications(&a);
+        assert_eq!(taken.len(), 1);
+        assert!(tree.pending_notes().subagents > 0, "taken, not yet running");
+        tree.requeue(&a, taken);
+        assert_eq!(
+            tree.pending_notes().subagents,
+            2,
+            "the inbox and the flight"
+        );
+        drop(flight);
+        assert_eq!(tree.pending_notes().subagents, 1);
+    }
+
+    #[test]
+    fn an_ended_run_is_owed_its_slot_pass_until_it_is_settled() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let b = reserve(&tree, ROOT_AGENT).unwrap();
+        assert_eq!(tree.pending_notes().subagents, 0);
+        tree.finish(&a, done("x"));
+        assert_eq!(tree.running_count(), 1);
+        assert_eq!(
+            tree.pending_notes().subagents,
+            1,
+            "a reminder may still follow"
+        );
+        tree.end_settled(&a);
+        assert_eq!(tree.pending_notes().subagents, 0);
+        // A kill of a running agent leaves its end to the watcher, which settles it.
+        tree.kill(&b);
+        assert_eq!(tree.running_count(), 0);
+        assert_eq!(tree.pending_notes().subagents, 1);
+        tree.kill_all();
+        assert_eq!(
+            tree.pending_notes().subagents,
+            0,
+            "no reminder follows once the session is ending"
+        );
+    }
+
+    #[test]
+    fn draining_and_discarding_poke_the_tree() {
+        let tree = tree(2);
+        tree.post_to_root("job-1", NotificationKind::Job, "ended".into());
+        tree.post_to_root("main", NotificationKind::Reminder, "board".into());
+        for act in [
+            |t: &AgentTree| {
+                t.discard_job_notifications();
+            },
+            |t: &AgentTree| {
+                t.discard_root_reminders();
+            },
+            |t: &AgentTree| {
+                t.take_notifications(ROOT_AGENT);
+            },
+        ] {
+            let mut woken = Box::pin(tree.changed().notified());
+            woken.as_mut().enable();
+            act(&tree);
+            assert!(woken.as_mut().now_or_never().is_some());
+        }
     }
 }

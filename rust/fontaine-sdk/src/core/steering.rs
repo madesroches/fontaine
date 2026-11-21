@@ -6,7 +6,9 @@
 //! order and one delivery path.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use tokio::sync::Notify;
 
 use crate::tools::gate::{AgentId, ROOT_AGENT};
 use crate::tools::lock::lock_recovering;
@@ -90,6 +92,8 @@ pub struct RemoteFull;
 #[derive(Clone, Default)]
 pub struct Steering {
     inner: Arc<Mutex<SteeringState>>,
+    /// The activity tracker's wake signal, once the session attached it.
+    activity: Arc<OnceLock<Arc<Notify>>>,
 }
 
 struct Slot {
@@ -158,8 +162,26 @@ impl Steering {
         lock_recovering(&self.inner)
     }
 
+    /// Wakes `notify` on every change of the queue, so the activity snapshot follows it.
+    pub fn attach_activity(&self, notify: Arc<Notify>) {
+        // Attached once at assembly; a second attach would be the same session's signal.
+        let _ = self.activity.set(notify);
+    }
+
+    fn poke(&self) {
+        if let Some(notify) = self.activity.get() {
+            notify.notify_one();
+        }
+    }
+
+    /// How many entries wait in the queue.
+    pub fn queued_len(&self) -> usize {
+        self.state().queued.len()
+    }
+
     pub fn queue(&self, entry: Queued) {
         self.state().push(None, entry);
+        self.poke();
     }
 
     /// Queues a line from an attached device. The cap is enforced here, under the queue's lock,
@@ -169,7 +191,10 @@ impl Steering {
         if state.remote_count() >= MAX_REMOTE_QUEUED {
             return Err(RemoteFull);
         }
-        Ok(state.push(Some(from), entry))
+        let seq = state.push(Some(from), entry);
+        drop(state);
+        self.poke();
+        Ok(seq)
     }
 
     /// The entries that have not reached the model yet, as typed, oldest first.
@@ -197,10 +222,13 @@ impl Steering {
     pub fn retract(&self) -> Vec<Retracted> {
         let mut state = self.state();
         state.announced = 0;
-        std::mem::take(&mut state.queued)
+        let taken = std::mem::take(&mut state.queued)
             .into_iter()
             .map(retracted)
-            .collect()
+            .collect();
+        drop(state);
+        self.poke();
+        taken
     }
 
     /// Takes what the human typed and leaves remote entries queued, in place: only typed text
@@ -216,6 +244,8 @@ impl Steering {
                 index += 1;
             }
         }
+        drop(state);
+        self.poke();
         taken
     }
 
@@ -237,6 +267,8 @@ impl Steering {
                 index += 1;
             }
         }
+        drop(state);
+        self.poke();
         taken
     }
 
@@ -261,6 +293,8 @@ impl Steering {
                 entry: entry.entry,
             },
         );
+        drop(state);
+        self.poke();
     }
 
     /// Whether a remote entry waits: at an idle prompt it starts work.
@@ -458,6 +492,9 @@ impl SteeringHook {
                 .map(|text| DeliveredMessage { text, remote: None })
                 .collect()
         };
+        if agent == ROOT_AGENT {
+            self.steering.poke();
+        }
         let target = (agent != ROOT_AGENT).then(|| agent.to_string());
         // The queued messages ride a text view of the result, never the raw parts: base64 has
         // no business in what reads as a transcript line.

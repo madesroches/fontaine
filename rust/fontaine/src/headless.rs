@@ -288,6 +288,8 @@ pub async fn run(
     )
     .await;
     // One exit point, so an input error ends the session for the hooks too.
-    runtime.fire_session_end("other").await;
+    runtime
+        .fire_session_end("other", fontaine_sdk::core::agent::TRANSITION_CAP)
+        .await;
     code
 }

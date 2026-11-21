@@ -737,6 +737,7 @@ pub enum HookEvent {
     PostCompact,
     Notification,
     Elicitation,
+    ActivityChanged,
 }
 
 /// The values a `stop_failure` matcher names.
@@ -761,7 +762,7 @@ const ALL_HANDLERS: &[HandlerKind] =
     &[HandlerKind::Command, HandlerKind::Http, HandlerKind::Prompt];
 
 impl HookEvent {
-    pub const ALL: [HookEvent; 18] = [
+    pub const ALL: [HookEvent; 19] = [
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::PostToolUseFailure,
@@ -780,6 +781,7 @@ impl HookEvent {
         HookEvent::PostCompact,
         HookEvent::Notification,
         HookEvent::Elicitation,
+        HookEvent::ActivityChanged,
     ];
 
     /// The key in `[[hooks.<key>]]`.
@@ -803,6 +805,7 @@ impl HookEvent {
             HookEvent::PostCompact => "post_compact",
             HookEvent::Notification => "notification",
             HookEvent::Elicitation => "elicitation",
+            HookEvent::ActivityChanged => "activity_changed",
         }
     }
 
@@ -827,6 +830,7 @@ impl HookEvent {
             HookEvent::PostCompact => "PostCompact",
             HookEvent::Notification => "Notification",
             HookEvent::Elicitation => "Elicitation",
+            HookEvent::ActivityChanged => "ActivityChanged",
         }
     }
 
@@ -855,6 +859,7 @@ impl HookEvent {
             HookEvent::Notification => {
                 MatcherKind::Values(&["permission_prompt", "elicitation_dialog"])
             }
+            HookEvent::ActivityChanged => MatcherKind::Values(&["active", "waiting", "idle"]),
             HookEvent::TaskCompleted
             | HookEvent::TaskCreated
             | HookEvent::TeammateIdle
@@ -873,6 +878,7 @@ impl HookEvent {
             | HookEvent::PreCompact
             | HookEvent::PostCompact
             | HookEvent::Notification
+            | HookEvent::ActivityChanged
             | HookEvent::Elicitation => COMMAND_HTTP,
             HookEvent::PreToolUse
             | HookEvent::PostToolUse
@@ -4792,6 +4798,21 @@ fn read_optional(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn activity_changed_is_observational_and_a_repository_may_define_it() {
+        use crate::core::config::{HandlerKind, HookEvent, ProjectScope};
+        let event = HookEvent::ActivityChanged;
+        assert_eq!(HookEvent::ALL.len(), 19);
+        assert_eq!(event.config_key(), "activity_changed");
+        assert_eq!(HookEvent::from_wire_name("ActivityChanged"), Some(event));
+        assert_eq!(event.handlers(), [HandlerKind::Command, HandlerKind::Http]);
+        assert_eq!(event.project_scope(), ProjectScope::Loads);
+        for state in ["active", "waiting", "idle", "idle|waiting", "*"] {
+            assert!(event.check_matcher(state).is_ok(), "{state}");
+        }
+        assert!(event.check_matcher("busy").is_err());
+    }
+
     #[test]
     fn hook_matcher_wildcards_only_work_as_the_whole_matcher() {
         let start = crate::core::config::HookEvent::SessionStart;

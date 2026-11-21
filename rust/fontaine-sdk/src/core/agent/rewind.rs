@@ -92,6 +92,12 @@ impl AgentRuntime {
             return Err(RewindError::SubagentsRunning);
         }
         let checkpoints = self.session.checkpoints();
+        // Rewind reads as a clear to a consumer of the activity snapshot.
+        let clearing = what.includes_conversation().then(|| {
+            self.state
+                .activity()
+                .override_reason(crate::core::activity::ActivityReason::Clear)
+        });
         if what.includes_conversation() {
             self.session
                 .rewind_conversation(plan.conv_n)
@@ -105,6 +111,7 @@ impl AgentRuntime {
             self.retire_idle_agents("the conversation was rewound");
             agents.discard_root_reminders();
             self.end_jobs().await;
+            drop(clearing);
             self.reset_shell_cwd();
         }
         let code = what

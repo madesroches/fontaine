@@ -230,6 +230,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::any("hooks.post_compact"),
     Rule::any("hooks.notification"),
     Rule::any("hooks.elicitation"),
+    Rule::any("hooks.activity_changed"),
     Rule::any("mcp.servers"),
     Rule::any("mcp.tool_search"),
     Rule::any("mcp.native_tool_search"),
@@ -643,6 +644,11 @@ mod tests {
         (
             "hooks.elicitation",
             "[[hooks.elicitation]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.activity_changed",
+            "[[hooks.activity_changed]]\ncommand = \"true\"\n",
             None,
         ),
         ("mcp.servers", "[mcp.servers.s]\ncommand = \"srv\"\n", None),

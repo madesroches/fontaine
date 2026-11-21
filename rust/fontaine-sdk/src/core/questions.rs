@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 
 use crate::core::gate::SessionState;
 use crate::core::ledger::{MessageOrigin, Record};
-use crate::core::permissions::Approver;
+use crate::core::permissions::{Approver, HumanChannel};
 
 /// What every recorded dialog answer starts with; the guardian's prompt and the evals name it.
 pub const ANSWER_LINE_PREFIX: &str = "Answered the agent's question";
@@ -53,11 +53,20 @@ fn answer_line(asked: &[Question], answer: &QuestionAnswer) -> String {
 pub struct HumanQuestions {
     approver: Arc<dyn Approver>,
     state: Arc<SessionState>,
+    human: HumanChannel,
 }
 
 impl HumanQuestions {
-    pub fn new(approver: Arc<dyn Approver>, state: Arc<SessionState>) -> HumanQuestions {
-        HumanQuestions { approver, state }
+    pub fn new(
+        approver: Arc<dyn Approver>,
+        state: Arc<SessionState>,
+        human: HumanChannel,
+    ) -> HumanQuestions {
+        HumanQuestions {
+            approver,
+            state,
+            human,
+        }
     }
 }
 
@@ -65,7 +74,10 @@ impl QuestionSource for HumanQuestions {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async move {
             let asked = questions.clone();
+            // Dropped with the future, so a cancelled question ends the wait too.
+            let waiting = self.state.wait_on_answer(agent, self.human);
             let (reply, by) = self.approver.ask_user_as(agent, questions).await;
+            drop(waiting);
             if let QuestionReply::Answered(answers) = &reply {
                 let lines: Vec<String> = answers
                     .iter()
@@ -160,7 +172,11 @@ mod tests {
             effort: None,
             retry: crate::core::retry::RetryPolicy::default(),
         }));
-        (HumanQuestions::new(approver, state), ledger, dir)
+        (
+            HumanQuestions::new(approver, state, HumanChannel::Present),
+            ledger,
+            dir,
+        )
     }
 
     fn question() -> Question {
@@ -337,6 +353,54 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("ok\\nAnswered"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn the_dialog_holds_the_human_wait_guard_only_when_a_human_can_answer() {
+        struct Probe {
+            state: Mutex<Option<Arc<SessionState>>>,
+            seen: Mutex<Vec<bool>>,
+        }
+        impl Approver for Probe {
+            fn approve<'a>(
+                &'a self,
+                _request: crate::core::permissions::ApprovalRequest,
+            ) -> BoxFuture<'a, crate::core::permissions::Answer> {
+                Box::pin(async { crate::core::permissions::Answer::Deny { feedback: None } })
+            }
+
+            fn ask_user<'a>(
+                &'a self,
+                _agent: &'a str,
+                _questions: Vec<Question>,
+            ) -> BoxFuture<'a, QuestionReply> {
+                let waiting = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("set before asking")
+                    .any_waiting();
+                self.seen.lock().unwrap().push(waiting);
+                Box::pin(async { QuestionReply::Declined })
+            }
+        }
+
+        let probe = Arc::new(Probe {
+            state: Mutex::new(None),
+            seen: Mutex::new(Vec::new()),
+        });
+        let (present, _ledger, _dir) = rig(probe.clone());
+        *probe.state.lock().unwrap() = Some(present.state.clone());
+        present.ask(ROOT_AGENT, vec![question()]).await;
+        assert!(
+            !present.state.any_waiting(),
+            "the guard is dropped with the dialog"
+        );
+        let absent =
+            HumanQuestions::new(probe.clone(), present.state.clone(), HumanChannel::Absent);
+        absent.ask(ROOT_AGENT, vec![question()]).await;
+        assert_eq!(*probe.seen.lock().unwrap(), vec![true, false]);
     }
 
     #[tokio::test]

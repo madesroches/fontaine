@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod activity;
 pub mod adjudication;
 pub mod afk_report;
 pub mod agent;

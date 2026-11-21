@@ -971,6 +971,7 @@ pub(super) fn retained(
         confirm_project_servers: setup.confirm_project_servers,
         scheduling: setup.scheduling,
         headless: setup.headless,
+        human: setup.human_channel,
         session_agents: setup.session_agents.clone(),
         host_mcp: setup.host_mcp.clone(),
         host_tools: setup.host_tools.clone(),

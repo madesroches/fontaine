@@ -6,7 +6,8 @@ use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment};
 use crate::transcript::Transcript;
 use crate::{Action, App, Command, Ui, parse_command};
 use fontaine_sdk::core::RuntimeError;
-use fontaine_sdk::core::agent::AgentRuntime;
+use fontaine_sdk::core::activity::TurnScope;
+use fontaine_sdk::core::agent::{AgentRuntime, NotificationTurn};
 use fontaine_sdk::core::audit::Decision;
 use fontaine_sdk::core::config::HookEvent;
 use fontaine_sdk::core::gate::AgentViewEvent;
@@ -377,9 +378,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             && kinds
                 .iter()
                 .all(|kind| *kind == fontaine_sdk::agents::tree::NotificationKind::Reminder);
-        let Some(prompt) = runtime.notification_prompt().await else {
+        let Some(NotificationTurn { prompt, claim }) = runtime.notification_prompt().await else {
             return std::ops::ControlFlow::Continue(());
         };
+        // The scope outlives the claim, so the hand-over never shows idle.
+        let _scope = runtime.state.activity().turn_scope();
+        drop(claim);
         if let Some(end) = self.refresh_before_turn(runtime) {
             return self.harness_turn_tail(runtime, launch_dir, end).await;
         }
@@ -414,6 +418,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if matches!(end, TurnEnd::InputClosed) {
             return Break(());
         }
+        // Taken before the queue is retracted and held until the queued turns have started, or
+        // the session would read idle between the retract and the next turn.
+        let _scope = runtime.state.activity().turn_scope();
         if self.drain_deferred(runtime).await.is_break() {
             return Break(());
         }
@@ -467,6 +474,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.quitting() {
             return std::ops::ControlFlow::Break(());
         }
+        let _scope = runtime.state.activity().turn_scope();
         let prompt = runtime.scheduled_prompt(&fired).await;
         self.app
             .transcript
@@ -501,6 +509,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.quitting() {
             return std::ops::ControlFlow::Break(());
         }
+        let _scope = runtime.state.activity().turn_scope();
         let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
             None => {
@@ -806,6 +815,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         let mut first = Some(first_origin);
+        // One scope per submission, the next taken before the previous drops: the prompt hook,
+        // a skill's expansion, the turn, its end-of-turn work and the queue's retract all sit
+        // inside it, and the hand-over to the next submission never reads idle.
+        let mut _held: Option<TurnScope> = None;
         // A dispatcher's hand-back runs next and keeps who asked for it, so a remote `/plan x`
         // is still a remote turn: stop refusal and audit apply, and it never reaches the draft.
         let mut handed_back_from: Option<RemoteSender> = None;
@@ -818,6 +831,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 other => (other, handed_back_from.take()),
             };
             self.current_remote = remote;
+            _held = Some(runtime.state.activity().turn_scope());
             // Only an idle-prompt submission was typed after the previous answer was on screen;
             // queued input was typed while a turn ran, before its reply was shown.
             let origin = first.take().unwrap_or(MessageOrigin::Other);
@@ -1126,6 +1140,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// A model that ran out of quota hands the session to the next entry of its list and the
     /// turn carries on there, before the failure is reported and before a goal hears of it.
     async fn turn(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        text: String,
+        human: Option<&str>,
+        origin: MessageOrigin,
+        attachments: Vec<Attachment>,
+    ) -> TurnEnd {
+        // Held across the whole loop, so pre-turn compaction, a usage-limit wait, the `stop`
+        // hooks and a continuation's gap never read as idle.
+        let _scope = runtime.state.activity().turn_scope();
+        self.turn_scoped(runtime, text, human, origin, attachments)
+            .await
+    }
+
+    async fn turn_scoped(
         &mut self,
         runtime: &mut AgentRuntime,
         text: String,

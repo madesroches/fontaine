@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::tools::error_chain::chain;
-use crate::tools::gate::{CallView, GateDecision, ToolGate};
+use crate::tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
 use crate::tools::guarded::Guard;
 use crate::tools::lock::write_recovering;
 use crate::tools::mcp::output::{DEFAULT_MAX_TOKENS, OutputLimits, Spill};
@@ -35,7 +35,7 @@ use crate::core::gate::SessionState;
 use crate::core::mcp_auth::McpAuth;
 use crate::core::mcp_json::{StartContext, expand_at_start};
 use crate::core::permissions::{
-    Approver, ElicitationEvent, ElicitationHook, run_elicitation_hooks,
+    Approver, ElicitationEvent, ElicitationHook, HumanChannel, run_elicitation_hooks,
 };
 use crate::core::runtime_error::RuntimeError;
 use crate::core::tools;
@@ -523,6 +523,7 @@ pub struct HookElicitor {
     inner: ApproverElicitor,
     approver: Arc<dyn Approver>,
     state: Arc<SessionState>,
+    human: HumanChannel,
 }
 
 impl HookElicitor {
@@ -531,6 +532,7 @@ impl HookElicitor {
         plugin_hooks: LivePlugins,
         approver: Arc<dyn Approver>,
         state: Arc<SessionState>,
+        human: HumanChannel,
     ) -> HookElicitor {
         HookElicitor {
             hooks,
@@ -538,7 +540,14 @@ impl HookElicitor {
             inner: ApproverElicitor(approver.clone()),
             approver,
             state,
+            human,
         }
+    }
+
+    /// The session waits on a person from the moment the dialog opens, after the hooks had
+    /// their say. The server's request carries no agent, so it is the root's.
+    fn waiting(&self) -> Option<crate::core::gate::WaitGuard> {
+        self.state.wait_on_answer(ROOT_AGENT, self.human)
     }
 
     async fn ask_hooks(
@@ -590,7 +599,10 @@ impl Elicitor for HookElicitor {
                 .await
             {
                 Some(reply) => reply,
-                None => self.inner.elicit(form).await,
+                None => {
+                    let _waiting = self.waiting();
+                    self.inner.elicit(form).await
+                }
             }
         })
     }
@@ -613,9 +625,13 @@ impl Elicitor for HookElicitor {
                     self.approver.warn(
                         "an elicitation hook accepted a link request; links open only after you confirm, so the request goes to the dialog",
                     );
+                    let _waiting = self.waiting();
                     self.inner.elicit_url(request).await
                 }
-                None => self.inner.elicit_url(request).await,
+                None => {
+                    let _waiting = self.waiting();
+                    self.inner.elicit_url(request).await
+                }
             }
         })
     }
@@ -754,6 +770,7 @@ impl AgentRuntime {
             self.setup.plugin_hooks.clone(),
             approver.clone(),
             self.state.clone(),
+            self.setup.human,
         ));
         let warner = approver.clone();
         options.warn = Arc::new(move |message| warner.warn(message));

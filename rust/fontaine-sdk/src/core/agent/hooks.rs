@@ -2,10 +2,17 @@
 //! submitted, a turn stops or fails, and the conversation compacts. The hooks themselves are in
 //! `crate::core::user_hooks`; this decides when each fires.
 
+use std::time::Duration;
+
 use super::{AgentRuntime, SessionOrigin};
+use crate::core::activity::Sources;
 use crate::core::config::HookEvent;
 use crate::core::turn::TurnOutcome;
 use crate::core::user_hooks::{LifecycleHooks, PromptGate};
+
+/// How long the awaited `shutdown` transition may take when the caller has no deadline of its
+/// own: `session_end`'s default timeout.
+pub const TRANSITION_CAP: Duration = Duration::from_millis(1500);
 
 impl AgentRuntime {
     /// The hooks for the events the runtime fires itself.
@@ -40,9 +47,25 @@ impl AgentRuntime {
         self.fire_session_start(self.start_source()).await;
     }
 
-    /// `session_end`; `reason` is `clear`, `resume`, `prompt_input_exit` or `other`.
-    pub async fn fire_session_end(&self, reason: &str) {
+    /// The session's last `activity_changed` transition (reason `shutdown`), then `session_end`;
+    /// `reason` is `clear`, `resume`, `prompt_input_exit` or `other`. The transition is awaited
+    /// here, never spawned, because a task would be dropped with the runtime, and is cut off
+    /// after `cap` so a slow hook cannot starve `session_end`. Callers stop the agents and jobs
+    /// first, so the transition reads an idle session.
+    pub async fn fire_session_end(&self, reason: &str, cap: Duration) {
+        let _ = tokio::time::timeout(cap, self.fire_shutdown_transition()).await;
         self.setup.lifecycle.session_end(reason).await;
+    }
+
+    async fn fire_shutdown_transition(&self) {
+        let sources = Sources {
+            state: &self.state,
+            jobs: Some(&self.setup.jobs),
+            steering: &self.steering,
+        };
+        self.activity
+            .shutdown_transition(&sources, &self.setup.lifecycle)
+            .await;
     }
 
     /// `user_prompt_submit` for a prompt the human sent. Context the hooks add is queued for the

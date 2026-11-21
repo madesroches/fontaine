@@ -43,8 +43,15 @@ impl AgentRuntime {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let work = async {
             tokio::join!(
-                self.fire_session_end("prompt_input_exit"),
-                self.setup.jobs.wait_stopped(deadline),
+                async {
+                    // Jobs are confirmed stopped before the transition, so it reads an idle
+                    // session; a job that never ends costs its slice, not the hooks.
+                    let _ =
+                        tokio::time::timeout(remaining / 4, self.setup.jobs.wait_stopped(deadline))
+                            .await;
+                    self.fire_session_end("prompt_input_exit", remaining / 4)
+                        .await;
+                },
                 self.mcp.close_all_final(MCP_GRACEFUL_CLOSE),
                 self.setup.lsp.terminate_all(),
                 self.setup.searxng.terminate_owned(remaining / 2),

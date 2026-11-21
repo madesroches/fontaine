@@ -657,7 +657,11 @@ fn one_question() -> serde_json::Value {
 async fn run_ask(rig: &Rig, context: &mut ToolContext) -> Result<String, String> {
     let mut p = params(rig);
     p.extension = Some(extension_asking(AskUserTool {
-        source: Arc::new(HumanQuestions::new(rig.approver.clone(), rig.state.clone())),
+        source: Arc::new(HumanQuestions::new(
+            rig.approver.clone(),
+            rig.state.clone(),
+            fontaine_sdk::core::permissions::HumanChannel::Present,
+        )),
     }));
     let tools = registry(p).unwrap();
     let tool = tools

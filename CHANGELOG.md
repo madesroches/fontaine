@@ -8,6 +8,17 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The session's activity (#579): one authoritative snapshot, derived from the runtime's own turn,
+  agent, background-job, notification and human-wait state, says whether the instance is `active`,
+  `waiting` on a person or `idle`, so a scheduler can tell the model's turn ending (`stop`) from the
+  instance being free. It is published twice from the same value: a new observational
+  `activity_changed` hook (`command` and `http` handlers, matcher on the new state, payload with
+  `reason`, `previous_state` and the complete snapshot including `seq`; deliveries are serial and
+  latest-wins, with a final `shutdown` transition before `session_end`), and an `activity` object in
+  the custom status-line JSON. The hook loads from a repository, can be registered by plugins and by
+  SDK `initialize.hooks` (`ActivityChanged`), and `stop`, `subagent_stop`, `teammate_idle` and the
+  TUI's running state are unchanged. `ask_user_question` and MCP elicitation dialogs now mark the
+  session as waiting on a human, as permission prompts already did. See `docs/hooks.md`.
 - `thinking_off` account key for `openrouter` (#739), opt-in: `thinking_off = true` adds
   `{"reasoning": {"enabled": false}}` to the guardian's and the scanner's forced-call requests, so a
   reasoning model stops spending the output budget on thinking.
@@ -81,6 +92,16 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- **Breaking for SDK embedders:** the exhaustive `config::HookEvent` enum gains the
+  `ActivityChanged` variant, so a `match` over it needs an arm, and `HookEvent::ALL` is now 19 long.
+  The `core` tree, which carries no stability promise, changes with it: `AgentRuntime::fire_session_end`
+  takes a delivery cap for the final transition (`TRANSITION_CAP` is `session_end`'s own 1.5 s),
+  `AgentRuntime::notification_prompt` returns a `NotificationTurn` that carries the turn's claim,
+  `HumanQuestions::new` and `HookElicitor::new` take the session's `HumanChannel`, and
+  `InputSource` gains `queued_count`.
+- `session_end` now fires after the agents and jobs are stopped on a TUI session switch and on a
+  headless input error (it fired before the stop on a switch), so the final activity snapshot reads
+  idle.
 - The `claude-subscription` cache self-check is harder to trip on a false positive (#718): a
   previous request that read nothing gives no verdict, a version needs two consecutive shortfalls
   before the native layout is turned off for it, the warning names the read, expected and gap
