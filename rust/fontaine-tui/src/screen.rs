@@ -2355,9 +2355,50 @@ mod tests {
         app.begin_approval(approval_request("ls"), tx);
         screen.render(&mut app).unwrap();
         assert!(!app.committed_under_overlay);
+        assert!(
+            !nonblank(rows(screen.backend().scrollback())).is_empty(),
+            "the approval forced rows into scrollback"
+        );
         app.approval = None;
         screen.render(&mut app).unwrap();
         assert!(!app.reprint);
+    }
+
+    #[test]
+    fn closing_the_agents_panel_over_a_pending_approval_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        let mut panel = crate::agents_panel::AgentsPanel::new();
+        panel.set_rows((1..=6).map(panel_row).collect());
+        app.agents = Some(panel);
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        screen.render(&mut app).unwrap();
+        assert!(app.approval.is_some());
+        assert_each_note_once(&screen);
+    }
+
+    #[test]
+    fn closing_the_ticket_dialog_over_a_pending_approval_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        tall_transcript(&mut screen, &mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        app.begin_ticket(ticket());
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        app.ticket_prompt = None;
+        screen.render(&mut app).unwrap();
+        assert!(app.approval.is_some());
+        assert_each_note_once(&screen);
     }
 
     fn contains_in_order(haystack: &[u8], needles: &[&[u8]]) -> bool {

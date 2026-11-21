@@ -1521,11 +1521,10 @@ impl App {
 
     /// Whether a one-off dialog covers the live area. The per-call dialogs are left out: closing
     /// one purges scrollback and reprints, which would happen on nearly every approval.
+    /// A one-off dialog counts even with a per-call dialog pending: it is drawn ahead of it.
     pub(crate) fn overlay_open(&self) -> bool {
-        (self.covered()
-            && self.approval.is_none()
-            && self.questions.is_empty()
-            && self.elicitations.is_empty())
+        self.ticket_prompt.is_some()
+            || self.one_off_other_than_ticket()
             || self.plugin_prompt.is_some()
             || self.setup_composition.is_some()
     }
@@ -1535,7 +1534,11 @@ impl App {
         self.approval.is_some()
             || !self.questions.is_empty()
             || !self.elicitations.is_empty()
-            || self.denied.is_some()
+            || self.one_off_other_than_ticket()
+    }
+
+    fn one_off_other_than_ticket(&self) -> bool {
+        self.denied.is_some()
             || self.unavailable.is_some()
             || self.usage_pause_prompt.is_some()
             || self.server.is_some()
