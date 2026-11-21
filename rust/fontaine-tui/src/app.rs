@@ -1521,7 +1521,8 @@ impl App {
 
     /// Whether a one-off dialog covers the live area. The per-call dialogs are left out: closing
     /// one purges scrollback and reprints, which would happen on nearly every approval.
-    /// A one-off dialog counts even with a per-call dialog pending: it is drawn ahead of it.
+    /// A one-off dialog counts even with a per-call dialog pending: it is drawn ahead of it. The
+    /// transcript view is the exception to "drawn": it is hidden while one is pending, yet counts.
     pub(crate) fn overlay_open(&self) -> bool {
         self.ticket_prompt.is_some()
             || self.one_off_other_than_ticket()
