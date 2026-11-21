@@ -1262,3 +1262,87 @@ async fn the_update_summary_request_keeps_unverified_claims_unverified() {
         assert!(sent.contains(fragment), "the request lacks `{fragment}`");
     }
 }
+
+fn git_operation_records(ledger: &Ledger) -> Vec<Option<fontaine_sdk::guardian::GitOperationKind>> {
+    ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry.record {
+            Record::GitOperationAtStart { operation } => Some(operation),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_stopped_git_operation_is_recorded_once_at_start_and_a_resume_keeps_it() {
+    use common::runtime::{build, build_resumed};
+    use fontaine_sdk::core::config::PermissionMode::Manual;
+    use fontaine_sdk::guardian::GitOperationKind;
+
+    let w = World::new();
+    common::git_init(&w.work);
+    common::conflicted_rebase(&w.work);
+    let built = build(&w, Manual, Vec::new(), false);
+    built.runtime.record_session_start().await;
+    let ledger = built.runtime.session.ledger.clone();
+    assert_eq!(
+        git_operation_records(&ledger),
+        [Some(GitOperationKind::Rebase)]
+    );
+    assert_eq!(
+        ledger.view().git_operation_at_start,
+        Some(Some(GitOperationKind::Rebase))
+    );
+    drop(built);
+
+    // The rebase ends before the session is continued. The continued session neither rescans nor
+    // appends: what it opened with is what the ledger keeps saying.
+    common::git(&w.work, &["rebase", "--abort"]);
+    let session = Session::create(&w.data, "00000000-0000-4000-8000-0000000000bb").unwrap();
+    session
+        .ledger
+        .append(Record::GitOperationAtStart {
+            operation: Some(GitOperationKind::Rebase),
+        })
+        .unwrap();
+    let handle = fontaine_sdk::core::models::ModelHandle::new(
+        fontaine_sdk::core::models::ModelRef::parse("test/mock").unwrap(),
+        fontaine_sdk::core::config::AccountKind::named("openai-compatible"),
+        MockCompletionModel::from_stream_turns(
+            Vec::<Vec<rig_core::test_utils::MockStreamEvent>>::new(),
+        )
+        .into(),
+    );
+    let models = fontaine_sdk::core::models::Models {
+        main_chain: fontaine_sdk::core::model_roles::ModelChain::single(handle.reference.clone()),
+        main: handle,
+        main_listing: fontaine_sdk::core::models::Listing::default(),
+        guardian: None,
+        guardian_choice: fontaine_sdk::core::models::GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let ledger = session.ledger.clone();
+    let resumed = build_resumed(&w, Manual, models, session);
+    resumed.record_session_start().await;
+    assert_eq!(
+        git_operation_records(&ledger),
+        [Some(GitOperationKind::Rebase)]
+    );
+    assert_eq!(
+        ledger.view().git_operation_at_start,
+        Some(Some(GitOperationKind::Rebase))
+    );
+}
+
+#[test]
+fn a_ledger_without_the_start_record_says_nothing_about_when_an_operation_began() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::create(dir.path()).unwrap();
+    assert_eq!(ledger.view().git_operation_at_start, None);
+    ledger
+        .append(Record::GitOperationAtStart { operation: None })
+        .unwrap();
+    assert_eq!(ledger.view().git_operation_at_start, Some(None));
+}

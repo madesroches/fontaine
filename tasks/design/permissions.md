@@ -86,6 +86,15 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               fallback for the write tools). An external path never becomes a root: no write
               reach of its own, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
+           6a. mode == auto/afk, after the floor, hooks and rules → `unjudged_edit`: a file-tool
+              edit of a tracked, new or session-created file in the primary root is
+              `tracked_edit`, a file-tool write into scratch is `scratch_write`, and a `shell`
+              call that `tools::shell_edit::classify` parses in full (read-only commands, `sed -i`
+              with `d`/`s` only, `mkdir`, `mv`, `git add`/`rm`/`mv`/`commit` and
+              `git <op> --continue`, every path through the pipeline's `TargetCheck`: the same
+              target rule as `tracked_edit` plus read/edit/write rules, child restrictions and a
+              symlink-free path; no file-tool hook matcher) is `shell_edit`. Hook-runner config
+              is excluded from all three. Anything else → step 7.
            7. mode == auto → the composed guardian (`fontaine_sdk::guardian::composition::adjudicate`):
               the Rune script of `[guardian.composition]` (the `screen` preset by default) over
               the host leaves, the LLM guardian and the logprob reads ──▶ Verdict, inside a
@@ -100,6 +109,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
                       │
          Allow ──▶ inner rig Tool executes ──▶ ResultPipeline ──▶ result appended to conversation (rig-memory)
          Deny  ──▶ tool_result = "Denied by guardian: [explanation]"; agent sees it and adapts
+                   (followed by `Allowed instead: <call>.` when the verdict named a narrower call)
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
@@ -153,7 +163,7 @@ second record with `tier = human`.
 **Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `protected_path` (the
-floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`afk` allow it) | `coordination` (`send_message` and `board_update` after the floor, hooks and rules, every mode) | `allow_rule`
+floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit`, `scratch_write` and `shell_edit` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`afk` allow it) | `coordination` (`send_message` and `board_update` after the floor, hooks and rules, every mode) | `allow_rule`
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (step 7) |
 `screen` (step 7: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `human`. A prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 

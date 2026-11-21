@@ -639,6 +639,7 @@ pub struct PermissionsSection {
     pub additional_directories: Option<Vec<String>>,
     pub auto_tracked_edits: Option<bool>,
     pub auto_scratch_writes: Option<bool>,
+    pub auto_shell_edits: Option<bool>,
 }
 
 /// Where a hook or an MCP server came from, which decides whether it needs workspace trust and
@@ -2608,6 +2609,8 @@ pub struct Permissions {
     pub auto_tracked_edits: bool,
     /// In `auto`, file-tool writes inside the session scratch directory skip the guardian.
     pub auto_scratch_writes: bool,
+    /// In `auto`, a fully parsed in-root shell edit or local git step skips the guardian.
+    pub auto_shell_edits: bool,
 }
 
 /// The merged hooks, one list per event.
@@ -3193,6 +3196,7 @@ impl Config {
                 additional_directories: Vec::new(),
                 auto_tracked_edits: true,
                 auto_scratch_writes: true,
+                auto_shell_edits: true,
             },
             hooks: Hooks::default(),
             mcp_servers: BTreeMap::new(),
@@ -3438,6 +3442,9 @@ impl Config {
             }
             if let Some(v) = p.auto_scratch_writes {
                 t.auto_scratch_writes = v;
+            }
+            if let Some(v) = p.auto_shell_edits {
+                t.auto_shell_edits = v;
             }
         }
         if let Some(h) = &s.hooks {

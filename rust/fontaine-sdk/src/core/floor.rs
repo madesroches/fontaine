@@ -111,6 +111,34 @@ pub fn is_instruction_or_ci_path(path: &Path, fold: bool) -> bool {
         || same(last, ".github", fold)
 }
 
+/// Hook-runner configuration by file name at any depth: editing one plants code that the next
+/// commit or rebase step runs.
+const HOOK_CONFIG_FILES: [&str; 5] = [
+    ".pre-commit-config.yaml",
+    "lefthook.yml",
+    "lefthook.yaml",
+    ".lefthook.yml",
+    ".lefthook.yaml",
+];
+
+/// Whether `path` (relative to a root) is hook-runner configuration or sits in the conventional
+/// `.githooks` directory. The directory a repository's `core.hooksPath` names is checked by the
+/// caller, which has to read the repository's configuration.
+pub fn is_hook_config_path(path: &Path, fold: bool) -> bool {
+    let names: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let Some((last, parents)) = names.split_last() else {
+        return false;
+    };
+    HOOK_CONFIG_FILES.iter().any(|f| same(last, f, fold))
+        || parents.iter().any(|n| same(n, ".githooks", fold))
+}
+
 /// Windows and macOS file systems are case-insensitive by default, so `.MCP.json` names the
 /// protected file there even before it exists.
 pub(crate) const FOLD_CASE: bool = cfg!(any(windows, target_os = "macos"));
@@ -306,6 +334,34 @@ mod tests {
         assert!(!hit("agents.md", false));
         assert!(hit("agents.md", true));
         assert!(hit("Docs/RULES/x.md", true));
+    }
+
+    #[test]
+    fn hook_runner_config_is_named_exactly() {
+        let hit = |path: &str| is_hook_config_path(Path::new(path), false);
+        for path in [
+            ".pre-commit-config.yaml",
+            "sub/.pre-commit-config.yaml",
+            "lefthook.yml",
+            "lefthook.yaml",
+            ".lefthook.yml",
+            ".lefthook.yaml",
+            ".githooks/pre-commit",
+            "a/.githooks/sub/commit-msg",
+        ] {
+            assert!(hit(path), "{path}");
+        }
+        for path in [
+            "docs/pre-commit-config.yaml.md",
+            "pre-commit-config.yaml",
+            "lefthook.yml.bak",
+            "githooks/pre-commit",
+            "src/.githooks.rs",
+            ".githooks",
+        ] {
+            assert!(!hit(path), "{path}");
+        }
+        assert!(is_hook_config_path(Path::new("LEFTHOOK.YML"), true));
     }
 
     #[test]

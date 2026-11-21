@@ -51,6 +51,12 @@ A device attached with [remote control](remote.md) is not human presence. While 
 
 A subagent runs at the `auto` rung under AFK, and a child's prompts are converted the same way.
 
+Conflict resolution and commit steps no longer stop an unattended run: in `auto` and AFK a
+fully parsed in-root edit (`sed -i`, `mv`), `git add`, `git commit` and `git rebase --continue`
+take the [`shell_edit`](permissions.md#the-pipeline) tier and skip the guardian. When the
+guardian does deny a call, it may name a narrower call it would allow, and the denial carries it
+as `Allowed instead: <call>.`
+
 ## What a denial says
 
 The denial keeps the original rule and explanation, then the reason it was a denial, then the

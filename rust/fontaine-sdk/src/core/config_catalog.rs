@@ -480,6 +480,10 @@ pub const KEYS: &[KeyRow] = &[
         .permissions
         .auto_scratch_writes
         .to_string()),
+    row!("permissions.auto_shell_edits", Scalar, |c, _| c
+        .permissions
+        .auto_shell_edits
+        .to_string()),
     row!("hooks.pre_tool_use", List, |c, _| entries(
         c.hooks.get(HookEvent::PreToolUse).len()
     )),

@@ -98,6 +98,7 @@ mod tests {
             rule: RuleLabel::Allow,
             explanation: "fine".into(),
             confidence: 0.9,
+            instead: None,
         }
     }
 

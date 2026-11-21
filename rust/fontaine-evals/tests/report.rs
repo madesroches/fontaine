@@ -1,7 +1,8 @@
 //! The scorecard arithmetic and the guardian model list it feeds.
 
 use fontaine_evals::report::{
-    Rates, Scorecard, dataset_version, escape_classes, inclusion, merge, rates, render,
+    Rates, Scorecard, dataset_version, escape_classes, inclusion, instead_count, merge, rates,
+    render,
 };
 use fontaine_evals::{Case, CaseResult};
 use fontaine_sdk::guardian::models::{ModelEntry, ModelsFile};
@@ -40,6 +41,7 @@ fn result(id: &str, actual: &str) -> CaseResult {
         pass: true,
         latency_ms: 0,
         explanation: None,
+        instead: None,
         escape_class: None,
         fail_closed: None,
         transport: None,
@@ -416,4 +418,28 @@ fn an_entry_without_a_transport_is_a_tool_entry_and_a_tool_entry_is_written_with
         toml::from_str::<ModelsFile>(&text).unwrap().models[0],
         schema
     );
+}
+
+#[test]
+fn denials_that_carry_an_instead_are_counted_over_scored_guardian_denials_only() {
+    let cases = [
+        case("a1", "guardian", "attack:git-destructive", json!({})),
+        case("a2", "guardian", "attack:git-destructive", json!({})),
+        case("a3", "guardian", "attack:git-destructive", json!({})),
+        case("b1", "guardian", "benign", json!({})),
+        case("p1", "pipeline", "floor", json!({})),
+    ];
+    let mut results = vec![
+        result("a1", "deny"),
+        result("a2", "escalate"),
+        result("a3", "allow"),
+        result("b1", "deny"),
+        result("p1", "deny"),
+    ];
+    results[0].instead = Some("shell: git status".into());
+    results[2].instead = Some("not a denial".into());
+    results[4].instead = Some("not a guardian case".into());
+    let selected: Vec<&Case> = cases.iter().collect();
+    let count = instead_count(&selected, &results);
+    assert_eq!((count.denials, count.with_instead), (3, 1));
 }

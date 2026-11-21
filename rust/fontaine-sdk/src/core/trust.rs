@@ -371,8 +371,9 @@ pub enum Tracking {
 /// Looks `resolved` up in the index of the work tree that encloses `root`. Unlike
 /// `classify_project_local`, which treats an ancestor entry (submodule, sparse directory) and a
 /// case variant as tracked because trust errs toward project scope, only an exact,
-/// case-sensitive entry for the resolved path counts. A path that does not exist yet is looked
-/// up through its canonical parent.
+/// case-sensitive entry for a file counts (see [`tracked_files`]): a submodule gitlink and an
+/// intent-to-add entry hold no content git could restore. A path that does not exist yet is
+/// looked up through its canonical parent.
 pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
     let Ok((repo, workdir)) = discover(root) else {
         return Tracking::Unknown;
@@ -383,7 +384,7 @@ pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
     let Ok(index) = repo.index_or_empty() else {
         return Tracking::Unknown;
     };
-    if !relative.is_empty() && index.entry_by_path(relative.as_ref()).is_some() {
+    if is_file_entry(&index, &relative) {
         Tracking::Tracked
     } else {
         Tracking::Untracked
@@ -422,23 +423,129 @@ pub fn tracked_files(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
     paths
         .iter()
         .map(|resolved| {
-            index_relative(&workdir, resolved).is_some_and(|relative| {
-                // `entry_by_path` ignores the mode: a submodule gitlink holds only a commit
-                // pointer, and an intent-to-add entry has no content in git yet.
-                !relative.is_empty()
-                    && index.entry_by_path(relative.as_ref()).is_some_and(|entry| {
-                        matches!(
-                            entry.mode,
-                            gix::index::entry::Mode::FILE
-                                | gix::index::entry::Mode::FILE_EXECUTABLE
-                                | gix::index::entry::Mode::SYMLINK
-                        ) && !entry
-                            .flags
-                            .contains(gix::index::entry::Flags::INTENT_TO_ADD)
-                    })
-            })
+            index_relative(&workdir, resolved)
+                .is_some_and(|relative| is_file_entry(&index, &relative))
         })
         .collect()
+}
+
+/// Whether the index holds a file entry at `relative`. `entry_by_path` ignores the mode: a
+/// submodule gitlink holds only a commit pointer, and an intent-to-add entry has no content in
+/// git yet.
+fn is_file_entry(index: &gix::index::State, relative: &BString) -> bool {
+    !relative.is_empty()
+        && index.entry_by_path(relative.as_ref()).is_some_and(|entry| {
+            matches!(
+                entry.mode,
+                gix::index::entry::Mode::FILE
+                    | gix::index::entry::Mode::FILE_EXECUTABLE
+                    | gix::index::entry::Mode::SYMLINK
+            ) && !entry
+                .flags
+                .contains(gix::index::entry::Flags::INTENT_TO_ADD)
+        })
+}
+
+/// A multi-step git operation stopped in the work tree that encloses `root`: what it is, and the
+/// branch it works on. `None` when nothing is in progress, there is no repository, or the
+/// repository cannot be read: this is a fact told to the guardian, never a decision.
+pub(crate) fn operation_in_progress(
+    root: &Path,
+) -> Option<(crate::guardian::GitOperationKind, Option<String>)> {
+    use crate::guardian::GitOperationKind as Kind;
+    use gix::state::InProgress;
+    let (repo, _) = discover(root).ok()?;
+    let kind = match repo.state()? {
+        InProgress::Rebase | InProgress::RebaseInteractive | InProgress::ApplyMailboxRebase => {
+            Kind::Rebase
+        }
+        InProgress::ApplyMailbox => Kind::Am,
+        InProgress::CherryPick | InProgress::CherryPickSequence => Kind::CherryPick,
+        InProgress::Revert | InProgress::RevertSequence => Kind::Revert,
+        InProgress::Merge => Kind::Merge,
+        InProgress::Bisect => Kind::Bisect,
+    };
+    let branch = if kind == Kind::Rebase {
+        // HEAD is detached while a rebase runs; the branch it will return to is written down.
+        ["rebase-merge", "rebase-apply"].iter().find_map(|dir| {
+            let text = std::fs::read_to_string(repo.path().join(dir).join("head-name")).ok()?;
+            let name = text.trim();
+            Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string())
+                .filter(|name| !name.is_empty())
+        })
+    } else {
+        repo.head_name()
+            .ok()
+            .flatten()
+            .map(|name| name.shorten().to_string())
+    };
+    Some((kind, branch))
+}
+
+/// The directory git runs hooks from when `core.hooksPath` is set for the repository that
+/// encloses `root`, read the way git reads it (system and user configuration included, since
+/// they can name a path inside the work tree too). `Ok(None)` when it is not set; `Err` when the
+/// configuration cannot be read, which callers treat as "cannot vouch".
+pub(crate) fn hooks_path(root: &Path) -> Result<Option<PathBuf>, ()> {
+    let options = gix::open::Options::default().strict_config(true);
+    let repo = match gix::discover_opts(root, gix::discover::upwards::Options::default(), options) {
+        Ok(repo) => repo,
+        Err(err) => {
+            use gix::discover::upwards::Error as Up;
+            return match err.downcast_any_ref::<Up>() {
+                Some(
+                    Up::NoGitRepository { .. }
+                    | Up::NoGitRepositoryWithinCeiling { .. }
+                    | Up::NoGitRepositoryWithinFs { .. },
+                ) => Ok(None),
+                _ => Err(()),
+            };
+        }
+    };
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+        return Ok(None);
+    };
+    let snapshot = repo.config_snapshot();
+    let Some(path) = snapshot.trusted_path("core.hooksPath").map_err(|_| ())? else {
+        return Ok(None);
+    };
+    // Git runs hooks with the work tree as the working directory, so a relative path starts there.
+    let joined = workdir.join(path);
+    Ok(Some(match std::fs::canonicalize(&joined) {
+        Ok(canonical) => canonical,
+        Err(_) => crate::tools::scope::fold(&joined),
+    }))
+}
+
+/// Whether the repository enclosing `root` has a hook git would run: any entry of its hooks
+/// directory (`core.hooksPath`, else the common git directory's `hooks`) that is not a `.sample`
+/// file. A directory that cannot be read counts as active, so the answer is only "no" when
+/// nothing could run.
+pub(crate) fn hooks_installed(root: &Path) -> bool {
+    let Ok(configured) = hooks_path(root) else {
+        return true;
+    };
+    let dir = match configured {
+        Some(dir) => dir,
+        None => {
+            let options = gix::open::Options::default().strict_config(true);
+            match gix::discover_opts(root, gix::discover::upwards::Options::default(), options) {
+                Ok(repo) => repo.common_dir().join("hooks"),
+                Err(_) => return true,
+            }
+        }
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) => return err.kind() != std::io::ErrorKind::NotFound,
+    };
+    entries.into_iter().any(|entry| match entry {
+        Ok(entry) => {
+            !entry.file_name().to_string_lossy().ends_with(".sample")
+                && !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        }
+        Err(_) => true,
+    })
 }
 
 /// User trust is earned only by a file git does not know about (untracked or ignored — both

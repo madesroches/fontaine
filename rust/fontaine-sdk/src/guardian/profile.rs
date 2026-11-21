@@ -91,6 +91,7 @@ impl Profile {
                         active_skills: request.session_facts.active_skills.clone(),
                         // The minimal prompt was calibrated without it, like the instructions.
                         agent_task: None,
+                        git_operation: None,
                     },
                     hook_context: Vec::new(),
                     prior_denials: Vec::new(),

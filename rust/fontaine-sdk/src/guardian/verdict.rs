@@ -43,6 +43,12 @@ struct RawVerdict {
     /// How sure the guardian is, from 0 to 1.
     #[schemars(range(min = 0.0, max = 1.0))]
     confidence: f64,
+    /// Only with `deny` or `escalate`: one narrower call that would be allowed in place of this
+    /// one, written as the tool and its arguments, for example the same shell command without
+    /// the deletion, or the same edit made with the `edit` tool. Omit it when no narrower call
+    /// would be allowed. Never name a call that reaches the effect this verdict denies.
+    #[serde(default)]
+    instead: Option<String>,
 }
 
 /// A validated verdict. Deserializing one is what checks it: a decision and a label that
@@ -54,6 +60,9 @@ pub struct Verdict {
     pub rule: RuleLabel,
     pub explanation: String,
     pub confidence: f64,
+    /// A narrower call the guardian would allow in place of the denied one. Advice to the agent
+    /// only: the call it names goes through the whole pipeline like any other.
+    pub instead: Option<String>,
 }
 
 impl Verdict {
@@ -76,16 +85,25 @@ impl Verdict {
                 )
             });
         }
+        // `null` and an empty string both mean "none", so only real text can be misplaced.
+        let instead = raw
+            .instead
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        if raw.decision == Decision::Allow && instead.is_some() {
+            return Err("`instead` names a narrower call to allow in place of a denied one, so it goes only with `deny` or `escalate`".to_string());
+        }
         Ok(Verdict {
             decision: raw.decision,
             rule: raw.rule,
             explanation: raw.explanation.trim().to_string(),
             confidence: raw.confidence,
+            instead,
         })
     }
 }
 
-const FORMAT_NOTE: &str = "The answer was not one JSON object with the fields `decision`, `rule`, `explanation` and `confidence`.";
+const FORMAT_NOTE: &str = "The answer was not one JSON object with the fields `decision`, `rule`, `explanation` and `confidence`, and optionally `instead`.";
 
 /// Why a rejected answer was rejected, for the retry. Written from fixed sentences, never from
 /// the output: the output is model-authored and may echo hostile tool arguments, and putting it
@@ -113,7 +131,7 @@ pub(crate) fn rejection_note(output: &str) -> String {
         return message;
     }
     format!(
-        "{FORMAT_NOTE} `decision`, `rule` and `explanation` are strings, `confidence` is a number, and there are no other fields."
+        "{FORMAT_NOTE} `decision`, `rule` and `explanation` are strings, `confidence` is a number, `instead` is a string when present, and there are no other fields."
     )
 }
 
@@ -252,6 +270,31 @@ mod tests {
     }
 
     #[test]
+    fn instead_is_optional_and_is_kept_trimmed_on_a_denial() {
+        let v = parse(json!({"decision": "deny", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9}))
+            .unwrap();
+        assert_eq!(v.instead, None);
+        let v = parse(json!({"decision": "deny", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9, "instead": " shell: git status "}))
+            .unwrap();
+        assert_eq!(v.instead.as_deref(), Some("shell: git status"));
+    }
+
+    #[test]
+    fn an_instead_on_an_allow_is_malformed_but_an_empty_or_null_one_is_not() {
+        assert!(
+            parse(json!({"decision": "allow", "rule": "allow", "explanation": "x", "confidence": 0.9, "instead": "shell: ls"}))
+                .is_err()
+        );
+        for instead in [json!(""), json!("  "), json!(null)] {
+            for (decision, rule) in [("allow", "allow"), ("deny", "Git Destructive")] {
+                let v = parse(json!({"decision": decision, "rule": rule, "explanation": "x", "confidence": 0.9, "instead": instead}))
+                    .unwrap();
+                assert_eq!(v.instead, None, "{decision} {instead}");
+            }
+        }
+    }
+
+    #[test]
     fn a_label_outside_the_enum_is_malformed() {
         assert!(
             parse(json!({"decision": "deny", "rule": "Rm Everything", "explanation": "x", "confidence": 0.9}))
@@ -327,6 +370,8 @@ mod tests {
         for field in ["decision", "rule", "explanation", "confidence"] {
             assert!(schema["required"].to_string().contains(field), "{field}");
         }
+        assert!(schema["properties"].get("instead").is_some());
+        assert!(!schema["required"].to_string().contains("instead"));
     }
 
     #[test]

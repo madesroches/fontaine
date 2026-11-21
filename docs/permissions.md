@@ -118,11 +118,13 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
 6. **Edits that skip the guardian (`auto` only).** After the floor and the hooks, a `write`,
-   `edit` or `notebook_edit` call is allowed without a guardian verdict in two cases. A file-tool
+   `edit` or `notebook_edit` call is allowed without a guardian verdict in two cases, and a
+   `shell` call in a third (`shell_edit`, below). A file-tool
    write whose resolved target is inside the session scratch directory is audited as
    `tier = scratch_write`; a shell command that touches scratch is not a file-tool call and goes
    to the guardian. An edit inside the primary workspace root is audited as `tier = tracked_edit`
-   when the target is a file git tracks (an exact entry in the index for the resolved path), a path
+   when the target is a file git tracks (an exact file entry in the index for the resolved path; a
+   submodule or an intent-to-add entry is not one), a path
    that does not exist yet in a git work tree, or a file this session created. Symlinks are
    resolved first, so a link is judged by its target. These go to the guardian as before: an
    existing file git does not track, such as `.env` or uncommitted work that predates the
@@ -130,12 +132,41 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    roots; the protected paths above; instruction files (`FONTAINE.md`,
    `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`), anything under a `rules`
    directory and anything under `.github`, because an edit there changes later decisions or what
-   CI runs; and every shell command. A request in your own message that names an excluded file
-   clears the guardian's soft deny for it. `@import`ed files are not excluded. Both allows
-   end a run of consecutive guardian denials, so routine work between denials keeps `auto` from
-   pausing. Turn them off with
-   [`auto_tracked_edits` and `auto_scratch_writes`](configuration.md#permissions); project scope
-   may only switch them off.
+   CI runs; hook-runner configuration (`.pre-commit-config.yaml`, `lefthook.yml`,
+   `.lefthook.yml`, anything under `.githooks/` and the directory the repository's
+   `core.hooksPath` names inside the root), because the next commit or rebase step runs what it
+   says; and every shell command except a `shell_edit`. A request in your own message that
+   names an excluded file clears the guardian's soft deny for it. `@import`ed files are not
+   excluded. All three allows end a run of consecutive guardian denials, so routine work between
+   denials keeps `auto` from pausing. Turn them off with
+   [`auto_tracked_edits`, `auto_scratch_writes` and `auto_shell_edits`](configuration.md#permissions);
+   project scope may only switch them off.
+
+   A `shell` call is audited as `tier = shell_edit` when Fontaine can parse the whole command and
+   every part of it is one of these, with every path it touches inside the primary root (the
+   call's working directory too):
+
+   - a read-only command of the [pre-classifier's](#the-shell-pre-classifier) set, or one of your
+     `allow_extra` entries as the first stage, whose reads pass the same file-read rules, and no
+     credential file;
+   - `sed -i` on Linux (GNU sed) with only `d` and `s` commands (no `e`, `w`, `r`, blocks, branches or
+     bracket expressions), on files an `edit` would change without a verdict;
+   - `mkdir`, and `mv` of such files onto a path a `write` would create or overwrite without a
+     verdict;
+   - `git add` of named files (or `-u`), `git rm` and `git mv` without `-f`, `git commit` without
+     `--amend` or `--no-verify`, and `git rebase`, `merge`, `cherry-pick` or `revert` with
+     `--continue`, optionally with `GIT_EDITOR=true` in front; the git steps skip the
+     guardian only when the repository has no installed hook (anything in its hooks directory that
+     is not a `.sample` file), because a hook can run files edited in the same call;
+   - `;`, `&&`, `||` and `!` between them, a pipe of read-only commands, and output redirects or
+     a non-expanding heredoc into a file a `write` would change without a verdict.
+
+   A deny or ask rule for the `edit`, `write` or `read` of any of those paths, an agent type that
+   may not use the tool, or a pre-tool-use hook scoped to a file tool sends the whole call to the
+   guardian instead, as does anything the parser cannot read in full (a substitution, a loop, a
+   `cd`, a background job, an input redirect). Hooks on file tools do not run for a shell edit, so
+   a post-tool-use hook such as a formatter on `edit` does not either. `acceptEdits` is
+   unchanged: a shell command still asks there.
 7. **The mode**, as in the table above. `send_message` and `board_update` come first: they reach
    only agents of the same tree, whose own calls are gated, so they run in every mode, `dontAsk`
    included, with no guardian verdict and no prompt (`tier = coordination`). `draft_bug_report`
@@ -156,13 +187,13 @@ tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that d
 to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `shell_edit`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
 `guardian`, `dont_ask`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on),
 `afk` (a temperature stop denied the call, or the record is an AFK toggle), `bug_draft` (a
 `draft_bug_report` call) and `bug_report` (you filed a report with [`/bug`](tui.md)). A record also has an
 `afk` flag, and `converted` when a prompt nobody could answer became a denial; see
 [AFK mode](afk.md#what-a-denial-says). A guardian decision also records the guardian model and profile, its
-verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
+verdict, confidence, the narrower call it said it would allow instead (`instead`, when it named one), whether the verdict came from the cache, how long the guardian took, the
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
 model with no tool support; see [Models with no tool
 support](guardian.md#models-with-no-tool-support)) and, when it failed closed, the reason (`error`,

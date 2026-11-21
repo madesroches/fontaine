@@ -229,6 +229,38 @@ pub fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Leaves `dir` (a repository with one commit) in a rebase of `feature` onto `main` that stopped
+/// on a conflict in `CHANGELOG.md`.
+pub fn conflicted_rebase(dir: &Path) {
+    git(dir, &["checkout", "-q", "-b", "main"]);
+    write(&dir.join("CHANGELOG.md"), "# Changes\nbase\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "base"]);
+    git(dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir.join("CHANGELOG.md"), "# Changes\nfeature\n");
+    git(dir, &["commit", "-q", "-am", "feature"]);
+    git(dir, &["checkout", "-q", "main"]);
+    write(&dir.join("CHANGELOG.md"), "# Changes\nmain\n");
+    git(dir, &["commit", "-q", "-am", "main"]);
+    git(dir, &["checkout", "-q", "feature"]);
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(["-c", "commit.gpgsign=false", "-c", "core.fsmonitor=false"])
+        .args(["rebase", "main"])
+        .current_dir(dir)
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env(
+            "GIT_CONFIG_SYSTEM",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .output()
+        .expect("git is installed");
+    assert!(!out.status.success(), "the rebase must stop on a conflict");
+}
+
 pub fn git_init(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     git(dir, &["init", "-q"]);

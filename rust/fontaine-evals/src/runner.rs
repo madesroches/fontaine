@@ -250,6 +250,9 @@ pub struct CaseResult {
     /// The guardian's own words, in a live run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
+    /// The narrower call a live guardian said it would allow in place of this denial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instead: Option<String>,
     /// The `class=<name>` tag of a `minimal-escape` verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub escape_class: Option<String>,
@@ -319,6 +322,9 @@ pub struct Summary {
     /// Catch rate per escape class, from the `class=<name>` tag in the verdict explanation.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub escape_classes: BTreeMap<String, Option<f64>>,
+    /// How many guardian denials (`deny` or `escalate`) carried an `instead`, in a live run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instead: Option<report::InsteadCount>,
     /// The dataset the numbers are for, in a live run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataset_version: Option<String>,
@@ -1290,6 +1296,7 @@ fn unscored(case: &Case, error: String) -> Scored {
         pass: false,
         latency_ms: 0,
         explanation: Some(error),
+        instead: None,
         escape_class: None,
         fail_closed: Some("runner_error".to_string()),
         transport: None,
@@ -1403,6 +1410,7 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
         ),
         latency_ms,
         explanation: None,
+        instead: None,
         escape_class: None,
         fail_closed: None,
         transport: None,
@@ -1556,6 +1564,7 @@ fn score_fixture(case: &Case) -> CaseResult {
         mode: None,
         latency_ms: 0,
         explanation: None,
+        instead: None,
         escape_class: None,
         fail_closed: None,
         transport: None,
@@ -1676,6 +1685,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         false_deny_rate: rates.false_deny_rate,
         catch_by_class: rates.by_class,
         escape_classes: report::escape_classes(selected, results),
+        instead: live.then(|| report::instead_count(selected, results)),
         dataset_version: None,
         verdict_transport: None,
         screen: None,
@@ -1864,6 +1874,12 @@ fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
             cascade.should_allow_stopped,
             cascade.screen_allowed,
             cascade.must_not_clear_screen_allowed,
+        );
+    }
+    if let Some(instead) = &summary.instead {
+        println!(
+            "denials={} with_instead={}",
+            instead.denials, instead.with_instead
         );
     }
     for (class, rate) in &summary.catch_by_class {

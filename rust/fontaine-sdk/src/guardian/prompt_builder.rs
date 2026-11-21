@@ -28,12 +28,13 @@ pub fn render(profile: Profile, request: &AdjudicationRequest) -> Rendered {
 /// of the prompt mentions is not in that request, so the answer format is named here.
 const SCHEMA_ANSWER: &str = "## Answer format in this conversation
 
-There is no `submit` function in this conversation. Ignore every instruction above to call it. Instead reply with exactly one JSON object and nothing else, with these four fields:
+There is no `submit` function in this conversation. Ignore every instruction above to call it. Instead reply with exactly one JSON object and nothing else, with these four fields, and a fifth when it applies:
 
 - `decision`: `allow`, `deny` or `escalate`;
 - `rule`: `allow` exactly when the decision is `allow`, otherwise the best-fitting label from the list above, copied exactly, never a rule's name. Both directions are checked: `decision` `allow` with `rule` `Data Exfiltration` is rejected, and so is `decision` `deny` with `rule` `allow`;
 - `explanation`: one to three sentences;
-- `confidence`: a number from 0 to 1.
+- `confidence`: a number from 0 to 1;
+- `instead` (optional, only with `deny` or `escalate`): one narrower call that would be allowed in place of this one, written as the tool and its arguments. Omit it when no narrower call would be allowed, and never name a call that reaches the effect you deny.
 ";
 
 /// The system prompt for a model that answers through schema-constrained output.
@@ -333,6 +334,22 @@ pub(crate) fn blocks(
             }
         }
     }
+    if guardian_view && let Some(operation) = &facts.git_operation {
+        let branch = operation
+            .branch
+            .as_deref()
+            .map(|name| format!(" on {}", one_line(name)))
+            .unwrap_or_default();
+        let origin = if operation.started_this_session {
+            "started this session"
+        } else {
+            "in progress since before this session"
+        };
+        text.push_str(&format!(
+            "git_operation: {} in progress{branch} ({origin})\n",
+            operation.kind.as_str()
+        ));
+    }
     if guardian_view && let Some(home) = &facts.home_directory {
         text.push_str(&format!(
             "home_directory: {} (the home directory of the user running the session)\n",
@@ -524,6 +541,7 @@ mod tests {
                 project_environment: None,
                 active_skills: Vec::new(),
                 agent_task: None,
+                git_operation: None,
             },
             hook_context: vec!["lint hook says the tree is dirty".into()],
             prior_denials: vec![DenialRecord {
@@ -1040,6 +1058,41 @@ mod tests {
             "the screen's input must not change"
         );
         assert!(!blocks(&with, false, false).contains("active_skill"));
+    }
+
+    #[test]
+    fn a_git_operation_renders_in_the_guardian_view_only_and_only_when_set() {
+        use crate::guardian::request::{GitOperation, GitOperationKind};
+        let bare = request();
+        let operation = |kind, branch: Option<&str>, started| GitOperation {
+            kind,
+            branch: branch.map(str::to_string),
+            started_this_session: started,
+        };
+        assert!(!user_message(&bare).contains("git_operation"));
+        let mut with = request();
+        for (given, line) in [
+            (
+                operation(GitOperationKind::Rebase, Some("743-fix"), true),
+                "git_operation: rebase in progress on 743-fix (started this session)",
+            ),
+            (
+                operation(GitOperationKind::CherryPick, Some("a\nb"), false),
+                "git_operation: cherry-pick in progress on a?b (in progress since before this session)",
+            ),
+            (
+                operation(GitOperationKind::Merge, None, true),
+                "git_operation: merge in progress (started this session)",
+            ),
+        ] {
+            with.session_facts.git_operation = Some(given);
+            let facts = session_facts_block(&user_message(&with));
+            assert!(facts.contains(line), "{facts}");
+            assert!(!blocks(&with, false, false).contains("git_operation"));
+            assert_eq!(blocks(&bare, false, false), blocks(&with, false, false));
+        }
+        let shaped = Profile::Minimal.shape(&with);
+        assert!(!user_message(&shaped).contains("git_operation"));
     }
 
     #[test]

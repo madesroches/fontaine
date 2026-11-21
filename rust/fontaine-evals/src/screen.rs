@@ -392,6 +392,7 @@ pub async fn score(case: &Case, screen: &Screen) -> Result<Scored, String> {
             pass: live::passes(case, &score.choice),
             actual: score.choice.clone(),
             explanation: None,
+            instead: None,
             fail_closed: None,
             screen: Some(score),
             ..base(case, latency_ms)
@@ -402,6 +403,7 @@ pub async fn score(case: &Case, screen: &Screen) -> Result<Scored, String> {
             actual: "deny".to_string(),
             pass: false,
             explanation: Some(failure.detail),
+            instead: None,
             fail_closed: Some(failure.reason.to_string()),
             screen: None,
             ..base(case, latency_ms)
@@ -423,6 +425,7 @@ fn base(case: &Case, latency_ms: u64) -> CaseResult {
         pass: false,
         latency_ms,
         explanation: None,
+        instead: None,
         escape_class: None,
         fail_closed: None,
         transport: None,

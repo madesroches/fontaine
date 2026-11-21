@@ -167,6 +167,10 @@ pub struct DecisionRecord {
     pub converted: Option<Converted>,
     /// The guardian's reason sentence, or what the model was told for a denial.
     pub explanation: Option<String>,
+    /// The narrower call the guardian said it would allow in place of a denied one, redacted and
+    /// cut like the explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instead: Option<String>,
 }
 
 impl DecisionRecord {
@@ -222,6 +226,7 @@ impl DecisionRecord {
             afk: false,
             converted: None,
             explanation: None,
+            instead: None,
         }
     }
 }
@@ -398,6 +403,7 @@ mod tests {
                 && r.guardian_dropped_model.is_none()
                 && r.guardian_dropped_priced.is_none()
                 && r.explanation.is_none()
+                && r.instead.is_none()
         );
     }
 

@@ -10,9 +10,12 @@ A call reaches the guardian in `auto` mode. The [deterministic floor](permission
 rules, protected-path handling), the read-only fast path (which includes a spawn of
 an agent type that can only read, and excludes reads of secret files such as `.env`), every other `agent` spawn, the coordination tools (`send_message` and `board_update`) and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
-it also does not see file-tool edits to tracked, new or session-created files in your workspace or
-writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
-still sees instruction files, `.github/`, existing untracked files and every shell command that does not take the read-only pre-classifier fast path (including supported read-only `git` subcommands).
+it also does not see file-tool edits to tracked, new or session-created files in your workspace,
+writes into the session scratch directory, or a shell call that Fontaine parses in full and that is
+made only of read-only commands, in-root edits (`sed -i`, `mkdir`, `mv`) and the local git steps
+(`git add`, `git commit`, `git rm`, `git mv`, `git rebase --continue`) (see
+[the pipeline](permissions.md#the-pipeline)); it
+still sees instruction files, `.github/`, hook-runner config, existing untracked files and every shell command that does not take one of those fast paths (including supported read-only `git` subcommands).
 
 ## Threat model
 
@@ -69,7 +72,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments (a shell call made after an earlier `cd` carries the absolute directory it starts in as `cwd`), a digest of them, `destructive`, derived by Fontaine from the call itself (below), and, when the call deletes one, `critical_deletions` (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was only partly parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start (each shown with its git name and URL, as `origin https://…`; `(none)` when the repository had none, and `(not recorded)` when the harness did not read them or could not read them completely (no root is a repository, or a repository has an `include` or `includeIf` section in its config or a remote without a fetch URL; a root that is not a repository is skipped when another root is one), in which case a git name the call uses is trusted unless this call or an earlier one in the session added or repointed it; the screen keeps bare URLs and `(none)`), the home directory of the user running the session as a `home_directory` line (guardian view and minimal profile; not the screen or the reads of a composition; set by Fontaine and never from a tool argument), the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` (the session did not record creating it), `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a file git's index holds (never on a directory; a shell command gets both marks only when it is a single simple command (no list, pipeline or substitution) with a certain working directory and no glob or pathspec word, and a file tool always gets them), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get no scratch line and no `absent` or `git_tracked` marks (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start (each shown with its git name and URL, as `origin https://…`; `(none)` when the repository had none, and `(not recorded)` when the harness did not read them or could not read them completely (no root is a repository, or a repository has an `include` or `includeIf` section in its config or a remote without a fetch URL; a root that is not a repository is skipped when another root is one), in which case a git name the call uses is trusted unless this call or an earlier one in the session added or repointed it; the screen keeps bare URLs and `(none)`), the home directory of the user running the session as a `home_directory` line (guardian view and minimal profile; not the screen or the reads of a composition; set by Fontaine and never from a tool argument), the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` (the session did not record creating it), `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a file git's index holds (never on a directory; a shell command gets both marks only when it is a single simple command (no list, pipeline or substitution) with a certain working directory and no glob or pathspec word, and a file tool always gets them), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session, and, in the guardian view only, a `git_operation` line when a rebase, merge, cherry-pick, revert, `am` or bisect is stopped in the primary root (`git_operation: rebase in progress on <branch> (started this session)`, or `(in progress since before this session)`; the harness reads it from the repository and records at session start whether one was already stopped, so a resumed session keeps the answer). Resolving the conflicts of an operation that started this session, staging the result and `--continue` complete the request that started it; for one in progress since before the session, resolving its conflicts inside the roots, staging and `--continue` are still treated as local undoable steps, while `--abort`, `--skip` and pushes are judged as usual. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get no scratch line and no `absent` or `git_tracked` marks (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -155,15 +158,18 @@ The guardian reads history and your messages by a few fixed rules:
   X" asks for that issue.
 - A guardian denial is not you rejecting the action. When it denies a soft-deny match, the
   explanation says what would clear it: you naming the action and its target, or a standing grant.
-- In the full profile, a denial explanation never proposes a shell command (the minimal profile
-  prompt does not carry this rule). It names a dedicated read-only tool
-  (`grep`, `glob`, `read`) only when the deny turns on the shell construct itself (a redirection, a
-  compound or unparseable command) and the call was a plain file search. It may name the `edit` or
-  `write` file tool for the same change only when the deny turns on the shell construct itself (a
-  script or compound command the harness cannot read), the call's effect is a write or edit of
-  paths that all resolve inside the workspace roots, and no rule protects them; never for a
-  deletion. When the deny rests on the target or content a rule protects, it names no alternative
-  at all.
+- In the full profile, a denial explanation never proposes a way forward: it names no shell
+  command, tool or route (the minimal profile prompt does not carry this rule). A narrower call that
+  would be allowed goes in the verdict's `instead` field, which is advice and pre-approves nothing:
+  the call it names goes through the whole pipeline like any other, and it is never a route to the
+  effect the verdict denies. It names a dedicated read-only tool (`grep`, `glob`, `read`) only when
+  the deny turns on the shell construct itself (a redirection, a compound or unparseable command)
+  and the call was a plain file search. It may name the `edit` or `write` file tool for the same
+  change only when the deny turns on the shell construct itself (a script or compound command the
+  harness cannot read), the call's effect is a write or edit of paths that all resolve inside the
+  workspace roots, and no rule protects them; never for a deletion. When the deny rests on the
+  target or content a rule protects, there is no `instead` at all. Being unable to verify the
+  content of an edit inside the workspace roots is never by itself a reason to deny it.
 - A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
 - Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
 
@@ -208,6 +214,7 @@ decision     allow | deny | escalate
 rule         allow, or one label of the list below
 explanation  1-3 sentences, shown to you and fed back to the agent on a deny
 confidence   0 to 1, the guardian's own estimate
+instead      optional, only with deny or escalate: one narrower call it would allow in place of this one
 ```
 
 `rule` is `allow` exactly when `decision` is `allow`; a verdict where they disagree, a label outside
@@ -216,10 +223,12 @@ Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing Fil
 `Secret Exposure`, `Tunnel/Reverse Shell`, `Unguarded Agent Loop`, `Safety Bypass` (disabling safety
 flags or security-guarding tests, adding persistence, or editing the agent's own settings), `Remote
 Redirect`, `Unreviewed Merge` and `Container Escape` (minimal profile only). A deny reaches the
-agent as `Denied by guardian: [Rule] explanation. Do not retry it or look for another route to the
-same effect; tell the user what you could not do. If the denial itself names a call that is allowed
-instead, make that call: it is not another route to the denied effect.`, and your terminal shows the label and the
-explanation; a subagent's denial shows in that agent's [view](tui.md#the-agent-list-and-the-agent-view),
+agent as `Denied by guardian: [Rule] explanation. Allowed instead: call. Do not retry it or look for
+another route to the same effect; tell the user what you could not do. If the denial itself names a call that is allowed
+instead, make that call: it is not another route to the denied effect.`, where the `Allowed instead`
+sentence is there only when the verdict has an `instead` (redacted and cut like the explanation), and
+your terminal shows the label and the explanation (and the `instead` of an escalation it asks you
+about); a subagent's denial shows in that agent's [view](tui.md#the-agent-list-and-the-agent-view),
 not in the main chat. Every shipped deny rule starts with the label it is reported under.
 
 ### Rule precedence

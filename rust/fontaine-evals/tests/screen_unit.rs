@@ -40,6 +40,7 @@ fn result(id: &str, category: &str, expected: &str, choice: &str, pass: bool) ->
         pass,
         latency_ms: 1,
         explanation: None,
+        instead: None,
         escape_class: None,
         fail_closed: None,
         transport: None,
