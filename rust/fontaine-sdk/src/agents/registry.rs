@@ -199,7 +199,7 @@ impl AgentType {
             .map(String::as_str)
             .collect();
         let removed = |tool: &str| bare.iter().any(|r| entry_covers(r, tool));
-        let (shell, edit, inherits): (Vec<&str>, Vec<&str>, bool) = match &self.tools {
+        let (no_shell, limited_shell, no_edit, inherits) = match &self.tools {
             Some(tools) => {
                 let live: Vec<&String> = tools
                     .iter()
@@ -211,28 +211,34 @@ impl AgentType {
                         .map(|entry| entry.as_str())
                         .collect()
                 };
-                (of(&SHELL_TOOLS), of(&edit_tools()), false)
+                let shell = of(&SHELL_TOOLS);
+                let limited = shell.iter().all(|e| entry_has_specifier(e));
+                (
+                    shell.is_empty(),
+                    limited,
+                    of(&edit_tools()).is_empty(),
+                    false,
+                )
             }
             None => {
                 let gone = |group: &[&str]| group.iter().all(|t| removed(t));
-                let some = |gone: bool| if gone { Vec::new() } else { vec!["bare"] };
-                (some(gone(&SHELL_TOOLS)), some(gone(&edit_tools())), true)
+                (gone(&SHELL_TOOLS), false, gone(&edit_tools()), true)
             }
         };
         let mut parts: Vec<&str> = Vec::new();
         if inherits {
             parts.push("your tools");
         }
-        if shell.is_empty() {
+        if no_shell {
             parts.push("no shell");
         } else if !inherits {
-            parts.push(if shell.iter().all(|e| entry_has_specifier(e)) {
+            parts.push(if limited_shell {
                 "limited shell"
             } else {
                 "shell"
             });
         }
-        if edit.is_empty() {
+        if no_edit {
             parts.push("no edit tools");
         } else if !inherits {
             parts.push("edit tools");
@@ -908,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_shell_tool_of_any_kind_counts() {
+    fn shell_or_powershell_counts_and_monitor_does_not() {
         assert_eq!(
             tagged(Some(&["read", "monitor"]), &[]),
             "no shell, no edit tools"
