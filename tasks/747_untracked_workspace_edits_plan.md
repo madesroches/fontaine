@@ -30,8 +30,18 @@ as it is.
   - `Tracked` → `TargetState::Tracked`;
   - `Untracked` → `Absent` if nothing is there, `Created` if the ledger's `existence` says
     `CreatedThisSession`, else `None`;
-  - `Unknown` (no work tree) → `None`, except with `deep` (`mkdir -p`), where the nearest existing
-    ancestor must be an untracked directory in a work tree.
+  - `Unknown` → `None`, except with `deep` (`mkdir -p`), where the nearest existing ancestor must
+    be an untracked directory in a work tree. `Unknown` lumps together "no repository encloses the
+    root" (`discover` → `Boundary::None`), "git could not be read" (`Boundary::Unknown`: an
+    unparseable config, a repository with no work tree; or `index_or_empty` failing) and "the
+    path cannot be placed in the work tree" (`index_relative` → `None`).
+- **Persistence locations.** The floor's `PROTECTED_DIRS`/`PROTECTED_FILES` and `SECRET_FILES`
+  do not cover files that a shell, service manager or tool runs or trusts later: `.envrc`,
+  `.zshenv`, `.zlogin`, `.bash_login`, `.ssh/`, `.config/systemd/user/`, `.config/autostart/`,
+  `.local/bin/`, `.cargo/config.toml`, `.aws/`, `.docker/`, `.kube/`. Today an untracked one
+  always reaches the guardian, whose Safety Bypass persistence rule (`guardian/rules.rs:59`) covers
+  it. Nothing refuses `$HOME` or a folder holding several repositories as the primary root
+  (`tools/scope.rs`), and `HooksDir` is empty when there is no repository (`core/trust.rs:489`).
 - **File tools.** `unjudged_edit` (`permissions.rs:1787`) returns `Tier::TrackedEdit` when
   `target_state` answers anything, for `edit`/`write`/`notebook_edit` in the primary root.
 - **Shell.** `unjudged_shell_edit` (`permissions.rs:1821`) runs `tools::shell_edit::classify`
@@ -100,14 +110,36 @@ as it is.
 New logic, after the unchanged exclusions (memory root, instruction/CI path, hook-runner config,
 in-root `core.hooksPath` directory):
 
-1. **Secret paths are excluded.** `floor::secret_path` names the path, as written or resolved →
+1. **A root that holds the home directory is excluded.** When the canonical home directory
+   (`dirs::home_dir()`, the source `adjudication.rs` already uses) is the primary root or lies
+   under it (`$HOME`, `/home`, `/`) → `None` for every target. Such a root is not a workspace that
+   is assumed backed up, and every dotfile the floor does not list sits in it. A pure helper
+   `root_holds_home(primary, home)` carries the check so tests do not depend on `$HOME`; no home
+   directory → the check is skipped.
+2. **Secret paths are excluded.** `floor::secret_path` names the path, as written or resolved →
    `None`. This also sends a tracked `.env` to the guardian, which is a tightening.
-2. **Tracked path.** `trust::tracking` says `Tracked` → `Tracked`, before any existence check, so
-   `git rm --cached` of a tracked file already deleted from disk still answers `Tracked` (as today,
-   `tracking` resolves an absent path through its parent).
-3. **Existing path.** If `symlink_metadata(resolved)` succeeds → `Present` (also when
+3. **Persistence and code-execution locations are excluded.** A new
+   `floor::is_persistence_path(rel, fold)`, built like `is_hook_config_path` (path components of
+   the path relative to the primary root, as written and as resolved, compared by name with
+   `same`, no pattern matching), returns true for:
+   - a file named `.envrc`, `.zshenv`, `.zlogin`, `.zlogout`, `.bash_login`, `.bash_logout`,
+     `.xprofile`, `.xinitrc`, `.xsessionrc` or `.pam_environment` at any depth;
+   - anything under a directory named `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`, `.cargo`,
+     `.config`, `.local` or `LaunchAgents` at any depth.
+
+   → `None`. These are files a shell, direnv, a service manager, cargo or a cloud CLI runs or
+   trusts later, which the guardian's Safety Bypass persistence rule judges today. A tracked
+   `.cargo/config.toml` or `.config/nextest.toml` now goes to the guardian too, a tightening.
+4. **Git that cannot be read stays fail-closed.** `trust::tracking` gains a variant,
+   `Tracking::Unreadable`, for `discover` returning `Boundary::Unknown` and for `index_or_empty`
+   failing; `Unknown` keeps "no repository encloses the root" and "the path cannot be placed in
+   the work tree". `Unreadable` → `None`. `tracked_files` is unchanged (`false` for both).
+5. **Tracked path.** `Tracked` → `Tracked`, before any existence check, so `git rm --cached` of a
+   tracked file already deleted from disk still answers `Tracked` (as today, `tracking` resolves
+   an absent path through its parent).
+6. **Existing path.** If `symlink_metadata(resolved)` succeeds → `Present` (also when
    `Tracking::Unknown`, no repository).
-4. **Absent path.** The nearest existing ancestor must be a directory inside the primary root →
+7. **Absent path.** The nearest existing ancestor must be a directory inside the primary root →
    `Absent`, else `None`. This replaces both the `Untracked`-absent arm and the `deep` arm, so
    `deep` disappears; `mkdir -p a/b` and a file tool creating `a/b/f` are judged the same way.
 
@@ -197,7 +229,9 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 
 0. **Baseline scorecard.** Before any prompt change, run the live Haiku eval (see Testing
    Strategy) on the current dataset into a scratch file.
-1. **Target rule** (`core/permissions.rs`):
+1. **Target rule** (`core/permissions.rs`, `core/floor.rs`, `core/trust.rs`):
+   - add `floor::is_persistence_path` with its two name lists, and `root_holds_home`;
+   - add `Tracking::Unreadable` to `trust::tracking` and update the `Tracking` doc comments;
    - rewrite `target_state` as above, dropping `deep` from its signature and its callers
      (`ShellTargets::target`, `unjudged_edit`);
    - replace `TargetState::Created` with `Present`;
@@ -238,7 +272,9 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 
 ## Files to Modify
 
-- `rust/fontaine-sdk/src/core/permissions.rs`, `core/tier.rs`, `core/config.rs`
+- `rust/fontaine-sdk/src/core/permissions.rs`, `core/floor.rs`, `core/trust.rs`, `core/tier.rs`,
+  `core/config.rs`
+- `rust/fontaine-sdk/tests/trust.rs`
 - `rust/fontaine-sdk/src/tools/shell_edit.rs`
 - `rust/fontaine-sdk/src/guardian/rules.rs`, `prompts/guardian/guardian_prompt.md`,
   `src/guardian/snapshots/*.snap`
@@ -263,18 +299,21 @@ The tier name `tracked_edit` and the key `auto_tracked_edits` stay. Their docume
 - 2026-11-21: AFK: the tier name `tracked_edit` and the key `auto_tracked_edits` are kept; only their documented meaning changes.
 - 2026-11-21: AFK: Git Destructive is not narrowed; the issue's guardian change covers `Destroy Pre-existing Files` only.
 - 2026-11-21: AFK: the five in-root attack cases (`attack-overdeny-10`, `-15`, `-33`, `-38`, `-39`) become benign allow cases under new ids, because the policy, not the model, changed; an out-of-root truncation attack case is added in their place, and `attack-destroy-pre-existing-files-06` is moved outside the roots to stay deny.
+- 2026-11-21: AFK: no-repository roots still qualify as the issue asks, but both tiers exclude an enumerated list of persistence and code-execution locations (`.envrc`, the shell login files the floor does not list, and anything under `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`, `.cargo`, `.config`, `.local`, `LaunchAgents`, by path component like `is_hook_config_path`), give nothing to a primary root that is the home directory or holds it, and keep git that cannot be read (`Tracking::Unreadable`, split from no-repository) fail-closed, because dropping the tracked condition would otherwise let those files be planted with no verdict, which the guardian's persistence rule judges today.
 
 ## Documentation
 
 - **`AGENTS.md`**: in the fast-path invariant, "edits (`sed -i`, `mkdir`, `mv`, local git steps)
   to git-tracked, new or session-created files in the primary root" becomes "edits and deletions
   (`sed -i`, `mkdir`, `mv`, `rm` of files, local git steps) of any file in the primary root,
-  tracked by git or not". Secret files join the exclusions.
+  tracked by git or not". Secret files and persistence locations join the exclusions, and a
+  primary root that holds the home directory gets neither tier.
 - **`tasks/fontaine_harness_plan.md`**:
   - **Permissions**, at the end of the subsection: a dated line (#747) that supersedes the
     2026-10-27 (#256) tracked/new/session-created condition and widens the 2026-11-21 (#743)
     `shell_edit` line to in-root deletions. Reason: workspace files are assumed backed up, so
-    tracking makes no difference inside the roots. The line names the secret-path exclusion.
+    tracking makes no difference inside the roots. The line names the secret-path and
+    persistence-location exclusions, the home-root refusal, and that unreadable git fails closed.
   - **Guardian**, at the end of the subsection: a dated line (#747) that supersedes the in-root
     clauses of the 2026-11-14 (#636), 2026-11-15 (user) and 2026-11-17 (#666) lines. Nothing
     inside the roots is `Destroy Pre-existing Files` except `.git` and unclear targets.
@@ -333,6 +372,10 @@ tier and guardian call count):
 - an `edit` in a primary root with no git repository → `tracked_edit`;
 - a `write` of a new file under a not-yet-existing directory → `tracked_edit`;
 - an `edit` of an untracked `.env`, and of a tracked `.env` → guardian;
+- a `write` of `.envrc`, `.ssh/authorized_keys`, `.config/systemd/user/x.service`,
+  `.cargo/config.toml` and `.local/bin/x`, in a root with a repository and in one without →
+  guardian;
+- an `edit` in a root whose git config is unparseable (`Tracking::Unreadable`) → guardian;
 - `AGENTS.md`, `.github/x`, `.pre-commit-config.yaml` and a protected path still go to the
   guardian or the floor;
 - `auto_tracked_edits = false` → guardian.
@@ -364,11 +407,20 @@ tier and guardian call count):
 - `sed -i` and `rm` in a primary root with no repository → `shell_edit`;
 - `rm -r dir` → guardian;
 - `rm .env` → guardian;
+- `rm .envrc` and `sed -i … .ssh/config` → guardian;
 - `rm AGENTS.md` → guardian;
 - `rm .githooks/pre-commit` → guardian;
 - `rm f` under an `Edit(f)` deny rule → guardian, not `shell_edit`;
 - `rm f` from a child with `shell` but not `edit` → guardian;
 - `rm f` in `manual` and `acceptEdits` → unchanged (prompt).
+
+**Unit tests, `core/floor.rs` and `core/permissions.rs`:** `is_persistence_path` accepts each
+listed name (and its case variant when folding) and rejects `src/config.rs`, `local/x` and
+`cargo/x`; `root_holds_home` is true for the home directory and its ancestors and false for a
+directory under it.
+
+**`tests/trust.rs`:** a repository with an unparseable config gives `Tracking::Unreadable`; a
+directory with no repository still gives `Unknown`.
 
 **Guardian unit test, `rules.rs`:** the assertion described in Design.
 
