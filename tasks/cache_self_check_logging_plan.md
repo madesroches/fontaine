@@ -7,7 +7,7 @@
 A session on Claude CLI 2.1.330 produced the "replayed context was not read back from the prompt
 cache" verdict after one prompt, and nothing recorded which request pair fell short or why. This
 plan makes the self-check observable: one debug event per finished request carrying the usage, the
-outcome and, for a skipped pair, the reason; a prefix-divergence record on a shortfall; and extra
+outcome and, for a skipped pair, the reason (with the prefix divergence when the prefix did not extend); and extra
 fields in the persisted verdict, so a verdict can be judged after the fact even when no debug file
 was open.
 
@@ -51,27 +51,35 @@ was one, the gap in seconds, whether the conversation holds a thinking block, an
 tokens only; no message content. A request with no native layout, version, wording or usage logs
 one event with `outcome = no_record` and the missing piece instead of returning silently.
 
-**Prefix divergence.** On `Broken`, the event adds the length of the common prefix of the two
-`prints` vectors and both lengths (the first index where they differ). This separates "the CLI
-rewrote the prefix" from "the prefix matched and the cache missed". It needs no new state:
-`check` already holds both vectors.
+**Prefix divergence.** On `Skip::NotExtended`, the event adds the first index where the two
+`prints` vectors differ and both lengths. This shows how the CLI rewrote the prefix. `Broken`
+needs no such field: it is returned only after `extends` is true, so the prefix always matched.
+It needs no new state: `check` already holds both vectors.
+
+**Record.** `Record` also carries `thinking`, copied from `Sent` in `finished`, because
+`check(prev, now)` builds `Evidence` from `Record`s; `Evidence.thinking` is taken from `now`.
 
 **Thinking blocks.** `Sent` gains a `thinking: bool`, set in `Sent::new` when any frame's content
 holds a `thinking` block (the same frame walk that fills `blocks`). It is logged only; no
 decision uses it. It records the one untested suspect from the issue without acting on it.
 
-**Persisted verdict.** The entry gains optional `prev_read`, `prev_write_1h` and `thinking`, written
-by `mark` from the `Evidence`, which gains those fields. `parse` ignores them like it already
-ignores `read` and `expected`, so older files load unchanged and `TEMPLATE_REVISION` stays. This
-is what makes a verdict diagnosable without a debug file.
+**Persisted verdict.** `Entry` (Copy) gains the three optional fields `prev_read`, `prev_write_1h` and
+`thinking`, written by `mark` from the `Evidence`, which gains those fields. `parse` reads them as
+optional and `persist` writes them when present (it re-parses and rewrites every entry from
+`Entry`, so unread fields would be dropped on the next write). Older files load unchanged and
+`TEMPLATE_REVISION` stays. This is what makes a verdict diagnosable without a debug file.
 
 ## Implementation Steps
 
 1. `context.rs`: `Skip` and `Outcome::Skipped`; widen `CacheUsage` and `CacheUsage::from_result`;
-   `Sent.thinking`; extend `Evidence` with the previous usage, the common-prefix length and the
-   thinking flag; emit the per-request event from `finished`; persist the new optional fields.
+   `Sent.thinking`; extend `Evidence` with the previous usage and the thinking flag (from `now`); add
+   `Record.thinking`, copied from `Sent` in `finished`; log the first differing index and both
+   lengths on `Skip::NotExtended`; emit the per-request event from `finished`; add the three
+   optional fields to `Entry`, read them in `parse` and write them in `persist`.
 2. `context/tests.rs`: the tests below; update the existing `record(...)` and `check` tests for
-   `Outcome::Skipped`.
+   `Outcome::Skipped`; update the `CacheUsage { read, write_1h }` literals (about 10 sites) and
+   `Evidence { .. }` literals (about 3), e.g. by deriving `Default` on `CacheUsage` and using
+   `..Default::default()`.
 3. `docs/claude-subscription.md`: document the debug event fields next to the existing
    `--debug-file` paragraph (~`:197`) and the new fields of `claude-cache-verdicts.json`.
    `docs/configuration.md`: the `claude-cache-verdicts.json` row, if it lists the fields.
@@ -99,6 +107,7 @@ is what makes a verdict diagnosable without a debug file.
 - 2026-11-20: signed thinking blocks are logged, not acted on. The suspect is unconfirmed (it
   did not reproduce headless with `--effort high`), and the data from this change is what decides
   whether `check` should skip such pairs.
+- AFK: prefix divergence data moved from `Broken` to `Skip::NotExtended` because `Broken` implies the prefix matched.
 
 ## Documentation
 
@@ -116,9 +125,10 @@ Unit tests in `context/tests.rs`, no live CLI:
 - `CacheUsage::from_result` reads `input`, `write_total` and `write_5m`, and each defaults to 0.
 - `Sent::new` sets `thinking` for a conversation holding a `thinking` block and not otherwise.
 - The per-request event: capture `tracing` output with a test subscriber and assert the outcome
-  word, the usage fields and, for `Broken`, the common-prefix length; assert no message text
-  appears in it.
-- A persisted verdict round-trips `prev_read`, `prev_write_1h` and `thinking`, and a file
+  word, the usage fields and, for `Skip::NotExtended`, the first differing index and both lengths;
+  assert no message text appears in it.
+- A persisted verdict round-trips `prev_read`, `prev_write_1h` and `thinking`, including a
+  merge of two entries (persisting one entry must not drop the other's fields), and a file
   without them still loads.
 
 ## Open Questions
