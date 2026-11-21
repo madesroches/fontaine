@@ -118,8 +118,13 @@ impl Walk<'_> {
             return false;
         }
         let argv = parts.argv.as_slice();
+        // An extra must never receive model-written stdin (`sqlite3 <<EOF` runs `.shell`).
+        let extras = !parts
+            .redirects
+            .iter()
+            .any(|r| matches!(r, IoRedirect::HereDocument(..)));
         if stage != Stage::Only {
-            return !parts.assigned && self.read_only(argv, stage == Stage::First);
+            return !parts.assigned && self.read_only(argv, extras && stage == Stage::First);
         }
         let name = argv[0].as_str();
         if parts.assigned && name != "git" {
@@ -130,7 +135,7 @@ impl Walk<'_> {
             "mkdir" => self.mkdir(&argv[1..]),
             "mv" => self.mv(&argv[1..]),
             "git" => self.git(argv),
-            _ => self.read_only(argv, true),
+            _ => self.read_only(argv, extras),
         }
     }
 
@@ -1049,6 +1054,22 @@ mod tests {
             ),
             GNU_SED
         );
+    }
+
+    #[test]
+    fn a_user_extra_never_receives_a_heredoc() {
+        let f = fixture();
+        let extras = Preclassifier::new(&["make".to_string(), "sqlite3".to_string()]);
+        let check = |command: &str| {
+            let env = Environment {
+                scope: &f.scope,
+                cwd: None,
+            };
+            classify(command, &env, &extras, &f.stub)
+        };
+        assert!(!check("make <<'EOF'\nx\nEOF"));
+        assert!(!check("sqlite3 data.db <<'EOF'\n.shell touch x\nEOF"));
+        assert!(check("cat > c.txt <<'EOF'\nhello\nEOF"));
     }
 
     #[test]
