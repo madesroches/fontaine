@@ -92,6 +92,7 @@ async fn a_command_and_a_script_put_the_commands_line_where_the_script_asks() {
 }
 
 /// Prints the session's activity state from the payload on stdin.
+#[cfg(target_os = "linux")]
 const ACTIVITY_COMMAND: &str = "[statusline]\ncommand = '''\nsed -n 's/.*\"activity\":{[^}]*\"state\":\"\\([a-z]*\\)\".*/ACT-\\1/p'\n'''\n";
 
 #[cfg(target_os = "linux")]
