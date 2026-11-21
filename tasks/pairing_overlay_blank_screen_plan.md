@@ -6,7 +6,8 @@
 After a device pairs through `/remote-control`, the chat is partly blank: transcript rows were
 committed to scrollback while the tall ticket (QR) or pairing dialog was open, and closing the
 dialog does not rewrite the transcript, so a gap sits above the input. Fix by making the
-"rows were committed under an overlay" recovery apply to every overlay, in one place.
+"rows were committed under an overlay" recovery apply to every one-off dialog (not the per-tool-call
+approval, question and elicitation dialogs), in one place.
 
 Out of scope: the `job_cancel_placeholder` error in the issue is tracked by #717.
 
@@ -19,14 +20,17 @@ Out of scope: the `job_cancel_placeholder` error in the issue is tracked by #717
 - The ticket dialog closes at `app.rs:1581` (`TicketKey::Dismiss`), `ui/remote.rs:513`, and is
   replaced by a pairing prompt; the pairing prompt is cleared at `app.rs:1620`, `ui/remote.rs:493,
   683, 698`. None reprint. Other overlays covered by `App::covered` (approval, questions,
-  elicitations, denied, ...) have the same latent gap.
+  elicitations, denied, ...) have the same latent gap; the per-call ones (approval, questions,
+  elicitations) are left alone, see Design.
 
 ## Design
 Centralise rather than patch each close path (many, and new overlays would regress):
 1. In `draw_frame`, set `committed_under_overlay` whenever rows are released while
-   `app.overlay_open()`. The helper is `self.covered() || self.plugin_prompt.is_some() ||
+   `app.overlay_open()`. The helper is `(self.covered() && !self.approval.is_some() &&
+   self.questions.is_empty() && self.elicitations.is_empty()) || self.plugin_prompt.is_some() ||
    self.setup_composition.is_some()`: `covered()` (app.rs:1518-1543) already includes agents and
-   transcript_view; `plugin_prompt` and `setup_composition` are dialogs drawn by `view::overlay_in`
+   transcript_view; the per-tool-call dialogs (approval, questions, elicitations) are excluded so a
+   non-auto session does not purge and reprint on nearly every close; `plugin_prompt` and `setup_composition` are dialogs drawn by `view::overlay_in`
    (view.rs:476,492) that `covered()` omits, and they count in `view::chrome`. The helper exists so
    the flag and the transition check share one definition of "a dialog covers the live area".
 2. `Screen` remembers `overlay_was_open` from the previous frame. At the top of `draw_frame`,
@@ -39,8 +43,7 @@ Centralise rather than patch each close path (many, and new overlays would regre
    covered the live area".
 
 ## Implementation Steps
-1. `app.rs`: add `pub(crate) fn overlay_open(&self) -> bool` (`covered() || plugin_prompt.is_some()
-   || setup_composition.is_some()`); reword the `committed_under_overlay` doc comment.
+1. `app.rs`: add `pub(crate) fn overlay_open(&self) -> bool` (as defined in Design step 1); reword the `committed_under_overlay` doc comment.
 2. `screen.rs`: add `overlay_was_open: bool` to `Screen`; use `overlay_open` for the flag at
    ~l.499; add the transition check at the start of `draw_frame`.
 3. Tests in `screen.rs` beside the agents-panel ones (~l.2103).
@@ -67,8 +70,9 @@ Centralise rather than patch each close path (many, and new overlays would regre
 ## Trade-offs
 - Per-close-path reprint (the issue's suggestion) touches ~7 sites and misses future overlays; the
   frame-transition check is one site. Cost: one bool on `Screen`, and
-  every dialog close after a commit purges scrollback and reprints the full transcript, the cost
-  the agents-panel and transcript-view closes already pay.
+  closing a one-off dialog after a commit purges scrollback and reprints the full transcript, the
+  cost the agents-panel and transcript-view closes already pay. The per-call dialogs are excluded
+  (they would pay it on nearly every approval), so a gap can still follow one in a long session.
 
 ## Testing Strategy
 Unit tests use the `screen(40,14)`/`everything()` TestBackend pattern (screen.rs:649-662, tests at
@@ -80,6 +84,7 @@ by regression tests):
   between renders (`app.ticket_prompt = None; app.begin_pairing(crate::guardian_prompt::pairing(..))`;
   see app.rs:3523), since ui/remote.rs:503-513 is unreachable from screen tests.
 - A dialog that committed nothing does not set `reprint`.
+- An approval dialog opened over a long transcript and then answered does not set `reprint`.
 - Existing agents-panel and transcript-view tests stay green.
 
 ## Decisions
@@ -88,3 +93,4 @@ by regression tests):
   `covered()` dialogs.
 - 2026-11-21: menus (search, completion, slash) and chrome growth outside dialogs are excluded from
   `overlay_open`: the gap is small (up to ~11 rows) and a purge/reprint on every menu close costs more.
+- AFK: 2026-11-21: `overlay_open` excludes the per-tool-call dialogs (approval, questions, elicitations), like menus: a purge/reprint on nearly every approval close in non-auto modes costs more than the latent gap, which the issue does not report.
