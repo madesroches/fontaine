@@ -11,8 +11,8 @@ requested step", "cannot verify the resolution", "did not name these files". Sin
 come back as #418, #636, #665, #666 and #743, and each was patched by rewording the guardian prompt.
 This plan stops asking the guardian about that class of call. A new deterministic tier, `shell_edit`,
 is the shell counterpart of `tracked_edit`. It allows a shell call that Fontaine can fully parse, as
-long as every command in it is either a read-only command already in the pre-classifier's curated
-set, or an in-root edit or local git step that can be undone from git. Anything the parser cannot
+long as every command in it is either a read-only command in the pre-classifier's curated
+set or a user `allow_extra` entry, or an in-root edit or local git step that can be undone from git. Anything the parser cannot
 fully understand still goes to the guardian, as it does today.
 
 Calls that still reach the guardian get two improvements, folded in from #744:
@@ -223,7 +223,8 @@ directly. It has four methods:
 
 The tier also rejects, leaving the call to the guardian, when any hook's matcher names a file tool
 (`read | ls | grep | edit | write | notebook_edit`, a superset of `hooks_name_file_reads`): those hooks never fire for
-a shell call, so the tier must not skip them.
+a shell call, so the tier must not skip them. PostToolUse hooks on file tools (a formatter on `edit`,
+say) do not run for a shell edit either.
 
 **The restricted `sed` grammar.** It is a small hand-written parser, not a regex. A script is a
 sequence of commands separated by `;` or newlines. Each command is an optional address
@@ -308,7 +309,9 @@ no narrower call would be allowed. Never name a call that reaches the effect thi
 
 - `null` and the empty string become `None` first; only a non-empty `instead` on an `allow` is a
   malformed answer, retried like a mismatched label;
-- it is cut to `adjudication::SUMMARY_CHARS` the way `explanation_of` cuts the explanation.
+- the cut to `adjudication::SUMMARY_CHARS` is not in `from_raw` (the `guardian` module must not import
+  `core`); it happens in `core/permissions.rs`, where `instead` is threaded into the deny text and the
+  audit record, the way its private `explanation_of` cuts the explanation.
 
 **Deny text.** On a guardian deny or escalate-converted-to-deny, the guardian denial sentence formatted in
 `permissions.rs` (around lines 2697/2705) is followed by `Allowed instead: <instead>.` when present,
@@ -478,7 +481,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 
 - **`docs/permissions.md`**: the tier list gains `shell_edit`: what qualifies, that it runs after
   the floor in `auto`/`afk`, and how to switch it off; the guardian decision audit-field sentence
-  (around lines 164-175) gains `instead`.
+  (around lines 164-175) gains `instead`; and post-tool hooks on file tools do not run for shell edits.
 - **`docs/guardian.md`**:
   - in the list of what never reaches the guardian, parsed in-root shell edits and the local git
     steps;
@@ -585,7 +588,8 @@ count):
   - `instead` is optional and its absence parses;
   - `instead` on an `allow` is rejected;
   - an empty `instead` and a `null` one become `None`, including on an `allow`;
-  - an over-long one is cut.
+  - the schema lists `instead` in `properties` but not in `required`.
+- **`permissions.rs`:** an over-long `instead` is cut to `SUMMARY_CHARS`.
 - **`prompt_builder.rs`:**
   - the `git_operation` line renders in the guardian view, in both the "started this session" and
     "since before" forms;
