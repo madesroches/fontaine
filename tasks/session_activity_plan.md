@@ -91,6 +91,17 @@ definition (field names snake_case, `state` as `"active" | "waiting" | "idle"`).
    `pending_notifications`, `queued_prompts` is non-zero.
 3. else `idle`.
 
+**Held deliveries are not pending.** `pending_notifications` counts only notes some surface will
+deliver. Root notes are excluded while `unattended_blocked()` (AFK stopped or breaker-paused: no
+notification turn starts, so e.g. a killed-job note would sit undrained forever), and held subagent
+mail is excluded likewise. The held flag is a `held` source in `Sources` read from the same state
+`unattended_blocked()` reads, and a change of it pokes the tracker. In hosts that do not deliver
+notifications between host messages (headless `-p` long-lived, Claude-compat, SDK `Session`), root
+notes posted after `settle` returns Done are excluded from `active` too, via a per-host
+`delivers_notifications_between_messages` flag on the tracker (TUI `true`; those hosts `false`;
+default `false`). No new notification-turn behavior is added; documented in `docs/hooks.md`. Those
+notes stay in the inbox and are drained by the next host message as today.
+
 Plain `-p` headless (`HumanChannel::Absent`) and AFK never block on a human (asks resolve to deny),
 so they never report `waiting`; Claude-compat and SDK hosts with an approver do, while the host decides. Excluded on purpose: idle wakeable subagents (their turn ended; they are
 woken by mail, and mail counts as pending), `/schedule` tasks and wake-ups (future work, already a
@@ -149,11 +160,17 @@ tokens bump it; each owns an `Arc` of the tracker rather than borrowing, so it c
   covering `review_afk_exits` `:827`, `keep_leftover_turn` `:849/:883` and queued `Command`/`Shell`
   entries), `harness_turn_tail` (`turn.rs:~420`), the goal paths (`ui/goal.rs:~70/:89`) and
   `remote_idle` (`ui/remote.rs:~606`). `queued_prompts` also counts the Claude-compat router's own
-  queued inputs (`claude_compat/router.rs:331-341`, `router.next()` / `inbox.queue`).
-- `wake_for_inbox` (`agents/spawn.rs:691-697`) holds a `TurnScope` (owning `Arc` token) across
-  `take_notifications` → `wake_idle` (`resume_inner` marks the node running) → the
-  `AlreadyRunning`/`Transient` requeue, since the drained notes are otherwise in neither the inbox
-  nor a running agent.
+  queued inputs (`claude_compat/router.rs:331-341`, `inbox.queue`, in the bin crate): the
+  `InputSource` trait (`run.rs:125`) gains `fn queued_count(&self) -> usize { 0 }`, which the router
+  implements; `run_session` (`run.rs:~135`) publishes it into the tracker and pokes the tracker
+  whenever it changes (on receive and on dequeue).
+- `wake_for_inbox` (`agents/spawn.rs:688-697`) is held inside `agents`, which never imports `core`
+  (so no `TurnScope` there): `AgentTree` keeps an in-flight-notes counter that
+  `pending_notifications()` includes. An RAII guard from the tree bumps it before
+  `take_notifications` and drops it only after `wake_idle` (`resume_inner` marks the node running)
+  or, on `AlreadyRunning`/`Transient`, after the requeue, so drained notes are never in neither the
+  inbox, the counter nor a running agent. The counter is read with the inbox in `compute`'s inbox
+  step.
 
 ### Publishing: `ActivityMonitor`
 
@@ -177,14 +194,21 @@ an SDK `Session` drop:
 - **Reason** is derived from the field diff by fixed priority (`waiting_changed`, `turn_started`,
   `turn_ended`, `agent_started`, `agent_ended`, `job_started`, `job_ended`, `notification_queued`,
   `notification_delivered`, `queue_changed`), plus two explicit overrides: `clear`
-  (set at the start of `clear_conversation` and released after `end_jobs`, so `clear_ended`,
-  `settle_retired`, `discard_root_reminders` and `end_jobs` all carry it) and `shutdown`, which teardown computes itself
-  (see the hook's Teardown). Reasons are a closed enum
+  (set before the first mutation of `clear_conversation`, released only after `end_jobs` and the
+  discards, so `clear_ended`, `settle_retired`, `discard_root_reminders` and `end_jobs` all carry
+  it; releasing it forces one recompute and publish even if nothing diffs, so the reason is never
+  lost to dedup and a stale override cannot leak into the next transition). Rewind
+  (`/rewind`) uses the same override under the reason `clear`. `shutdown` is computed by teardown
+  itself (see the hook's Teardown). While an override is set, wakes are recomputed but the
+  override reason replaces the diff reason. Reasons are a closed enum
   with stable wire strings.
 - Hook delivery is **serial and latest-wins**: one in-flight hook run at a time, and while it runs
   only the newest pending snapshot is kept, so a slow hook never reorders or backs up, and the
   final state is always delivered. Intermediate states can be skipped; each delivered payload is
-  complete, so consumers need no history.
+  complete, so consumers need no history. `previous_state` and `reason` are relative to the last
+  *delivered* payload: a skipped snapshot's reason is dropped and the delivered payload carries the
+  reason computed against the last delivered snapshot (a forced override reason such as `clear`
+  survives a skip by being carried onto the next delivery); `seq` still shows the gap.
 - A job that exits between two wakes is still seen: compute reads the registry, not the signal.
 
 ### The hook: `activity_changed`
@@ -240,13 +264,18 @@ not part of this change.
    inboxes of running/idle subagents) and `SessionState::any_waiting()`; `SessionState::activity()`
    accessor; steering queue length source (the root queue only) plus a change poke on every
    `Steering` mutation (`core/steering.rs`: delivery drain, `retract`, `retract_typed`,
-   `drain_remote`, `requeue`, `queue_remote`). Poke the tracker/tree from `take_notifications`, `discard_job_notifications`
+   `drain_remote`, `requeue`, `queue_remote`, `queue` (`:161`)). `Steering` takes an optional handle to the tracker's `Notify` (from `state.activity()` at
+   `core/agent.rs:372`; `Default` leaves it unset for tests; the Claude-compat router shares the
+   `Arc` via attach). Poke the tracker/tree from `take_notifications`, `discard_job_notifications`
    and `discard_root_reminders` (`agents/tree.rs`), and from job registration/promotion
    (`tools/jobs.rs` ~`:846-886`, `:956`), which notify nothing today. Take `state.wait_on_human(agent)`
    around `HumanQuestions::ask`, and around the inner `elicit`/`elicit_url` calls in `HookElicitor`
    (`core/agent/mcp.rs:520-620`, after hooks run) with `wait_on_human(ROOT_AGENT)`; both guards are
-   taken only when a human can answer, using the `no_human()`/AFK check the permission sites use
-   (`core/permissions.rs:2272-2275`, `:2862-2873`).
+   taken only when a human can answer: a human channel is present and `!state.afk_on()` (the
+   permission sites' `no_human()` at `core/permissions.rs:1685-1693` is private and unreachable from
+   these types). So `HumanChannel` (`setup.human_channel`, `core/agent.rs:152`) is passed into
+   `HumanQuestions` and `HookElicitor` where they are built (`core/questions.rs`,
+   `core/agent/mcp.rs`, `core/agent/setup.rs`, `core/agent.rs`).
 3. **Turn accounting wiring.** Take a `TurnScope` inside `run_turn`; hold an outer one around the
    whole turn loop in the TUI (`fontaine-tui/src/ui/turn.rs`, covering `turn_ended` at `:1592`) and
    headless (`run_one`/`continue_on_stop`, covering `turn_ended` at `run.rs:331` and `:486`). In
@@ -259,7 +288,7 @@ not part of this change.
    scopes for TUI goal evaluation (`fontaine-tui/src/ui/goal.rs`), headless goal evaluation
    (`run.rs:984`), `/compact` and `/btw` (`ui/commands/context.rs`) and `!` shell lines
    (`ui/commands/workspace.rs`). Claude-compat runs through `run_session` and has no turn site. Hold the retract →
-   next-turn scopes and the `wake_for_inbox` scope (see Turn accounting), and count the
+   next-turn scopes and the `wake_for_inbox` in-flight-notes guard (see Turn accounting), and count the
    Claude-compat router's queued inputs in `queued_prompts`. Add the headless input-error
    `kill_all` and move the TUI session-switch stop ahead of `fire_session_end`. Make
    the `AgentRuntime::notification_prompt` wrapper take/return a `TurnClaim`; update its callers, including
@@ -267,7 +296,7 @@ not part of this change.
 4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`) through
    `Handle::try_current()`, with an abort-on-drop handle on `AgentRuntime` and a `quiesce` that teardown
    calls, `AgentRuntime::activity()` (`watch::Receiver`), the `clear` reason override
-   (`clear_conversation`, from its start through `end_jobs`) and the teardown transition in `fire_session_end` (`core/agent/hooks.rs`,
+   (`clear_conversation` and rewind, set before the first mutation, released after `end_jobs` and the discards with a forced recompute/publish) and the teardown transition in `fire_session_end` (`core/agent/hooks.rs`,
    `core/agent/shutdown.rs`). `begin_final_shutdown`'s `abort_all`/`force_stop_all` wake the monitor,
    so it is quiesced before the transition.
 5. **Hook plumbing.** `HookEvent::ActivityChanged` in every `match` and `ALL` (now 19),
@@ -292,8 +321,8 @@ not part of this change.
 - New: `rust/fontaine-sdk/src/core/activity.rs`; `core.rs` (module)
 - `rust/fontaine-sdk/src/tools/jobs.rs` (`subscribe`, registration/promotion pokes), `agents/tree.rs`
   (queries, drain pokes)
-- `rust/fontaine-sdk/src/core/questions.rs`, `core/agent/mcp.rs` (`wait_on_human`),
-  `core/steering.rs` (change pokes)
+- `rust/fontaine-sdk/src/core/questions.rs`, `core/agent/mcp.rs` (`wait_on_human`; `HumanChannel` plumbing via `core/agent/setup.rs`, `core/agent.rs`),
+  `core/steering.rs` (change pokes, tracker `Notify` handle)
 - `rust/fontaine-sdk/src/core/gate.rs` (tracker on `SessionState`), `core/turn.rs` (`TurnScope`),
   `core/agent.rs` (`notification_prompt`, `activity()`, `clear_conversation`),
   `core/agent/shutdown.rs`, `core/agent/build.rs` / `setup.rs` (monitor), `core/agent/hooks.rs`,
@@ -304,7 +333,7 @@ not part of this change.
 - `rust/fontaine-sdk/src/core/statusline/mod.rs`, `rust/fontaine-sdk/src/run.rs`
 - `rust/fontaine-tui/src/ui/{mod,turn,goal}.rs`, `ui/commands/{context,workspace}.rs`,
   `fontaine-tui/src/lib.rs`, `fontaine-tui/src/ui/remote.rs`
-- `rust/fontaine/src/claude_compat/mod.rs` (final transition), `claude_compat/router.rs`, `rust/fontaine/src/headless.rs`
+- `rust/fontaine/src/claude_compat/mod.rs` (final transition), `claude_compat/router.rs` (`queued_count`), `rust/fontaine/src/headless.rs`
 - `docs/hooks.md`, `docs/configuration.md`, `docs/tui.md`, `docs/tools.md`, `docs/plugins.md`;
   `CHANGELOG.md`;
   `tasks/fontaine_harness_plan.md` (Decisions)
@@ -328,6 +357,14 @@ not part of this change.
   the final snapshot is idle.
 - 2026-11-21: the awaited `shutdown` transition of a non-final `fire_session_end` is capped at 1.5 s
   (`session_end`'s default timeout); final shutdown slices it from the remaining deadline.
+- 2026-11-21: AFK: the subagent wake window is closed inside `agents` by an in-flight-notes counter on `AgentTree` (RAII around take → wake → requeue) included in `pending_notifications()`, not a core `TurnScope`, so `agents` never imports `core`.
+- 2026-11-21: AFK: the `clear` override is set before the first mutation of `clear_conversation`, released after `end_jobs` and the discards with a forced recompute/publish even if nothing diffs; rewind uses reason `clear`.
+- 2026-11-21: AFK: notes no surface will deliver are not `pending_notifications` (root and subagent notes while `unattended_blocked()`; root notes between host messages in headless/Claude-compat/SDK `Session` via a per-host `delivers_notifications_between_messages` flag, TUI true, others false); no new notification-turn behavior is added.
+- 2026-11-21: AFK: under latest-wins delivery `previous_state` and `reason` are relative to the last delivered payload; a skipped snapshot's reason is dropped and `seq` shows the gap.
+- 2026-11-21: AFK: Claude-compat queued inputs reach the compute through `InputSource::queued_count()` (default 0), published into the tracker by `run_session` and poked on change.
+- 2026-11-21: AFK: turn-scope coverage is proven by mechanism tests (scope/claim nesting, claim upgrade, retract read-order) plus a debug-build `debug_assert` tripwire for turns, compaction and model requests run with no scope held, not per-site never-idle sampling.
+- 2026-11-21: AFK: `Steering` (including `queue`) pokes the tracker through an optional `Notify` handle from `state.activity()`, unset under `Default`; the router shares it via attach.
+- 2026-11-21: AFK: `HumanChannel` is passed into `HumanQuestions` and `HookElicitor`; their `wait_on_human` guards require a human channel and `!state.afk_on()`.
 
 ## Documentation
 
@@ -360,17 +397,25 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   report; plus a `TurnClaim` test that drains the inbox, awaits, then starts the turn, sampling at
   every step).
 - Wake sources: a wake arriving between register and compute is not lost; `take_notifications`,
-  `discard_job_notifications`, `discard_root_reminders`, and job registration/promotion each
-  republish.
-- Per-site turn scopes: each of the TUI turn loop, headless `run_one`/`continue_on_stop`, headless
-  `handle_message` and the goal loop (`stop_before_call`/`compact_if_needed`, `goal_prompt`), TUI
-  prompt submission (`user_prompt_submit` hook, skill expansion, MCP prompt fetch), `scheduled_turn`,
-  TUI and headless goal evaluation, `/compact`, `/btw` and `!` shell lines holds a scope across the
-  whole site (sampled never idle mid-site). A `TurnClaim` is never taken by an empty inbox poll or by
-  the subagent `join_news` path. The retract → next-turn sites (`converse_loop`, `harness_turn_tail`,
-  goal paths, `remote_idle`) each hold a scope across the retract (sampled never idle), the router's
-  queued inputs count in `queued_prompts`, and a read-order test pins the `wake_for_inbox`
-  take → wake → requeue handoff (never `running_agents == 0` with an empty inbox).
+  `discard_job_notifications`, `discard_root_reminders`, job registration/promotion and every `Steering` mutation
+  (including `queue`) each republish.
+- Turn-scope mechanism (no cheap seam exists to sample a real site mid-flight, and a latest-wins
+  hook cannot prove never-idle): `TurnScope`/`TurnClaim` nesting, claim upgrade into a scope in
+  `run_turn`, the retract read-order (scope taken before `steering.retract()`), and a debug-build
+  tripwire (`debug_assert`) that fires when `run_turn`, compaction or a model request runs with no
+  scope held. Site tests are kept only where a real seam exists (headless `run_one`/`handle_message`,
+  TUI turn loop). A `TurnClaim` is never taken by an empty inbox poll or by the subagent
+  `join_news` path. The router's queued inputs count in `queued_prompts` (via
+  `InputSource::queued_count`), and an `agents`-level test pins the `wake_for_inbox`
+  take → wake → requeue handoff through the in-flight-notes counter (`pending_notifications() > 0`
+  at every step, including the `Transient` requeue; never `running_agents == 0` with an empty inbox
+  and a zero counter).
+- Held deliveries and hosts: AFK stop that kills a background job → state `idle` once the job ends
+  (its note is held, not pending); resuming AFK delivers it and the state is `active` until its
+  turn ends; a root note posted between host messages in headless/Claude-compat/SDK `Session` leaves
+  the state `idle`, and in the TUI keeps it `active` until delivered; `clear` and rewind carry reason
+  `clear` even when nothing diffs; under a slow hook a skipped snapshot's reason is dropped and
+  `previous_state` is the last delivered one.
 - Shutdown/exit: the final transition is delivered once (continuing the monitor's `seq`, never
   deduped away, never concurrent with a monitor delivery, including a job or agent ending
   concurrently during teardown), inside `fire_session_end`, after job stop
