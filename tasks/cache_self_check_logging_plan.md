@@ -33,8 +33,8 @@ was open.
 ## Design
 
 **Outcome with a reason.** Replace `Outcome::NoVerdict` by `Outcome::Skipped(Skip)` with
-`enum Skip { FirstRequest, NotExtended, MergedTail, UnreplayableTail, SettingsChanged,
-ColdPrevious, GapTooLong, TooManyAdded }`, `Display`ed as a stable snake_case word. `check` returns the
+`enum Skip { FirstRequest, NotExtended { first_diff, prev_len, now_len }, MergedTail,
+UnreplayableTail, SettingsChanged, ColdPrevious, GapTooLong, TooManyAdded }`, `Display`ed as a stable snake_case word (the `NotExtended` data is not part of the word; it is logged as separate fields). `check` returns the
 first reason that applies, in the order it tests today. `finished`'s control flow does not
 change: `Skipped` behaves exactly as `NoVerdict` did, including leaving a strike untouched.
 
@@ -43,7 +43,7 @@ change: `Skipped` behaves exactly as `NoVerdict` did, including leaving a strike
 check keeps comparing only `read` and `write_1h`; the extra fields are for the log only, so the
 decision logic and `READ_SLACK` are untouched.
 
-**Per-request event.** At the end of `finished`'s decision, one `tracing::debug!` (module target,
+**Per-request event.** `finished` computes its outcome once and funnels every exit (healthy after `clear_strike`, skipped, non-striking broken, `Mark::Known`, the strike and the verdict) through one emit point, so the strike/verdict state known only after `strike`/`mark` is available to it. That emit is one `tracing::debug!` (module target,
 so no export backend sees it) with: session id, CLI version, the wording's first 8 hex digits,
 layout, frame count, added blocks, the request's usage, the previous request's usage when there
 was one, the gap in seconds, whether the conversation holds a thinking block, and the outcome
@@ -51,10 +51,11 @@ was one, the gap in seconds, whether the conversation holds a thinking block, an
 tokens only; no message content. A request with no native layout, version, wording or usage logs
 one event with `outcome = no_record` and the missing piece instead of returning silently.
 
-**Prefix divergence.** On `Skip::NotExtended`, the event adds the first index where the two
-`prints` vectors differ and both lengths. This shows how the CLI rewrote the prefix. `Broken`
+**Prefix divergence.** `Skip::NotExtended` carries `{ first_diff, prev_len, now_len }`, computed in `check`
+where both `prints` vectors are in scope, and the event adds them: the first index where the two
+vectors differ and both lengths. This shows how the CLI rewrote the prefix. `Broken`
 needs no such field: it is returned only after `extends` is true, so the prefix always matched.
-It needs no new state: `check` already holds both vectors.
+The data rides on the `Skip` variant because `check` returns only the `Outcome`.
 
 **Record.** `Record` also carries `thinking`, copied from `Sent` in `finished`, because
 `check(prev, now)` builds `Evidence` from `Record`s; `Evidence.thinking` is taken from `now`.
@@ -82,7 +83,6 @@ optional and `persist` writes them when present (it re-parses and rewrites every
    `..Default::default()`.
 3. `docs/claude-subscription.md`: document the debug event fields next to the existing
    `--debug-file` paragraph (~`:197`) and the new fields of `claude-cache-verdicts.json`.
-   `docs/configuration.md`: the `claude-cache-verdicts.json` row, if it lists the fields.
 4. `CHANGELOG.md`: an `Added` entry under `[Unreleased]`.
 
 ## Files to Modify
@@ -90,7 +90,6 @@ optional and `persist` writes them when present (it re-parses and rewrites every
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/context.rs`
 - `rust/fontaine-sdk/src/core/providers/claude_subscription/context/tests.rs`
 - `docs/claude-subscription.md`
-- `docs/configuration.md`
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -111,8 +110,7 @@ optional and `persist` writes them when present (it re-parses and rewrites every
 
 ## Documentation
 
-`docs/claude-subscription.md` (debug event, verdict fields) and `docs/configuration.md` if it lists
-the verdict file's fields.
+`docs/claude-subscription.md` (debug event, verdict fields).
 
 ## Testing Strategy
 
