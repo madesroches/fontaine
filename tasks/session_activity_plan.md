@@ -139,8 +139,16 @@ tokens bump it; each owns an `Arc` of the tracker rather than borrowing, so it c
   `keep_unsettled_turn` into `run_one` (`run.rs:566,:605,:797-803`); the TUI keeps it as a local
   through `self.turn`.
 
-`app.running` is not read or written by any of this; interruption, queueing, scheduling, spinner
-and turn timing are unchanged.
+- Retract → next-turn path: a `TurnScope` is taken BEFORE `steering.retract()` and held until the
+  next turn's own scope exists, in the TUI `converse_loop` (`fontaine-tui/src/ui/turn.rs:~992`,
+  covering `review_afk_exits` `:827`, `keep_leftover_turn` `:849/:883` and queued `Command`/`Shell`
+  entries), `harness_turn_tail` (`turn.rs:~420`), the goal paths (`ui/goal.rs:~70/:89`) and
+  `remote_idle` (`ui/remote.rs:~606`). `queued_prompts` also counts the Claude-compat router's own
+  queued inputs (`claude_compat/router.rs:331-341`, `router.next()` / `inbox.queue`).
+- `wake_for_inbox` (`agents/spawn.rs:691-697`) holds a `TurnScope` (owning `Arc` token) across
+  `take_notifications` → `wake_idle` (`resume_inner` marks the node running) → the
+  `AlreadyRunning`/`Transient` requeue, since the drained notes are otherwise in neither the inbox
+  nor a running agent.
 
 ### Publishing: `ActivityMonitor`
 
@@ -177,8 +185,10 @@ an SDK `Session` drop:
 New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `ActivityChanged`).
 
 - Observational like `notification`: handlers `command` and `http` only (a `prompt` hook would
-  force model spend), run in the background through a `LifecycleHooks::activity_changed` method
-  modelled on `notify`, never block, decide nothing (output ignored, added to
+  force model spend), run through a `pub(crate) async fn LifecycleHooks::activity_changed` like
+  `session_end` (`core/user_hooks.rs:1699`), awaited by the monitor (which does its own spawning,
+  one in flight) and by teardown; it takes `notify`'s handler set and discarded output, decides
+  nothing (output ignored, added to
   `discards_system_message`). It loads from project scope (`ProjectScope::Loads`): it cannot
   loosen anything and forces no model calls.
 - Matcher: the new aggregate `state` (`active`, `waiting`, `idle`), so a scheduler can hook only
@@ -186,8 +196,6 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
 - Payload: the common fields (`session_id`, `cwd`, …) plus `hook_event_name`, `reason`,
   `previous_state`, and `activity` (the shared object above, including `seq` and its own
   `session_id`).
-- Fired from the monitor, not from a turn path, so `stop`, `subagent_stop` and `teammate_idle`
-  ordering and timing are untouched.
 - Teardown: the final transition is delivered once, inside `AgentRuntime::fire_session_end`
   (`core/agent/hooks.rs:44`), which every exit uses: it recomputes after jobs are stopped and awaits
   one `activity_changed` (reason `shutdown`) before `session_end`, because a fire-and-forget task
@@ -198,12 +206,19 @@ New `HookEvent::ActivityChanged` (config key `activity_changed`, wire name `Acti
   deadline (`finish_final_shutdown`, `shutdown.rs:38-55`). Jobs are already force-stopped in
   `begin_final_shutdown`, so only awaiting `wait_stopped` remains before the transition;
   `finish_final_shutdown` (`core/agent/shutdown.rs:44-52`), which runs `session_end` in a
-  `tokio::join!` beside it, awaits the job stop first. The other exits already stop jobs before
+  `tokio::join!` beside it, awaits the job stop first, but only for its own fixed slice of the
+  remaining deadline: `wait_stopped` (`tools/jobs.rs:1153-1163`) loops until no job runs or the
+  whole deadline passes, so if jobs have not stopped by the slice the transition is computed and
+  delivered anyway and `session_end` keeps its share (`core/agent/shutdown.rs:45-53`). Final
+  shutdown needs no agent stop (`abort_all` sets nodes Killed synchronously). The other exits already stop jobs before
   `fire_session_end`: headless (`terminate_all` at `run.rs:1121/1205/1240`, then
   `fire_session_end("other")` at `fontaine/src/headless.rs:291`), Claude-compat
   (`claude_compat/mod.rs:362`) and the embedded `Session` (`session.rs:777`). The TUI session switch
-  (`fontaine-tui/src/lib.rs:727-732`, `session_end("resume")`) is reordered to stop jobs before
-  calling it.
+  (`fontaine-tui/src/lib.rs:726-730`, `session_end("resume")`) is reordered to stop agents
+  (`kill_all` + `settled`) and jobs before calling it, so the final `shutdown` snapshot is not
+  active or `running_agents > 0`. The headless input-error exit (`run.rs:1121-1123`) does
+  `terminate_all` but no `kill_all` before `session_end` fires (`headless.rs:291`,
+  `claude_compat/mod.rs:362`, `session.rs:777`); it gets the same agent stop.
 
 ### The status line
 
@@ -239,7 +254,10 @@ not part of this change.
    consumed at `ui/mod.rs:903-906`). Add
    scopes for TUI goal evaluation (`fontaine-tui/src/ui/goal.rs`), headless goal evaluation
    (`run.rs:984`), `/compact` and `/btw` (`ui/commands/context.rs`) and `!` shell lines
-   (`ui/commands/workspace.rs`). Claude-compat runs through `run_session` and has no turn site. Make
+   (`ui/commands/workspace.rs`). Claude-compat runs through `run_session` and has no turn site. Hold the retract →
+   next-turn scopes and the `wake_for_inbox` scope (see Turn accounting), and count the
+   Claude-compat router's queued inputs in `queued_prompts`. Add the headless input-error
+   `kill_all` and move the TUI session-switch stop ahead of `fire_session_end`. Make
    the `AgentRuntime::notification_prompt` wrapper take/return a `TurnClaim`; update its callers, including
    `fontaine-sdk/tests/core_scanner.rs` and `tests/core_lsp.rs`.
 4. **`ActivityMonitor`** spawned from runtime assembly (`core/agent/build.rs`/`setup.rs`) through
@@ -295,6 +313,9 @@ not part of this change.
 - 2026-11-21: `activity_changed` loads from project scope (cannot loosen anything, forces no model calls).
 - 2026-11-21: hook delivery is serial and latest-wins; each payload is the complete snapshot.
 - 2026-11-21: `activity_changed` is registrable from plugins and SDK `initialize.hooks`.
+- 2026-11-21: `session_end` now fires after agents and jobs are stopped on the TUI session switch
+  and the headless input-error exit (it fired before the stop at `fontaine-tui/src/lib.rs:726`), so
+  the final snapshot is idle.
 
 ## Documentation
 
@@ -334,10 +355,15 @@ All deterministic, no live APIs. Unit tests in `core/activity.rs` and integratio
   prompt submission (`user_prompt_submit` hook, skill expansion, MCP prompt fetch), `scheduled_turn`,
   TUI and headless goal evaluation, `/compact`, `/btw` and `!` shell lines holds a scope across the
   whole site (sampled never idle mid-site). A `TurnClaim` is never taken by an empty inbox poll or by
-  the subagent `join_news` path.
+  the subagent `join_news` path. The retract → next-turn sites (`converse_loop`, `harness_turn_tail`,
+  goal paths, `remote_idle`) each hold a scope across the retract (sampled never idle), the router's
+  queued inputs count in `queued_prompts`, and a read-order test pins the `wake_for_inbox`
+  take → wake → requeue handoff (never `running_agents == 0` with an empty inbox).
 - Shutdown/exit: the final transition is delivered once, inside `fire_session_end`, after job stop
   and before `session_end` at shutdown, headless, Claude-compat, embedded `Session` and TUI session
-  switch; a slow `activity_changed` hook cannot starve `session_end`.
+  switch; a slow `activity_changed` hook cannot starve `session_end`, and a job that never finishes does
+  not either (the pre-transition `wait_stopped` is bounded by its own slice); the session-switch and
+  headless input-error final snapshots show no running agents.
 - Monitor lifetime: built without a tokio runtime it does not panic; it does not fire after
   `session_end`, and does not outlive a dropped runtime.
 - Cancellation paths: model `job_cancel` (no note posted), panel `kill_by_user`, natural exit with
