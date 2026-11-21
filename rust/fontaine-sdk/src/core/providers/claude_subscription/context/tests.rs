@@ -1178,6 +1178,15 @@ fn a_thinking_block_in_the_conversation_is_noted() {
     ]))
     .frames;
     assert!(sent("think", (2, 9, 170), &with).thinking);
+    let redacted = translated(json!([
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": [
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "text", "text": "ok"}]},
+        {"role": "user", "content": "next"},
+    ]))
+    .frames;
+    assert!(sent("think", (2, 9, 170), &redacted).thinking);
     assert!(!sent("think", (2, 9, 170), &conversation(3)).thinking);
 }
 

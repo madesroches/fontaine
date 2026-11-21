@@ -413,9 +413,12 @@ impl Sent {
             frame.value["message"]["content"]
                 .as_array()
                 .is_some_and(|blocks| {
-                    blocks
-                        .iter()
-                        .any(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
+                    blocks.iter().any(|block| {
+                        matches!(
+                            block.get("type").and_then(Value::as_str),
+                            Some("thinking" | "redacted_thinking")
+                        )
+                    })
                 })
         });
         Sent {

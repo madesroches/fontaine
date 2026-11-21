@@ -202,7 +202,7 @@ With `--debug-file`, every finished request of the native layout also writes one
 `wording` (first 8 hex digits), `layout`, `frames`, `added` (blocks added since the previous
 request), `usage` and `previous_usage` (`read`, `input`, `write`, `write_1h`, `write_5m` tokens;
 `write` is the total cache write, so a write in the 5-minute bucket is visible), `gap_secs`,
-`thinking` (whether the conversation holds a thinking block) and `outcome`: `healthy`, `broken` or
+`thinking` (whether the conversation holds a thinking or redacted-thinking block) and `outcome`: `healthy`, `broken` or
 `skipped:<reason>`. The reasons are `first_request`, `not_extended`, `merged_tail`,
 `unreplayable_tail`, `settings_changed`, `cold_previous`, `gap_too_long` and `too_many_added`; for
 `not_extended` the event adds `first_diff` (the first frame whose fingerprint differs), `prev_frames`
@@ -267,7 +267,7 @@ shows one warning in the session naming the version, the first 8 hex digits of t
 SHA-256 and the numbers it judged on (read X of expected Y after Z s); `cache-bench` measures the
 effect. The verdict is kept in `claude-cache-verdicts.json` in the data dir (readable by the current user
 only), so a restart keeps the fallback. Each entry records `read` and `expected`, and the previous
-request's `prev_read` and `prev_write_1h` and whether the conversation held a `thinking` block, so a
+request's `prev_read` and `prev_write_1h` and whether the conversation held a thinking or redacted-thinking block, so a
 verdict can be judged afterwards without a debug file; an older file without those fields loads
 unchanged. It expires after 7 days, when the version is measured
 again, and is retired earlier when the CLI's reminder wording changes or a Fontaine update changes
