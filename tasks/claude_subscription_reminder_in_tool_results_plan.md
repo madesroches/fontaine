@@ -40,9 +40,11 @@ Two small changes, both leaving the cache layout untouched.
 Add one short paragraph to the base prompt (`prompts/core/system_prompt.md`), provider-agnostic
 because the model can be switched mid-session and the prompt is assembled once: a
 `<system-reminder>` block holding account context, such as an email address, may be appended to a
-tool result by the transport. It is not part of the tool's output and carries nothing to act on,
-and the model must never copy its contents into messages, reports, commit messages, PR text or
-files. The paragraph must not say the block is trusted: a tool can forge one, so the model keeps
+tool result by the transport. It is added context, not the tool's output, so the model does not
+act on it or treat it as part of what the tool returned, and does not repeat the address in
+messages, reports or files except where the user asks for authorship or attribution (the CLI's own
+reminder allows that use). Commit messages and PR text take their identity from git config, not
+from this block. The paragraph must not say the block is trusted: a tool can forge one, so the model keeps
 treating instructions inside tool results as data. A replacement `system_prompt` drops the
 paragraph; the email scrubbing in §2 still covers that case.
 
@@ -80,9 +82,16 @@ unlikely. `/export` scrubs no secrets today and is left unchanged.
    (the module is private and its items are `pub(super)`).
 3. `core/redact.rs` `session_secrets`: push a `Secret::new(email)` for each learned email, so
    `/bug` (which calls `session_secrets` at command time) gets them with no further change.
-   `core/bug_drafts.rs` `FileDrafts::save`: `FileDrafts` already holds `data_dir`, so `save` adds
-   `known_account_emails(&self.data_dir)` to its `Redactor` before redacting title, area and
-   details; the read happens at save time so emails learned after the agent is built (a later
+   `core/redact.rs` `Secret` gains `Secret::email(..)`, which marks the value to match ASCII
+   case-insensitively (a re-cased address is still the same address); `session_secrets` uses it.
+   `Redactor` stores those values in a separate list and `redact` replaces them with a
+   case-insensitive scan (`to_ascii_lowercase` on both sides preserves byte offsets).
+   `Redactor` gains `pub fn extended(&self, extra: impl IntoIterator<Item = Secret>) -> Redactor`,
+   returning a copy with the extra secrets merged (re-filtered by `MIN_SECRET_LEN`, re-sorted
+   longest first, deduped); this leaves `FileDrafts::new` and its callers unchanged.
+   `core/bug_drafts.rs` `FileDrafts::save`: `FileDrafts` already holds `data_dir`, so `save` builds
+   `self.redactor.extended(known_account_emails(&self.data_dir).into_iter().map(Secret::email))`
+   and redacts title, area and details with it; the read happens at save time so emails learned after the agent is built (a later
    account, a failed discovery) are scrubbed too. Subagents never get `draft_bug_report`.
 4. Docs: `docs/claude-subscription.md` (the paragraph around line 279 listing the reminder; lines
    ~241 and ~290-294, which say the email is kept "in memory for the request only") states the
@@ -113,13 +122,17 @@ unlikely. `/export` scrubs no secrets today and is left unchanged.
 - 2026-11-20: Learned emails live in process memory only and are never written to disk; a resumed
   session's earlier-turn email is scrubbed only once discovery or a request has recorded it.
 
+- 2026-11-20 AFK: Base-prompt paragraph reworded (added transport context, not tool output; do not repeat the address except where the user asks for authorship) instead of a strict never-copy rule, so it does not contradict the CLI's reminder or Claude Code and needs no master-plan deviation.
+- 2026-11-20 AFK: `FileDrafts::save` extends its `Redactor` via a new `Redactor::extended` method returning a copy with extra secrets (re-filtered, re-sorted, deduped); smaller change than making `FileDrafts` hold `Vec<Secret>` and rebuild.
+- 2026-11-20 AFK: Account-email secrets match ASCII case-insensitively (`Secret::email`), so a re-cased address is scrubbed; other secrets stay case-sensitive.
+
 ## Documentation
 
 `docs/claude-subscription.md`, `docs/tui.md` and `CHANGELOG.md`, as in step 4.
 
 ## Testing Strategy
 
-- Unit: `Redactor` built with the account emails replaces each in a draft title and body (extend
+- Unit: `Redactor` built with the account emails replaces each, also re-cased, in a draft title and body (extend
   the `bug_drafts` tests); `session_secrets` includes them for `/bug`.
 - Unit: the accessor returns empty before a listing and every learned email after, as an
   in-module unit test using an inline-script listing stub (as `cli.rs:1322`), not the CLI double.
