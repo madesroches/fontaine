@@ -27,8 +27,7 @@ points the CLI's own undocumented raw-body capture at a private directory (the i
   `completion`, `guardian_completion` and `completion_for_agent` share it), each request with its own
   derived `translated.session_id`. `connect` is also reached from `client_for` in `models.rs` for
   login checks.
-- `preserve_order` is enabled for `serde_json` in `rust/Cargo.toml`; `sha2` is already a
-  `fontaine-sdk` dependency.
+- `preserve_order` is enabled for `serde_json` in `rust/Cargo.toml`.
 - `owner_only::create_new` / `create_dir` (`core/owner_only.rs`) create 0600 / 0700 entries with
   `O_EXCL` semantics; `Scratch` already uses them for per-launch files.
 - `Cli::new` is built in `Provider::connect` (`mod.rs`) from `ConnectContext`, which carries the
@@ -39,7 +38,7 @@ points the CLI's own undocumented raw-body capture at a private directory (the i
 
 ### Switch
 
-A user-level environment variable `FONTAINE_CLAUDE_CAPTURE`: unset/empty/`0` is off, `1` (or `full`)
+A user-level environment variable `FONTAINE_CLAUDE_CAPTURE`: unset/empty/`0` is off; any other unrecognised value is also off and emits one `Warn` naming the accepted values (unset, empty, `0`, `1`, `full`, `delta`); `1` (or `full`)
 records the full post-`apply` frame list of every request, `delta` records only the new
 message-level frames (pre-`apply`; it does not show cache-marker or reminder placement). It is read from `ctx.env` in `connect` only. There
 is no config key at any scope, so project scope cannot enable it (the project-scope loader never
@@ -50,8 +49,7 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 
 - `Capture` (held as `Option<Arc<Capture>>` on `Cli`; `None` when off, so nothing is created).
 - On the first request launch (lazily, never in `connect`: `connect` is also reached for login
-  checks): `Capture::ensure_created()` runs when `launch`/`launch_with` is called with the request
-  flag, so the stem and `.bodies/` dir exist before the CLI spawns. It creates `<data_dir>/claude-capture/` with
+  checks): `Capture::ensure_created()` runs from `Cli::launch_request`, so the stem and `.bodies/` dir exist before the CLI spawns. It creates `<data_dir>/claude-capture/` with
   `owner_only::create_dir` tolerating `AlreadyExists` (verifying it is a real directory, not a
   symlink, via `symlink_metadata`), create the file `<fontaine-session-id>-<short random token>.jsonl` with
   `owner_only::create_new` (`O_EXCL`, 0600; no symlink following since it is a fresh create), and
@@ -64,8 +62,7 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
   the connection. A `Mutex` serialises appends; the capture keeps the previous-hash baseline and the
   request index per `translated.session_id` (a map inside `Capture`) and puts that id in each
   record. The baseline advances when a request is recorded (in `prepare`, before the replay), even if
-  the request is later cut or fails. The switch is read from the host's env and is never forwarded to the CLI child
-  environment, so the child CLI never sees it.
+  the request is later cut or fails.
 - No export: the module never touches telemetry, the ledger or remote events; records go only to
   the file. A write failure is reported once through `Warn` and capture stops for that file
   (never fails the request).
@@ -74,10 +71,8 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 
 - `request`: `{kind:"request", session (the request's `translated.session_id`), index, at (unix ms),
   mode, hashes:[hex per frame], diverged_at: null | n, frames:[{i, frame}]}`.
-  `hashes` are computed by capture.rs itself: a sha256 prefix (hex) of
-  `frame.value["message"].to_string()` per pre-`apply` frame, via `Capture::prints(&frames)` called
-  where `context::fingerprints` is called (it returns `u64` `DefaultHasher` values, so it is not
-  reused). `hashes` and `diverged_at` appear in every record in both modes. They are
+  `hashes` are the pre-`apply` `prints` (`context::fingerprints`, `u64`) that `prepare` already
+  computes, written as hex. `hashes` and `diverged_at` appear in every record in both modes. They are
   layout-neutral because `apply` moves the cache marker/reminder between requests; divergence and
   delta use them.
   In full mode (default) `frames` holds all post-`apply` frames exactly as sent, so
@@ -93,8 +88,8 @@ pins). `--debug-file` / `FONTAINE_LOG` never enable it.
 - Frames are stored as parsed JSON values via `serde_json` (`preserve_order` gives byte-stable
   replay). An empty thinking text with a
   signature serialises as `""` and survives unchanged.
-- The capture hook points: `prepare` calls `Capture::prints(&frames)` pre-`apply` (in delta mode
-  the caller also keeps the pre-`apply` frames), then, post-`apply` and before writing,
+- The capture hook points: `prepare` keeps the pre-`apply` `prints` (and, in delta mode, the
+  pre-`apply` frames), then, post-`apply` and before writing,
   `Capture::record_request(session, prints, pre_frames_if_delta, &post_frames_including_query)`
   with the full frame list including the popped query frame; and `stream` on `Event::Complete`, where the result `line`
   is already in hand and is parsed there.
@@ -105,11 +100,12 @@ When the switch is on, `Cli::environment` adds `OTEL_LOG_RAW_API_BODIES=file:<di
 is `<data_dir>/claude-capture/<file-stem>.bodies/`, created 0700 via
 `owner_only::create_dir` by `ensure_created()` (at the same lazy point as the file); the
 request-launch path passes the resolved `.bodies` dir into `Cli::environment`. Absence of output is non-fatal (verified manually, see Manual
-Verification). The mechanism is a separate `Cli::launch_request(scratch, args)` (calls `launch_with`
-internally with a request flag), called by `transport.rs` `prepare` (~line 218) instead of `launch`;
-`launch`/`launch_with` keep their signatures, so discovery, probe and reminder launches never get the
-variable. `command`/`environment` take the optional bodies dir via an internal options value, read
-from the `Cli`'s `Capture`.
+Verification). The mechanism is a separate `Cli::launch_request(scratch, args)`: it calls
+`ensure_created()`, builds the options value (the `.bodies` dir) and calls a private shared
+`launch_inner(scratch, args, stdin, loopback, options)`; `transport.rs` `prepare` calls it instead of
+`launch`. `launch`/`launch_with` delegate to `launch_inner` with default options and keep their
+signatures and callers, so discovery, probe and reminder launches never get the variable.
+`command`/`environment` take the options value.
 
 ### Reassemble and diff helper
 
@@ -126,17 +122,17 @@ and `index`.
 
 ## Implementation Steps
 
-1. `capture.rs`: `Capture`, switch parsing, `ensure_created` (lazy directory/file/`.bodies`), warning, record writing,
+1. `capture.rs`: `Capture`, switch parsing (unrecognised value: off plus one `Warn`), `ensure_created` (lazy directory/file/`.bodies`), warning, record writing,
    per-session baselines, full/delta/divergence logic, `reassemble`, `diff`.
 2. `cli.rs`: hold `Option<Arc<Capture>>`, attached by a builder/setter on `Cli` (not a new
-   `Cli::new` argument); add `Cli::launch_request(scratch, args)` (calls `launch_with` with a request
-   flag, which calls `Capture::ensure_created()`); `command`/`environment` take the optional
-   `.bodies` dir via an internal options value from the `Cli`'s `Capture` (adds the raw-bodies
-   variable); `launch`/`launch_with` signatures and the `cli.rs` test caller are unchanged;
+   `Cli::new` argument); add `Cli::launch_request(scratch, args)` (calls `Capture::ensure_created()`,
+   builds the options value with the `.bodies` dir, calls private `launch_inner`); `command`/
+   `environment` take the options value (adds the raw-bodies variable); `launch`/`launch_with`
+   delegate to `launch_inner` with default options, their signatures and the `cli.rs` test caller are unchanged;
    `transport.rs` `prepare` is the one `launch_request` caller.
-3. `mod.rs` `connect`: compute `session` first, read the switch from `ctx.env`, build the capture
+3. `mod.rs` `connect`: compute `session` first, read the switch from `ctx.env` (warning on an unrecognised value), build the capture
    and attach it to the `Cli`.
-4. `transport.rs`: call `prints` pre-`apply` and record the request in `prepare` post-`apply`
+4. `transport.rs`: pass the existing pre-`apply` `prints` and record the request in `prepare` post-`apply`
    (launching via `Cli::launch_request`); add the
    capture handle and request index to `Running`; record the result in `stream` at
    `Event::Complete`.
@@ -163,6 +159,12 @@ and `index`.
   message-level), because `apply` rewrites earlier frames so deltas cannot reassemble what was sent.
 - 2026-11-20: AFK: the CLI raw-body supplement is kept (the issue requires it), non-fatal and
   verified manually.
+- 2026-11-20: AFK: the request launch is `Cli::launch_request(scratch, args)` (calls `ensure_created()`,
+  builds the options value with the `.bodies` dir, calls a private shared `launch_inner`); `launch` and
+  `launch_with` delegate with default options, so their signatures and callers are unchanged, because
+  that keeps discovery, probe and reminder launches free of the variable without a request flag.
+- 2026-11-20: AFK: an unrecognised `FONTAINE_CLAUDE_CAPTURE` value is off with one `Warn` naming the
+  accepted values, because a typo should neither silently capture nor silently do nothing.
 
 ## Documentation
 
@@ -175,13 +177,15 @@ and `index`.
 
 Unit tests in `capture/tests.rs` (no live CLI):
 - Off by default: no file or directory is created when the variable is unset.
+- An unrecognised switch value (e.g. `yes`) is off, creates nothing and emits exactly one `Warn`
+  naming the accepted values; unset, empty, `0`, `1`, `full` and `delta` emit none.
 - Owner-only: file is 0600 and directories 0700 (Unix); the warning is raised through a recording
   `Warn`; `O_EXCL` refuses an existing file.
 - Project scope cannot enable it: a project `[env]` / config carrying the variable leaves the
   capture off.
 - A scripted conversation of three requests: default (full) mode reassembles to exactly the frames
   sent, including a moved cache marker and an inserted reminder; `delta` mode reassembles the
-  messages; the hash list matches; the cache marker moving between consecutive requests does not
+  messages; the recorded hashes equal the hex of the pre-`apply` `prints`; the cache marker moving between consecutive requests does not
   report divergence; an edited history produces `diverged_at` with the right index.
 - Two conversations (different `translated.session_id`) through one `Capture` keep separate
   baselines and indices; the baseline advances when a request is recorded, even if it is later cut
@@ -196,7 +200,7 @@ Unit tests in `capture/tests.rs` (no live CLI):
   reassemble.
 - `diff` reports the divergence point first, then the first differing frame.
 - The child environment gets `OTEL_LOG_RAW_API_BODIES` only when on and only for request
-  launches (not discovery, probe or reminder), and never the Fontaine switch.
+  launches (not discovery, probe or reminder).
 - A transport test with the existing fake CLI double shows the request and result records appear.
 
 ## Manual Verification
