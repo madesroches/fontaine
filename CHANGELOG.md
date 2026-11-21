@@ -12,7 +12,7 @@ All notable changes are recorded here. The format follows
   every deferred tool's definition is sent once, marked `defer_loading`, and `tool_search` answers
   with `tool_reference` blocks, so loading a tool no longer restarts the prompt cache and the
   references persist across a resume. `[mcp] native_tool_search = false` keeps the client-side
-  route; Claude 3, Opus 4/4.1 and Sonnet 4 models use it automatically, and a host that rejects the
+  route, which Claude 3, Opus 4/4.1 and Sonnet 4 models use automatically; a host that rejects the
   fields is warned about once and retried without them for the session. `tool_search` is in context
   editing's default `exclude_tools`.
 - `claude-subscription` learns the CLI's context reminder from the CLI itself (#726): once per
