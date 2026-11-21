@@ -780,6 +780,8 @@ models it also serves, and is accepted and ignored for the others. Sending it is
 deployment that does not honour it leaves the model thinking, and the guardian's 1024-token output
 budget can then go entirely to reasoning — the call answers nothing and fails closed as `error`
 with `finish_reason=Length`, which no retry fixes, so the model is not usable as a guardian there.
+An `openrouter` account sends `{"reasoning": {"enabled": false}}` on the guardian's and the
+scanner's calls when `thinking_off = true`; it is off by default there.
 On an `openai-compatible` or `kimi` account, a model that thinks by default cannot be the guardian:
 every call is denied as `GuardianUnavailable`. Pick a model without default thinking.
 

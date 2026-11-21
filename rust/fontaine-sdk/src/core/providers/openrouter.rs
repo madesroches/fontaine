@@ -7,6 +7,7 @@ use rig_core::operation::Completion;
 use rig_core::providers::openai::wire::{OPENROUTER, OpenAiWire};
 use rig_core::providers::openai::{OpenAI as Client, OpenAIConfig, Route};
 use rig_core::{DynModel, Model};
+use serde_json::{Value, json};
 
 use super::cache_wire::CacheWire;
 use super::reasoning_parts::ReasoningPartsWire;
@@ -43,6 +44,10 @@ impl Provider for OpenRouter {
         true
     }
 
+    fn accepts_thinking_off(&self) -> bool {
+        true
+    }
+
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
         // Chat only: the marker rewrite lives on that wire, and every upstream speaks it.
         let mut config = OpenAIConfig::with_key(&OPENROUTER, ctx.api_key().unwrap_or_default())
@@ -54,6 +59,7 @@ impl Provider for OpenRouter {
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
             caching: PromptCaching::of(ctx.account),
             warn: ctx.warn.clone(),
+            thinking_off: ctx.account.thinking_off.unwrap_or(false),
         }))
     }
 }
@@ -62,6 +68,15 @@ struct Connected {
     client: Client,
     caching: PromptCaching,
     warn: Warn,
+    thinking_off: bool,
+}
+
+/// Opt-in: OpenRouter routes to upstreams that cannot all disable reasoning, so unset means off.
+/// The `reasoning` object is gateway-normalized, so one value serves every model.
+fn thinking_off(account: Option<bool>) -> Option<Value> {
+    account
+        .unwrap_or(false)
+        .then(|| json!({"reasoning": {"enabled": false}}))
 }
 
 impl Connected {
@@ -96,6 +111,10 @@ impl AccountClient for Connected {
         self.model(model, CacheScope::StaticPrefix)
     }
 
+    fn thinking_off(&self, _model: &str) -> Option<Value> {
+        thinking_off(Some(self.thinking_off))
+    }
+
     fn catalog_vendor(&self) -> Option<ProviderId> {
         Some(vendor("openrouter"))
     }
@@ -106,5 +125,18 @@ impl AccountClient for Connected {
             Ok(list.data.into_iter().map(|m| m.id).collect())
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_off_is_sent_only_when_the_account_sets_true() {
+        let off = Some(json!({"reasoning": {"enabled": false}}));
+        assert_eq!(thinking_off(Some(true)), off);
+        assert_eq!(thinking_off(Some(false)), None);
+        assert_eq!(thinking_off(None), None);
     }
 }
