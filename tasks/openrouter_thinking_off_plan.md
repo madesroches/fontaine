@@ -47,8 +47,11 @@ set `thinking_off = true`, which adds OpenRouter's reasoning-disabled parameter 
    `thinking_off` and a non-accepting kind (`ollama`) still rejects it (rename the test to say
    "belongs to databricks and openrouter").
 3. `rust/fontaine-sdk/tests/account_session.rs`: using `openrouter_session` (line 428), add a test
-   that with `thinking_off = true` the guardian's chat request body carries `reasoning.enabled ==
-   false`, and that without the key the body has no `reasoning` key.
+   that with `thinking_off = true` the guardian handle's `thinking_off` equals
+   `{"reasoning": {"enabled": false}}`; send `caching_request().additional_params(handle.thinking_off.clone())`
+   (the handle's completion never injects it; the guardian call sites do) and assert the body's
+   `reasoning.enabled == false`. Without the key, assert `handle.thinking_off.is_none()` and that the
+   body has no `reasoning` key.
 4. Docs and changelog (below).
 
 ## Files to Modify
