@@ -16,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::OnceCell;
 
+use super::capture::Capture;
 use super::context::Verdicts;
 use super::protocol::{Event, Failure, Reader};
 use super::reminder::Reminders;
@@ -298,6 +299,14 @@ pub struct Cli {
     warn: Warn,
     verdicts: Arc<Verdicts>,
     reminders: Arc<Reminders>,
+    capture: Option<Arc<Capture>>,
+}
+
+/// What only a request launch adds to the child's environment.
+#[derive(Default)]
+pub(super) struct LaunchOptions {
+    /// Where the CLI is asked to write its own raw API bodies.
+    raw_bodies: Option<PathBuf>,
 }
 
 impl Cli {
@@ -321,7 +330,17 @@ impl Cli {
             warn,
             verdicts,
             reminders: Reminders::shared(data_dir),
+            capture: None,
         }
+    }
+
+    pub(super) fn with_capture(mut self, capture: Option<Arc<Capture>>) -> Self {
+        self.capture = capture;
+        self
+    }
+
+    pub(super) fn traffic_capture(&self) -> Option<&Arc<Capture>> {
+        self.capture.as_ref()
     }
 
     pub(super) fn reminders(&self) -> &Arc<Reminders> {
@@ -540,7 +559,11 @@ impl Cli {
 
     /// The environment a launch starts from, rebuilt: nothing is inherited that is not named
     /// here.
-    fn environment(&self, loopback: Option<&str>) -> Vec<(OsString, OsString)> {
+    fn environment(
+        &self,
+        loopback: Option<&str>,
+        options: &LaunchOptions,
+    ) -> Vec<(OsString, OsString)> {
         let mut vars: Vec<(OsString, OsString)> = Vec::new();
         for name in PASSTHROUGH_ENV {
             // A loopback request must not be routed through an outbound proxy.
@@ -572,15 +595,26 @@ impl Cli {
         if let Some(url) = loopback {
             vars.push((OsString::from("ANTHROPIC_BASE_URL"), OsString::from(url)));
         }
+        if let Some(dir) = &options.raw_bodies {
+            let mut value = OsString::from("file:");
+            value.push(dir);
+            vars.push((OsString::from("OTEL_LOG_RAW_API_BODIES"), value));
+        }
         vars
     }
 
-    fn command(&self, args: Vec<OsString>, cwd: &Path, loopback: Option<&str>) -> Command {
+    fn command(
+        &self,
+        args: Vec<OsString>,
+        cwd: &Path,
+        loopback: Option<&str>,
+        options: &LaunchOptions,
+    ) -> Command {
         let mut command = Command::new(&self.program);
         command
             .args(args)
             .env_clear()
-            .envs(self.environment(loopback))
+            .envs(self.environment(loopback, options))
             .current_dir(cwd)
             .kill_on_drop(true);
         #[cfg(unix)]
@@ -609,7 +643,24 @@ impl Cli {
         args: Vec<OsString>,
         stdin: bool,
     ) -> Result<CliChild, ClaudeError> {
-        self.launch_with(scratch, args, stdin, None)
+        self.launch_inner(scratch, args, stdin, None, &LaunchOptions::default())
+    }
+
+    /// `launch` for a request's own process: when the capture is on, it also points the CLI's raw
+    /// body capture at the capture's private directory. A capture that cannot be set up leaves
+    /// the launch as `launch` makes it.
+    pub(super) fn launch_request(
+        &self,
+        scratch: Scratch,
+        args: Vec<OsString>,
+    ) -> Result<CliChild, ClaudeError> {
+        let options = LaunchOptions {
+            raw_bodies: self
+                .capture
+                .as_ref()
+                .and_then(|capture| capture.ensure_created()),
+        };
+        self.launch_inner(scratch, args, true, None, &options)
     }
 
     /// `launch` for the reminder probe: `loopback` is the base URL its one request goes to, and
@@ -621,8 +672,19 @@ impl Cli {
         stdin: bool,
         loopback: Option<&str>,
     ) -> Result<CliChild, ClaudeError> {
+        self.launch_inner(scratch, args, stdin, loopback, &LaunchOptions::default())
+    }
+
+    fn launch_inner(
+        &self,
+        scratch: Scratch,
+        args: Vec<OsString>,
+        stdin: bool,
+        loopback: Option<&str>,
+        options: &LaunchOptions,
+    ) -> Result<CliChild, ClaudeError> {
         self.refuse_instruction_files()?;
-        let mut command = self.command(args, &self.workdir, loopback);
+        let mut command = self.command(args, &self.workdir, loopback, options);
         command
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -1392,13 +1454,13 @@ mod tests {
         let cli = cli_over(env);
         let has = |vars: &[(OsString, OsString)], name: &str| vars.iter().any(|(n, _)| n == name);
 
-        let request = cli.environment(None);
+        let request = cli.environment(None, &LaunchOptions::default());
         assert!(!has(&request, "ANTHROPIC_BASE_URL"));
         for name in proxies {
             assert!(has(&request, name), "{name}");
         }
 
-        let probe = cli.environment(Some("http://127.0.0.1:1/nonce"));
+        let probe = cli.environment(Some("http://127.0.0.1:1/nonce"), &LaunchOptions::default());
         for name in proxies {
             assert!(!has(&probe, name), "{name}");
         }
@@ -1408,6 +1470,25 @@ mod tests {
             .find(|(n, _)| n == "ANTHROPIC_BASE_URL")
             .unwrap();
         assert_eq!(base.1, "http://127.0.0.1:1/nonce");
+    }
+
+    #[test]
+    fn only_request_options_add_the_raw_body_variable() {
+        let cli = cli_over(Arc::new(|_: &str| None));
+        let value = |options: &LaunchOptions| {
+            cli.environment(None, options)
+                .into_iter()
+                .find(|(n, _)| n == "OTEL_LOG_RAW_API_BODIES")
+                .map(|(_, v)| v)
+        };
+        assert_eq!(value(&LaunchOptions::default()), None);
+        let options = LaunchOptions {
+            raw_bodies: Some(PathBuf::from("/tmp/data/claude-capture/x.bodies")),
+        };
+        assert_eq!(
+            value(&options),
+            Some(OsString::from("file:/tmp/data/claude-capture/x.bodies"))
+        );
     }
 
     #[test]
