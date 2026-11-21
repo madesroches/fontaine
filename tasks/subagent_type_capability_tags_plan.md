@@ -26,12 +26,12 @@ Specifier `disallowed` entries never count:
 
 - A bare `disallowed` entry removes every declared entry whose `entry_tool` it covers (same matching
   as `toolset`), so `tools: ["shell(git *)"]` + `disallowed: ["shell"]` is `no shell`.
-- Shell (`shell`, `powershell` or `monitor` entry, bare or with specifier; `monitor` runs shell
-  commands, see `is_shell_class`): none → `no shell` (all three must be gone, since bare
+- Shell (`shell` or `powershell` entry, bare or with specifier; `monitor` is root-only, so a
+  subagent never holds it and it is not counted): none → `no shell` (both must be gone, since bare
   `disallowed: ["shell"]` only removes `powershell` when the parent lacks POSIX shell); every shell
   entry has a specifier → `limited shell`; any bare entry → `shell`.
 - File edits (`edit`, `write`, `notebook_edit`): all gone → `no edit tools`; else `edit tools`.
-- `tools: None` (inherits): `no shell` needs `shell`, `powershell` and `monitor` all in bare `disallowed`. Tag is `your tools`, with each suffix (`no shell`, `no edit tools`) added independently per the same
+- `tools: None` (inherits): `no shell` needs `shell` and `powershell` both in bare `disallowed`. Tag is `your tools`, with each suffix (`no shell`, `no edit tools`) added independently per the same
   classification: `your tools, no shell`, `your tools, no edit tools`, `your tools, no shell, no edit tools`.
 
 Tag form: `no shell, no edit tools`, `limited shell, no edit tools`,
@@ -76,5 +76,5 @@ computed facts; descriptions carry routing advice.
 Unit tests in `registry.rs`: `describe()` for the builtins names `no shell` on `explore`,
 `limited shell` on `reviewer`, `shell, edit tools` on `worker`, `your tools` on `fork`; a user type
 with `tools: None` and `disallowed: ["shell","powershell"]` shows `your tools, no shell`; with
-`disallowed: ["shell"]` alone, or only `shell` + `powershell`, it does not show `no shell` (`monitor` remains); a type listing `monitor` is not `no shell`; `tools: ["shell(git *)"]` + `disallowed: ["shell"]` is `no shell`; `["shell","powershell","monitor","edit","write","notebook_edit"]`
+`disallowed: ["shell"]` alone, it does not show `no shell`; a type declaring only `monitor` is `no shell`; `tools: ["shell(git *)"]` + `disallowed: ["shell"]` is `no shell`; `["shell","powershell","edit","write","notebook_edit"]`
 shows `your tools, no shell, no edit tools`; a type listing `powershell` counts as shell.

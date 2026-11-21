@@ -177,14 +177,21 @@ fn entry_covers(entry_tool: &str, tool: &str) -> bool {
         .is_some_and(|t| t.starts_with("__"))
 }
 
-const SHELL_TOOLS: [&str; 3] = ["shell", "powershell", "monitor"];
-const EDIT_TOOLS: [&str; 3] = ["edit", "write", "notebook_edit"];
+// `monitor` is root-only, so a subagent never holds it and it does not count here.
+const SHELL_TOOLS: [&str; 2] = ["shell", "powershell"];
+
+fn edit_tools() -> Vec<&'static str> {
+    use crate::tools::descriptor::{Destructive, find, names};
+    names()
+        .filter(|n| find(n).is_some_and(|d| matches!(d.destructive, Destructive::FileWrite)))
+        .collect()
+}
 
 impl AgentType {
     /// The capability tag the `agent` tool's listing shows, from the declared tools minus the bare
     /// `disallowed` entries. It never looks at a parent, so on a narrower parent the child may
     /// hold less than the tag says.
-    pub fn capabilities(&self) -> String {
+    fn capabilities(&self) -> String {
         let bare: Vec<&str> = self
             .disallowed
             .iter()
@@ -204,12 +211,12 @@ impl AgentType {
                         .map(|entry| entry.as_str())
                         .collect()
                 };
-                (of(&SHELL_TOOLS), of(&EDIT_TOOLS), false)
+                (of(&SHELL_TOOLS), of(&edit_tools()), false)
             }
             None => {
                 let gone = |group: &[&str]| group.iter().all(|t| removed(t));
                 let some = |gone: bool| if gone { Vec::new() } else { vec!["bare"] };
-                (some(gone(&SHELL_TOOLS)), some(gone(&EDIT_TOOLS)), true)
+                (some(gone(&SHELL_TOOLS)), some(gone(&edit_tools())), true)
             }
         };
         let mut parts: Vec<&str> = Vec::new();
@@ -882,26 +889,15 @@ mod tests {
     #[test]
     fn an_inheriting_type_is_no_shell_only_when_every_shell_tool_is_disallowed() {
         assert_eq!(
-            tagged(None, &["shell", "powershell", "monitor"]),
+            tagged(None, &["shell", "powershell"]),
             "your tools, no shell"
         );
-        assert_eq!(tagged(None, &["shell", "powershell"]), "your tools");
         assert_eq!(tagged(None, &["shell"]), "your tools");
-        assert_eq!(
-            tagged(None, &["shell(git *)", "powershell", "monitor"]),
-            "your tools"
-        );
+        assert_eq!(tagged(None, &["shell(git *)", "powershell"]), "your tools");
         assert_eq!(
             tagged(
                 None,
-                &[
-                    "shell",
-                    "powershell",
-                    "monitor",
-                    "edit",
-                    "write",
-                    "notebook_edit"
-                ]
+                &["shell", "powershell", "edit", "write", "notebook_edit"]
             ),
             "your tools, no shell, no edit tools"
         );
@@ -915,7 +911,7 @@ mod tests {
     fn a_declared_shell_tool_of_any_kind_counts() {
         assert_eq!(
             tagged(Some(&["read", "monitor"]), &[]),
-            "shell, no edit tools"
+            "no shell, no edit tools"
         );
         assert_eq!(
             tagged(Some(&["read", "powershell"]), &[]),
@@ -923,7 +919,7 @@ mod tests {
         );
         assert_eq!(
             tagged(Some(&["shell(git *)", "monitor"]), &[]),
-            "shell, no edit tools"
+            "limited shell, no edit tools"
         );
         assert_eq!(
             tagged(Some(&["shell(git *)"]), &["shell"]),
