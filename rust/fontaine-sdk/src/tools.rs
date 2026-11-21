@@ -30,6 +30,7 @@ pub mod schedule;
 pub mod scope;
 pub mod search;
 pub mod shell_cwd;
+pub mod shell_edit;
 pub mod skill;
 pub mod tls;
 pub mod todo;

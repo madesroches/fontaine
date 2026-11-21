@@ -918,14 +918,15 @@ impl AgentRuntime {
         let roots = self.roots();
         let scanned = self.indexed_roots();
         let (data_dir, primary) = (self.setup.data_dir.clone(), self.primary_root());
-        let (index, git_remotes, git_remote_names, stored) =
+        let (index, git_remotes, git_remote_names, stored, git_operation) =
             tokio::task::spawn_blocking(move || {
                 let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
                 let remotes = git_remotes_of(&scanned);
                 let names = git_remote_names_of(&scanned);
                 // File I/O only: setup is an explicit command, never a step of session start.
                 let stored = project_env::load(&data_dir, &primary);
-                (index, remotes, names, stored)
+                let operation = trust::operation_in_progress(&primary).map(|(kind, _)| kind);
+                (index, remotes, names, stored, operation)
             })
             .await
             .unwrap_or_default();
@@ -973,6 +974,9 @@ impl AgentRuntime {
             self.append(Record::FileIndex {
                 paths: index.paths,
                 truncated: index.truncated,
+            });
+            self.append(Record::GitOperationAtStart {
+                operation: git_operation,
             });
         } else {
             // A process that died mid-turn left its journal; the turn belongs before the next.

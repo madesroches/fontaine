@@ -212,6 +212,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_trust("permissions.additional_directories", TIGHTEN),
     Rule::if_project_local("permissions.auto_tracked_edits", is_false, AUTO_EDITS),
     Rule::if_project_local("permissions.auto_scratch_writes", is_false, AUTO_EDITS),
+    Rule::if_project_local("permissions.auto_shell_edits", is_false, AUTO_EDITS),
     Rule::any("hooks.pre_tool_use"),
     Rule::any("hooks.post_tool_use"),
     Rule::any("hooks.post_tool_use_failure"),
@@ -559,6 +560,11 @@ mod tests {
             "permissions.auto_scratch_writes",
             "[permissions]\nauto_scratch_writes = false\n",
             Some("[permissions]\nauto_scratch_writes = true\n"),
+        ),
+        (
+            "permissions.auto_shell_edits",
+            "[permissions]\nauto_shell_edits = false\n",
+            Some("[permissions]\nauto_shell_edits = true\n"),
         ),
         (
             "hooks.pre_tool_use",

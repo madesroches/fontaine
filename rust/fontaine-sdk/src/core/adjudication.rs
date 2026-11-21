@@ -5,8 +5,8 @@
 use crate::agents::registry::AgentTypes;
 use crate::guardian::{
     ACTIONS_TAKEN, AGENT_TASK_CHARS, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord,
-    PreExistence, RECENT_USER_MESSAGES, ScreenIntent, SessionFacts, TASK_INTENT_CHARS,
-    ToolCallSummary, TouchedPath, leading_chars, task_intent,
+    GitOperation, PreExistence, RECENT_USER_MESSAGES, ScreenIntent, SessionFacts,
+    TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, leading_chars, task_intent,
 };
 use crate::tools::descriptor::{self, Destructive};
 use crate::tools::gate::ROOT_AGENT;
@@ -251,7 +251,25 @@ fn facts(
             .map(crate::core::project_env::to_facts),
         active_skills: Vec::new(),
         agent_task: None,
+        git_operation: git_operation(view, scope.primary()),
     }
+}
+
+/// The multi-step git operation stopped in `primary` now, and whether it began after the session
+/// did. A fact, not a decision: when the repository cannot be read there is simply none.
+fn git_operation(view: &LedgerView, primary: &std::path::Path) -> Option<GitOperation> {
+    let (kind, branch) = trust::operation_in_progress(primary)?;
+    let started_this_session = match view.git_operation_at_start {
+        // An older ledger never recorded the start, so nothing is known about it.
+        None => false,
+        Some(None) => true,
+        Some(Some(at_start)) => at_start != kind,
+    };
+    Some(GitOperation {
+        kind,
+        branch,
+        started_this_session,
+    })
 }
 
 /// `caller` and every agent above it below the root: the agents whose own view's messages are

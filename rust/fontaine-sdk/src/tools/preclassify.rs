@@ -984,16 +984,48 @@ impl Preclassifier {
     /// command is not read-only.
     pub fn read_paths(&self, command: &str, env: &Environment<'_>) -> Option<Vec<String>> {
         let analysis = analyze(command);
-        let argv = analysis.simple.as_ref()?;
+        self.read_only_argv(analysis.simple.as_ref()?, env)
+    }
+
+    /// [`read_paths`](Self::read_paths) for one already-parsed simple command, so a caller that
+    /// walks a larger program applies the same table.
+    pub(crate) fn read_only_argv(
+        &self,
+        argv: &[String],
+        env: &Environment<'_>,
+    ) -> Option<Vec<String>> {
+        self.read_only_argv_with(argv, env, true)
+    }
+
+    /// Like [`read_only_argv`](Self::read_only_argv) but without the user's `allow_extra`
+    /// entries: for a pipeline stage that receives live stdin, which the extras were never
+    /// vetted for.
+    pub(crate) fn curated_read_only_argv(
+        &self,
+        argv: &[String],
+        env: &Environment<'_>,
+    ) -> Option<Vec<String>> {
+        self.read_only_argv_with(argv, env, false)
+    }
+
+    fn read_only_argv_with(
+        &self,
+        argv: &[String],
+        env: &Environment<'_>,
+        extras: bool,
+    ) -> Option<Vec<String>> {
         let base = env.base()?;
-        let name = argv[0].as_str();
+        let name = argv.first()?.as_str();
         let mut paths = Vec::new();
         if let Some(spec) = SPECS.iter().find(|s| s.command == name) {
             return curated(spec, &argv[1..], env, &base, &mut paths).then_some(paths);
         }
         if program_name(name) == "git" {
-            let (_, git_paths) = self.parse_git(command, env)?;
+            let (_, git_paths) = self.parse_git_argv(argv, env)?;
             return Some(git_paths);
+        }
+        if !extras {
+            return None;
         }
         let allowed = self.extra.iter().any(|entry| {
             if entry[0] != name {
@@ -1028,9 +1060,17 @@ impl Preclassifier {
         env: &Environment<'_>,
     ) -> Option<(GitCommand, Vec<String>)> {
         let analysis = analyze(command);
-        let argv = analysis.simple.as_ref()?;
+        self.parse_git_argv(analysis.simple.as_ref()?, env)
+    }
+
+    /// [`parse_git`](Self::parse_git) for one already-parsed simple command.
+    pub(crate) fn parse_git_argv(
+        &self,
+        argv: &[String],
+        env: &Environment<'_>,
+    ) -> Option<(GitCommand, Vec<String>)> {
         let base = env.base()?;
-        let name = argv[0].as_str();
+        let name = argv.first()?.as_str();
         if program_name(name) != "git" {
             return None;
         }
@@ -1646,6 +1686,51 @@ mod tests {
         assert!(raw_mentions_word("echo 'x; rm -rf /", &["rm"]));
         assert!(!raw_mentions_word("echo format", &["rm"]));
         assert!(!raw_mentions_word("echo rm-rf", &["rm"]));
+    }
+
+    #[test]
+    fn read_paths_and_read_only_argv_agree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let scope = Scope::new(root, []);
+        let env = Environment {
+            scope: &scope,
+            cwd: None,
+        };
+        let pre = Preclassifier::new(&["make".to_string(), "cargo metadata".to_string()]);
+        for command in [
+            "ls -la src",
+            "cat a.txt b.txt",
+            "grep -n x a.txt",
+            "head -n 5 a.txt",
+            "git status",
+            "git diff --cached a.txt",
+            "git log -n 3",
+            "make build",
+            "cargo metadata",
+            "cargo build",
+            "cat /etc/passwd",
+            "ls -z",
+            "git push",
+            "rm a.txt",
+            "ls && ls",
+            "cat $x",
+            "",
+        ] {
+            let via_command = pre.read_paths(command, &env);
+            let via_argv = analyze(command)
+                .simple
+                .and_then(|argv| pre.read_only_argv(&argv, &env));
+            assert_eq!(via_command, via_argv, "{command}");
+        }
+        let argv = |text: &str| analyze(text).simple.unwrap();
+        assert!(pre.read_only_argv(&argv("make"), &env).is_some());
+        assert!(pre.curated_read_only_argv(&argv("make"), &env).is_none());
+        assert!(pre.curated_read_only_argv(&argv("ls"), &env).is_some());
+        assert!(
+            pre.curated_read_only_argv(&argv("git status"), &env)
+                .is_some()
+        );
     }
 
     fn git_env() -> Environment<'static> {

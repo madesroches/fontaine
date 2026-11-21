@@ -311,6 +311,7 @@ impl Rig {
             auto_edits: fontaine_sdk::core::gate::AutoEdits {
                 tracked: config.permissions.auto_tracked_edits,
                 scratch: config.permissions.auto_scratch_writes,
+                shell: config.permissions.auto_shell_edits,
             },
         }));
         let user_config = world.config.join("config.toml");

@@ -20,6 +20,8 @@ pub enum Tier {
     TrackedEdit,
     /// `auto` only: a file-tool write inside the session scratch directory, after the floor.
     ScratchWrite,
+    /// `auto` only: a fully parsed in-root shell edit or local git step, after the floor.
+    ShellEdit,
     Tier05,
     /// An `agent` spawn after the floor: the child's own calls are gated, so the spawn is not
     /// judged by the guardian.
@@ -47,7 +49,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 20] = [
+    pub const ALL: [Tier; 21] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::ProtectedPath,
@@ -55,6 +57,7 @@ impl Tier {
         Tier::ReadOnlyFastPath,
         Tier::TrackedEdit,
         Tier::ScratchWrite,
+        Tier::ShellEdit,
         Tier::Tier05,
         Tier::Spawn,
         Tier::Coordination,
@@ -79,6 +82,7 @@ impl Tier {
             Tier::ReadOnlyFastPath => "read_only_fast_path",
             Tier::TrackedEdit => "tracked_edit",
             Tier::ScratchWrite => "scratch_write",
+            Tier::ShellEdit => "shell_edit",
             Tier::Tier05 => "tier05",
             Tier::Spawn => "spawn",
             Tier::Coordination => "coordination",

@@ -132,7 +132,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[permissions] deny`, `ask` | add only | add only | add only |
 | `[permissions] allow` | no | yes | yes |
 | `[permissions] additional_directories` | no | yes | yes |
-| `[permissions] auto_tracked_edits`, `auto_scratch_writes` | `false` only | `false` only | yes |
+| `[permissions] auto_tracked_edits`, `auto_scratch_writes`, `auto_shell_edits` | `false` only | `false` only | yes |
 | `[auto_mode] environment`, `allow`, `setup_reminder` | no | yes | yes |
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
@@ -937,6 +937,7 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 | `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
 | `auto_tracked_edits` | In `auto`, edits to git-tracked files, new files and files the session created inside the primary root skip the guardian (after the floor). Project scope may only set `false`. | `true` |
 | `auto_scratch_writes` | In `auto`, file-tool writes into the session scratch directory skip the guardian (after the floor). Project scope may only set `false`. | `true` |
+| `auto_shell_edits` | In `auto`, a shell call that Fontaine parses in full and that is made only of read-only commands and in-root edits or local git steps (`sed -i`, `mkdir`, `mv`, `git add`, `git commit`, `git rebase --continue` and the like) skips the guardian (after the floor). Project scope may only set `false`. See [the pipeline](permissions.md#the-pipeline). | `true` |
 
 `default_mode = "auto"` and `"afk"` load only from the user file and `--settings`. It is rejected from the shared
 project file and from `settings.local.toml`, trusted or not, because it loosens: those scopes accept

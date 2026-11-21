@@ -88,6 +88,44 @@ pub struct ActiveSkill {
     pub declared: Vec<String>,
 }
 
+/// The kinds of multi-step git operation that can be stopped halfway in a work tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitOperationKind {
+    Rebase,
+    Merge,
+    CherryPick,
+    Revert,
+    Am,
+    Bisect,
+}
+
+impl GitOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GitOperationKind::Rebase => "rebase",
+            GitOperationKind::Merge => "merge",
+            GitOperationKind::CherryPick => "cherry-pick",
+            GitOperationKind::Revert => "revert",
+            GitOperationKind::Am => "am",
+            GitOperationKind::Bisect => "bisect",
+        }
+    }
+}
+
+/// A multi-step git operation in progress in the primary root, read from the repository by the
+/// harness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitOperation {
+    pub kind: GitOperationKind,
+    /// The branch the operation works on. HEAD is detached during a rebase, so for one it is the
+    /// branch the rebase will move back to; omitted when none is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// It was started after this session began, so by the requests the session has seen.
+    pub started_this_session: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionFacts {
     pub workspace_roots: Vec<String>,
@@ -121,6 +159,9 @@ pub struct SessionFacts {
     /// [`AGENT_TASK_CHARS`]. Agent-written, so the guardian treats it as untrusted data and
     /// never as the user's intent; `None` for the root agent. Only the guardian sees it.
     pub agent_task: Option<String>,
+    /// A rebase, merge, cherry-pick, revert, am or bisect that is stopped in the primary root.
+    /// Only the guardian sees it.
+    pub git_operation: Option<GitOperation>,
 }
 
 /// The facts of a project's setup record that the guardian reads. The core builds it from its

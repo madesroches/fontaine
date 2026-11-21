@@ -79,6 +79,9 @@ pub struct Adjudication {
     pub explanation: String,
     /// The model's own confidence; absent when it gave no verdict.
     pub confidence: Option<f64>,
+    /// A narrower call the model said would be allowed in place of this one; only on a verdict
+    /// that denies or escalates, as written by the model and so untrusted.
+    pub instead: Option<String>,
     pub fail_closed: Option<FailClosed>,
     pub cache_hit: bool,
     pub latency_ms: u64,
@@ -417,6 +420,7 @@ impl Guardian {
                     rule,
                     explanation,
                     confidence,
+                    instead: None,
                     fail_closed,
                     cache_hit,
                     latency_ms,
@@ -466,7 +470,7 @@ impl Guardian {
                         *usage,
                     );
                 }
-                base(
+                let mut adjudication = base(
                     verdict.decision,
                     AuditLabel::Model(verdict.rule),
                     verdict.explanation,
@@ -474,7 +478,9 @@ impl Guardian {
                     None,
                     cache_hit,
                     *usage,
-                )
+                );
+                adjudication.instead = verdict.instead;
+                adjudication
             }
         }
     }

@@ -324,6 +324,15 @@ pub fn validate_case(case: &Case) -> Vec<String> {
     if let Some(value) = case
         .session_facts
         .as_ref()
+        .and_then(|facts| facts.get("git_operation"))
+        && let Err(e) =
+            serde_json::from_value::<fontaine_sdk::guardian::GitOperation>(value.clone())
+    {
+        err(format!("`session_facts.git_operation` does not parse: {e}"));
+    }
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
         .and_then(|facts| facts.get("git_remote_names"))
     {
         let remotes: Vec<&str> = case
@@ -596,6 +605,34 @@ mod tests {
                 .any(|p| p.contains("agent_message_before_reply")),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn a_git_operation_must_name_a_kind_and_whether_the_session_started_it() {
+        let problems = |operation: serde_json::Value| {
+            validate_case(&case(
+                "guardian",
+                serde_json::json!({"session_facts": {"git_operation": operation}}),
+            ))
+        };
+        assert!(
+            problems(serde_json::json!({
+                "kind": "rebase", "branch": "main", "started_this_session": true
+            }))
+            .is_empty()
+        );
+        for bad in [
+            serde_json::json!({"kind": "rebase"}),
+            serde_json::json!({"kind": "checkout", "started_this_session": true}),
+            serde_json::json!("rebase"),
+        ] {
+            assert!(
+                problems(bad.clone())
+                    .iter()
+                    .any(|p| p.contains("session_facts.git_operation")),
+                "{bad}"
+            );
+        }
     }
 
     fn problems_for_remote_names(names: serde_json::Value) -> Vec<String> {

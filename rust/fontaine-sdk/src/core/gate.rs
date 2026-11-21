@@ -176,6 +176,7 @@ pub struct ChildRestrictions {
 pub struct AutoEdits {
     pub tracked: bool,
     pub scratch: bool,
+    pub shell: bool,
 }
 
 impl Default for AutoEdits {
@@ -183,6 +184,7 @@ impl Default for AutoEdits {
         AutoEdits {
             tracked: true,
             scratch: true,
+            shell: true,
         }
     }
 }

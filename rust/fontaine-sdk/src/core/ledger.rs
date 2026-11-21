@@ -107,6 +107,13 @@ pub enum Record {
         paths: Vec<String>,
         truncated: bool,
     },
+    /// The git operation that was stopped in the primary root when the session began, `None` when
+    /// there was none. Appended only when the session is not continued, so it keeps meaning "at
+    /// the start of the session" across resumes; an older ledger has none.
+    GitOperationAtStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation: Option<crate::guardian::GitOperationKind>,
+    },
     /// A human message, verbatim. `agent` names the subagent it was typed to in that agent's
     /// view; `None` is the main conversation. `attachments` names the labels of any inline
     /// files it carried.
@@ -444,6 +451,9 @@ pub struct LedgerView {
     pub project_environment: Option<ProjectEnvironment>,
     index: HashSet<String>,
     pub index_truncated: bool,
+    /// What the session start recorded about a stopped git operation: `None` when it recorded
+    /// nothing (an older ledger), `Some(None)` when none was in progress.
+    pub git_operation_at_start: Option<Option<crate::guardian::GitOperationKind>>,
     /// Every human message typed to the main conversation, verbatim, oldest first.
     pub user_messages: Vec<String>,
     /// The origin of each entry of `user_messages`, kept in step with it.
@@ -498,6 +508,7 @@ impl Default for LedgerView {
             project_environment: None,
             index: HashSet::new(),
             index_truncated: false,
+            git_operation_at_start: None,
             user_messages: Vec::new(),
             user_origins: Vec::new(),
             agent_replies: Vec::new(),
@@ -685,6 +696,9 @@ impl LedgerView {
             Record::FileIndex { paths, truncated } => {
                 self.index = paths.iter().map(|p| path_key(p)).collect();
                 self.index_truncated = *truncated;
+            }
+            Record::GitOperationAtStart { operation } => {
+                self.git_operation_at_start = Some(*operation);
             }
             Record::UserMessage {
                 text,

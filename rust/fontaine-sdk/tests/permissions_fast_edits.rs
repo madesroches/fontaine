@@ -316,3 +316,49 @@ async fn a_fast_edit_between_denials_keeps_auto_from_pausing() {
     rig.check("shell", curl(2)).await;
     assert!(!rig.state.auto_paused());
 }
+
+#[tokio::test]
+async fn an_intent_to_add_file_goes_to_the_guardian() {
+    let (rig, fake) = repo_rig(&["a.txt"], "", false);
+    write(&rig.work().join("planned.txt"), "a");
+    git(rig.work(), &["add", "-N", "planned.txt"]);
+    assert!(allowed(&rig.check("edit", edit_args("planned.txt")).await));
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn hook_runner_configuration_goes_to_the_guardian() {
+    let (rig, fake) = repo_rig(
+        &[
+            ".pre-commit-config.yaml",
+            "lefthook.yml",
+            ".githooks/pre-commit",
+            "scripts/hooks/pre-commit",
+        ],
+        "",
+        false,
+    );
+    for path in [
+        ".pre-commit-config.yaml",
+        "lefthook.yml",
+        ".githooks/pre-commit",
+    ] {
+        assert!(allowed(&rig.check("edit", edit_args(path)).await), "{path}");
+        assert_eq!(last_tier(&rig), Tier::Guardian, "{path}");
+    }
+    assert_eq!(fake.calls(), 3);
+    // Only a repository that names the directory makes it a hook directory.
+    assert!(allowed(
+        &rig.check("edit", edit_args("scripts/hooks/pre-commit"))
+            .await
+    ));
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    git(rig.work(), &["config", "core.hooksPath", "scripts/hooks"]);
+    assert!(allowed(
+        &rig.check("edit", edit_args("scripts/hooks/pre-commit"))
+            .await
+    ));
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 4);
+}

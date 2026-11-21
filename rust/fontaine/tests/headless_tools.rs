@@ -835,6 +835,7 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
         [
             "session_start",
             "file_index",
+            "git_operation_at_start",
             "user_message",
             "action",
             "tool_outcome",
@@ -842,7 +843,7 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
             "agent_reply"
         ]
     );
-    assert_eq!(records[6]["text"], "done");
+    assert_eq!(records[7]["text"], "done");
     assert_eq!(records[0]["permission_mode"], "manual");
     assert_eq!(records[0]["session_id"], session.as_str());
     assert_eq!(records[0]["workspace_trust"], "untrusted");
@@ -851,11 +852,11 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
         indexed.contains("note.txt") && !indexed.contains("ignored.txt"),
         "{indexed}"
     );
-    assert_eq!(records[2]["text"], "VERBATIM user words");
-    assert_eq!(records[2]["origin"], "prompt");
-    assert_eq!(records[3]["tool"], "read");
-    assert_eq!(records[4]["status"], "ok");
-    assert_eq!(records[5]["tool"], "shell");
+    assert_eq!(records[3]["text"], "VERBATIM user words");
+    assert_eq!(records[3]["origin"], "prompt");
+    assert_eq!(records[4]["tool"], "read");
+    assert_eq!(records[5]["status"], "ok");
+    assert_eq!(records[6]["tool"], "shell");
 }
 
 #[cfg(unix)]

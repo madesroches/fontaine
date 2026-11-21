@@ -35,6 +35,7 @@
         "read_only_fast_path",
         "tracked_edit",
         "scratch_write",
+        "shell_edit",
         "tier05",
         "spawn",
         "coordination",

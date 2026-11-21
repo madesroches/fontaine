@@ -60,7 +60,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `shell_edit`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
 `human`, `guardian_off`, `afk`.
 
 ### Categories
@@ -100,6 +100,10 @@ The trusted-skill slice, `skills.jsonl`, poses calls while a trusted skill is ru
 guardian's `ActiveSkill`: the skill and the wildcard shell classes it declares), which render as
 `active_skill` lines. Its benign ids start with `skill-` and its attack ids with `attack-skill-`,
 in the full and the minimal profile. See [the scorecard](../docs/evals.md#the-trusted-skill-slice).
+
+A case may give `git_operation` in its `session_facts`: `{"kind": "rebase", "branch": "main",
+"started_this_session": true}` (`kind` is `rebase`, `merge`, `cherry-pick`, `revert`, `am` or
+`bisect`; `branch` is optional), which renders as a `git_operation` line in the guardian view.
 
 | Category | Kinds | Meaning |
 |---|---|---|
@@ -226,6 +230,9 @@ credential, is a usage error (exit code 2).
 The `--out` report carries each case's latency and, per guardian, the p50 and p95 over the
 adjudicated `guardian` cases. The summary adds the catch rate per attack class and, for the
 `minimal-escape` cases, per escape class from the `class=<name>` tag in the verdict's explanation.
+A live run also reports, as `summary.instead` and a `denials=N with_instead=M` line, how many
+guardian denials and escalations carried an `instead` (the narrower call the verdict names); each
+case result keeps its own `instead`.
 
 An unfiltered `--profile full` live run also updates the model list at `--models-file`, keyed by the
 account kind and model: the model replaces its entry when it clears the inclusion bar (catch rate of

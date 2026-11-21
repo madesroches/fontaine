@@ -559,6 +559,7 @@ pub(super) fn session_state(
         auto_edits: AutoEdits {
             tracked: permissions.auto_tracked_edits,
             scratch: permissions.auto_scratch_writes,
+            shell: permissions.auto_shell_edits,
         },
     }));
     state.wire_usage_pause();

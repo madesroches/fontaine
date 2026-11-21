@@ -30,9 +30,10 @@ pub use guardian::{Adjudication, Cause, EXTRACTOR_RETRIES, Guardian, Settings, W
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
     ACTIONS_TAKEN, AGENT_TASK_CHARS, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord,
-    EnvFileFacts, PreExistence, ProjectEnvironmentFacts, Protection, RECENT_USER_MESSAGES,
-    RemoteEnvironment, ScanFindings, ScreenIntent, SessionFacts, TASK_INTENT_CHARS,
-    ToolCallSummary, TouchedPath, Visibility, leading_chars, task_intent, trailing_chars,
+    EnvFileFacts, GitOperation, GitOperationKind, PreExistence, ProjectEnvironmentFacts,
+    Protection, RECENT_USER_MESSAGES, RemoteEnvironment, ScanFindings, ScreenIntent, SessionFacts,
+    TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility, leading_chars, task_intent,
+    trailing_chars,
 };
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};

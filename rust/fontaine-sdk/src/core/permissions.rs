@@ -22,6 +22,7 @@ use crate::tools::mcp::{ElicitForm, ElicitReply, ElicitUrl};
 use crate::tools::preclassify::{Environment, Preclassifier, analyze};
 use crate::tools::risk::RiskClass;
 use crate::tools::scope::{Scope, ScopeError, is_external_read, is_external_write};
+use crate::tools::shell_edit::{self, TargetCheck};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tracing::Instrument;
@@ -372,6 +373,7 @@ fn pause_ended(guardian: &LlmGuardian, ended: &crate::core::gate::UsagePauseEnde
         rule: reason.label(),
         explanation: ended.to_string(),
         confidence: None,
+        instead: None,
         fail_closed: Some(reason),
         cache_hit: false,
         latency_ms: 0,
@@ -929,6 +931,15 @@ fn ruled_hit<'a>(
     })
 }
 
+/// The file tools whose rules govern a read-only command's path operands.
+fn read_tools(program: &str) -> &'static [&'static str] {
+    match program.rsplit(['/', '\\']).next().unwrap_or("") {
+        "ls" => &["read", "ls"],
+        "grep" | "rg" => &["read", "grep"],
+        _ => &["read"],
+    }
+}
+
 fn ruled_read_calls(
     command: &str,
     paths: &[String],
@@ -942,11 +953,7 @@ fn ruled_read_calls(
         Some(cwd) => scope.resolved(cwd),
         None => scope.primary().to_path_buf(),
     };
-    let tools: &[&'static str] = match argv[0].rsplit(['/', '\\']).next().unwrap_or("") {
-        "ls" => &["read", "ls"],
-        "grep" | "rg" => &["read", "grep"],
-        _ => &["read"],
-    };
+    let tools = read_tools(&argv[0]);
     let mut calls = Vec::new();
     for candidate in paths {
         let path = base.join(candidate).to_string_lossy().into_owned();
@@ -991,6 +998,141 @@ fn explanation_of(why: &str) -> String {
     }
     let cut: String = text.chars().take(adjudication::SUMMARY_CHARS - 1).collect();
     format!("{cut}…")
+}
+
+/// What an unjudged edit would find at its target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetState {
+    /// A file the index holds.
+    Tracked,
+    /// A file a tool of this session created.
+    Created,
+    /// Nothing there yet.
+    Absent,
+}
+
+/// The directory git runs hooks from when the repository names one, read once per decision.
+struct HooksDir(Result<Option<PathBuf>, ()>);
+
+impl HooksDir {
+    fn read(primary: &Path) -> HooksDir {
+        HooksDir(trust::hooks_path(primary))
+    }
+
+    /// Whether the path (resolved, and as written) is inside that directory; `None` when the
+    /// repository's configuration could not be read.
+    fn names(&self, resolved: &Path, written: &Path) -> Option<bool> {
+        match &self.0 {
+            Err(()) => None,
+            Ok(None) => Some(false),
+            Ok(Some(dir)) => {
+                Some(floor::under(resolved, dir).is_some() || floor::under(written, dir).is_some())
+            }
+        }
+    }
+}
+
+/// The floor's view of the paths a shell edit touches, so the classifier in `tools` can ask
+/// without importing it.
+struct ShellTargets<'a> {
+    pipeline: &'a PermissionPipeline,
+    agent: &'a str,
+    scope: &'a Scope,
+    home: Option<&'a Path>,
+    rules: crate::core::gate::Rules,
+    hooks: HooksDir,
+}
+
+impl ShellTargets<'_> {
+    /// No deny or ask rule and no agent restriction touches any of these file-tool calls.
+    fn clear(&self, calls: &[(&'static str, Value)]) -> bool {
+        ruled_hit(
+            &self.rules.deny,
+            calls,
+            self.scope,
+            self.home,
+            Posture::Deny,
+        )
+        .is_none()
+            && ruled_hit(&self.rules.ask, calls, self.scope, self.home, Posture::Ask).is_none()
+            && self
+                .pipeline
+                .restricted_read(self.agent, calls, self.scope, self.home)
+                .is_none()
+    }
+
+    /// The path as the file tools would open it, when it names the same place without a symlink
+    /// on the way: `sed -i` and `mv` replace a link instead of following it, so the file the
+    /// checks looked at would not be the file that changed.
+    fn plain(&self, given: &str) -> Option<PathBuf> {
+        let (root, resolved) = self.scope.find(given).ok()?;
+        (root == 0 && self.scope.written(given) == resolved).then_some(resolved)
+    }
+
+    fn protected(&self, given: &str) -> bool {
+        floor::protected_path(
+            self.scope,
+            self.home,
+            &self.pipeline.state.protected_dirs,
+            &serde_json::json!({ "path": given }),
+        )
+        .is_some()
+    }
+
+    fn target(&self, tool: &'static str, given: &str) -> Option<(PathBuf, TargetState)> {
+        let resolved = self.plain(given)?;
+        if self.protected(given) {
+            return None;
+        }
+        let calls = [(tool, serde_json::json!({ "path": given }))];
+        if !self.clear(&calls) {
+            return None;
+        }
+        let state = self.pipeline.target_state(
+            self.scope,
+            given,
+            &resolved,
+            &self.hooks,
+            tool == "write",
+        )?;
+        Some((resolved, state))
+    }
+}
+
+impl TargetCheck for ShellTargets<'_> {
+    fn read_target(&self, program: &str, path: &str) -> bool {
+        self.scope.find(path).is_ok()
+            && floor::secret_path(self.scope, path).is_none()
+            && self.clear(
+                &read_tools(program)
+                    .iter()
+                    .map(|tool| (*tool, serde_json::json!({ "path": path })))
+                    .collect::<Vec<_>>(),
+            )
+    }
+
+    fn edit_target(&self, path: &str) -> bool {
+        self.target("edit", path).is_some_and(|(resolved, state)| {
+            state != TargetState::Absent
+                && std::fs::symlink_metadata(resolved).is_ok_and(|meta| meta.is_file())
+        })
+    }
+
+    fn write_target(&self, path: &str) -> bool {
+        self.target("write", path).is_some_and(|(resolved, state)| {
+            state == TargetState::Absent
+                || std::fs::symlink_metadata(resolved).is_ok_and(|meta| meta.is_file())
+        })
+    }
+
+    fn not_protected(&self, path: &str) -> bool {
+        self.plain(path).is_some() && !self.protected(path)
+    }
+
+    fn tracked_entry(&self, path: &str) -> bool {
+        self.target("edit", path)
+            .is_some_and(|(_, state)| state == TargetState::Tracked)
+    }
 }
 
 impl PermissionPipeline {
@@ -1068,6 +1210,22 @@ impl PermissionPipeline {
             hook.matcher()
                 .and_then(|text| parse_rule(&text).ok())
                 .is_some_and(|rule| matches!(rule.tool.as_str(), "read" | "ls" | "grep"))
+        })
+    }
+
+    /// Whether a pre-tool-use hook is scoped to a file tool. Such a hook never fires for a shell
+    /// call, so a shell edit it would have seen must not skip the verdict it stands in front of.
+    fn hooks_name_file_tools(&self) -> bool {
+        let layer = self.plugin_hooks.get();
+        self.hooks.iter().chain(layer.pre.iter()).any(|hook| {
+            hook.matcher()
+                .and_then(|text| parse_rule(&text).ok())
+                .is_some_and(|rule| {
+                    matches!(
+                        rule.tool.as_str(),
+                        "read" | "ls" | "grep" | "edit" | "write" | "notebook_edit"
+                    )
+                })
         })
     }
 
@@ -1623,11 +1781,16 @@ impl PermissionPipeline {
     }
 
     /// The tier of an `auto` edit that needs no guardian verdict: a file-tool write into the
-    /// session scratch directory, or an edit to a file git tracks, a file that does not exist yet
-    /// or one this session created. Only reached after the whole floor and the hooks have passed,
-    /// and a protected path never gets here. Anything uncertain answers `None`, which leaves the
-    /// call to the guardian.
+    /// session scratch directory, an edit to a file git tracks, a file that does not exist yet or
+    /// one this session created, or a shell call made only of such edits, read-only commands and
+    /// local git steps. Only reached after the whole floor and the hooks have passed, and a
+    /// protected path never gets here. Anything uncertain answers `None`, which leaves the call
+    /// to the guardian.
     fn unjudged_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
+        // Before the file-tool guard below: `shell` is `Arbitrary` and would never pass it.
+        if call.tool == "shell" {
+            return self.unjudged_shell_edit(call, args);
+        }
         if call.risk != RiskClass::WorkspaceWrite
             || !matches!(call.tool, "edit" | "write" | "notebook_edit")
         {
@@ -1647,25 +1810,79 @@ impl PermissionPipeline {
         if !edits.tracked || root != 0 {
             return None;
         }
+        self.target_state(
+            &scope,
+            given,
+            &resolved,
+            &HooksDir::read(scope.primary()),
+            false,
+        )
+        .map(|_| Tier::TrackedEdit)
+    }
+
+    fn unjudged_shell_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
+        if !self.state.auto_edits.shell || self.hooks_name_file_tools() {
+            return None;
+        }
+        let command = args.get("command")?.as_str()?;
+        let scope = self.state.scope();
+        let env = Environment {
+            scope: &scope,
+            cwd: args.get("cwd").and_then(Value::as_str),
+        };
+        // The edits are judged against the primary root; a call that runs elsewhere is not.
+        let base = env.base()?;
+        if scope.find(&base.to_string_lossy()).ok()?.0 != 0 {
+            return None;
+        }
+        let targets = ShellTargets {
+            pipeline: self,
+            agent: call.agent,
+            scope: &scope,
+            home: self.state.home.as_deref(),
+            rules: self.state.rules(),
+            hooks: HooksDir::read(scope.primary()),
+        };
+        shell_edit::classify(command, &env, &self.preclassifier, &targets)
+            .then_some(Tier::ShellEdit)
+    }
+
+    /// What an unjudged edit of `given` (resolved to `resolved`) would act on, or `None` when the
+    /// guardian must judge it: a file outside the primary root, the memory store, an instruction
+    /// file or CI path, hook-runner configuration, a path git does not track that already exists
+    /// and no tool of this session created, or any path when git cannot be read. `deep` also
+    /// accepts a path whose parent directories do not exist yet (`mkdir -p a/b`), which a file
+    /// tool never creates in one call.
+    fn target_state(
+        &self,
+        scope: &Scope,
+        given: &str,
+        resolved: &Path,
+        hooks: &HooksDir,
+        deep: bool,
+    ) -> Option<TargetState> {
         let primary = scope.primary();
         if let Some(memory) = &self.state.memory_root
-            && floor::under(&resolved, memory).is_some()
+            && floor::under(resolved, memory).is_some()
         {
             return None;
         }
+        let written = scope.written(given);
         // Relative to the root, so a directory named `rules` above the workspace means nothing.
         let excluded = |path: &Path| {
-            floor::under(path, primary)
-                .is_some_and(|rel| floor::is_instruction_or_ci_path(&rel, floor::FOLD_CASE))
+            floor::under(path, primary).is_some_and(|rel| {
+                floor::is_instruction_or_ci_path(&rel, floor::FOLD_CASE)
+                    || floor::is_hook_config_path(&rel, floor::FOLD_CASE)
+            })
         };
-        if excluded(&resolved) || excluded(&scope.written(given)) {
+        if excluded(resolved) || excluded(&written) || hooks.names(resolved, &written)? {
             return None;
         }
-        match trust::tracking(primary, &resolved) {
-            Tracking::Tracked => Some(Tier::TrackedEdit),
+        match trust::tracking(primary, resolved) {
+            Tracking::Tracked => Some(TargetState::Tracked),
             Tracking::Untracked => {
                 let absent = matches!(
-                    std::fs::symlink_metadata(&resolved),
+                    std::fs::symlink_metadata(resolved),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound
                 );
                 let created = self
@@ -1674,7 +1891,19 @@ impl PermissionPipeline {
                     .view()
                     .existence(&resolved.to_string_lossy())
                     == Existence::CreatedThisSession;
-                (absent || created).then_some(Tier::TrackedEdit)
+                if absent {
+                    Some(TargetState::Absent)
+                } else {
+                    created.then_some(TargetState::Created)
+                }
+            }
+            Tracking::Unknown if deep => {
+                // The nearest ancestor that exists decides: a directory inside a work tree.
+                let ancestor = resolved.ancestors().skip(1).find(|dir| dir.exists())?;
+                (floor::under(ancestor, primary).is_some()
+                    && ancestor.is_dir()
+                    && trust::tracking(primary, ancestor) == Tracking::Untracked)
+                    .then_some(TargetState::Absent)
             }
             Tracking::Unknown => None,
         }
@@ -1785,6 +2014,7 @@ impl PermissionPipeline {
         record
             .explanation
             .get_or_insert_with(|| adjudication.explanation.clone());
+        record.instead = adjudication.instead.as_deref().map(explanation_of);
         record
     }
 
@@ -1880,7 +2110,10 @@ impl PermissionPipeline {
         self.state.append(self.action(cx, tier));
         // Routine edits between denials keep a run of them from pausing `auto` for an absent
         // user; the guardian breaker's pause itself is only lifted by a human.
-        if matches!(tier, Tier::TrackedEdit | Tier::ScratchWrite) {
+        if matches!(
+            tier,
+            Tier::TrackedEdit | Tier::ScratchWrite | Tier::ShellEdit
+        ) {
             self.state.guardian_allowed();
         }
         GateDecision::Allow {
@@ -2426,6 +2659,7 @@ impl PermissionPipeline {
                     rule: kind.label(),
                     explanation: reason,
                     confidence: None,
+                    instead: None,
                     fail_closed: Some(kind),
                     cache_hit: false,
                     latency_ms: 0,
@@ -2667,8 +2901,15 @@ impl PermissionPipeline {
                     Prompt {
                         tier: Tier::Guardian,
                         reason: format!(
-                            "the guardian wants you to decide: [{rule}] {}",
-                            adjudication.explanation
+                            "the guardian wants you to decide: [{rule}] {}{}",
+                            adjudication.explanation,
+                            adjudication
+                                .instead
+                                .as_deref()
+                                .map(explanation_of)
+                                .filter(|text| !text.is_empty())
+                                .map(|text| format!("\nThe guardian would allow instead: {text}"))
+                                .unwrap_or_default()
                         ),
                         rule: Some(rule),
                         forced: true,
@@ -2698,8 +2939,19 @@ impl PermissionPipeline {
                 } else {
                     None
                 };
-                let mut message =
-                    format!("Denied by guardian: [{rule}] {why}. {}", recovery(no_human));
+                // Model-written, so redacted and cut like the explanation. The call it names is
+                // judged afresh when the agent makes it.
+                let instead = adjudication
+                    .instead
+                    .as_deref()
+                    .map(explanation_of)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| format!(" Allowed instead: {}.", text.trim_end_matches('.')))
+                    .unwrap_or_default();
+                let mut message = format!(
+                    "Denied by guardian: [{rule}] {why}.{instead} {}",
+                    recovery(no_human)
+                );
                 // A user's `permission_denied` hook may allow exactly one retry, as `/denied`
                 // then `r` does. It is asked first so the agent is told the truth.
                 let retry = self
@@ -2707,7 +2959,7 @@ impl PermissionPipeline {
                     .await;
                 if let Some(hook_id) = &retry {
                     message = format!(
-                        "Denied by guardian: [{rule}] {why}. A permission_denied hook approved one retry of exactly this call: you may run it again once, unchanged."
+                        "Denied by guardian: [{rule}] {why}.{instead} A permission_denied hook approved one retry of exactly this call: you may run it again once, unchanged."
                     );
                     self.state.grant_retry(
                         RetrySource::Hook(hook_id.clone()),

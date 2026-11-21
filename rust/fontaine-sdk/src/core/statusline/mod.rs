@@ -542,6 +542,7 @@ mod tests {
             headless: false,
             human_channel: "present".into(),
             explanation: None,
+            instead: None,
             afk: false,
             converted: None,
         };
