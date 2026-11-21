@@ -248,14 +248,6 @@ the same rule as `auto_tracked_edits` in `config_scope.rs`. It is a separate key
 file-tool edits fast while sending shell edits back to the guardian. `AutoEdits` gains a `shell`
 field.
 
-### Accepted risk: repository-controlled code
-
-`git commit` and `git rebase --continue` run hooks, and git config can name filters or an
-fsmonitor; read-only git stages in a chain run on the real binary, so git config can also name a
-`diff.external`, textconv or pager helper for them. The guardian never inspected those either. `.git/` is a protected path, so the agent
-cannot plant them through this tier. The tier therefore adds no new exposure, and this is recorded
-as an accepted risk rather than mitigated.
-
 ### Guardian fact: `git_operation`
 
 `SessionFacts` gains `git_operation: Option<GitOperation>`, with:
@@ -476,12 +468,13 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - 2026-11-21: (user) The live eval's catch rate may get slightly worse (at most 3 points) if the false-deny rate does not rise: a working `auto` mode comes first.
 - 2026-11-21: AFK: `git add` in `shell_edit` takes only file pathspecs or `-u`; `-A`/`--all`/`.` go to the guardian so an un-ignored secret is never staged unjudged.
 - 2026-11-21: (user) #744's guardian-side changes (`git_operation` fact, `instead` verdict field) ship in this change, verified with a live Haiku eval on the `router` OpenRouter account.
+- 2026-11-21: Accepted risk: git-config-named filters, fsmonitor and `diff.external`/textconv/pager helpers run unjudged for the git steps and real-binary read-only git stages in `shell_edit`, as they already could under the guardian; `.git/` is protected, so this tier cannot plant them.
 
 ## Documentation
 
 - **`docs/permissions.md`**: the tier list gains `shell_edit`: what qualifies, that it runs after
   the floor in `auto`/`afk`, and how to switch it off; the guardian decision audit-field sentence
-  (around lines 164-175) gains `instead`; and post-tool hooks on file tools do not run for shell edits.
+  (around lines 164-175) gains `instead`; post-tool hooks on file tools do not run for shell edits; and step 6's "and every shell command" becomes "every shell command except a `shell_edit`".
 - **`docs/guardian.md`**:
   - in the list of what never reaches the guardian, parsed in-root shell edits and the local git
     steps;
@@ -502,7 +495,7 @@ carriers are `Adjudication` literals: `guardian/guardian.rs` (the LLM guardian),
 - **`AGENTS.md`**: the `tracked_edit` exception in the fast-path invariant grows to "file-tool and
   fully parsed shell edits".
 - **`tasks/fontaine_harness_plan.md`**: a Permissions decision that departs from the 2026-10-21
-  line's "a mutating shell must not fast-path" reason in `auto`/`afk` (`acceptEdits` unchanged) and names the accepted repository-hook risk.
+  line's "a mutating shell must not fast-path" reason in `auto`/`afk` (`acceptEdits` unchanged) and names the accepted repository-controlled-code risk.
 - **`tasks/design/permissions.md`**: the pipeline step list.
 - **`tasks/design/testing.md`**: the golden adversarial set gains the shell-edit cases.
 - **`tasks/design/config.md`**: the new key.
