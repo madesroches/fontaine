@@ -28,7 +28,7 @@ Centralise rather than patch each close path (many, and new overlays would regre
    self.setup_composition.is_some()`: `covered()` (app.rs:1518-1543) already includes agents and
    transcript_view; `plugin_prompt` and `setup_composition` are dialogs drawn by `view::overlay_in`
    (view.rs:476,492) that `covered()` omits, and they count in `view::chrome`. The helper exists so
-   the flag and the transition check share one definition of "an overlay hides the live area".
+   the flag and the transition check share one definition of "a dialog covers the live area".
 2. `Screen` remembers `overlay_was_open` from the previous frame. At the top of `draw_frame`,
    when it was open, no overlay is open now, and `committed_under_overlay` is set, set
    `app.reprint = true; app.committed_under_overlay = false;` directly, before the existing
@@ -47,11 +47,17 @@ happens once, when the last one closes.
 2. `screen.rs`: add `overlay_was_open: bool` to `Screen`; use `overlay_open` for the flag at
    ~l.499; add the transition check at the start of `draw_frame`.
 3. Tests in `screen.rs` beside the agents-panel ones (~l.2103).
-4. Add a `pairing` mode to `rust/fontaine-tui/examples/live_area.rs`: print notices, open the
+4. Add a `pairing` mode to `rust/fontaine-tui/examples/live_area.rs` (and a sentence about it in
+   the module doc comment, lines 1-7, which lists the modes): print notices, open the
    ticket dialog via `begin_ticket`, then a pairing prompt via `begin_pairing`, print more notices
    so rows commit under it, dismiss. Verify in real tmux per `tasks/design/testing.md`
    "Reproducing terminal layout bugs", before and after the fix: each line appears once with no
    blank run above the input.
+5. Docs: `docs/tui.md`: add closing any dialog that pushed rows into scrollback to the list of what
+   erases it (~l.20-25: it reprints the transcript, which erases the scrollback first), and widen
+   ~l.1234-1236, which says only closing a tall transcript view does. `docs/remote.md` (ticket
+   dialog section, ~l.70-90): one sentence that closing the dialog redraws the transcript.
+   `CHANGELOG.md`: entry under `## [Unreleased]` / `### Fixed`, ending "(#740)".
 
 ## Files to Modify
 - `rust/fontaine-tui/src/app.rs`
@@ -61,7 +67,9 @@ happens once, when the last one closes.
 
 ## Trade-offs
 - Per-close-path reprint (the issue's suggestion) touches ~7 sites and misses future overlays; the
-  frame-transition check is one site. Cost: one bool on `Screen`.
+  frame-transition check is one site. Cost: one bool on `Screen`, and
+  every dialog close after a commit purges scrollback and reprints the full transcript, the cost
+  the agents-panel and transcript-view closes already pay.
 
 ## Testing Strategy
 Unit tests use the `screen(40,14)`/`everything()` TestBackend pattern (screen.rs:649-662, tests at
@@ -76,9 +84,11 @@ by regression tests):
 - Existing agents-panel and transcript-view tests stay green.
 
 ## Documentation
-None (internal behavior); add a CHANGELOG entry.
+See Implementation Step 5.
 
 ## Decisions
 - 2026-11-21: the transition check sets `reprint`/`committed_under_overlay` directly instead of
   calling `app.view(...)`, which also unfocuses `agent_list` while it must stay focused under
   `covered()` dialogs.
+- 2026-11-21: menus (search, completion, slash) and chrome growth outside dialogs are excluded from
+  `overlay_open`: the gap is small (up to ~11 rows) and a purge/reprint on every menu close costs more.
