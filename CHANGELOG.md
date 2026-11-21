@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `thinking_off` account key for `openrouter` (#739), opt-in: `thinking_off = true` adds
+  `{"reasoning": {"enabled": false}}` to the guardian's and the scanner's forced-call requests, so a
+  reasoning model stops spending the output budget on thinking.
 - Anthropic's native deferred tool loading for `anthropic` accounts (#628): with MCP tools deferred,
   every deferred tool's definition is sent once, marked `defer_loading`, and `tool_search` answers
   with `tool_reference` blocks, so loading a tool no longer restarts the prompt cache and the

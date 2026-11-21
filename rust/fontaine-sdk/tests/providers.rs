@@ -339,13 +339,16 @@ fn model_options_belong_to_ollama_only() {
 }
 
 #[test]
-fn thinking_off_belongs_to_databricks_only() {
+fn thinking_off_belongs_to_databricks_and_openrouter() {
     let ok = parse(
         "[accounts.d]\nkind = \"databricks\"\nbase_url = \"https://example.cloud.databricks.com\"\n\
 thinking_off = true\n",
     )
     .unwrap();
     assert_eq!(ok.accounts.unwrap()["d"].thinking_off, Some(true));
+
+    let or = parse("[accounts.o]\nkind = \"openrouter\"\nthinking_off = true\n").unwrap();
+    assert_eq!(or.accounts.unwrap()["o"].thinking_off, Some(true));
 
     let err = parse("[accounts.l]\nkind = \"ollama\"\nthinking_off = true\n").unwrap_err();
     assert!(err.contains("accounts.l.thinking_off"), "{err}");

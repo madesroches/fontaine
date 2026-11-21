@@ -472,6 +472,39 @@ async fn an_openrouter_account_with_prompt_caching_false_sends_no_marker() {
 }
 
 #[tokio::test]
+async fn an_openrouter_guardian_disables_reasoning_only_when_the_account_opts_in() {
+    for (extra, off) in [("thinking_off = true\n", true), ("", false)] {
+        let server = gateway().await;
+        let w = World::new();
+        let runtime = openrouter_session(&w, &server, extra).await;
+        let Some(fontaine_sdk::core::models::GuardianModel::Ready(handle)) =
+            &runtime.models.guardian
+        else {
+            panic!("the guardian is ready");
+        };
+        if off {
+            assert_eq!(
+                handle.thinking_off,
+                Some(json!({"reasoning": {"enabled": false}}))
+            );
+        } else {
+            assert!(handle.thinking_off.is_none());
+        }
+        handle
+            .completion
+            .call(caching_request().additional_params(handle.thinking_off.clone()))
+            .await
+            .unwrap();
+        let body = last_body(&server).await;
+        if off {
+            assert_eq!(body["reasoning"]["enabled"], json!(false), "{body}");
+        } else {
+            assert!(body.get("reasoning").is_none(), "{body}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn the_openrouter_guardian_marks_its_system_prompt_only() {
     let server = gateway().await;
     let w = World::new();

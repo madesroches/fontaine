@@ -16,7 +16,7 @@ This page helps you choose a kind and shows a minimal example of each;
 | `ollama` | Local Ollama | `/api/chat` | `http://localhost:11434` | optional | priced if catalog lists it | `context_tokens`, `think` |
 | `opencode-go` | OpenCode Go | four wires, per model | `https://opencode.ai/inference/go` | sign-in | unpriced | `wires` |
 | `databricks` | Databricks AI Gateway | four wires, per model | `base_url` required | required (Bearer) | estimated (list price) | `wires`, `model_facts`, `thinking_off` |
-| `openrouter` | OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | required | priced | prompt caching |
+| `openrouter` | OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | required | priced | prompt caching, `thinking_off` |
 | `claude-subscription` | Claude Max or Ultra via the Claude CLI | Messages, via the CLI | none | the CLI's login | unpriced | native web search, plan quota |
 
 `--max-budget-usd` does not apply to unpriced models, and with one as the main model it is a usage
