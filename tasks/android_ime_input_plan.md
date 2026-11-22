@@ -28,7 +28,8 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   activity object; the activity object is the instance of the class named in the manifest.
 - `docs/android.md` (line ~69) documents swipe typing as unsupported.
 - `.github/workflows/android.yml`, `release.yml` and `dev.yml` all build the APK through
-  `build-apk.sh`; the runner images ship a JDK, which provides `javac`.
+  `build-apk.sh`, but on different runner images: `android.yml` on `ubuntu-latest` (JDK 17), `release.yml`
+  and `dev.yml` (`build-android`) on `ubuntu-22.04` (default JDK 11); none uses `setup-java`.
 
 ## Design
 
@@ -68,8 +69,8 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 - Reporting calls `static native void nativeImeState(String text, int selStart, int selEnd,
   int compStart, int compEnd)` (composing −1/−1 when absent) and `static native void nativeImeSubmit()`.
 - Rust-driven methods: `setImeState(String, int, int, int, int)` replaces the mirror and the
-  selection/composing spans, then posts `InputMethodManager.updateSelection` (and `restartInput`
-  when the text changed under a live composition); `showKeyboard()` does `requestFocus()` then
+  selection/composing spans, then posts `InputMethodManager.restartInput` when the text changed and
+  `updateSelection` alone for selection/composing-only changes, as `TextView.setText` does; `showKeyboard()` does `requestFocus()` then
   `showSoftInput` on `ImeView` on the UI thread, with no `toggleSoftInput` fallback (deprecated since
   API 31; android-activity 0.6.1 `show_soft_input` already uses `showSoftInput` on the decor view while
   NativeActivity holds the input queue; Manual Verification step 1 still checks it);
@@ -81,8 +82,9 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 
 After `cargo ndk`, compile the Java: `javac --release 8 -cp android.jar -d classes` over the `find java -name '*.java'` list,
 then `$tools/d8 --lib android.jar --min-api 26 --output dex` over the `find classes -name '*.class'` list, and add `classes.dex`
-at the APK root (`zip -j` into `base.apk` before `zipalign`). Fail with a clear message when `javac`
-is missing. After the build, assert the staged `libfontaine_android.so` exports
+at the APK root (`zip -j` into `base.apk` before `zipalign`). The script selects JDK 17 explicitly (the
+newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else `javac -version` must report
+>= 17; otherwise it fails with a clear message. All three workflows therefore get the same toolchain. After the build, assert the staged `libfontaine_android.so` exports
 `Java_dev_fontaine_remote_FontaineActivity_nativeImeState` and `..._nativeImeSubmit` (NDK
 `llvm-nm -D`, found as the workflows do: `ANDROID_NDK_HOME`, else the newest `$ANDROID_HOME/ndk/*`, at
 `toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm`), so a symbol dropped by the linker fails the build, not the first launch. The check proves the
@@ -113,7 +115,8 @@ Manual Verification.
 ### Android glue (`src/android/ime_bridge.rs`, `mod.rs`, `jni_bridge.rs`, `ui.rs`)
 
 - `ime_bridge.rs`: the two exported `#[unsafe(no_mangle)] extern "system"` JNI functions write into a
-  `static Mutex<Pending>` (lock panics on poison per AGENTS.md because the contents feed field text)
+  `static Mutex<Pending>` (a poisoned lock is recovered with a one-line reason at the call site: the next whole-state report
+  overwrites the slot, and a panic in an `extern "system"` fn would abort the process)
   and `take()` drains it. The `Pending { state: Option<ImeState>, submit: bool }` slot type lives in
   portable `ime.rs` (latest state wins; submit is a sticky flag).
   Java-side calls (`set_state`, `show`, `hide`) go through `jni_bridge::with_activity`, clearing
@@ -124,8 +127,9 @@ Manual Verification.
   bridge's `show`/`hide`; `frame()` pushes `ImeSync::outgoing` to Java after input handling and
   after taps. Hardware-key and `KeyEvent` handling is unchanged. Clearing the field on submit
   flows through the same `outgoing` check, so the IME's mirror is reset too.
-- `ui.rs`: draw an underline beneath `field.composing()` in `field_frame` so the in-progress word is
-  visible, since the field is drawn by ImGui and not by a Java text widget.
+- `ui.rs`: in `field_frame`, when the field is not empty, draw the composing underline along the bottom
+  edge of each box returned by `Layout::selection_boxes(composing)` (as the selection is drawn at
+  ui.rs:535-546) so the in-progress word is visible, since the field is drawn by ImGui and not by a Java text widget.
 
 ## Implementation Steps
 
@@ -137,9 +141,15 @@ Manual Verification.
 5. `build-apk.sh`: javac + d8 + dex packaging + symbol-export check; update its header comment (add
    javac, d8, llvm-nm to the tools/requirements).
 6. `src/android/ime_bridge.rs` plus `mod.rs`/`jni_bridge.rs` changes (`with_activity` becomes
-   `pub(super)`); remove dead `TextEvent` code.
+   `pub(super)`); remove the dead `TextEvent`/`TextAction` branches, the `set_text_input_state` calls
+   (mod.rs:610, :671, :681), `hide_soft_input` (:693), the `typed` variable and the
+   `TextInputState`/`TextInputAction` imports (:15).
 7. `ui.rs`: composing underline.
-8. Docs, changelog, master-plan Decisions.
+8. Docs, changelog, master-plan edits in `tasks/fontaine_harness_plan.md`: dated (#751) Decisions lines at
+   the end of `### Build and release` (the subclass-over-GameActivity choice; the Java/dex build step), an
+   amending line for the #721 line at ~:503 whose reason "the activity has no Java code to apply
+   fitsSystemWindows" no longer holds, and the workspace-layout line at ~:234 gaining the Java
+   `FontaineActivity`, the `ime` module and the javac/d8 build.
 
 ## Files to Modify
 
@@ -147,9 +157,10 @@ Manual Verification.
 - `rust/fontaine-android/java/dev/fontaine/remote/FontaineActivity.java` (new)
 - `rust/fontaine-android/src/{field.rs, lib.rs, ime.rs (new)}`
 - `rust/fontaine-android/src/android/{mod.rs, jni_bridge.rs, ime_bridge.rs (new), ui.rs}`
-- `docs/android.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, workspace-layout
-  line for `fontaine-android`)
-- `.github/workflows/android.yml` only if the JDK is not on `PATH` for `javac` (verified in step 5)
+- `docs/android.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, #721 line amendment,
+  workspace-layout line for `fontaine-android`)
+- `.github/workflows/release.yml` and `.github/workflows/dev.yml`: set `JAVA_HOME` from `JAVA_HOME_17_X64`
+  for the `build-apk.sh` step if the script's own selection needs it
 
 ## Trade-offs
 
@@ -187,7 +198,7 @@ Host unit tests (run on every OS in `ci.yml`):
 - Swipe-typing scenario as a sequence: compose a word, replace it from a suggestion, commit, then a
   tap-driven `move_to` resets composing.
 
-CI (`android.yml`) compiles the Java, dexes it and checks the exported JNI symbols while building
+CI (`android.yml`, `release.yml`, `dev.yml`) compiles the Java, dexes it and checks the exported JNI symbols while building
 the debug APK; a Java compile error or dropped symbol fails the PR. No automated test can drive a
 real IME.
 
