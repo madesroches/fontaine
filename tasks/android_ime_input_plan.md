@@ -46,7 +46,9 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 ### Java layer (`rust/fontaine-android/java/dev/fontaine/remote/FontaineActivity.java`)
 
 - `FontaineActivity extends NativeActivity`. After `super.onCreate`, adds a 1×1 transparent `ImeView`
-  with `addContentView`; the view is focusable and takes focus so `InputMethodManager` can serve it.
+  with `addContentView`; the view calls `setFocusableInTouchMode(true)` and `requestFocus()` after `addContentView`
+  (and again in `showKeyboard()`), since a merely focusable view cannot take focus in touch mode and
+  `InputMethodManager` could not serve it.
   Touches still reach the native input queue (NativeActivity takes the window's queue), so the view
   never sees them.
 - `ImeView.onCheckIsTextEditor()` is true. `onCreateInputConnection(EditorInfo)` sets
@@ -54,11 +56,14 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   IME_FLAG_NO_EXTRACT_UI | IME_FLAG_NO_FULLSCREEN`, `initialSelStart/End` from the mirror, and
   returns a `BaseInputConnection(view, true)` subclass whose `getEditable()` returns the shared
   mirror `SpannableStringBuilder`. The base class then implements `commitText`, `setComposingText`,
-  `deleteSurroundingText`, `setSelection`, `finishComposingText` and the `getText*` queries against
-  the mirror. The subclass overrides each mutator to call `super` and then report the mirror to
-  Rust, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. After each IME
-  mutation (in `endBatchEdit` once batch depth reaches 0) it calls
-  `InputMethodManager.updateSelection(view, selStart, selEnd, compStart, compEnd)` from the mirror,
+  `setComposingRegion`, `deleteSurroundingText`, `deleteSurroundingTextInCodePoints` (API 24),
+  `replaceText` (API 34; the app targets SDK 34), `setSelection`, `finishComposingText` and the
+  `getText*` queries against the mirror. The subclass overrides each mutator to call `super` and
+  then report the mirror to Rust, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. The subclass counts batch depth
+  itself in overridden `beginBatchEdit`/`endBatchEdit` (`BaseInputConnection` keeps none;
+  `endBatchEdit` returns depth > 0). It calls
+  `InputMethodManager.updateSelection(view, selStart, selEnd, compStart, compEnd)` from the mirror when the count returns to 0 and after any mutator
+  (including the three above) running while the count is 0,
   since `BaseInputConnection` does not and the IME's cursor/composing tracking would go stale.
   `sendKeyEvent` is left to the base class, which re-dispatches the key to the window, so it
   reaches Rust as the existing `InputEvent::KeyEvent` (keys, Backspace and Enter from IMEs that
@@ -71,9 +76,7 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 - Rust-driven methods: `setImeState(String, int, int, int, int)` replaces the mirror and the
   selection/composing spans, then posts `InputMethodManager.restartInput` when the text changed and
   `updateSelection` alone for selection/composing-only changes, as `TextView.setText` does; `showKeyboard()` does `requestFocus()` then
-  `showSoftInput` on `ImeView` on the UI thread, with no `toggleSoftInput` fallback (deprecated since
-  API 31; android-activity 0.6.1 `show_soft_input` already uses `showSoftInput` on the decor view while
-  NativeActivity holds the input queue; Manual Verification step 1 still checks it);
+  `showSoftInput` on `ImeView` on the UI thread, (no `toggleSoftInput` fallback: deprecated since API 31, and `showSoftInput` already works under NativeActivity);
   `hideKeyboard()` calls `hideSoftInputFromWindow`. All hop to the UI thread with
   `runOnUiThread`.
 - Manifest: `android:name="dev.fontaine.remote.FontaineActivity"`, drop `android:hasCode="false"`.
@@ -87,9 +90,7 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else `javac 
 >= 17; otherwise it fails with a clear message. All three workflows therefore get the same toolchain. After the build, assert the staged `libfontaine_android.so` exports
 `Java_dev_fontaine_remote_FontaineActivity_nativeImeState` and `..._nativeImeSubmit` (NDK
 `llvm-nm -D`, found as the workflows do: `ANDROID_NDK_HOME`, else the newest `$ANDROID_HOME/ndk/*`, at
-`toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm`), so a symbol dropped by the linker fails the build, not the first launch. The check proves the
-symbols are exported, not that ART resolves them; resolution is covered by `System.loadLibrary` and
-Manual Verification.
+`toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm`), so a symbol dropped by the linker fails the build, not the first launch.
 
 ### Portable model (`src/field.rs`, new `src/ime.rs`)
 
@@ -121,8 +122,9 @@ Manual Verification.
   portable `ime.rs` (latest state wins; submit is a sticky flag).
   Java-side calls (`set_state`, `show`, `hide`) go through `jni_bridge::with_activity`, clearing
   exceptions as the other bridge calls do.
-- `mod.rs`: `input()` drains `ime_bridge::take()` after the event loop: `incoming` the state, set
-  `submitted` for a submit. Remove the dead `TextEvent`/`TextAction` branches and every
+- `mod.rs`: `input()` drains `ime_bridge::take()` after the event loop: the drained IME state is applied where
+  `typed` is today (before the `pressed` loop), and the IME submit flag is ORed into `submitted`
+  before the existing `submitted && !self.field.is_empty()` check. Remove the dead `TextEvent`/`TextAction` branches and every
   `set_text_input_state` call; replace `show_soft_input(true)`/`hide_soft_input(false)` with the
   bridge's `show`/`hide`; `frame()` pushes `ImeSync::outgoing` to Java after input handling and
   after taps. Hardware-key and `KeyEvent` handling is unchanged. Clearing the field on submit
@@ -159,8 +161,6 @@ Manual Verification.
 - `rust/fontaine-android/src/android/{mod.rs, jni_bridge.rs, ime_bridge.rs (new), ui.rs}`
 - `docs/android.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, #721 line amendment,
   workspace-layout line for `fontaine-android`)
-- `.github/workflows/release.yml` and `.github/workflows/dev.yml`: set `JAVA_HOME` from `JAVA_HOME_17_X64`
-  for the `build-apk.sh` step if the script's own selection needs it
 
 ## Trade-offs
 
