@@ -72,10 +72,13 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   library only to find `ANativeActivity_onCreate`, and ART resolves `Java_*` symbols only from
   libraries loaded through `System.loadLibrary`.
 - Reporting calls `static native void nativeImeState(String text, int selStart, int selEnd,
-  int compStart, int compEnd)` (composing −1/−1 when absent) and `static native void nativeImeSubmit()`.
-- Rust-driven methods: `setImeState(String, int, int, int, int)` replaces the mirror and the
-  selection/composing spans, then posts `InputMethodManager.restartInput` when the text changed and
-  `updateSelection` alone for selection/composing-only changes, as `TextView.setText` does; `showKeyboard()` does `requestFocus()` then
+  int compStart, int compEnd, int gen)` (composing −1/−1 when absent; `gen` is the generation of the
+  last Rust push Java applied, 0 before any) and `static native void nativeImeSubmit()`.
+- Rust-driven methods: `setImeState(String, int, int, int, int, int gen, boolean wholesale)` replaces the mirror and the
+  selection/composing spans, stores `gen` as the generation echoed by every later report, then posts
+  `InputMethodManager.restartInput` only when `wholesale` (submit-clear, paste/`replace_all`, cut, as
+  `TextView.setText` does) and `updateSelection` otherwise (hardware key, IME DEL/digit key event, tap),
+  so incremental edits keep the IME's suggestion, shift and autocorrect-undo state; `showKeyboard()` does `requestFocus()` then
   `showSoftInput` on `ImeView` on the UI thread, (no `toggleSoftInput` fallback: deprecated since API 31, and `showSoftInput` already works under NativeActivity);
   `hideKeyboard()` calls `hideSoftInputFromWindow`. All hop to the UI thread with
   `runOnUiThread`.
@@ -113,24 +116,36 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
     strips NUL, shifting every offset by the NULs before it, sets text, anchor/cursor (selection
     `sel.0` = anchor, `sel.1` = cursor) and composing (empty or inverted ranges become `None`).
   - `Field::ime_state() -> (String, usize, usize, Option<Range<usize>>)`: the reverse, from the field.
-  - `ImeSync { last: Option<ImeState> }`: `incoming(&mut self, &mut Field, ImeState)` applies and
-    records the applied state as `last`; `outgoing(&mut self, &Field) -> Option<ImeState>` returns the
-    field's state only when it differs from `last`, and the caller records it (`mark_sent`) only after
-    a successful JNI push, so a failed push is retried next frame. The Activity calls `incoming`
-    for drained IME state and `outgoing` once per frame after all input, so a field change from a tap,
+  - `ImeSync { last: Option<ImeState>, gen: u32, wholesale: bool }`: `incoming(&mut self, &mut Field, ImeState, report_gen: u32)`
+    applies the state, then records `field.ime_state()` converted back (the normalized state after NUL
+    stripping, surrogate rounding and composing normalization, not the raw input) as `last`, so a
+    normalized state is never echoed back. Convergence rule: `gen` counts pushes Rust has sent. A
+    report with `report_gen == gen` was built after Java applied the latest push and is recorded as
+    above. A report with `report_gen < gen` was built on a stale mirror: it is still applied (the IME's edit is
+    not lost) but `last` is reset to `None`, so `outgoing` re-pushes the Field and Java converges.
+    `outgoing(&self, &Field) -> Option<ImeState>` returns the field's state only when it differs from
+    `last`; it does not mutate, so a second call without `mark_sent` returns the same state. The caller
+    pushes it tagged `gen + 1` and the `wholesale()` flag, then calls `mark_sent(&mut self, ImeState)`
+    only after a successful JNI push, which sets `last`, increments `gen` and clears the flag, so a failed push is retried next frame.
+    `note_wholesale(&mut self)` sets the flag; the Activity calls it on submit-clear, paste/`replace_all`
+    and cut, and a stale-report reset also sets it (the IME must restart on the corrected text). Tap and key
+    edits leave it clear. The Activity calls `incoming`
+    for drained IME state (with its generation) and `outgoing` once per frame after all input, so a field change from a tap,
     paste, hardware key or submit reaches the IME, and an IME change is never echoed back.
 
 ### Android glue (`src/android/ime_bridge.rs`, `mod.rs`, `jni_bridge.rs`, `ui.rs`)
 
 - `ime_bridge.rs`: the two exported `#[unsafe(no_mangle)] extern "system"` JNI functions write into a
-  `static Mutex<Pending>` (a poisoned lock is recovered with a one-line reason at the call site: the next whole-state report
-  overwrites the slot, and a panic in an `extern "system"` fn would abort the process)
-  and `take()` drains it. The `Pending { state: Option<ImeState>, submit: bool }` slot type lives in
+  `static Mutex<Pending>` (locked with `.expect("...")` like the crate's other locks; the critical sections are plain
+  assignments and `take`, so the lock cannot poison)
+  and `take()` drains it. The `Pending { state: Option<(ImeState, u32)>, submit: bool }` slot type lives in
   portable `ime.rs` (latest state wins; submit is a sticky flag).
   Java-side calls (`set_state`, `show`, `hide`) go through `jni_bridge::with_activity`, clearing
   exceptions as the other bridge calls do.
-- `mod.rs`: `input()` drains `ime_bridge::take()` after the event loop: the drained IME state is applied where
-  `typed` is today (before the `pressed` loop), and the IME submit flag is ORed into `submitted`
+- `mod.rs`: `input()` drains `ime_bridge::take()` after the event loop: the drained IME state is applied via
+  `ImeSync::incoming` where `typed` is today (before the `pressed` loop, so key events, taps, paste and
+  submit-clear handled later in the same `input()` change the Field after the IME state, and `outgoing`
+  at the end of the frame pushes the result), and the IME submit flag is ORed into `submitted`
   before the existing `submitted && !self.field.is_empty()` check. Remove the dead `TextEvent`/`TextAction` branches and every
   `set_text_input_state` call; replace `show_soft_input(true)`/`hide_soft_input(false)` with the
   bridge's `show`/`hide`; `frame()` pushes `ImeSync::outgoing` to Java after input handling and
@@ -178,6 +193,10 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
 - AFK: The editor declares `TYPE_CLASS_TEXT | CAP_SENTENCES` with a Send action, not the issue's
   multi-line flag, because the field's Enter submits and the model never holds newlines; a
   multi-line editor makes keyboards insert newlines instead of sending.
+- AFK: Rust-to-Java pushes carry a generation counter that Java echoes in every report; a report from an older generation is applied but resets `last` so the field is re-pushed (converges without reverting a hardware key typed in between).
+- AFK: `restartInput` only for wholesale pushes (submit-clear, paste/`replace_all`, cut), flagged on the push; incremental key and tap edits use `updateSelection` only.
+- AFK: The `Pending` lock uses `.expect("...")` rather than poison recovery, per AGENTS.md; its critical sections cannot panic.
+- AFK: `ImeSync::incoming` records the normalized `field.ime_state()` as `last`; `outgoing(&self)` is pure and `mark_sent(&mut self, ImeState)` commits a successful push.
 
 ## Documentation
 
@@ -191,8 +210,14 @@ Host unit tests (run on every OS in `ci.yml`):
 - `ime.rs`: UTF-16↔byte conversion for ASCII, BMP multi-byte (`é`), astral chars (emoji, surrogate
   pairs), offsets inside a pair, out-of-range offsets; `ImeState::apply_to`/`from_field` round-trip.
 - `ImeSync`: no outgoing after `incoming` of the same state; outgoing after a tap/paste/clear
-  changes the field; unchanged field yields nothing.
-- `Pending`: latest of several stored states wins; the submit flag is set and cleared by `take`.
+  changes the field; unchanged field yields nothing; `incoming` of a state needing normalization (a NUL,
+  a mid-surrogate-pair offset, an inverted composing range) yields no `outgoing`; a second `outgoing`
+  without `mark_sent` returns the same state, and after `mark_sent` none; wholesale flag set by
+  `note_wholesale`, cleared by `mark_sent`.
+- Race interleaving: push gen 1 (field changed by a hardware key), then an `incoming` report built on the
+  old mirror with `report_gen` 0 arrives: the field takes the report, `outgoing` yields the field again
+  (wholesale); a report with the current gen leaves `outgoing` empty.
+- `Pending`: latest of several stored states (with their generation) wins; the submit flag is set and cleared by `take`.
 - `field.rs`: every non-IME mutator clears `composing`; `apply_ime` sets it, with selection, empty and
   inverted composing, and NUL stripped with offsets shifted; `ime_state` round-trips with `apply_ime`.
 - Swipe-typing scenario as a sequence: compose a word, replace it from a suggestion, commit, then a
