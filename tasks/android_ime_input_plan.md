@@ -20,7 +20,7 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 - `src/android/mod.rs`: `Activity::input()` handles `InputEvent::KeyEvent` (the only path that works
   today); the `TextEvent`/`TextAction` branches and every `set_text_input_state` call are dead under
   android-activity 0.6.1's NativeActivity backend (the calls are no-ops). `show_soft_input` /
-  `hide_soft_input` act on NativeActivity's own content view, which has no `InputConnection`.
+  `hide_soft_input` act on the window's decor view, which has no `InputConnection`.
 - `src/field.rs`: `Field { text, anchor, cursor }`, byte offsets on char boundaries, NUL stripped.
   `src/keys.rs`: `Key::Enter` submits a non-empty field, so the field is a single logical line that
   wraps on screen, never one holding newlines.
@@ -28,7 +28,7 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   activity object; the activity object is the instance of the class named in the manifest.
 - `docs/android.md` (line ~69) documents swipe typing as unsupported.
 - `.github/workflows/android.yml`, `release.yml` and `dev.yml` all build the APK through
-  `build-apk.sh`; the runners' JDK (already used for `keytool`) provides `javac`.
+  `build-apk.sh`; the runner images ship a JDK, which provides `javac`.
 
 ## Design
 
@@ -55,28 +55,39 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   mirror `SpannableStringBuilder`. The base class then implements `commitText`, `setComposingText`,
   `deleteSurroundingText`, `setSelection`, `finishComposingText` and the `getText*` queries against
   the mirror. The subclass overrides each mutator to call `super` and then report the mirror to
-  Rust, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit.
+  Rust, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. After each IME
+  mutation (in `endBatchEdit` once batch depth reaches 0) it calls
+  `InputMethodManager.updateSelection(view, selStart, selEnd, compStart, compEnd)` from the mirror,
+  since `BaseInputConnection` does not and the IME's cursor/composing tracking would go stale.
   `sendKeyEvent` is left to the base class, which re-dispatches the key to the window, so it
   reaches Rust as the existing `InputEvent::KeyEvent` (keys, Backspace and Enter from IMEs that
   still use them).
+- `FontaineActivity` has `static { System.loadLibrary("fontaine_android"); }`: NativeActivity opens the
+  library only to find `ANativeActivity_onCreate`, and ART resolves `Java_*` symbols only from
+  libraries loaded through `System.loadLibrary`.
 - Reporting calls `static native void nativeImeState(String text, int selStart, int selEnd,
   int compStart, int compEnd)` (composing −1/−1 when absent) and `static native void nativeImeSubmit()`.
-- Rust-driven methods, each `synchronized` on the mirror and guarding against echo with a
-  `programmatic` flag: `setImeState(String, int, int, int, int)` replaces the mirror and the
+- Rust-driven methods: `setImeState(String, int, int, int, int)` replaces the mirror and the
   selection/composing spans, then posts `InputMethodManager.updateSelection` (and `restartInput`
-  when the text changed under a live composition); `showKeyboard()` requests focus on the view and
-  `showSoftInput`; `hideKeyboard()` calls `hideSoftInputFromWindow`. All hop to the UI thread with
+  when the text changed under a live composition); `showKeyboard()` does `requestFocus()` then
+  `showSoftInput` on `ImeView` on the UI thread, with no `toggleSoftInput` fallback (deprecated since
+  API 31; android-activity 0.6.1 `show_soft_input` already uses `showSoftInput` on the decor view while
+  NativeActivity holds the input queue; Manual Verification step 1 still checks it);
+  `hideKeyboard()` calls `hideSoftInputFromWindow`. All hop to the UI thread with
   `runOnUiThread`.
 - Manifest: `android:name="dev.fontaine.remote.FontaineActivity"`, drop `android:hasCode="false"`.
 
 ### Build (`build-apk.sh`)
 
-After `cargo ndk`, compile the Java: `javac --release 8 -cp android.jar -d classes <java/**/*.java>`,
-then `$tools/d8 --lib android.jar --min-api 26 --output dex classes/**/*.class`, and add `classes.dex`
+After `cargo ndk`, compile the Java: `javac --release 8 -cp android.jar -d classes` over the `find java -name '*.java'` list,
+then `$tools/d8 --lib android.jar --min-api 26 --output dex` over the `find classes -name '*.class'` list, and add `classes.dex`
 at the APK root (`zip -j` into `base.apk` before `zipalign`). Fail with a clear message when `javac`
 is missing. After the build, assert the staged `libfontaine_android.so` exports
 `Java_dev_fontaine_remote_FontaineActivity_nativeImeState` and `..._nativeImeSubmit` (NDK
-`llvm-nm -D`), so a symbol dropped by the linker fails the build, not the first launch.
+`llvm-nm -D`, found as the workflows do: `ANDROID_NDK_HOME`, else the newest `$ANDROID_HOME/ndk/*`, at
+`toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm`), so a symbol dropped by the linker fails the build, not the first launch. The check proves the
+symbols are exported, not that ART resolves them; resolution is covered by `System.loadLibrary` and
+Manual Verification.
 
 ### Portable model (`src/field.rs`, new `src/ime.rs`)
 
@@ -94,34 +105,39 @@ is missing. After the build, assert the staged `libfontaine_android.so` exports
   - `Field::ime_state() -> ImeState`: the reverse, from the field.
   - `ImeSync { last: Option<ImeState> }`: `incoming(&mut self, &mut Field, ImeState)` applies and
     records the applied state as `last`; `outgoing(&mut self, &Field) -> Option<ImeState>` returns the
-    field's state only when it differs from `last` and records it. The Activity calls `incoming`
+    field's state only when it differs from `last`, and the caller records it (`mark_sent`) only after
+    a successful JNI push, so a failed push is retried next frame. The Activity calls `incoming`
     for drained IME state and `outgoing` once per frame after all input, so a field change from a tap,
     paste, hardware key or submit reaches the IME, and an IME change is never echoed back.
 
 ### Android glue (`src/android/ime_bridge.rs`, `mod.rs`, `jni_bridge.rs`, `ui.rs`)
 
 - `ime_bridge.rs`: the two exported `#[unsafe(no_mangle)] extern "system"` JNI functions write into a
-  `static Mutex<Pending { state: Option<ImeState>, submit: bool }>` (latest state wins; lock
-  panics on poison per AGENTS.md because the contents feed field text) and `take()` drains it.
+  `static Mutex<Pending>` (lock panics on poison per AGENTS.md because the contents feed field text)
+  and `take()` drains it. The `Pending { state: Option<ImeState>, submit: bool }` slot type lives in
+  portable `ime.rs` (latest state wins; submit is a sticky flag).
   Java-side calls (`set_state`, `show`, `hide`) go through `jni_bridge::with_activity`, clearing
   exceptions as the other bridge calls do.
 - `mod.rs`: `input()` drains `ime_bridge::take()` after the event loop: `incoming` the state, set
   `submitted` for a submit. Remove the dead `TextEvent`/`TextAction` branches and every
   `set_text_input_state` call; replace `show_soft_input(true)`/`hide_soft_input(false)` with the
   bridge's `show`/`hide`; `frame()` pushes `ImeSync::outgoing` to Java after input handling and
-  after taps. Hardware-key and `KeyEvent` handling is unchanged. Clearing the field on submit and
-  switching screens flow through the same `outgoing` check, so the IME's mirror is reset too.
+  after taps. Hardware-key and `KeyEvent` handling is unchanged. Clearing the field on submit
+  flows through the same `outgoing` check, so the IME's mirror is reset too.
 - `ui.rs`: draw an underline beneath `field.composing()` in `field_frame` so the in-progress word is
   visible, since the field is drawn by ImGui and not by a Java text widget.
 
 ## Implementation Steps
 
-1. `src/field.rs`: add `composing`, its accessor and clearing; update existing mutators.
+1. `src/field.rs`: add `composing`, its accessor and clearing; update existing mutators and the
+   stale header comment (lines 1-2); update the `src/keys.rs` header comment (lines 1-2).
 2. `src/ime.rs` and `src/lib.rs`: `ImeState`, conversions, `apply_ime`, `ime_state`, `ImeSync`, tests.
 3. `java/dev/fontaine/remote/FontaineActivity.java`: activity, `ImeView`, connection, native hooks.
 4. `AndroidManifest.xml`: subclass name, `hasCode` removed.
-5. `build-apk.sh`: javac + d8 + dex packaging + symbol-export check.
-6. `src/android/ime_bridge.rs` plus `mod.rs`/`jni_bridge.rs` changes; remove dead `TextEvent` code.
+5. `build-apk.sh`: javac + d8 + dex packaging + symbol-export check; update its header comment (add
+   javac, d8, llvm-nm to the tools/requirements).
+6. `src/android/ime_bridge.rs` plus `mod.rs`/`jni_bridge.rs` changes (`with_activity` becomes
+   `pub(super)`); remove dead `TextEvent` code.
 7. `ui.rs`: composing underline.
 8. Docs, changelog, master-plan Decisions.
 
@@ -132,18 +148,11 @@ is missing. After the build, assert the staged `libfontaine_android.so` exports
 - `rust/fontaine-android/src/{field.rs, lib.rs, ime.rs (new)}`
 - `rust/fontaine-android/src/android/{mod.rs, jni_bridge.rs, ime_bridge.rs (new), ui.rs}`
 - `docs/android.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, workspace-layout
-  line for `fontaine-android`), `tasks/design/platforms.md` if it describes the APK build
+  line for `fontaine-android`)
 - `.github/workflows/android.yml` only if the JDK is not on `PATH` for `javac` (verified in step 5)
 
 ## Trade-offs
 
-- **Custom `NativeActivity` subclass (chosen) vs `GameActivity`.** GameActivity extends
-  `AppCompatActivity`, so the Gradle-free build would have to fetch and pin the
-  `games-activity`/appcompat/core/fragment/lifecycle AAR closure, merge their resources with aapt2
-  and ship them in a signed release APK, and the whole event loop moves to a different backend, none
-  of it testable without a device. The subclass adds one Java file compiled by tools already on the
-  runner, keeps the proven backend, and the IME logic that matters (offset conversion, sync) lives
-  in portable Rust.
 - **Mirror-`Editable` `BaseInputConnection` vs a hand-written `InputConnection`.** The base class
   implements the many text queries IMEs make; only mutations need forwarding.
 - **Whole-state reports vs deltas.** Sending the full text/selection/composing after each mutation
@@ -162,8 +171,7 @@ is missing. After the build, assert the staged `libfontaine_android.so` exports
 ## Documentation
 
 - `docs/android.md`: replace the "swipe typing … not supported" paragraph with what works (swipe
-  typing, suggestions, spacebar cursor drag, composition underline) and note the Java activity
-  in the build notes if the page has them.
+  typing, suggestions, spacebar cursor drag, composition underline).
 - `CHANGELOG.md` `[Unreleased]` entry (#751).
 
 ## Testing Strategy
@@ -173,7 +181,8 @@ Host unit tests (run on every OS in `ci.yml`):
   pairs), offsets inside a pair, out-of-range offsets; `apply_ime` with selection, composing, empty
   and inverted composing, NUL stripped with offsets shifted; `ime_state` round-trip with `apply_ime`.
 - `ImeSync`: no outgoing after `incoming` of the same state; outgoing after a tap/paste/clear
-  changes the field; unchanged field yields nothing; latest of several incoming states wins.
+  changes the field; unchanged field yields nothing.
+- `Pending`: latest of several stored states wins; the submit flag is set and cleared by `take`.
 - `field.rs`: every non-IME mutator clears `composing`; `apply_ime` sets it.
 - Swipe-typing scenario as a sequence: compose a word, replace it from a suggestion, commit, then a
   tap-driven `move_to` resets composing.
@@ -195,9 +204,3 @@ needs a real IME and touch).
    keyboard's selection gesture and expect the field's selection to follow.
 5. Tap-to-place cursor, drag-select, Cut/Copy/Paste menu, hardware keyboard keys, the Send key.
    Expect all to behave as before and Send to submit the prompt.
-
-## Open Questions
-
-- Whether `showSoftInput` on the 1×1 view reliably shows the keyboard on every target (API 26–34)
-  while NativeActivity holds the window's input queue; confirm in Manual Verification step 1 and
-  fall back to `InputMethodManager.toggleSoftInput` only if it does not.
