@@ -59,11 +59,11 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   `setComposingRegion`, `deleteSurroundingText`, `deleteSurroundingTextInCodePoints` (API 24),
   `replaceText` (API 34; the app targets SDK 34), `setSelection`, `finishComposingText` and the
   `getText*` queries against the mirror. The subclass overrides each mutator to call `super` and
-  then report the mirror to Rust, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. The subclass counts batch depth
+  then mark the mirror dirty, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. The subclass counts batch depth
   itself in overridden `beginBatchEdit`/`endBatchEdit` (`BaseInputConnection` keeps none;
-  `endBatchEdit` returns depth > 0). It calls
-  `InputMethodManager.updateSelection(view, selStart, selEnd, compStart, compEnd)` from the mirror when the count returns to 0 and after any mutator
-  (including the three above) running while the count is 0,
+  `endBatchEdit` returns depth > 0). While the count is above 0 mutators only mark the mirror dirty; the report to Rust happens once when
+  the count returns to 0, and immediately after a mutator that runs while the count is 0. It calls
+  `InputMethodManager.updateSelection(view, selStart, selEnd, compStart, compEnd)` from the mirror at those same points,
   since `BaseInputConnection` does not and the IME's cursor/composing tracking would go stale.
   `sendKeyEvent` is left to the base class, which re-dispatches the key to the window, so it
   reaches Rust as the existing `InputEvent::KeyEvent` (keys, Backspace and Enter from IMEs that
@@ -86,8 +86,10 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
 After `cargo ndk`, compile the Java: `javac --release 8 -cp android.jar -d classes` over the `find java -name '*.java'` list,
 then `$tools/d8 --lib android.jar --min-api 26 --output dex` over the `find classes -name '*.class'` list, and add `classes.dex`
 at the APK root (`zip -j` into `base.apk` before `zipalign`). The script selects JDK 17 explicitly (the
-newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else `javac -version` must report
->= 17; otherwise it fails with a clear message. All three workflows therefore get the same toolchain. After the build, assert the staged `libfontaine_android.so` exports
+newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `java -version` and `javac -version` must report
+>= 17; otherwise it fails with a clear message. It exports `JAVA_HOME` set to the chosen JDK and puts
+`$JAVA_HOME/bin` first on `PATH` before running javac and d8, since the build-tools `d8` wrapper ends in
+`exec java` and ignores `JAVA_HOME`. All three workflows therefore get the same toolchain. After the build, assert the staged `libfontaine_android.so` exports
 `Java_dev_fontaine_remote_FontaineActivity_nativeImeState` and `..._nativeImeSubmit` (NDK
 `llvm-nm -D`, found as the workflows do: `ANDROID_NDK_HOME`, else the newest `$ANDROID_HOME/ndk/*`, at
 `toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm`), so a symbol dropped by the linker fails the build, not the first launch.
@@ -161,14 +163,6 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else `javac 
 - `rust/fontaine-android/src/android/{mod.rs, jni_bridge.rs, ime_bridge.rs (new), ui.rs}`
 - `docs/android.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions, #721 line amendment,
   workspace-layout line for `fontaine-android`)
-
-## Trade-offs
-
-- **Mirror-`Editable` `BaseInputConnection` vs a hand-written `InputConnection`.** The base class
-  implements the many text queries IMEs make; only mutations need forwarding.
-- **Whole-state reports vs deltas.** Sending the full text/selection/composing after each mutation
-  is idempotent and latest-wins, so a dropped or merged update cannot desynchronize the field;
-  prompts are short.
 
 ## Decisions
 
