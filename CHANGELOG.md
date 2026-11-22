@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Android keyboard input (#751): the app's text fields now take swipe typing, suggestions, autocorrect and
+  spacebar cursor dragging, and underline the word the keyboard is composing. The app ships a small
+  Java `FontaineActivity` that hosts an invisible editor view whose input connection mirrors the field
+  and reports edits over JNI; `build-apk.sh` now compiles it with `javac` and `d8` and checks the
+  library's JNI exports. See `docs/android.md`.
 - The session's activity (#579): one authoritative snapshot, derived from the runtime's own turn,
   agent, background-job, notification and human-wait state, says whether the instance is `active`,
   `waiting` on a person or `idle`, so a scheduler can tell the model's turn ending (`stop`) from the

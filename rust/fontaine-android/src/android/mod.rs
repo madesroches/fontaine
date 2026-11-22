@@ -4,6 +4,7 @@
 
 mod camera;
 mod error;
+mod ime_bridge;
 mod jni_bridge;
 mod ui;
 
@@ -11,9 +12,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use android_activity::input::{
-    InputEvent, KeyAction, KeyMapChar, Keycode, MotionAction, TextInputAction, TextInputState,
-};
+use android_activity::input::{InputEvent, KeyAction, KeyMapChar, Keycode, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, Rect};
 use dear_imgui_sys as sys;
 use fontaine_remote::{AttachOptions, Client, ClientStore, RelayMode, Target};
@@ -22,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::{Action, App, Screen};
 use crate::field::Field;
+use crate::ime::ImeSync;
 use crate::keys::{self, Key};
 use crate::layout::{self, Insets};
 use crate::link::is_pair_link;
@@ -501,6 +501,8 @@ struct Activity {
     last_scan: Instant,
     /// What has been typed into the paste or prompt field, with its cursor and selection.
     field: Field,
+    /// What the keyboard's mirror of `field` holds, so a change is pushed to Java and never echoed.
+    ime: ImeSync,
     camera_denied: bool,
     camera_granted: bool,
     /// The permission is asked of Java only when it may have changed, not every frame.
@@ -607,7 +609,7 @@ impl Activity {
 
     fn clear_field(&mut self) {
         self.field.clear();
-        self.android.set_text_input_state(TextInputState::default());
+        self.ime.note_wholesale();
     }
 
     fn perform(&mut self, action: Option<Action>) {
@@ -658,7 +660,7 @@ impl Activity {
         match tap {
             Tap::MoveCursor(idx) => {
                 self.field.move_to(idx);
-                self.android.show_soft_input(true);
+                ime_bridge::show(&self.android);
             }
             Tap::SelectRange(anchor, cursor) => self.field.select(anchor, cursor),
             Tap::SelectAll => self.field.select_all(),
@@ -668,7 +670,7 @@ impl Activity {
             Tap::Cut => {
                 if self.write_clipboard() {
                     self.field.cut();
-                    self.android.set_text_input_state(TextInputState::default());
+                    self.ime.note_wholesale();
                 }
             }
             Tap::PasteField => {
@@ -678,7 +680,7 @@ impl Activity {
                     } else {
                         self.field.replace_all(text.trim());
                     }
-                    self.android.set_text_input_state(TextInputState::default());
+                    self.ime.note_wholesale();
                 }
             }
             Tap::SubmitField => {
@@ -690,7 +692,7 @@ impl Activity {
                     None
                 };
                 self.clear_field();
-                self.android.hide_soft_input(false);
+                ime_bridge::hide(&self.android);
                 self.perform(action);
             }
             Tap::GrantCamera => {
@@ -782,11 +784,16 @@ impl Activity {
     }
 
     fn input(&mut self) {
+        // Applied before the key and tap handling below, so what the app does in the same frame
+        // lands on top of the keyboard's state and is pushed back by `push_ime`.
+        let (reported, ime_submit) = ime_bridge::take();
+        if let Some((state, generation)) = reported {
+            self.ime.incoming(&mut self.field, state, generation);
+        }
         let Ok(mut events) = self.android.input_events_iter() else {
             return;
         };
-        let mut typed: Option<String> = None;
-        let mut submitted = false;
+        let mut submitted = ime_submit;
         let mut pressed: Vec<Key> = Vec::new();
         let imgui = self.surface.as_ref().map(|s| &s.imgui);
         while events.next(|event| match event {
@@ -826,22 +833,8 @@ impl Activity {
                 });
                 InputStatus::Handled
             }
-            InputEvent::TextEvent(state) => {
-                typed = Some(state.text.clone());
-                InputStatus::Handled
-            }
-            InputEvent::TextAction(action) => {
-                submitted = matches!(
-                    action,
-                    TextInputAction::Send | TextInputAction::Done | TextInputAction::Go
-                );
-                InputStatus::Handled
-            }
             _ => InputStatus::Unhandled,
         }) {}
-        if let Some(text) = typed {
-            self.field.replace_all(&text);
-        }
         for key in pressed {
             if keys::apply(&mut self.field, key) {
                 submitted = true;
@@ -852,8 +845,24 @@ impl Activity {
         }
     }
 
+    /// Mirrors a field change the keyboard has not seen (tap, key, paste, submit) into Java.
+    fn push_ime(&mut self) {
+        let Some(state) = self.ime.outgoing(&self.field) else {
+            return;
+        };
+        if ime_bridge::set_state(
+            &self.android,
+            &state,
+            self.ime.next_gen(),
+            self.ime.wholesale(),
+        ) {
+            self.ime.mark_sent(state);
+        }
+    }
+
     fn frame(&mut self) {
         self.input();
+        self.push_ime();
         self.drain_client();
         self.scan();
         self.refresh_insets();
@@ -874,6 +883,7 @@ impl Activity {
         for tap in taps {
             self.handle_tap(tap);
         }
+        self.push_ime();
     }
 
     fn open_surface(&mut self) {
@@ -932,6 +942,7 @@ fn android_main(app: AndroidApp) {
         latest_undecoded: false,
         last_scan: Instant::now(),
         field: Field::default(),
+        ime: ImeSync::default(),
         camera_denied: false,
         camera_granted: false,
         permission_stale: true,

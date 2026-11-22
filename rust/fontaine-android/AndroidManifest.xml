@@ -12,11 +12,10 @@
 
     <application
         android:label="Fontaine"
-        android:hasCode="false"
         android:allowBackup="false"
         android:usesCleartextTraffic="false">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="dev.fontaine.remote.FontaineActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize"

@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod field;
+pub mod ime;
 pub mod keys;
 pub mod layout;
 pub mod link;

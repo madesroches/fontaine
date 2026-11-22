@@ -66,8 +66,9 @@ The paste field on the scan screen and the message field in a session are edited
   selection; in the scan screen's paste field it replaces the whole field with the trimmed text.
   Cut and Copy put the selection on the system clipboard.
 
-Swipe typing and dragging the spacebar to move the cursor are not supported: the app has no Java
-input-method connection, so the keyboard delivers key presses only.
+The keyboard is a full editor for the field: swipe typing, word suggestions and autocorrect work,
+and dragging the spacebar moves the cursor. The word the keyboard is still working on is underlined
+until it commits. The keyboard's Send key submits the field, like Enter.
 
 ## In a session
 
