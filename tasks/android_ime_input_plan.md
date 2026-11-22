@@ -104,10 +104,15 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
     UTF-16 code units as Java reports them.
   - `utf16_to_byte(text, units) -> usize` and `byte_to_utf16(text, byte) -> usize`; an offset inside a
     surrogate pair rounds down to the char start; out-of-range offsets clamp.
-  - `Field::apply_ime(&ImeState)`: strips NUL, shifting every offset by the NULs before it, converts
-    offsets, sets text, anchor/cursor (selection `sel.0` = anchor, `sel.1` = cursor) and composing
-    (empty or inverted ranges become `None`).
-  - `Field::ime_state() -> ImeState`: the reverse, from the field.
+  - `ImeState::apply_to(&self, &mut Field)` and `ImeState::from_field(&Field)` convert between UTF-16
+    and byte offsets and call the two `Field` methods below, which live in `field.rs` (its text,
+    anchor, cursor and `stripped()` are private to that module, and the public setters clear
+    `composing`).
+- `field.rs` (byte offsets only; `ime.rs` has already converted from/to UTF-16):
+  - `Field::apply_ime(text: &str, anchor: usize, cursor: usize, composing: Option<Range<usize>>)`:
+    strips NUL, shifting every offset by the NULs before it, sets text, anchor/cursor (selection
+    `sel.0` = anchor, `sel.1` = cursor) and composing (empty or inverted ranges become `None`).
+  - `Field::ime_state() -> (String, usize, usize, Option<Range<usize>>)`: the reverse, from the field.
   - `ImeSync { last: Option<ImeState> }`: `incoming(&mut self, &mut Field, ImeState)` applies and
     records the applied state as `last`; `outgoing(&mut self, &Field) -> Option<ImeState>` returns the
     field's state only when it differs from `last`, and the caller records it (`mark_sent`) only after
@@ -137,9 +142,10 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
 
 ## Implementation Steps
 
-1. `src/field.rs`: add `composing`, its accessor and clearing; update existing mutators and the
+1. `src/field.rs`: add `composing`, its accessor and clearing, and `apply_ime`/`ime_state` (byte
+   offsets; `ime.rs` does the UTF-16 conversion); update existing mutators and the
    stale header comment (lines 1-2); update the `src/keys.rs` header comment (lines 1-2).
-2. `src/ime.rs` and `src/lib.rs`: `ImeState`, conversions, `apply_ime`, `ime_state`, `ImeSync`, tests.
+2. `src/ime.rs` and `src/lib.rs`: `ImeState`, conversions (`apply_to`, `from_field`), `ImeSync`, `Pending`, tests.
 3. `java/dev/fontaine/remote/FontaineActivity.java`: activity, `ImeView`, connection, native hooks.
 4. `AndroidManifest.xml`: subclass name, `hasCode` removed.
 5. `build-apk.sh`: javac + d8 + dex packaging + symbol-export check; update its header comment (add
@@ -183,12 +189,12 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
 
 Host unit tests (run on every OS in `ci.yml`):
 - `ime.rs`: UTF-16↔byte conversion for ASCII, BMP multi-byte (`é`), astral chars (emoji, surrogate
-  pairs), offsets inside a pair, out-of-range offsets; `apply_ime` with selection, composing, empty
-  and inverted composing, NUL stripped with offsets shifted; `ime_state` round-trip with `apply_ime`.
+  pairs), offsets inside a pair, out-of-range offsets; `ImeState::apply_to`/`from_field` round-trip.
 - `ImeSync`: no outgoing after `incoming` of the same state; outgoing after a tap/paste/clear
   changes the field; unchanged field yields nothing.
 - `Pending`: latest of several stored states wins; the submit flag is set and cleared by `take`.
-- `field.rs`: every non-IME mutator clears `composing`; `apply_ime` sets it.
+- `field.rs`: every non-IME mutator clears `composing`; `apply_ime` sets it, with selection, empty and
+  inverted composing, and NUL stripped with offsets shifted; `ime_state` round-trips with `apply_ime`.
 - Swipe-typing scenario as a sequence: compose a word, replace it from a suggestion, commit, then a
   tap-driven `move_to` resets composing.
 
