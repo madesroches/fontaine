@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: build-apk.sh <out.apk> [--debug-sign]
 # Builds the arm64 APK without Gradle: cargo-ndk compiles the library, javac and d8 turn the Java
-# activity into classes.dex, aapt2 packs the manifest, zipalign aligns it. The result is unsigned unless --debug-sign is given; a release APK is signed
+# activity into classes.dex, aapt2 packs the manifest, zipalign aligns it.
+# The result is unsigned unless --debug-sign is given; a release APK is signed
 # by the release or dev workflow's `sign` job, which alone holds the keystore.
 # The version comes from rust/Cargo.toml; FONTAINE_APK_VERSION_CODE and FONTAINE_APK_VERSION_NAME
 # override the code and name (see version-code.sh).

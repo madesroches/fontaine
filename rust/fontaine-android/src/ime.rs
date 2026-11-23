@@ -65,8 +65,8 @@ pub struct ImeSync {
     last: Option<ImeState>,
     generation: u32,
     wholesale: bool,
-    /// The newest push was wholesale and no report of its generation has arrived yet.
-    unacked_wholesale: bool,
+    /// The generation of the newest wholesale push no report has acknowledged yet.
+    unacked_wholesale: Option<u32>,
 }
 
 impl ImeSync {
@@ -75,15 +75,20 @@ impl ImeSync {
     /// report older than the last push is applied too, so the IME's edit is not lost, but it is
     /// forgotten so the field is pushed again and Java converges. The exception is a report older
     /// than an unacknowledged wholesale push (submit-clear, paste, cut): it holds the text that
-    /// push replaced, so applying it would bring that text back, and it is dropped.
+    /// push replaced, so applying it would bring that text back, and it is dropped. Java's mirror
+    /// already equals what was pushed, so nothing is pushed again for it.
     pub fn incoming(&mut self, field: &mut Field, state: ImeState, report_generation: u32) {
+        if self
+            .unacked_wholesale
+            .is_some_and(|sent| report_generation >= sent)
+        {
+            self.unacked_wholesale = None;
+        }
         if report_generation >= self.generation {
-            self.unacked_wholesale = false;
             state.apply_to(field);
             self.last = Some(ImeState::from_field(field));
-        } else if self.unacked_wholesale {
-            self.last = None;
-            self.wholesale = true;
+        } else if self.unacked_wholesale.is_some() {
+            // Dropped: see above.
         } else {
             state.apply_to(field);
             self.last = None;
@@ -117,7 +122,9 @@ impl ImeSync {
     pub fn mark_sent(&mut self, state: ImeState) {
         self.last = Some(state);
         self.generation += 1;
-        self.unacked_wholesale = self.wholesale;
+        if self.wholesale {
+            self.unacked_wholesale = Some(self.generation);
+        }
         self.wholesale = false;
     }
 }
@@ -306,15 +313,33 @@ mod tests {
         sync.mark_sent(pushed);
         sync.incoming(&mut field, state("prompt", (6, 6), None), 0);
         assert_eq!(field.as_str(), "");
-        let again = sync.outgoing(&field).expect("re-push");
-        assert_eq!(again.text, "");
-        assert!(sync.wholesale());
-        sync.mark_sent(again);
+        assert_eq!(sync.outgoing(&field), None);
+        assert!(!sync.wholesale());
         // A second stale report is still dropped until one of the current generation arrives.
-        sync.incoming(&mut field, state("prompt", (6, 6), None), 1);
+        sync.incoming(&mut field, state("prompt", (6, 6), None), 0);
         assert_eq!(field.as_str(), "");
-        sync.incoming(&mut field, state("x", (1, 1), None), 2);
+        sync.incoming(&mut field, state("x", (1, 1), None), 1);
         assert_eq!(field.as_str(), "x");
+    }
+
+    #[test]
+    fn an_incremental_push_does_not_forget_an_unacknowledged_wholesale_one() {
+        let mut field = Field::default();
+        let mut sync = ImeSync::default();
+        sync.incoming(&mut field, state("a", (1, 1), None), 0);
+        field.replace_all("pasted");
+        sync.note_wholesale();
+        let pushed = sync.outgoing(&field).expect("paste");
+        sync.mark_sent(pushed);
+        field.move_to(1);
+        let pushed = sync.outgoing(&field).expect("tap");
+        sync.mark_sent(pushed);
+        sync.incoming(&mut field, state("a", (1, 1), None), 0);
+        assert_eq!(field.as_str(), "pasted");
+        sync.incoming(&mut field, state("pasted", (1, 1), None), 1);
+        assert_eq!(field.as_str(), "pasted");
+        sync.incoming(&mut field, state("pastex", (6, 6), None), 2);
+        assert_eq!(field.as_str(), "pastex");
     }
 
     #[test]

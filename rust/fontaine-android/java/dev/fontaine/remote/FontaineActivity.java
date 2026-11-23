@@ -100,6 +100,9 @@ public class FontaineActivity extends NativeActivity {
         // batch's edits and stamp its generation on them; only the newest is kept.
         private Connection live;
         private Runnable deferred;
+        // Set while a deferred push is replayed from onCreateInputConnection, whose EditorInfo
+        // already carries the state, so the input method must not be told again.
+        private boolean quiet;
 
         ImeView(Context context) {
             super(context);
@@ -121,6 +124,7 @@ public class FontaineActivity extends NativeActivity {
         public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
             // One logical line that wraps: Enter submits, so a multi-line editor would make
             // keyboards insert newlines instead of offering Send.
+            runDeferred(true);
             outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
             outAttrs.imeOptions =
                     EditorInfo.IME_ACTION_SEND
@@ -128,7 +132,6 @@ public class FontaineActivity extends NativeActivity {
                             | EditorInfo.IME_FLAG_NO_FULLSCREEN;
             outAttrs.initialSelStart = Selection.getSelectionStart(mirror);
             outAttrs.initialSelEnd = Selection.getSelectionEnd(mirror);
-            runDeferred();
             Connection connection = new Connection(this);
             live = connection;
             outAttrs.initialCapsMode = connection.getCursorCapsMode(outAttrs.inputType);
@@ -138,12 +141,17 @@ public class FontaineActivity extends NativeActivity {
             return connection;
         }
 
-        private void runDeferred() {
+        private void runDeferred(boolean silently) {
             live = null;
             Runnable push = deferred;
             deferred = null;
             if (push != null) {
-                push.run();
+                quiet = silently;
+                try {
+                    push.run();
+                } finally {
+                    quiet = false;
+                }
             }
         }
 
@@ -186,7 +194,7 @@ public class FontaineActivity extends NativeActivity {
                 BaseInputConnection.setComposingSpan(mirror, compStart, compEnd);
             }
             InputMethodManager manager = manager();
-            if (manager == null) {
+            if (manager == null || quiet) {
                 return;
             }
             if (wholesale) {
