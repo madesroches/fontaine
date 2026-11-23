@@ -57,7 +57,7 @@ composing region and a bidirectional, UTF-16-aware sync with the IME, all unit-t
   returns a `BaseInputConnection(view, true)` subclass whose `getEditable()` returns the shared
   mirror `SpannableStringBuilder`. The base class then implements `commitText`, `setComposingText`,
   `setComposingRegion`, `deleteSurroundingText`, `deleteSurroundingTextInCodePoints` (API 24),
-  `replaceText` (API 34; the app targets SDK 34), `setSelection`, `finishComposingText` and the
+  `replaceText` (API 33), `setSelection`, `finishComposingText` and the
   `getText*` queries against the mirror. The subclass overrides each mutator to call `super` and
   then mark the mirror dirty, and overrides `performEditorAction(IME_ACTION_SEND/DONE/GO)` to report a submit. The subclass counts batch depth
   itself in overridden `beginBatchEdit`/`endBatchEdit` (`BaseInputConnection` keeps none;

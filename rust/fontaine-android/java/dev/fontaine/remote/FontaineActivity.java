@@ -301,6 +301,23 @@ public class FontaineActivity extends NativeActivity {
             }
 
             @Override
+            public void closeConnection() {
+                super.closeConnection();
+                // A keyboard that dies mid-batch never calls endBatchEdit.
+                batchDepth = 0;
+                if (dirty) {
+                    flush();
+                }
+                if (live == this) {
+                    Runnable push = deferred;
+                    deferred = null;
+                    if (push != null) {
+                        push.run();
+                    }
+                }
+            }
+
+            @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
                 boolean done = super.commitText(text, newCursorPosition);
                 changed();
