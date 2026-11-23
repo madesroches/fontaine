@@ -197,7 +197,14 @@ public class FontaineActivity extends NativeActivity {
             Selection.setSelection(mirror, clamp(selStart, length), clamp(selEnd, length));
             BaseInputConnection.removeComposingSpans(mirror);
             if (compStart >= 0 && compEnd > compStart && compEnd <= length) {
-                BaseInputConnection.setComposingSpan(mirror, compStart, compEnd);
+                // The ranged setComposingSpans is @hide, so a bare connection over the mirror
+                // sets the span through the public setComposingRegion.
+                new BaseInputConnection(this, true) {
+                    @Override
+                    public Editable getEditable() {
+                        return mirror;
+                    }
+                }.setComposingRegion(compStart, compEnd);
             }
             InputMethodManager manager = manager();
             if (manager == null || quiet) {
