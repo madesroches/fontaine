@@ -5,13 +5,17 @@
 //! The mirror is computed by comparing the host's `App` with what was last published, so every
 //! change the loop makes reaches devices without a second render path.
 
+use std::collections::BTreeMap;
+
 use fontaine_sdk::core::preview::DiffPreview;
 use fontaine_sdk::tools::ask_user::Question;
 use fontaine_sdk::tools::todo::TodoItem;
 use serde::{Deserialize, Serialize};
 
+use crate::agent_list::depth_first;
+use crate::agents_panel::{SpendView, row_label, spend_text};
 use crate::app::App;
-use crate::transcript::{Entry, ToolOutput};
+use crate::transcript::{Entry, ToolOutput, Transcript};
 
 /// Longest text field of a mirrored entry. A longer one is cut, and says so, so one frame can
 /// never outgrow the host's frame cap.
@@ -123,6 +127,47 @@ pub(crate) fn capped(entry: &Entry) -> Entry {
     entry
 }
 
+/// One agent of the session as a device lists it. The host publishes every agent in the tree,
+/// whether or not its own terminal lists it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AgentSummary {
+    /// `None` is the main conversation.
+    pub id: Option<String>,
+    pub name: String,
+    pub parent: Option<String>,
+    pub agent_type: String,
+    pub model: String,
+    pub status: String,
+    pub depth: usize,
+    pub spend: String,
+    pub idle: bool,
+}
+
+/// Every agent of the tree in tree order, for the host to store where `Status::of` can read it.
+pub(crate) fn summarize_agents(rows: &[fontaine_sdk::agents::tree::AgentRow]) -> Vec<AgentSummary> {
+    depth_first(rows)
+        .into_iter()
+        .map(|row| AgentSummary {
+            id: Some(row.id.clone()),
+            name: row.name.clone(),
+            parent: row.parent.clone(),
+            agent_type: row.agent_type.clone(),
+            model: row.model.clone(),
+            status: row_label(row.status, row.idle).to_string(),
+            depth: row.depth,
+            spend: spend_text(&SpendView {
+                tokens: row.spend.tokens(),
+                token_budget: row.budget.tokens,
+                cost_usd: row.spend.cost_usd,
+                cost_budget: row.budget.cost_usd,
+                unpriced_tokens: row.spend.unpriced_tokens,
+                estimated: row.spend.estimated,
+            }),
+            idle: row.idle,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Status {
     pub mode: String,
@@ -144,11 +189,33 @@ pub(crate) struct Status {
     pub scheduled: usize,
     /// The active goal's age in seconds and whether it waits for the user.
     pub goal: Option<(u64, bool)>,
+    /// Main first, then every subagent; empty while the session has no subagent.
+    #[serde(default)]
+    pub agents: Vec<AgentSummary>,
 }
 
 impl Status {
     pub(crate) fn of(app: &App) -> Status {
+        let agents = if app.agent_summaries.is_empty() {
+            Vec::new()
+        } else {
+            let main = AgentSummary {
+                id: None,
+                name: "main".to_string(),
+                parent: None,
+                agent_type: String::new(),
+                model: app.model.clone(),
+                status: if app.running { "running" } else { "idle" }.to_string(),
+                depth: 0,
+                spend: String::new(),
+                idle: !app.running,
+            };
+            std::iter::once(main)
+                .chain(app.agent_summaries.iter().cloned())
+                .collect()
+        };
         Status {
+            agents,
             mode: app.mode.as_str().to_string(),
             model: app.model.clone(),
             effort: app.effort.map(|effort| effort.to_string()),
@@ -205,15 +272,26 @@ pub(crate) enum RemoteEvent {
     Set {
         at: usize,
         entry: Entry,
+        /// The subagent whose transcript this is; absent is the main conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// Streamed text added to the assistant entry at `at`.
     Append {
         at: usize,
         text: String,
         streaming: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     Truncate {
         len: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// The host dropped this agent's transcript, as `/clear` does.
+    AgentGone {
+        agent: String,
     },
     Status {
         status: Box<Status>,
@@ -227,17 +305,27 @@ pub(crate) enum RemoteEvent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     pub entries: Vec<Entry>,
+    /// Each subagent's whole transcript, by agent id.
+    #[serde(default)]
+    pub agent_entries: BTreeMap<String, Vec<Entry>>,
     pub status: Option<Status>,
     pub dialog: Option<Dialog>,
 }
 
-/// What was last published, and the comparison that finds what to publish next.
-pub(crate) struct MirrorTracker {
+/// What was last published of one transcript.
+#[derive(Default)]
+struct Mirrored {
     entries: Vec<Entry>,
-    status: Option<Status>,
-    dialog: Option<Dialog>,
     /// The transcript's change counter at the last comparison, to skip an unchanged transcript.
     changes: Option<u64>,
+}
+
+/// What was last published, and the comparison that finds what to publish next.
+pub(crate) struct MirrorTracker {
+    main: Mirrored,
+    agents: BTreeMap<String, Mirrored>,
+    status: Option<Status>,
+    dialog: Option<Dialog>,
     /// Whether AFK was on when devices were last told.
     pub afk_told: bool,
 }
@@ -245,17 +333,22 @@ pub(crate) struct MirrorTracker {
 impl MirrorTracker {
     pub(crate) fn new(afk: bool) -> MirrorTracker {
         MirrorTracker {
-            entries: Vec::new(),
+            main: Mirrored::default(),
+            agents: BTreeMap::new(),
             status: None,
             dialog: None,
-            changes: None,
             afk_told: afk,
         }
     }
 
     pub(crate) fn snapshot(&self) -> Snapshot {
         Snapshot {
-            entries: self.entries.clone(),
+            entries: self.main.entries.clone(),
+            agent_entries: self
+                .agents
+                .iter()
+                .map(|(id, mirrored)| (id.clone(), mirrored.entries.clone()))
+                .collect(),
             status: self.status.clone(),
             dialog: self.dialog.clone(),
         }
@@ -264,10 +357,22 @@ impl MirrorTracker {
     /// The events that bring a device up to date with `app`, in order.
     pub(crate) fn diff(&mut self, app: &App) -> Vec<RemoteEvent> {
         let mut events = Vec::new();
-        let changes = app.transcript.changes();
-        if self.changes != Some(changes) {
-            self.changes = Some(changes);
-            self.diff_entries(app, &mut events);
+        diff_transcript(&app.transcript, &mut self.main, None, &mut events);
+        let gone: Vec<String> = self
+            .agents
+            .keys()
+            .filter(|id| !app.agent_views.contains_key(*id))
+            .cloned()
+            .collect();
+        for agent in gone {
+            self.agents.remove(&agent);
+            events.push(RemoteEvent::AgentGone { agent });
+        }
+        let mut views: Vec<_> = app.agent_views.iter().collect();
+        views.sort_by_key(|(id, _)| id.as_str());
+        for (id, view) in views {
+            let mirrored = self.agents.entry(id.clone()).or_default();
+            diff_transcript(&view.transcript, mirrored, Some(id), &mut events);
         }
         let status = Status::of(app);
         if self.status.as_ref() != Some(&status) {
@@ -283,46 +388,63 @@ impl MirrorTracker {
         }
         events
     }
+}
 
-    fn diff_entries(&mut self, app: &App, events: &mut Vec<RemoteEvent>) {
-        let current: Vec<Entry> = app
-            .transcript
-            .mirror_entries()
-            .into_iter()
-            .map(capped)
-            .collect();
-        if current.len() < self.entries.len() {
-            events.push(RemoteEvent::Truncate { len: current.len() });
-            self.entries.truncate(current.len());
-        }
-        for (at, entry) in current.into_iter().enumerate() {
-            match self.entries.get(at) {
-                Some(old) if *old == entry => continue,
-                Some(Entry::Assistant { text: old, .. }) => {
-                    if let Entry::Assistant { text, streaming } = &entry
-                        && text.len() > old.len()
-                        && text.starts_with(old.as_str())
-                    {
-                        events.push(RemoteEvent::Append {
-                            at,
-                            text: text[old.len()..].to_string(),
-                            streaming: *streaming,
-                        });
-                        self.entries[at] = entry;
-                        continue;
-                    }
+/// Publishes what changed in `transcript` since `mirrored`, tagged with `agent`.
+fn diff_transcript(
+    transcript: &Transcript,
+    mirrored: &mut Mirrored,
+    agent: Option<&str>,
+    events: &mut Vec<RemoteEvent>,
+) {
+    let changes = transcript.changes();
+    if mirrored.changes == Some(changes) {
+        return;
+    }
+    mirrored.changes = Some(changes);
+    let agent = || agent.map(str::to_string);
+    let current: Vec<Entry> = transcript
+        .mirror_entries()
+        .into_iter()
+        .map(capped)
+        .collect();
+    let entries = &mut mirrored.entries;
+    if current.len() < entries.len() {
+        events.push(RemoteEvent::Truncate {
+            len: current.len(),
+            agent: agent(),
+        });
+        entries.truncate(current.len());
+    }
+    for (at, entry) in current.into_iter().enumerate() {
+        match entries.get(at) {
+            Some(old) if *old == entry => continue,
+            Some(Entry::Assistant { text: old, .. }) => {
+                if let Entry::Assistant { text, streaming } = &entry
+                    && text.len() > old.len()
+                    && text.starts_with(old.as_str())
+                {
+                    events.push(RemoteEvent::Append {
+                        at,
+                        text: text[old.len()..].to_string(),
+                        streaming: *streaming,
+                        agent: agent(),
+                    });
+                    entries[at] = entry;
+                    continue;
                 }
-                _ => {}
             }
-            events.push(RemoteEvent::Set {
-                at,
-                entry: entry.clone(),
-            });
-            if at < self.entries.len() {
-                self.entries[at] = entry;
-            } else {
-                self.entries.push(entry);
-            }
+            _ => {}
+        }
+        events.push(RemoteEvent::Set {
+            at,
+            entry: entry.clone(),
+            agent: agent(),
+        });
+        if at < entries.len() {
+            entries[at] = entry;
+        } else {
+            entries.push(entry);
         }
     }
 }
@@ -438,6 +560,24 @@ mod tests {
         host.transcript.notice("a note");
         host.transcript
             .shell("ls".into(), "a\n[exit 0]".into(), Some(0));
+        host.transcript
+            .entries
+            .push(Entry::Attachment("notes.txt".into()));
+        host.transcript.touch();
+        host.view_of("a1".into())
+            .transcript
+            .user("for the agent".into());
+        host.agent_summaries = vec![AgentSummary {
+            id: Some("a1".into()),
+            name: "worker".into(),
+            parent: None,
+            agent_type: "general".into(),
+            model: "m".into(),
+            status: "running".into(),
+            depth: 1,
+            spend: "1k tok".into(),
+            idle: false,
+        }];
         host.running = true;
         let (reply, _answer) = oneshot::channel();
         host.begin_approval(
@@ -465,9 +605,33 @@ mod tests {
         let wire = serde_json::to_string(&snapshot).expect("a snapshot serializes");
         let mirrored = app::Snapshot::parse(&wire).expect("the app decodes a host snapshot");
         assert_eq!(mirrored.entries.len(), snapshot.entries.len());
-        assert!(mirrored.entries.iter().all(
-            |e| !matches!(e, app::Entry::Other(kind) if kind != "Reasoning" && kind != "Shell")
+        assert!(
+            mirrored
+                .entries
+                .iter()
+                .all(|e| !matches!(e, app::Entry::Other(_))),
+            "{:?}",
+            mirrored.entries
+        );
+        assert!(mirrored.entries.iter().any(
+            |e| matches!(e, app::Entry::Reasoning { text, .. } if text == "thought about it")
         ));
+        assert!(
+            mirrored
+                .entries
+                .iter()
+                .any(|e| matches!(e, app::Entry::Shell { command, .. } if command == "ls"))
+        );
+        assert!(
+            mirrored
+                .entries
+                .iter()
+                .any(|e| matches!(e, app::Entry::Attachment(n) if n == "notes.txt"))
+        );
+        assert_eq!(
+            mirrored.agent_entries["a1"],
+            vec![app::Entry::User("for the agent".into())]
+        );
         assert_eq!(mirrored.entries[0], app::Entry::User("make a note".into()));
         assert!(matches!(
             &mirrored.entries[1],
@@ -504,6 +668,11 @@ mod tests {
         let status = mirrored.status.expect("a status");
         assert!(status.running);
         assert_eq!(status.model, "m");
+        assert_eq!(status.agents.len(), 2);
+        assert_eq!(status.agents[0].id, None);
+        assert_eq!(status.agents[1].id.as_deref(), Some("a1"));
+        assert_eq!(status.agents[1].status, "running");
+        assert_eq!(status.agents[1].spend, "1k tok");
         let Some(app::Dialog::Approval {
             id,
             choices,
@@ -525,13 +694,24 @@ mod tests {
             RemoteEvent::Set {
                 at: 0,
                 entry: Entry::User("x".into()),
+                agent: None,
+            },
+            RemoteEvent::Set {
+                at: 0,
+                entry: Entry::User("x".into()),
+                agent: Some("a1".into()),
             },
             RemoteEvent::Append {
                 at: 1,
                 text: "more".into(),
                 streaming: true,
+                agent: None,
             },
-            RemoteEvent::Truncate { len: 2 },
+            RemoteEvent::Truncate {
+                len: 2,
+                agent: None,
+            },
+            RemoteEvent::AgentGone { agent: "a1".into() },
             RemoteEvent::Status {
                 status: Box::new(Status::of(&host)),
             },
@@ -591,6 +771,204 @@ mod tests {
 
     fn host_like() -> App {
         host()
+    }
+
+    fn lines_of(transcript: &Transcript) -> Vec<String> {
+        transcript
+            .lines(60, &Theme::preset(Default::default()))
+            .iter()
+            .map(|line| line.to_string())
+            .collect()
+    }
+
+    fn with_two_agents(host: &mut App) {
+        for (id, said) in [("a1", "first agent"), ("a2", "second agent")] {
+            let view = host.view_of(id.into());
+            view.transcript.user(format!("task for {id}"));
+            view.transcript.error(said);
+        }
+    }
+
+    #[test]
+    fn a_device_built_from_events_renders_every_agents_transcript() {
+        let mut host = host();
+        let mut client = host_like();
+        let mut tracker = MirrorTracker::new(false);
+        host.transcript.user("main".into());
+        with_two_agents(&mut host);
+        deliver(&mut client, tracker.diff(&host));
+        for id in ["a1", "a2"] {
+            assert_eq!(
+                lines_of(&host.agent_views[id].transcript),
+                lines_of(&client.agent_views[id].transcript)
+            );
+        }
+        assert_eq!(lines(&host), lines(&client));
+        // A change to one agent publishes only that agent's events, tagged with it.
+        host.view_of("a2".into()).transcript.notice("later");
+        let events = tracker.diff(&host);
+        assert!(events.iter().all(|e| matches!(
+            e,
+            RemoteEvent::Set { agent: Some(a), .. } if a == "a2"
+        )));
+        assert_eq!(events.len(), 1);
+        deliver(&mut client, events);
+        assert_eq!(
+            lines_of(&host.agent_views["a2"].transcript),
+            lines_of(&client.agent_views["a2"].transcript)
+        );
+        // Rewinding one agent truncates only it.
+        host.view_of("a1".into()).transcript.entries.truncate(1);
+        host.view_of("a1".into()).transcript.touch();
+        let events = tracker.diff(&host);
+        assert!(matches!(
+            events.as_slice(),
+            [RemoteEvent::Truncate { len: 1, agent: Some(a) }] if a == "a1"
+        ));
+        deliver(&mut client, events);
+        assert_eq!(client.agent_views["a1"].transcript.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_main_event_has_no_agent_key_on_the_wire() {
+        let event = RemoteEvent::Truncate {
+            len: 1,
+            agent: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"kind":"truncate","len":1}"#
+        );
+        let old: RemoteEvent =
+            serde_json::from_str(r#"{"kind":"set","at":0,"entry":{"User":"x"}}"#).unwrap();
+        assert_eq!(
+            old,
+            RemoteEvent::Set {
+                at: 0,
+                entry: Entry::User("x".into()),
+                agent: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_snapshot_with_agents_round_trips_through_the_assembler_and_renders_the_same() {
+        use fontaine_remote::HostMsg;
+        use fontaine_remote::protocol::{SnapshotAssembler, split_snapshot};
+
+        let mut host = host();
+        let mut tracker = MirrorTracker::new(false);
+        host.transcript.user("main".into());
+        with_two_agents(&mut host);
+        tracker.diff(&host);
+        let json = serde_json::to_string(&tracker.snapshot()).unwrap();
+        let mut assembler = SnapshotAssembler::default();
+        let mut joined = None;
+        for part in split_snapshot(1, 1, &json, 256) {
+            let HostMsg::Snapshot {
+                epoch,
+                seq,
+                part,
+                of,
+                state,
+            } = part
+            else {
+                panic!("a snapshot part");
+            };
+            joined = assembler.push(epoch, seq, part, of, state).or(joined);
+        }
+        let (_, _, state) = joined.expect("every part arrived");
+        let mut late = host_like();
+        crate::remote::client_ui::apply_snapshot(&mut late, serde_json::from_str(&state).unwrap());
+        for id in ["a1", "a2"] {
+            assert_eq!(
+                lines_of(&host.agent_views[id].transcript),
+                lines_of(&late.agent_views[id].transcript)
+            );
+        }
+        // An old host's snapshot has no agent entries and still parses.
+        let old: Snapshot = serde_json::from_str(r#"{"entries":[],"status":null,"dialog":null}"#)
+            .expect("an older snapshot parses");
+        assert!(old.agent_entries.is_empty());
+    }
+
+    #[test]
+    fn dropping_the_agent_views_publishes_agent_gone_and_the_device_returns_to_main() {
+        let mut host = host();
+        let mut client = host_like();
+        let mut tracker = MirrorTracker::new(false);
+        with_two_agents(&mut host);
+        deliver(&mut client, tracker.diff(&host));
+        client.view(Some("a1".into()));
+        host.agent_views.clear();
+        let events = tracker.diff(&host);
+        let mut gone: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                RemoteEvent::AgentGone { agent } => Some(agent.as_str()),
+                _ => None,
+            })
+            .collect();
+        gone.sort_unstable();
+        assert_eq!(gone, ["a1", "a2"]);
+        deliver(&mut client, events);
+        assert!(client.agent_views.is_empty());
+        assert!(client.viewing.is_none());
+        assert!(tracker.snapshot().agent_entries.is_empty());
+    }
+
+    #[test]
+    fn the_status_lists_every_agent_with_main_first_and_none_while_there_is_no_subagent() {
+        let mut host = host();
+        assert!(Status::of(&host).agents.is_empty());
+        host.agent_summaries = vec![AgentSummary {
+            id: Some("a1".into()),
+            name: "worker".into(),
+            parent: None,
+            agent_type: "general".into(),
+            model: "m".into(),
+            status: "running".into(),
+            depth: 1,
+            spend: "3 tok".into(),
+            idle: false,
+        }];
+        let status = Status::of(&host);
+        assert_eq!(status.agents.len(), 2);
+        assert_eq!(status.agents[0].id, None);
+        assert_eq!(status.agents[1].id.as_deref(), Some("a1"));
+        let wire = serde_json::to_value(&status).unwrap();
+        let back: Status = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(back.agents, status.agents);
+        let mut old = wire;
+        old.as_object_mut().unwrap().remove("agents");
+        assert!(
+            serde_json::from_value::<Status>(old)
+                .unwrap()
+                .agents
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_device_command_picker_is_exactly_the_hosts_device_list() {
+        use crate::commands::{Command, builtin_menu, parse_command};
+
+        let host_list: Vec<String> = builtin_menu()
+            .into_iter()
+            .filter(|entry| {
+                parse_command(&format!("/{}", entry.name))
+                    .is_some_and(|c| !matches!(c, Command::Other { .. }) && c.device_allowed())
+            })
+            .map(|entry| entry.name)
+            .collect();
+        let mut picker: Vec<String> = fontaine_android::commands::DEVICE_COMMANDS
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect();
+        let mut host_list = host_list;
+        picker.sort_unstable();
+        host_list.sort_unstable();
+        assert_eq!(picker, host_list);
     }
 
     #[test]
@@ -682,6 +1060,7 @@ mod tests {
     fn events_round_trip_through_json() {
         let event = RemoteEvent::Set {
             at: 3,
+            agent: Some("a1".into()),
             entry: Entry::Tool {
                 id: "i".into(),
                 tool: "shell".into(),

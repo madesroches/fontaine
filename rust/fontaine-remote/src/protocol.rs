@@ -150,6 +150,15 @@ pub enum ClientMsg {
         message_id: String,
         line: String,
     },
+    /// A message to one subagent, addressed by the id the host published in its agent list.
+    AgentMessage {
+        message_id: String,
+        agent: String,
+        text: String,
+    },
+    StopAgent {
+        agent: String,
+    },
     Ping,
 }
 
@@ -414,6 +423,25 @@ mod tests {
             parse_hello(br#"{"type":"ping","v":1}"#),
             Err(Reason::Malformed)
         );
+    }
+
+    #[test]
+    fn agent_messages_round_trip_flat() {
+        let message = ClientMsg::AgentMessage {
+            message_id: "m1".into(),
+            agent: "a1".into(),
+            text: "go".into(),
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"agent_message","message_id":"m1","agent":"a1","text":"go"}"#
+        );
+        assert_eq!(serde_json::from_str::<ClientMsg>(&json).unwrap(), message);
+        let stop = ClientMsg::StopAgent { agent: "a1".into() };
+        let json = serde_json::to_string(&stop).unwrap();
+        assert_eq!(json, r#"{"type":"stop_agent","agent":"a1"}"#);
+        assert_eq!(serde_json::from_str::<ClientMsg>(&json).unwrap(), stop);
     }
 
     #[test]

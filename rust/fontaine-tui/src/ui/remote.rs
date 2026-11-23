@@ -481,6 +481,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 DeviceInput::Answer { by, id, answer } => {
                     apply_answer(&mut self.app, running, by, id, answer);
                 }
+                DeviceInput::AgentMessage { by, agent, text } => {
+                    apply_agent_message(runtime, running, by, &agent, text);
+                }
+                DeviceInput::StopAgent { from, agent } => {
+                    apply_stop_agent(runtime, running, &from, &agent);
+                }
             }
         }
         // The device that asked went away: its confirmation closes with no reply.
@@ -768,6 +774,79 @@ fn when(secs: u64) -> String {
         3600..=86_399 => format!("{}h ago", ago / 3600),
         _ => format!("{}d ago", ago / 86_400),
     }
+}
+
+/// The name an agent goes by in a notice to a device: its name with its id, or the id alone.
+fn agent_words(runtime: &AgentRuntime, id: &str) -> String {
+    let name = runtime.state.agents().name_of(id);
+    if name == id {
+        id.to_string()
+    } else {
+        format!("{name} ({id})")
+    }
+}
+
+/// Delivers a device's message to a subagent. Only the runtime is touched: the host's own view,
+/// input history and transcripts stay as they are, and the audit record names the device.
+fn apply_agent_message(
+    runtime: &AgentRuntime,
+    running: &Running,
+    by: RemoteSender,
+    agent: &str,
+    text: String,
+) {
+    let size = text.len();
+    match runtime.message_agent(agent, text) {
+        Ok(_) => running.surface.audit(
+            "agent_message",
+            &format!(
+                "message {} ({size} bytes) from {} was delivered to agent {agent}",
+                by.message_id, by.node
+            ),
+            Decision::Allow,
+        ),
+        Err(refusal) => {
+            running.surface.audit(
+                "agent_message_refused",
+                &format!(
+                    "message {} from {} to agent {agent} was refused: {}",
+                    by.message_id,
+                    by.node,
+                    refusal.notice(agent)
+                ),
+                Decision::Deny,
+            );
+            running.surface.hub().notice_to(
+                &by.node,
+                Level::Warning,
+                &refusal.notice(&agent_words(runtime, agent)),
+            );
+        }
+    }
+}
+
+/// Stops a subagent for a device. The main conversation is not an agent here: it stops with an
+/// interrupt.
+fn apply_stop_agent(runtime: &AgentRuntime, running: &Running, from: &str, agent: &str) {
+    let label = agent_words(runtime, agent);
+    if runtime.state.agents().is_child(agent) && runtime.kill_agent(agent) {
+        running.surface.audit(
+            "agent_stop",
+            &format!("device {from} stopped agent {agent}"),
+            Decision::Allow,
+        );
+        return;
+    }
+    running.surface.audit(
+        "agent_stop_refused",
+        &format!("device {from} asked to stop agent {agent}, which is not a running subagent"),
+        Decision::Deny,
+    );
+    running.surface.hub().notice_to(
+        &from.to_string(),
+        Level::Warning,
+        &format!("{label} cannot be stopped: it is not a running agent"),
+    );
 }
 
 /// Applies a device's answer to the open dialog; a refusal is told to that device and audited,

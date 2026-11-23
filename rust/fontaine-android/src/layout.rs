@@ -120,6 +120,37 @@ pub fn margin(scale: f32) -> f32 {
     16.0 * scale
 }
 
+/// Whether the agents bar shows: only once the session has an agent besides main, and main is
+/// always in the host's list, so one entry is main alone.
+pub fn agents_bar_visible(listed: usize) -> bool {
+    listed > 1
+}
+
+/// Breaks chips of the given widths into rows that fit `avail`, keeping their order. A chip wider
+/// than a row gets a row to itself. Returns the index ranges of the rows.
+pub fn chip_rows(widths: &[f32], avail: f32, gap: f32) -> Vec<std::ops::Range<usize>> {
+    let mut rows = Vec::new();
+    let (mut start, mut used) = (0, 0.0);
+    for (i, width) in widths.iter().enumerate() {
+        let next = if i == start {
+            *width
+        } else {
+            used + gap + width
+        };
+        if i > start && next > avail {
+            rows.push(start..i);
+            start = i;
+            used = *width;
+        } else {
+            used = next;
+        }
+    }
+    if start < widths.len() {
+        rows.push(start..widths.len());
+    }
+    rows
+}
+
 /// Side of the square scan card: as wide as the window allows, shrunk so the paste section below
 /// stays on screen, but never under `min_side`.
 pub fn card_side(avail_width: f32, avail_height: f32, below_px: f32, min_side: f32) -> f32 {
@@ -289,6 +320,33 @@ mod tests {
     fn a_content_rect_gives_the_uncovered_edges() {
         let i = Insets::from_content_rect(10, 120, 1060, 2352, DISPLAY);
         assert_eq!(i, insets(120.0, 10.0, 20.0, 48.0));
+    }
+
+    #[test]
+    fn the_agents_bar_hides_while_only_main_exists() {
+        assert!(!agents_bar_visible(0));
+        assert!(!agents_bar_visible(1));
+        assert!(agents_bar_visible(2));
+    }
+
+    #[test]
+    fn chips_wrap_into_rows_in_order() {
+        assert!(chip_rows(&[], 100.0, 4.0).is_empty());
+        assert_eq!(chip_rows(&[30.0, 30.0, 30.0], 100.0, 4.0), vec![0..3]);
+        assert_eq!(
+            chip_rows(&[30.0, 30.0, 30.0, 30.0], 100.0, 4.0),
+            vec![0..3, 3..4]
+        );
+        // 30 + 4 + 30 + 4 + 30 = 98 fits; one more pixel does not.
+        assert_eq!(chip_rows(&[30.0, 30.0, 31.0], 98.0, 4.0), vec![0..2, 2..3]);
+    }
+
+    #[test]
+    fn a_chip_wider_than_a_row_stands_alone() {
+        assert_eq!(
+            chip_rows(&[20.0, 500.0, 20.0], 100.0, 4.0),
+            vec![0..1, 1..2, 2..3]
+        );
     }
 
     #[test]

@@ -471,6 +471,47 @@ async fn a_device_cannot_run_guardian_disable_and_the_refusal_is_audited() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_message_or_stop_for_an_unknown_agent_is_refused_with_a_notice_and_audited() {
+    let w = World::new(Vec::new()).with_config(DIRECT_ONLY);
+    let w = &w;
+    w.run(|ui| async move {
+        let mut client = attach(&ui).await;
+        client.send(ClientMsg::AgentMessage {
+            message_id: "am1".into(),
+            agent: "no-such-agent".into(),
+            text: "hello".into(),
+        });
+        until(&mut client, |e| {
+            matches!(e, ClientEvent::Accepted { message_id } if message_id == "am1").then_some(())
+        })
+        .await;
+        let text = until(&mut client, |e| match e {
+            ClientEvent::Notice { text, .. } if text.contains("no agent") => Some(text.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(text.contains("no-such-agent"), "{text}");
+        client.send(ClientMsg::StopAgent {
+            agent: "no-such-agent".into(),
+        });
+        until(&mut client, |e| match e {
+            ClientEvent::Notice { text, .. } if text.contains("cannot be stopped") => Some(()),
+            _ => None,
+        })
+        .await;
+        // Neither reached the main conversation or the host's own view.
+        assert!(!ui.screen().contains("hello"), "{}", ui.screen());
+        client.stop();
+    })
+    .await;
+    let rules = rules(w);
+    for expected in ["agent_message_refused", "agent_stop_refused"] {
+        assert!(rules.iter().any(|r| r == expected), "{rules:?}");
+    }
+    assert!(w.requests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_afk_session_asks_no_device_and_tells_it_so() {
     let w = World::new(Vec::new())
         .in_mode(PermissionMode::Afk)

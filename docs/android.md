@@ -72,11 +72,22 @@ until it commits. The keyboard's Send key submits the field, like Enter.
 
 ## In a session
 
-- The transcript follows the host, and the status line shows the model, mode and branch.
+- The transcript follows the host, and the status line shows the model, mode and branch. Chips under
+  it show the goal, running agents, scheduled work and background shells and monitors.
+- When the session has subagents, an **agents bar** lists main and every agent with its status:
+  running ones first, then failed, then the rest. Tap one to read its transcript, live. An agent that
+  waits on an approval or a question is marked `!`. The view you pick is yours alone and never moves
+  the host's. The message field then writes to that agent, **Stop agent** ends it, and a slash line is
+  refused with "switch to main to run commands". The agent stays viewable after it leaves the list.
+- Reasoning rows are collapsed: tap one to read it. Shell lines, attachments, the host's todo list
+  (read-only, collapsed to its progress) and the messages queued behind the running turn are shown.
+- The **commands** picker lists the slash commands the host runs for a device; a tap puts one in the
+  message field.
 - The message field sends a prompt. A message that starts with `/` is sent as a slash line and runs
   only if the command is on the [device list](remote.md#what-a-device-sees-and-can-do). A message is at
   most 8 KiB.
-- **Interrupt** stops the main turn when one is running.
+- **Interrupt** stops the main turn when one is running; on a subagent's view the button is **Stop
+  agent**.
 - An approval shows the tool, the reason and any diff, with the choices the host offered: allow once,
   allow for the session, deny. "Always allow" is never offered, because it writes a permanent rule on
   the host. A question takes one option; a multi-select question is answered at the host.
@@ -95,3 +106,5 @@ list and attribution by node id apply unchanged, and the ledger records the phon
 - One session at a time; there is no session list, push notification or LAN-only mode.
 - Questions allow one option each; typed answers and multi-select answers happen at the host.
 - The app reads what the host publishes leniently: an entry kind the app does not know is skipped.
+- What stays at the host, and why, is listed in
+  [what stays at the host](remote.md#what-stays-at-the-host).

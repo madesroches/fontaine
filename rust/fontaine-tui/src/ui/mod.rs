@@ -561,6 +561,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             main_writing,
         );
         self.app.agent_list.set_rows(shown);
+        self.app.agent_summaries = crate::remote::summarize_agents(rows);
         // A call whose agent stopped never gets a result, and would hold the live area.
         for row in rows.iter().filter(|row| !row.status.is_running()) {
             if let Some(view) = self.app.agent_views.get_mut(&row.id) {

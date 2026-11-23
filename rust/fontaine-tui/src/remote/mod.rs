@@ -13,7 +13,7 @@ mod store;
 pub(crate) mod surface;
 
 pub use client_ui::{AttachEnd, AttachParams, run_attached};
-pub(crate) use event::{Dialog, MirrorTracker};
+pub(crate) use event::{AgentSummary, Dialog, MirrorTracker, summarize_agents};
 pub use store::FileStore;
 pub(crate) use store::ensure_dir;
 pub(crate) use surface::{DeviceInput, RemoteSurface};

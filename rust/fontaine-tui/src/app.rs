@@ -266,6 +266,9 @@ pub struct App {
     pub transcript: Transcript,
     /// The subagents' transcripts, by agent id, filled as their events arrive.
     pub agent_views: HashMap<String, AgentView>,
+    /// Every subagent of the tree, listed or not, as devices see them; written with the list
+    /// below the status line.
+    pub(crate) agent_summaries: Vec<crate::remote::AgentSummary>,
     /// The agent whose transcript is on screen; `None` is the main conversation.
     pub viewing: Option<String>,
     /// The next render erases the screen and its scrollback and writes the shown transcript
@@ -542,6 +545,7 @@ impl App {
         App {
             transcript: Transcript::default(),
             agent_views: HashMap::new(),
+            agent_summaries: Vec::new(),
             viewing: None,
             reprint: false,
             refusal: None,
