@@ -4,9 +4,6 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
-  # Temporary: exercises this file on its own PR; remove once the PR run is green.
-  pull_request:
-    paths: ['.github/workflows/pg2.yml']
 
 env:
   CARGO_TERM_COLOR: always
