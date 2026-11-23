@@ -545,6 +545,22 @@ fn field_frame(id: &str, field: &Field, hint: &str, state: &mut UiState, taps: &
                     );
                 }
             }
+            if let Some(range) = field.composing()
+                && !field.is_empty()
+            {
+                let color = sys::igGetColorU32_Vec4(rgba(BRIGHT));
+                for (left, _, right, bottom) in layout.selection_boxes(range) {
+                    let y = origin.y + bottom - 1.0;
+                    sys::ImDrawList_AddLine(
+                        list,
+                        v2(origin.x + left, y),
+                        v2(origin.x + right, y),
+                        color,
+                        1.5,
+                        0,
+                    );
+                }
+            }
             let tint = if field.is_empty() {
                 [0.55, 0.55, 0.55, 1.0]
             } else {

@@ -10,7 +10,7 @@ const CAMERA: &str = "android.permission.CAMERA";
 const GRANTED: i32 = 0;
 
 /// Runs `body` on a thread attached to the VM, with the activity object.
-fn with_activity<T>(
+pub(super) fn with_activity<T>(
     app: &AndroidApp,
     body: impl FnOnce(&mut jni::JNIEnv<'_>, &JObject<'_>) -> jni::errors::Result<T>,
 ) -> Option<T> {

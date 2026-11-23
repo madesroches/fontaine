@@ -1,5 +1,5 @@
-//! How a hardware or soft-keyboard key press edits the paste or prompt field. NativeActivity
-//! delivers keys, not composed text, so the field is built here from them.
+//! How a hardware key press, or a key event from an input method that still sends them, edits the
+//! paste or prompt field. Composed text arrives through the input-method connection instead.
 
 use crate::field::Field;
 

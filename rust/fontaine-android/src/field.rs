@@ -1,15 +1,18 @@
-//! The text of the paste or prompt field with a cursor and a selection. NativeActivity delivers
-//! keys and taps, not an editable buffer, so the editing lives here where it can be tested.
+//! The text of the paste or prompt field with a cursor, a selection and the input method's
+//! composing region. The input method edits a Java-side mirror and the app edits taps and keys, so
+//! the editing lives here where it can be tested.
 
 use std::ops::Range;
 
 /// Text with an anchor and a moving cursor, both byte offsets on char boundaries. The selection is
-/// the range between them and is empty when they are equal.
+/// the range between them and is empty when they are equal. `composing` is the span the input
+/// method is still revising (a swiped word); any edit that does not come from it ends the span.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Field {
     text: String,
     anchor: usize,
     cursor: usize,
+    composing: Option<Range<usize>>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -52,6 +55,11 @@ impl Field {
             .then(|| self.anchor.min(self.cursor)..self.anchor.max(self.cursor))
     }
 
+    /// The span the input method is composing, when there is one.
+    pub fn composing(&self) -> Option<Range<usize>> {
+        self.composing.clone()
+    }
+
     pub fn selected(&self) -> &str {
         self.selection().map_or("", |range| &self.text[range])
     }
@@ -80,6 +88,7 @@ impl Field {
     }
 
     fn collapse_to(&mut self, idx: usize) {
+        self.composing = None;
         self.anchor = idx;
         self.cursor = idx;
     }
@@ -123,6 +132,7 @@ impl Field {
     }
 
     pub fn select(&mut self, anchor: usize, cursor: usize) {
+        self.composing = None;
         self.anchor = self.clamp(anchor);
         self.cursor = self.clamp(cursor);
     }
@@ -188,6 +198,7 @@ impl Field {
 
     /// Replaces the whole text and puts the cursor at its end.
     pub fn replace_all(&mut self, text: &str) {
+        self.composing = None;
         self.text = stripped(text);
         self.collapse_to(self.text.len());
     }
@@ -195,6 +206,42 @@ impl Field {
     pub fn clear(&mut self) {
         self.text.clear();
         self.collapse_to(0);
+    }
+
+    /// Takes the input method's state, in byte offsets. NULs are stripped and every offset moves
+    /// back by the NULs before it; offsets are rounded down to char boundaries; an empty or
+    /// inverted composing range means none.
+    pub fn apply_ime(
+        &mut self,
+        text: &str,
+        anchor: usize,
+        cursor: usize,
+        composing: Option<Range<usize>>,
+    ) {
+        let shift = |at: usize| {
+            let end = at.min(text.len());
+            let end = (0..=end)
+                .rev()
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap_or(0);
+            end - text[..end].matches('\0').count()
+        };
+        let (anchor, cursor) = (shift(anchor), shift(cursor));
+        let composing = composing.map(|r| shift(r.start)..shift(r.end));
+        self.text = stripped(text);
+        self.anchor = anchor;
+        self.cursor = cursor;
+        self.composing = composing.filter(|r| r.start < r.end);
+    }
+
+    /// The text, anchor, cursor and composing span as `apply_ime` takes them.
+    pub fn ime_state(&self) -> (String, usize, usize, Option<Range<usize>>) {
+        (
+            self.text.clone(),
+            self.anchor,
+            self.cursor,
+            self.composing.clone(),
+        )
     }
 }
 
@@ -392,5 +439,77 @@ mod tests {
     fn word_range_on_empty_text_is_empty() {
         let f = Field::default();
         assert_eq!(f.word_range_at(7), 0..0);
+    }
+
+    #[test]
+    fn every_app_side_edit_ends_the_composition() {
+        let compose = |f: &mut Field| f.apply_ime("hello world", 5, 5, Some(0..5));
+        let mut f = Field::default();
+        for edit in [
+            (|f: &mut Field| f.move_to(3)) as fn(&mut Field),
+            |f| f.select(0, 2),
+            |f| f.replace_all("x"),
+            |f| f.clear(),
+            |f| f.insert("a"),
+            |f| f.backspace(),
+            |f| f.move_left(),
+            |f| f.select_all(),
+        ] {
+            compose(&mut f);
+            assert_eq!(f.composing(), Some(0..5));
+            edit(&mut f);
+            assert_eq!(f.composing(), None);
+        }
+        compose(&mut f);
+        f.select(0, 5);
+        f.cut();
+        assert_eq!(f.composing(), None);
+    }
+
+    #[test]
+    fn apply_ime_sets_text_selection_and_composing() {
+        let mut f = Field::default();
+        f.apply_ime("hello world", 6, 11, Some(6..11));
+        assert_eq!(f.as_str(), "hello world");
+        assert_eq!(f.selection(), Some(6..11));
+        assert_eq!(f.composing(), Some(6..11));
+    }
+
+    #[test]
+    fn apply_ime_drops_empty_and_inverted_composing() {
+        let mut f = Field::default();
+        f.apply_ime("abc", 1, 1, Some(1..1));
+        assert_eq!(f.composing(), None);
+        // The input method can report a span whose end precedes its start.
+        #[allow(clippy::reversed_empty_ranges)]
+        let inverted = Some(2..1);
+        f.apply_ime("abc", 1, 1, inverted);
+        assert_eq!(f.composing(), None);
+    }
+
+    #[test]
+    fn apply_ime_strips_nuls_and_shifts_offsets() {
+        let mut f = Field::default();
+        f.apply_ime("a\0bc\0d", 4, 6, Some(2..4));
+        assert_eq!(f.as_str(), "abcd");
+        assert_eq!((f.cursor(), f.selection()), (4, Some(3..4)));
+        assert_eq!(f.composing(), Some(1..3));
+    }
+
+    #[test]
+    fn apply_ime_rounds_offsets_to_char_boundaries_and_clamps() {
+        let mut f = Field::default();
+        f.apply_ime("é", 1, 99, None);
+        assert_eq!(f.selection(), Some(0..2));
+    }
+
+    #[test]
+    fn ime_state_round_trips_with_apply_ime() {
+        let mut f = Field::default();
+        f.apply_ime("aé b", 1, 3, Some(1..3));
+        let (text, anchor, cursor, composing) = f.ime_state();
+        let mut g = Field::default();
+        g.apply_ime(&text, anchor, cursor, composing);
+        assert_eq!(f, g);
     }
 }
