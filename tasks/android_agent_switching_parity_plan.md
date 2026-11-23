@@ -47,9 +47,10 @@ host state):
 
 - `Status` gains `agents: Vec<AgentSummary>` (`#[serde(default)]`): `id`, `name`, `parent`,
   `agent_type`, `model`, `status` (a string label from `agents_panel::status_label`/`row_label`),
-  `depth`, `elapsed_secs`, `spend` (the text `spend_text` already builds), `idle`, `writing`. Built
-  from the same `agent_list::rows` output the TUI lists, so listing rules (running, viewed, task
-  owner, recently failed) are shared (DRY) and the main agent is row 0 with `id = None`/"main".
+  `depth`, `spend` (the text `spend_text` already builds), `idle`. Built from the agent tree
+  directly: every agent whose transcript exists in `App::agent_views`, plus main (row 0 with
+  `id = None`/"main"). It does not use `agent_list::rows`, which depends on the host's
+  viewing/dismissed state. Running/failed ordering is done by the app.
 - `Snapshot` gains `agent_entries: BTreeMap<String, Vec<Entry>>` (`#[serde(default)]`), keyed by
   agent id, from `App::agent_views`. Each agent's list is capped to its last N entries
   (`AGENT_ENTRIES_CAP`, 200) and the snapshot builder keeps newest agents first so the total stays
@@ -68,16 +69,20 @@ Two new `ClientMsg` variants, both audited and routed through the same choke poi
 
 - `AgentMessage { message_id, agent, text }`: the surface calls the existing
   `AgentRuntime::message_agent` path via a new `DeviceInput::AgentMessage` handled by the interface
-  loop (the runtime is not reachable from the network task), tagged with the sender like remote
-  prompts. Same size cap as `Prompt`; replies `Accepted`/`PromptRejected` (an unknown or finished
+  loop (the runtime is not reachable from the network task). The interface-loop handlers call
+  `runtime.message_agent` / `runtime.kill_agent` directly, never `Ui::message_agent` /
+  `Ui::kill_agent` (which write to host input history, the main transcript and
+  `restore_to_input`), and turn the outcome into an audit/ledger entry plus
+  `hub.notice_to(node, ...)`; host UI state is never touched. The audit record naming the node and
+  message id is the attribution. Same size cap as `Prompt`; replies `Accepted`/`PromptRejected` (an unknown or finished
   agent that cannot be resumed is `Reason::Malformed`; the refusal text goes to the device as a
   notice).
 - `StopAgent { agent }`: queued as `DeviceInput::StopAgent`, applied with `kill_agent`, audited
   (`agent_stop`). Stopping `main` is not offered: main is interrupted with `Interrupt`.
 
 `Interrupt` stays main-only. The protocol `VERSION` stays 1: all additions are `serde(default)`
-fields or new message variants; an older host answers a new variant as `Malformed`, and the app
-shows "this host does not support agent control; update it" instead of failing silently.
+fields or new message variants. Agent controls appear in the app only when `Status.agents` is
+non-empty (an old host never publishes it).
 
 ### 3. App side
 
@@ -87,7 +92,9 @@ shows "this host does not support agent control; update it" instead of failing s
   prompt send read the viewed agent. Sending while viewing a subagent emits `ClientMsg::AgentMessage`;
   while viewing main it emits `Prompt`/`Slash` as today (slash lines are main-only: while a subagent is
   viewed the field says "switch to main to run commands", mirroring `app::MAIN_ONLY`). A `Stop agent`
-  action emits `StopAgent`. If the viewed agent disappears the view falls back to main.
+  action emits `StopAgent`. The view falls back to main only on `AgentGone`; a viewed agent stays viewable and messageable
+  after it leaves `Status.agents` (transcripts persist in `App::agent_views` and `message_agent` can
+  resume Done/Failed agents).
 - `android/ui.rs`: an agents bar below the status line (hidden while only main exists) listing rows as
   chips/a collapsible list with name, status, model, spend; the row with a pending dialog is badged;
   tap switches; the viewed agent's header shows status and a Stop button. Interrupt button stays for
@@ -118,24 +125,26 @@ Decisions.
 | Elicitations, trust prompts, usage pause, pairing | "waiting on the host" | keep |
 | Image paste, `@` file mention, editor handoff | host-side | keep: no host filesystem or image path from a device |
 
-A test pins the table: the exhaustive `device_allowed` match is unchanged (its existing test stays),
-and a new test asserts the app's slash picker list equals the commands for which `device_allowed`
-is true.
+A test pins the table: the exhaustive `device_allowed` match is unchanged (its existing test stays).
+The picker list is a constant in `fontaine-android`; a test in `fontaine-tui` (which reads that
+constant, like the contract test) asserts it equals the commands for which
+`Command::device_allowed` is true.
 
 ## Implementation Steps
 
 1. **Wire types** (`rust/fontaine-remote/src/protocol.rs`): `ClientMsg::AgentMessage`,
    `ClientMsg::StopAgent`; round-trip tests; docs constants reuse `MAX_MESSAGE_BYTES`.
+   `server.rs`: extend `precheck` to `AgentMessage` (message_id, blank text, `MAX_MESSAGE_BYTES`)
+   and `StopAgent` (agent id length).
 2. **Host mirror** (`rust/fontaine-tui/src/remote/event.rs`): `AgentSummary`, `Status.agents`,
    `Snapshot.agent_entries`, `agent` on events, `AgentGone`; `MirrorTracker` per-agent diff
-   (`diff_entries` generalised over a transcript). Build summaries from `agent_list::rows`.
+   (`diff_entries` generalised over a transcript). Build summaries from the agent tree and `App::agent_views`.
 3. **Host surface** (`remote/surface.rs`, `ui/remote.rs`): handle the two new messages
-   (`DeviceInput::AgentMessage`/`StopAgent`), apply through `message_agent`/`kill_agent`, audit,
+   (`DeviceInput::AgentMessage`/`StopAgent`), apply through `runtime.message_agent`/`kill_agent`, audit,
    refuse with a notice to the device on failure; the host viewing state is untouched (devices do
    not move the host's `viewing`).
-4. **TUI attach client** (`remote/client_ui.rs`): apply the agent-tagged events to
-   `App::agent_views` so `fontaine attach` mirrors subagents too and the `agent_list`/view works
-   there (it shares the renderers); lets the same host code path be exercised end to end in tests.
+4. **TUI attach client** (`remote/client_ui.rs`): `apply_event`/`apply_snapshot` apply the
+   agent-tagged events into `App::agent_views` (needed for the test seam).
 5. **App model and state** (`fontaine-android/src/model.rs`, `app.rs`, `layout.rs`): agent mirror,
    viewing state, new actions, the `MAIN_ONLY` rule, fallback to main.
 6. **App UI** (`android/ui.rs`): agents bar, per-agent header and Stop, parity renderers
@@ -146,7 +155,7 @@ is true.
 
 ## Files to Modify
 
-- `rust/fontaine-remote/src/protocol.rs`, `hub.rs` (only if the hub filters message kinds)
+- `rust/fontaine-remote/src/protocol.rs`, `rust/fontaine-remote/src/server.rs` (`precheck`/`dispatch`)
 - `rust/fontaine-tui/src/remote/{event.rs,surface.rs,client_ui.rs}`, `ui/remote.rs`, `app.rs` (read
   access to agent views for the mirror)
 - `rust/fontaine-android/src/{model.rs,app.rs,layout.rs,android/ui.rs}`
@@ -161,7 +170,8 @@ is true.
 - **Tag events with `agent`** vs a separate event family for subagents: a tag reuses `diff_entries`
   and the apply path.
 - **Version bump** vs additive fields: additive keeps old apps working against a new host (they
-  ignore the new fields) and needs no negotiation.
+  ignore the new fields) and needs no negotiation; agent controls appear only when `Status.agents`
+  is non-empty.
 
 ## Decisions
 
@@ -178,6 +188,7 @@ is true.
 - `StopAgent` and `AgentMessage` are not guardian-judged: like `Prompt` and `Interrupt` they are
   inputs a human gives, and every call the agent then makes is still gated by the floor and guardian.
 - Protocol `VERSION` stays 1 (additive).
+- The attach TUI does not drive agents; it only applies agent-tagged events into `App::agent_views`.
 
 ## Documentation
 
@@ -193,13 +204,14 @@ is true.
   same lines per agent (extends `a_device_built_only_from_events_renders_the_host_transcript`);
   snapshot with agents round-trips through `SnapshotAssembler`; `AgentGone` on `/clear`; the cap and
   `clipped` flag.
+- `server.rs`: an oversized or empty `AgentMessage` is rejected before the session sees it.
 - `surface.rs`: `AgentMessage`/`StopAgent` are queued as inputs and audited; an unknown agent id is
   refused with a notice; neither reaches the steering queue as a main prompt; a closed surface
   refuses them. The existing refused-command and plain-text prompt tests stay green.
 - `fontaine-android` unit tests: model decodes agent fields and ignores unknown ones; `app.rs`
   send routing (viewing a subagent -> `AgentMessage`, slash while viewing a subagent is refused
-  locally, view falls back to main when the agent leaves); `layout.rs` agents bar; picker list equals
-  the device-allowed commands.
+  locally, view falls back to main on `AgentGone`); `layout.rs` agents bar.
+- `fontaine-tui`: the slash picker constant equals the commands for which `device_allowed` is true.
 - Contract test extended as in step 7.
 - End to end: a headless `fontaine -p`-driven integration test is not applicable (attach is
   interactive); the `fontaine attach` client over a loopback hub is the wiring test in `client_ui.rs`.
