@@ -10,6 +10,7 @@ import android.text.Selection;
 import android.text.SpannableStringBuilder;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -39,6 +40,11 @@ public class FontaineActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // NativeActivity resets the soft input mode to unspecified, and an eagerly focused text
+        // editor would then raise the keyboard on every launch; show() raises it on demand.
+        getWindow().setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         ime = new ImeView(this);
         addContentView(ime, new ViewGroup.LayoutParams(1, 1));
         // A view that is only focusable cannot take focus in touch mode, and the input method

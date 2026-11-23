@@ -909,6 +909,9 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("fontaine"),
     );
+    // The pending slot is process-global and outlives an activity instance; a leftover report
+    // must not be applied by this instance's fresh sync.
+    let _ = ime_bridge::take();
     let Some(files) = app.internal_data_path() else {
         log::error!("the app has no private files directory");
         return;
