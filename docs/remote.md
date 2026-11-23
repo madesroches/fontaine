@@ -120,7 +120,7 @@ the host's transcript, status bar, todo list and the one dialog that wants an an
 renderers the host uses. Local-only features (editor handoff, clipboard images, `/config`, shell
 lines) say they are host-side.
 
-A device sends only a prompt or a slash line:
+A device sends a prompt, a slash line, a message to a subagent, or a stop for one:
 
 - A **prompt** is plain text for the model. A line that starts with `!` or `/` is still plain text,
   never a shell line or a command. It queues like a line you typed during a turn, but it never enters
@@ -134,7 +134,14 @@ A device sends only a prompt or a slash line:
   `/effort`, `/login`, `/exit`, `/add-dir`, `/plugin`, `/mcp` and every panel, toggle or picker of the
   host.
 - **Interrupt** (Esc on the device) interrupts the main turn when one is running, and does nothing
-  otherwise.
+  otherwise. It is main-only.
+- An **agent message** goes to one subagent, named by the id the host lists for it, the way typing in
+  that agent's view at the host does: a running agent reads it with its next tool result and a
+  finished one that can be resumed starts another run. It is audited with the device's node id and
+  never enters your input history or the transcript you are looking at. An unknown agent, or one that
+  cannot be resumed, is refused with a notice to that device. A **stop** ends a running or idle
+  subagent, like `x` on its row, and is audited too. Neither is judged by the guardian: they are
+  inputs a person gives, and every call the agent then makes still crosses the floor and guardian.
 - **Approvals and questions** can be answered from the device. An approval takes one of the choices the
   dialog offered: allow once, allow for the session, or deny with an optional reason of at most 1 KiB.
   A device cannot choose "always allow", which writes a permanent rule to your user settings: it is
@@ -148,6 +155,24 @@ A device sends only a prompt or a slash line:
   `/afk review`, the pairing confirmation and `/guardian-disable` are the host's alone. A device sees
   "the host is waiting on …" and an answer naming one is refused, audited, and leaves the dialog
   pending.
+
+The host publishes every agent of the session, not only the ones its own list shows, and each
+agent's whole transcript, so a device can switch between them without asking. A device keeps its own
+view: it never moves the agent you are looking at. Agent controls appear only when the host lists
+agents, so an older host that does not is unaffected. A subagent's approval or question shows which
+agent asked and is answered like any other.
+
+### What stays at the host
+
+| Feature | Why |
+|---|---|
+| `/resume`, `/branch`, `/rewind`, `/clear` | They replace or rewrite the session the device is attached to |
+| `/model`, `/effort`, `/config`, `/permissions`, `/mcp`, `/hooks`, `/plugin`, `/login`, `/theme`, `/output-style`, `/guardian-model`, `/add-dir`, `/export`, `/copy`, `/memory`, `/bug`, `/exit`, `/loop` | They change permissions, credentials, host files or host UI |
+| Permission mode changes and `/afk` | A phone cannot loosen what an unattended host will do |
+| `/guardian-disable`, `/guardian-enable`, every `/remote` subcommand | Security invariants |
+| `/agents` panel jobs and the board | Agents are covered by the agent list; killing a background job stays at the host |
+| Multi-select questions, elicitations, trust prompts, the usage pause, pairing | Answered at the host |
+| Image paste, `@` file mentions, editor handoff | No host file or image path from a device |
 
 The device that answered an approval or question is recorded: its node id is in the ledger
 (`Approval`, `Denial` and the dialog's user message carry `remote`, with the dialog id as

@@ -407,6 +407,22 @@ fn precheck(message: &ClientMsg) -> Result<(), (String, Reason)> {
     let line = match message {
         ClientMsg::Prompt { message_id, text } => Some((message_id, text.as_str())),
         ClientMsg::Slash { message_id, line } => Some((message_id, line.as_str())),
+        ClientMsg::AgentMessage {
+            message_id,
+            agent,
+            text,
+        } => {
+            if agent.is_empty() || agent.len() > MAX_MESSAGE_ID_BYTES {
+                return Err((message_id.clone(), Reason::Malformed));
+            }
+            Some((message_id, text.as_str()))
+        }
+        ClientMsg::StopAgent { agent } => {
+            if agent.is_empty() || agent.len() > MAX_MESSAGE_ID_BYTES {
+                return Err((String::new(), Reason::Malformed));
+            }
+            None
+        }
         _ => None,
     };
     let Some((id, text)) = line else {
@@ -535,6 +551,52 @@ fn dispatch(
         registration,
         shared.session.client_message(from, label, message),
     );
+}
+
+#[cfg(test)]
+mod precheck_tests {
+    use super::*;
+
+    fn agent_message(message_id: &str, agent: &str, text: &str) -> ClientMsg {
+        ClientMsg::AgentMessage {
+            message_id: message_id.into(),
+            agent: agent.into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn an_agent_message_is_checked_like_a_prompt() {
+        assert!(precheck(&agent_message("m", "a", "go")).is_ok());
+        assert_eq!(
+            precheck(&agent_message("m", "a", "  ")).unwrap_err().1,
+            Reason::Malformed
+        );
+        assert_eq!(
+            precheck(&agent_message("", "a", "go")).unwrap_err().1,
+            Reason::Malformed
+        );
+        assert_eq!(
+            precheck(&agent_message("m", "", "go")).unwrap_err().1,
+            Reason::Malformed
+        );
+        let long = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        assert_eq!(
+            precheck(&agent_message("m", "a", &long)).unwrap_err().1,
+            Reason::TooLarge
+        );
+    }
+
+    #[test]
+    fn a_stop_needs_an_agent_id_of_sane_length() {
+        let stop = |agent: &str| ClientMsg::StopAgent {
+            agent: agent.into(),
+        };
+        assert!(precheck(&stop("a1")).is_ok());
+        assert_eq!(precheck(&stop("")).unwrap_err().1, Reason::Malformed);
+        let long = "x".repeat(MAX_MESSAGE_ID_BYTES + 1);
+        assert_eq!(precheck(&stop(&long)).unwrap_err().1, Reason::Malformed);
+    }
 }
 
 #[cfg(test)]

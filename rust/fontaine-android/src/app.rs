@@ -2,13 +2,24 @@
 //! for the network client and a borrowed `View` for the renderer come out. Nothing here touches
 //! the network, the camera or the screen, so all of it runs under host tests.
 
+use std::collections::BTreeMap;
+
 use fontaine_remote::{
     AttachError, ClientEvent, ClientMsg, Level, MAX_MESSAGE_BYTES, Reason, StoredHost, Target,
     Ticket, WireAnswer, fresh_key, short_node,
 };
 
+use crate::layout;
 use crate::link;
-use crate::model::{Dialog, DiffPreview, Entry, Question, RemoteEvent, Snapshot, Status};
+use crate::model::{
+    AgentSummary, Dialog, DiffPreview, Entry, Question, RemoteEvent, Snapshot, Status, TodoItem,
+};
+
+/// What a subagent's view says to a slash line: commands run in the main conversation only.
+pub const MAIN_ONLY: &str = "switch to main to run commands";
+
+/// The agent id the host gives the main conversation in a dialog that names no agent.
+const ROOT_AGENT: &str = "root";
 
 /// The choice the host refuses from a device, so it is never offered.
 const ALWAYS: &str = "always allow";
@@ -42,6 +53,10 @@ pub struct App {
     pending: Option<Box<Ticket>>,
     hosts: Vec<StoredHost>,
     entries: Vec<Entry>,
+    /// Each subagent's transcript, by agent id.
+    entries_by_agent: BTreeMap<String, Vec<Entry>>,
+    /// The agent on screen; `None` is the main conversation.
+    viewing: Option<String>,
     status: Option<Status>,
     dialog: Option<Dialog>,
     /// Set once an answer went out, so a second tap cannot answer the same dialog twice; the
@@ -79,9 +94,40 @@ pub enum DialogView<'a> {
     HostWaiting(String),
 }
 
+/// One agent of the bar.
+pub struct AgentChip<'a> {
+    /// `None` is main.
+    pub id: Option<&'a str>,
+    pub name: &'a str,
+    pub status: &'a str,
+    pub selected: bool,
+    /// A dialog from this agent waits for an answer.
+    pub waiting: bool,
+}
+
+/// The header of the agent on screen.
+pub struct AgentHeader<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+    pub model: &'a str,
+    pub spend: &'a str,
+}
+
 pub struct View<'a> {
     pub screen: &'a Screen,
     pub entries: &'a [Entry],
+    /// The agent on screen; `None` is the main conversation.
+    pub viewed: Option<&'a str>,
+    /// Empty while the session has only its main conversation.
+    pub agents: Vec<AgentChip<'a>>,
+    /// Set while a subagent is on screen.
+    pub header: Option<AgentHeader<'a>>,
+    pub todos: &'a [TodoItem],
+    pub queued: &'a [String],
+    /// Short facts about the session: its goal, scheduled work, background jobs, running agents.
+    pub chips: Vec<String>,
+    /// Whether the prompt field takes a slash line.
+    pub commands_allowed: bool,
     pub status_line: String,
     pub running: bool,
     pub dialog: Option<DialogView<'a>>,
@@ -99,6 +145,8 @@ impl App {
             pending: None,
             hosts: Vec::new(),
             entries: Vec::new(),
+            entries_by_agent: BTreeMap::new(),
+            viewing: None,
             status: None,
             dialog: None,
             answer_sent: false,
@@ -183,6 +231,8 @@ impl App {
 
     fn reset_session(&mut self) {
         self.entries.clear();
+        self.entries_by_agent.clear();
+        self.viewing = None;
         self.status = None;
         self.dialog = None;
         self.answer_sent = false;
@@ -196,7 +246,8 @@ impl App {
     }
 
     /// A prompt, or a slash line when it starts with `/` (the host's device list decides whether
-    /// it runs).
+    /// it runs). While a subagent is on screen the text goes to that agent, and a slash line is
+    /// refused here.
     pub fn send_prompt(&mut self, text: &str) -> Option<Action> {
         if self.screen != Screen::Session {
             return None;
@@ -212,8 +263,19 @@ impl App {
             ));
             return None;
         }
+        if self.viewing.is_some() && text.starts_with('/') {
+            self.notice = Some(MAIN_ONLY.to_string());
+            return None;
+        }
         self.notice = None;
         let message_id = self.message_id();
+        if let Some(agent) = self.viewing.clone() {
+            return Some(Action::Send(ClientMsg::AgentMessage {
+                message_id,
+                agent,
+                text: text.to_string(),
+            }));
+        }
         Some(Action::Send(if text.starts_with('/') {
             ClientMsg::Slash {
                 message_id,
@@ -225,6 +287,36 @@ impl App {
                 text: text.to_string(),
             }
         }))
+    }
+
+    /// Shows an agent's transcript, `None` for the main conversation. An agent the host never
+    /// mentioned is ignored.
+    pub fn view_agent(&mut self, target: Option<&str>) {
+        if self.screen != Screen::Session {
+            return;
+        }
+        match target {
+            None => self.viewing = None,
+            Some(id) if self.knows_agent(id) => self.viewing = Some(id.to_string()),
+            Some(_) => {}
+        }
+    }
+
+    fn knows_agent(&self, id: &str) -> bool {
+        self.entries_by_agent.contains_key(id)
+            || self
+                .status
+                .as_ref()
+                .is_some_and(|s| s.agents.iter().any(|a| a.id.as_deref() == Some(id)))
+    }
+
+    /// Stops the agent on screen. Main is stopped with `interrupt`.
+    pub fn stop_agent(&mut self) -> Option<Action> {
+        if self.screen != Screen::Session {
+            return None;
+        }
+        let agent = self.viewing.clone()?;
+        Some(Action::Send(ClientMsg::StopAgent { agent }))
     }
 
     pub fn interrupt(&mut self) -> Option<Action> {
@@ -267,6 +359,7 @@ impl App {
             id,
             index,
             questions,
+            ..
         }) = &self.dialog
         else {
             return None;
@@ -311,7 +404,15 @@ impl App {
                     match Snapshot::parse(&state) {
                         Ok(snapshot) => {
                             self.entries = snapshot.entries;
+                            self.entries_by_agent = snapshot.agent_entries;
                             self.status = snapshot.status;
+                            if self
+                                .viewing
+                                .as_deref()
+                                .is_some_and(|id| !self.knows_agent(id))
+                            {
+                                self.viewing = None;
+                            }
                             self.set_dialog(snapshot.dialog);
                         }
                         Err(_) => {
@@ -374,32 +475,129 @@ impl App {
 
     fn apply(&mut self, event: RemoteEvent) {
         match event {
-            RemoteEvent::Set { at, entry } => {
-                if at < self.entries.len() {
-                    self.entries[at] = entry;
-                } else if at == self.entries.len() {
-                    self.entries.push(entry);
+            RemoteEvent::Set { at, entry, agent } => {
+                let entries = self.transcript_mut(agent);
+                if at < entries.len() {
+                    entries[at] = entry;
+                } else if at == entries.len() {
+                    entries.push(entry);
                 }
             }
             RemoteEvent::Append {
                 at,
                 text,
                 streaming,
+                agent,
             } => {
                 if let Some(Entry::Assistant {
                     text: held,
                     streaming: live,
-                }) = self.entries.get_mut(at)
+                }) = self.transcript_mut(agent).get_mut(at)
                 {
                     held.push_str(&text);
                     *live = streaming;
                 }
             }
-            RemoteEvent::Truncate { len } => self.entries.truncate(len),
+            RemoteEvent::Truncate { len, agent } => self.transcript_mut(agent).truncate(len),
+            RemoteEvent::AgentGone { agent } => {
+                self.entries_by_agent.remove(&agent);
+                if self.viewing.as_deref() == Some(agent.as_str()) {
+                    self.viewing = None;
+                }
+            }
             RemoteEvent::Status { status } => self.status = Some(*status),
             RemoteEvent::Dialog { dialog } => self.set_dialog(dialog),
             RemoteEvent::Unknown => {}
         }
+    }
+
+    /// The entries an event is about: the main conversation's, or a subagent's, started empty the
+    /// first time the host mentions it.
+    fn transcript_mut(&mut self, agent: Option<String>) -> &mut Vec<Entry> {
+        match agent {
+            Some(id) => self.entries_by_agent.entry(id).or_default(),
+            None => &mut self.entries,
+        }
+    }
+
+    /// The bar's rows: main first, then agents that run or wait, then those that failed, then
+    /// the rest, each group in the host's order.
+    fn chips(&self) -> Vec<AgentChip<'_>> {
+        let Some(status) = &self.status else {
+            return Vec::new();
+        };
+        if !layout::agents_bar_visible(status.agents.len()) {
+            return Vec::new();
+        }
+        let waiting_agent = self.dialog.as_ref().and_then(|dialog| match dialog {
+            Dialog::Approval { agent, .. } | Dialog::Question { agent, .. } => {
+                Some(if agent.is_empty() || agent == ROOT_AGENT {
+                    None
+                } else {
+                    Some(agent.as_str())
+                })
+            }
+            _ => None,
+        });
+        let mut rows: Vec<&AgentSummary> = status.agents.iter().collect();
+        rows.sort_by_key(|a| rank(a));
+        rows.into_iter()
+            .map(|a| AgentChip {
+                id: a.id.as_deref(),
+                name: &a.name,
+                status: &a.status,
+                selected: a.id == self.viewing,
+                waiting: waiting_agent == Some(a.id.as_deref()),
+            })
+            .collect()
+    }
+
+    fn header(&self) -> Option<AgentHeader<'_>> {
+        let id = self.viewing.as_deref()?;
+        let listed = self
+            .status
+            .as_ref()
+            .and_then(|s| s.agents.iter().find(|a| a.id.as_deref() == Some(id)));
+        Some(match listed {
+            Some(a) => AgentHeader {
+                name: &a.name,
+                status: &a.status,
+                model: &a.model,
+                spend: &a.spend,
+            },
+            None => AgentHeader {
+                name: id,
+                status: "not listed",
+                model: "",
+                spend: "",
+            },
+        })
+    }
+
+    fn status_chips(&self) -> Vec<String> {
+        let Some(s) = &self.status else {
+            return Vec::new();
+        };
+        let mut chips = Vec::new();
+        if let Some((secs, waiting)) = s.goal {
+            chips.push(if waiting {
+                "goal: waiting for you".to_string()
+            } else {
+                format!("goal: {}", age(secs))
+            });
+        }
+        let count = |n: usize, one: &str, many: &str| {
+            (n > 0).then(|| format!("{n} {}", if n == 1 { one } else { many }))
+        };
+        chips.extend(count(s.running_agents, "agent running", "agents running"));
+        chips.extend(count(s.scheduled, "scheduled", "scheduled"));
+        chips.extend(count(
+            s.background_shells,
+            "background shell",
+            "background shells",
+        ));
+        chips.extend(count(s.background_monitors, "monitor", "monitors"));
+        chips
     }
 
     pub fn view(&self) -> View<'_> {
@@ -457,9 +655,20 @@ impl App {
             Dialog::HostOnly { what } => DialogView::HostWaiting(what.clone()),
             Dialog::Unknown => DialogView::HostWaiting("a prompt".to_string()),
         });
+        let entries: &[Entry] = match &self.viewing {
+            Some(id) => self.entries_by_agent.get(id).map_or(&[], Vec::as_slice),
+            None => &self.entries,
+        };
         View {
             screen: &self.screen,
-            entries: &self.entries,
+            entries,
+            viewed: self.viewing.as_deref(),
+            agents: self.chips(),
+            header: self.header(),
+            todos: self.status.as_ref().map_or(&[], |s| s.todos.as_slice()),
+            queued: self.status.as_ref().map_or(&[], |s| s.queued.as_slice()),
+            chips: self.status_chips(),
+            commands_allowed: self.viewing.is_none(),
             status_line,
             running: self.status.as_ref().is_some_and(|s| s.running),
             dialog,
@@ -467,6 +676,26 @@ impl App {
             notice: self.notice.as_deref(),
             hosts: &self.hosts,
         }
+    }
+}
+
+/// Where a status sorts in the agents bar: running first, then failed, then the rest.
+fn rank(agent: &AgentSummary) -> u8 {
+    if agent.id.is_none() {
+        return 0;
+    }
+    match agent.status.as_str() {
+        "running" | "waiting-on-permission" => 1,
+        "failed" | "killed" | "budget-exhausted" => 2,
+        _ => 3,
+    }
+}
+
+fn age(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        _ => format!("{}h", secs / 3600),
     }
 }
 
@@ -872,6 +1101,209 @@ mod tests {
         app.on_client_event(ClientEvent::Connected);
         assert_eq!(*app.screen(), Screen::Session);
         assert!(matches!(app.back_to_scan(), Some(Action::Stop)));
+    }
+
+    fn with_agents() -> App {
+        let mut app = paired();
+        app.on_client_event(snapshot(json!({
+            "entries": [{ "User": "main line" }],
+            "agent_entries": {
+                "a1": [{ "User": "to a1" }],
+                "a2": [],
+            },
+            "status": { "mode": "manual", "model": "m", "running": false, "agents": [
+                { "id": null, "name": "main", "status": "idle" },
+                { "id": "a1", "name": "one", "status": "done" },
+                { "id": "a2", "name": "two", "status": "running" },
+                { "id": "a3", "name": "three", "status": "failed" },
+            ]},
+            "dialog": null,
+        })));
+        app
+    }
+
+    #[test]
+    fn the_bar_lists_main_then_running_then_failed_then_the_rest() {
+        let app = with_agents();
+        let names: Vec<&str> = app.view().agents.iter().map(|c| c.name).collect();
+        assert_eq!(names, ["main", "two", "three", "one"]);
+        assert!(app.view().agents[0].selected);
+    }
+
+    #[test]
+    fn the_bar_is_hidden_while_only_main_exists_or_the_host_is_old() {
+        let mut app = paired();
+        assert!(app.view().agents.is_empty());
+        app.on_client_event(snapshot(json!({
+            "status": { "agents": [{ "id": null, "name": "main", "status": "idle" }] },
+        })));
+        assert!(app.view().agents.is_empty());
+    }
+
+    #[test]
+    fn viewing_a_subagent_shows_its_transcript_and_sends_to_it() {
+        let mut app = with_agents();
+        assert_eq!(app.view().entries.len(), 1);
+        app.view_agent(Some("a1"));
+        assert_eq!(app.view().entries, [Entry::User("to a1".into())]);
+        assert!(app.view().header.is_some());
+        assert!(!app.view().commands_allowed);
+        let Some(Action::Send(ClientMsg::AgentMessage { agent, text, .. })) =
+            app.send_prompt("keep going")
+        else {
+            panic!("an agent message");
+        };
+        assert_eq!((agent.as_str(), text.as_str()), ("a1", "keep going"));
+        // A line that is not a command is still a message to the agent.
+        assert!(matches!(
+            app.send_prompt("what is /tmp?"),
+            Some(Action::Send(ClientMsg::AgentMessage { .. }))
+        ));
+        app.view_agent(None);
+        assert!(matches!(
+            app.send_prompt("hello"),
+            Some(Action::Send(ClientMsg::Prompt { .. }))
+        ));
+        assert!(app.view().header.is_none());
+    }
+
+    #[test]
+    fn a_slash_line_in_a_subagent_view_is_refused_locally() {
+        let mut app = with_agents();
+        app.view_agent(Some("a1"));
+        assert!(app.send_prompt("/cost").is_none());
+        assert_eq!(app.view().notice, Some(MAIN_ONLY));
+    }
+
+    #[test]
+    fn stop_names_the_viewed_subagent_and_main_has_none() {
+        let mut app = with_agents();
+        assert!(app.stop_agent().is_none());
+        app.view_agent(Some("a2"));
+        assert!(matches!(
+            app.stop_agent(),
+            Some(Action::Send(ClientMsg::StopAgent { agent })) if agent == "a2"
+        ));
+    }
+
+    #[test]
+    fn an_unknown_agent_cannot_be_viewed() {
+        let mut app = with_agents();
+        app.view_agent(Some("nope"));
+        assert!(app.view().header.is_none());
+    }
+
+    #[test]
+    fn agent_tagged_events_build_that_transcript_and_agent_gone_returns_to_main() {
+        let mut app = with_agents();
+        app.on_client_event(event(
+            json!({ "kind": "set", "at": 1, "entry": { "Assistant": { "text": "he", "streaming": true } }, "agent": "a1" }),
+        ));
+        app.on_client_event(event(
+            json!({ "kind": "append", "at": 1, "text": "llo", "streaming": false, "agent": "a1" }),
+        ));
+        app.view_agent(Some("a1"));
+        assert!(matches!(
+            &app.view().entries[1],
+            Entry::Assistant { text, .. } if text == "hello"
+        ));
+        app.on_client_event(event(
+            json!({ "kind": "truncate", "len": 1, "agent": "a1" }),
+        ));
+        assert_eq!(app.view().entries.len(), 1);
+        // The main transcript was never touched.
+        app.view_agent(None);
+        assert_eq!(app.view().entries, [Entry::User("main line".into())]);
+        app.view_agent(Some("a1"));
+        app.on_client_event(event(json!({ "kind": "agent_gone", "agent": "a1" })));
+        assert!(app.view().header.is_none());
+        assert_eq!(app.view().entries, [Entry::User("main line".into())]);
+    }
+
+    #[test]
+    fn a_viewed_agent_that_left_the_list_stays_viewable() {
+        let mut app = with_agents();
+        app.view_agent(Some("a1"));
+        app.on_client_event(event(json!({ "kind": "status", "status": {
+            "agents": [
+                { "id": null, "name": "main", "status": "idle" },
+                { "id": "a2", "name": "two", "status": "running" },
+            ] } })));
+        assert_eq!(app.view().header.expect("a header").status, "not listed");
+        assert_eq!(app.view().entries, [Entry::User("to a1".into())]);
+        assert!(matches!(
+            app.send_prompt("again"),
+            Some(Action::Send(ClientMsg::AgentMessage { .. }))
+        ));
+    }
+
+    #[test]
+    fn the_agent_that_asks_is_badged_and_main_is_when_the_dialog_names_none() {
+        let mut app = with_agents();
+        let ask = |agent: &str| {
+            json!({ "kind": "dialog", "dialog": { "dialog": "approval", "id": 1, "tool": "bash",
+                "agent": agent, "agent_name": "two", "summary": "", "reason": "",
+                "choices": ["deny"], "preview": null } })
+        };
+        app.on_client_event(event(ask("a2")));
+        let waiting: Vec<&str> = app
+            .view()
+            .agents
+            .iter()
+            .filter(|c| c.waiting)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(waiting, ["two"]);
+        app.on_client_event(event(ask("")));
+        let waiting: Vec<&str> = app
+            .view()
+            .agents
+            .iter()
+            .filter(|c| c.waiting)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(waiting, ["main"]);
+    }
+
+    #[test]
+    fn a_new_snapshot_drops_a_view_of_an_agent_the_host_no_longer_has() {
+        let mut app = with_agents();
+        app.view_agent(Some("a1"));
+        app.on_client_event(snapshot(json!({ "entries": [], "agent_entries": {} })));
+        assert!(app.view().header.is_none());
+    }
+
+    #[test]
+    fn a_snapshot_keeps_a_view_of_an_agent_listed_without_a_transcript() {
+        let mut app = with_agents();
+        app.view_agent(Some("a3"));
+        app.on_client_event(snapshot(json!({
+            "entries": [], "agent_entries": {},
+            "status": { "agents": [{ "id": "a3", "name": "three", "status": "running" }] },
+        })));
+        assert!(app.view().header.is_some());
+    }
+
+    #[test]
+    fn status_chips_and_queued_lines_reach_the_view() {
+        let mut app = paired();
+        app.on_client_event(snapshot(json!({
+            "status": { "goal": [125, false], "running_agents": 2, "scheduled": 1,
+                "background_shells": 1, "background_monitors": 0, "queued": ["next"],
+                "todos": [{ "content": "t", "status": "pending" }] },
+        })));
+        let view = app.view();
+        assert_eq!(
+            view.chips,
+            [
+                "goal: 2m",
+                "2 agents running",
+                "1 scheduled",
+                "1 background shell"
+            ]
+        );
+        assert_eq!(view.queued, ["next"]);
+        assert_eq!(view.todos.len(), 1);
     }
 
     #[test]

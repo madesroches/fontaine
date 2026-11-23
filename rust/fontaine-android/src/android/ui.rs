@@ -1,15 +1,17 @@
 //! Draws a `View` with Dear ImGui and reports what was tapped. The state lives in `App`; this
 //! only renders it and forwards taps, so no session logic sits behind the unsafe FFI calls.
 
+use std::collections::HashSet;
 use std::ffi::{CString, c_char};
 
 use dear_imgui_sys as sys;
 use sys::{ImVec2_c, ImVec4_c};
 
-use crate::app::{DialogView, Screen, View};
+use crate::app::{AgentChip, AgentHeader, DialogView, Screen, View};
+use crate::commands::{DEVICE_COMMANDS, line_for};
 use crate::field::Field;
 use crate::layout::{self, Insets};
-use crate::model::{DiffKind, Entry, ToolStatus};
+use crate::model::{DiffKind, Entry, TodoItem, ToolStatus};
 
 /// What the person did this frame.
 pub enum Tap {
@@ -27,6 +29,12 @@ pub enum Tap {
     DeclinePairing,
     ConnectHost(String),
     Interrupt,
+    /// Show this agent's transcript; `None` is the main conversation.
+    ViewAgent(Option<String>),
+    /// Stop the agent on screen.
+    StopAgent,
+    /// Put this line in the prompt field.
+    InsertCommand(String),
     Approval(String),
     Question(usize),
     Back,
@@ -109,6 +117,10 @@ pub struct UiState {
     footer_px: f32,
     /// A long press on the field that is still held, whether or not it has been dragged.
     selecting: Option<Selecting>,
+    /// Reasoning rows the person opened, by the agent on screen (empty is main) and entry index.
+    open_reasoning: HashSet<(String, usize)>,
+    todos_open: bool,
+    commands_open: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -895,11 +907,18 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     if !view.status_line.is_empty() {
         colored([0.6, 0.7, 0.8, 1.0], &view.status_line);
     }
+    if !view.chips.is_empty() {
+        caption(&view.chips.join(" · "));
+    }
     if let Some(ms) = view.reconnecting_in_ms {
         colored(
             [1.0, 0.8, 0.3, 1.0],
             &format!("Reconnecting in {:.1}s", ms as f32 / 1000.0),
         );
+    }
+    agents_bar(&view.agents, taps);
+    if let Some(header) = &view.header {
+        agent_header(header);
     }
     let dialog_rows = if view.dialog.is_some() { 7.0 } else { 0.0 };
     // SAFETY: a frame is open.
@@ -922,8 +941,9 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     // SAFETY: a frame is open; the child is ended below whether or not it is visible.
     let open = unsafe { sys::igBeginChild_Str(id.as_ptr(), v2(0.0, height), 0, 0) };
     if open {
-        for entry in view.entries {
-            entry_row(entry);
+        let owner = view.viewed.unwrap_or_default();
+        for (at, entry) in view.entries.iter().enumerate() {
+            entry_row(entry, owner, at, &mut state.open_reasoning);
         }
         // SAFETY: inside the child window.
         unsafe {
@@ -941,7 +961,24 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
         dialog_panel(dialog, taps);
         separator();
     }
-    field_frame("prompt", frame.field, "message the session", state, taps);
+    todo_panel(view.todos, &mut state.todos_open);
+    if !view.queued.is_empty() {
+        caption("queued");
+        for line in view.queued {
+            wrapped(&format!("- {line}"));
+        }
+    }
+    if view.commands_allowed {
+        command_picker(&mut state.commands_open, taps);
+    } else {
+        state.commands_open = false;
+    }
+    let hint = if view.header.is_some() {
+        "message this agent"
+    } else {
+        "message the session"
+    };
+    field_frame("prompt", frame.field, hint, state, taps);
     let (spacing_x, _) = style_pair(|s| s.ItemSpacing);
     let half = (avail_width() - spacing_x) * 0.5;
     if primary_button_sized("Send", half) {
@@ -949,7 +986,11 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     }
     // SAFETY: a frame is open.
     unsafe { sys::igSameLine(0.0, -1.0) };
-    if secondary_button_sized("Interrupt", avail_width()) {
+    if view.header.is_some() {
+        if secondary_button_sized("Stop agent", avail_width()) {
+            taps.push(Tap::StopAgent);
+        }
+    } else if secondary_button_sized("Interrupt", avail_width()) {
         taps.push(Tap::Interrupt);
     }
     if secondary_button("Leave session") {
@@ -959,7 +1000,7 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     state.footer_px = unsafe { sys::igGetCursorPosY() } - footer_top;
 }
 
-fn entry_row(entry: &Entry) {
+fn entry_row(entry: &Entry, owner: &str, at: usize, open: &mut HashSet<(String, usize)>) {
     match entry {
         Entry::User(body) => colored([0.5, 0.8, 1.0, 1.0], &format!("> {body}")),
         Entry::Assistant { text: body, .. } => wrapped(body),
@@ -997,7 +1038,143 @@ fn entry_row(entry: &Entry) {
             headline,
         ),
         Entry::Error(body) => colored([1.0, 0.45, 0.4, 1.0], &format!("! {body}")),
+        Entry::Reasoning {
+            text: body,
+            streaming,
+        } => {
+            let key = (owner.to_string(), at);
+            let opened = open.contains(&key);
+            let mark = if opened { "-" } else { "+" };
+            let label = format!(
+                "{mark} reasoning{}##reasoning-{at}",
+                if *streaming { " ..." } else { "" }
+            );
+            if styled_button(&label, avail_width(), &NEUTRAL) {
+                if opened {
+                    open.remove(&key);
+                } else {
+                    open.insert(key);
+                }
+            }
+            if opened {
+                colored(DIM, body);
+            }
+        }
+        Entry::Shell { command, output } => {
+            colored([0.5, 0.8, 1.0, 1.0], &format!("$ {command}"));
+            colored([0.6, 0.6, 0.6, 1.0], output);
+        }
+        Entry::Attachment(name) => colored(DIM, &format!("attached: {name}")),
         Entry::Other(_) => {}
+    }
+}
+
+/// The row of agents under the status line: a chip each, wrapped to the width. A chip with a
+/// waiting dialog is marked with `!`.
+fn agents_bar(agents: &[AgentChip<'_>], taps: &mut Vec<Tap>) {
+    if agents.is_empty() {
+        return;
+    }
+    let (spacing_x, _) = style_pair(|s| s.ItemSpacing);
+    let (padding_x, _) = style_pair(|s| s.FramePadding);
+    let labels: Vec<String> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, chip)| {
+            format!(
+                "{}{}{} {}##agent-{i}",
+                if chip.selected { "> " } else { "" },
+                if chip.waiting { "! " } else { "" },
+                chip.name,
+                chip.status
+            )
+        })
+        .collect();
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|label| {
+            let shown = label.split("##").next().unwrap_or_default();
+            text_height_width(shown) + padding_x * 2.0
+        })
+        .collect();
+    for row in layout::chip_rows(&widths, avail_width(), spacing_x) {
+        for i in row.clone() {
+            if i != row.start {
+                // SAFETY: a frame is open.
+                unsafe { sys::igSameLine(0.0, -1.0) };
+            }
+            let chip = &agents[i];
+            let colors = if chip.selected { &ACCENT } else { &NEUTRAL };
+            if styled_button(&labels[i], widths[i], colors) {
+                taps.push(Tap::ViewAgent(chip.id.map(str::to_string)));
+            }
+        }
+    }
+    gap(half_line());
+}
+
+fn text_height_width(body: &str) -> f32 {
+    let body = c(body);
+    // SAFETY: a frame is open and `body` is NUL-terminated.
+    unsafe { sys::igCalcTextSize(body.as_ptr(), std::ptr::null(), false, -1.0) }.x
+}
+
+fn agent_header(header: &AgentHeader<'_>) {
+    let mut line = format!("{} - {}", header.name, header.status);
+    if !header.model.is_empty() {
+        line.push_str(&format!(" - {}", header.model));
+    }
+    if !header.spend.is_empty() {
+        line.push_str(&format!(" - {}", header.spend));
+    }
+    colored([0.85, 0.9, 1.0, 1.0], &line);
+}
+
+/// The host's todo list, read-only, collapsed to its progress until opened.
+fn todo_panel(todos: &[TodoItem], open: &mut bool) {
+    if todos.is_empty() {
+        return;
+    }
+    let done = todos.iter().filter(|t| t.status == "completed").count();
+    let label = format!(
+        "{} todos {done}/{}##todos",
+        if *open { "-" } else { "+" },
+        todos.len()
+    );
+    if styled_button(&label, avail_width(), &NEUTRAL) {
+        *open = !*open;
+    }
+    if *open {
+        for todo in todos {
+            let (mark, color) = match todo.status.as_str() {
+                "completed" => ("[x]", [0.5, 0.9, 0.5, 1.0]),
+                "in_progress" => ("[~]", [1.0, 0.85, 0.4, 1.0]),
+                _ => ("[ ]", [0.7, 0.7, 0.7, 1.0]),
+            };
+            colored(color, &format!("{mark} {}", todo.content));
+        }
+    }
+}
+
+/// The commands the host runs for a device; a tap puts one in the prompt field.
+fn command_picker(open: &mut bool, taps: &mut Vec<Tap>) {
+    let label = format!("{} commands##commands", if *open { "-" } else { "+" });
+    if styled_button(&label, avail_width(), &NEUTRAL) {
+        *open = !*open;
+    }
+    if !*open {
+        return;
+    }
+    for command in DEVICE_COMMANDS {
+        let label = if command.hint.is_empty() {
+            format!("/{}##cmd-{}", command.name, command.name)
+        } else {
+            format!("/{} {}##cmd-{}", command.name, command.hint, command.name)
+        };
+        if styled_button(&label, avail_width(), &NEUTRAL) {
+            taps.push(Tap::InsertCommand(line_for(command)));
+            *open = false;
+        }
     }
 }
 

@@ -28,6 +28,7 @@ use super::event::{Dialog, RemoteEvent, Snapshot, Status};
 use crate::app::{Action, App, Input};
 use crate::commands::{Command, parse_command};
 use crate::screen::{Anchored, FrameWriter, Screen, Tty};
+use crate::transcript::Transcript;
 use crate::{
     LiveScreen, ReaderPause, TerminalGuard, hyperlink, linear, read_terminal, restore_terminal,
 };
@@ -74,14 +75,21 @@ fn apply_status(app: &mut App, status: Status) {
 /// since it needs the device's own bookkeeping.
 pub(crate) fn apply_event(app: &mut App, event: RemoteEvent) -> Option<Option<Dialog>> {
     match event {
-        RemoteEvent::Set { at, entry } => app.transcript.mirror_set(at, entry),
+        RemoteEvent::Set { at, entry, agent } => transcript_of(app, agent).mirror_set(at, entry),
         RemoteEvent::Append {
             at,
             text,
             streaming,
-        } => app.transcript.mirror_append(at, &text, streaming),
-        RemoteEvent::Truncate { len } => {
-            app.transcript.mirror_truncate(len);
+            agent,
+        } => transcript_of(app, agent).mirror_append(at, &text, streaming),
+        RemoteEvent::Truncate { len, agent } => {
+            transcript_of(app, agent).mirror_truncate(len);
+        }
+        RemoteEvent::AgentGone { agent } => {
+            app.agent_views.remove(&agent);
+            if app.viewing.as_deref() == Some(agent.as_str()) {
+                app.view(None);
+            }
         }
         RemoteEvent::Status { status } => apply_status(app, *status),
         RemoteEvent::Dialog { dialog } => return Some(dialog),
@@ -89,11 +97,36 @@ pub(crate) fn apply_event(app: &mut App, event: RemoteEvent) -> Option<Option<Di
     None
 }
 
+/// The transcript an event is about: the main conversation, or a subagent's, started empty the
+/// first time the host mentions it.
+fn transcript_of(app: &mut App, agent: Option<String>) -> &mut Transcript {
+    match agent {
+        Some(id) => &mut app.view_of(id).transcript,
+        None => &mut app.transcript,
+    }
+}
+
 /// Replaces what the device shows with the host's whole state.
 pub(crate) fn apply_snapshot(app: &mut App, snapshot: Snapshot) -> Option<Dialog> {
     app.transcript.mirror_truncate(0);
     for (at, entry) in snapshot.entries.into_iter().enumerate() {
         app.transcript.mirror_set(at, entry);
+    }
+    app.agent_views
+        .retain(|id, _| snapshot.agent_entries.contains_key(id));
+    if app
+        .viewing
+        .as_ref()
+        .is_some_and(|id| !app.agent_views.contains_key(id))
+    {
+        app.view(None);
+    }
+    for (id, entries) in snapshot.agent_entries {
+        let transcript = &mut app.view_of(id).transcript;
+        transcript.mirror_truncate(0);
+        for (at, entry) in entries.into_iter().enumerate() {
+            transcript.mirror_set(at, entry);
+        }
     }
     // What scrollback holds of the old state is stale: the screen is written again from the top.
     app.reprint = true;
@@ -712,6 +745,7 @@ mod tests {
         ui.event(RemoteEvent::Set {
             at: 0,
             entry: Entry::User("hi".into()),
+            agent: None,
         });
         ui.install(Some(approval_dialog(
             3,
@@ -941,6 +975,7 @@ mod tests {
                 background_monitors: 0,
                 scheduled: 0,
                 goal: None,
+                agents: Vec::new(),
             }),
         });
         assert!(ui.app.running && ui.app.mode == PermissionMode::Auto);
@@ -970,6 +1005,7 @@ mod tests {
         device.event(RemoteEvent::Set {
             at: 0,
             entry: host.transcript.entries[0].clone(),
+            agent: None,
         });
         // A live area over budget writes the pending call into the device's scrollback.
         assert!(
@@ -988,10 +1024,12 @@ mod tests {
         device.event(RemoteEvent::Set {
             at: 0,
             entry: host.transcript.entries[0].clone(),
+            agent: None,
         });
         device.event(RemoteEvent::Set {
             at: 1,
             entry: Entry::User("next".into()),
+            agent: None,
         });
         let live = device
             .app
@@ -1012,10 +1050,12 @@ mod tests {
         ui.event(RemoteEvent::Set {
             at: 0,
             entry: Entry::User("stale".into()),
+            agent: None,
         });
         ui.app.reprint = false;
         ui.snapshot(Snapshot {
             entries: vec![Entry::User("fresh".into())],
+            agent_entries: Default::default(),
             status: None,
             dialog: None,
         });

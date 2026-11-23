@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Android agent switching and TUI parity (#746): the host now publishes every agent of the session and
+  each agent's transcript, and the app lists them in an agents bar, shows any agent's transcript live,
+  messages it and stops it (new `AgentMessage` and `StopAgent` messages, audited and not
+  guardian-judged; the protocol version stays 1). The app also shows reasoning (collapsed), shell
+  lines, attachments, the todo list, queued messages, goal and background-job chips, and a picker of
+  the device-allowed slash commands. What stays host-only is listed in `docs/remote.md`.
 - Android keyboard input (#751): the app's text fields now take swipe typing, suggestions, autocorrect and
   spacebar cursor dragging, and underline the word the keyboard is composing. The app ships a small
   Java `FontaineActivity` that hosts an invisible editor view whose input connection mirrors the field

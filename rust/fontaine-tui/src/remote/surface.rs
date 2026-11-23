@@ -32,6 +32,15 @@ pub(crate) enum DeviceInput {
     Interrupt {
         from: Sender,
     },
+    AgentMessage {
+        by: RemoteSender,
+        agent: String,
+        text: String,
+    },
+    StopAgent {
+        from: Sender,
+        agent: String,
+    },
 }
 
 /// A device that presented a valid secret and waits for the person at the host to confirm.
@@ -336,6 +345,28 @@ impl HostSession for RemoteSurface {
                 self.wake();
                 Handled::Silent
             }
+            ClientMsg::AgentMessage {
+                message_id,
+                agent,
+                text,
+            } => {
+                let by = sender(&message_id);
+                lock(&self.inputs, "device inputs").push_back(DeviceInput::AgentMessage {
+                    by,
+                    agent,
+                    text,
+                });
+                self.wake();
+                Handled::Accepted { message_id }
+            }
+            ClientMsg::StopAgent { agent } => {
+                lock(&self.inputs, "device inputs").push_back(DeviceInput::StopAgent {
+                    from: from.clone(),
+                    agent,
+                });
+                self.wake();
+                Handled::Silent
+            }
             ClientMsg::Hello { .. } | ClientMsg::Ping => Handled::Silent,
         }
     }
@@ -564,6 +595,63 @@ mod tests {
         assert!(matches!(inputs[1], DeviceInput::Interrupt { .. }));
         // A prompt sent while a dialog is open is queued like any other message.
         assert!(steering.queued().is_empty());
+    }
+
+    #[test]
+    fn agent_messages_and_stops_are_queued_as_inputs_and_never_as_main_prompts() {
+        let (surface, steering) = surface();
+        let node: Sender = "device-node".into();
+        let handled = surface.client_message(
+            &node,
+            "l",
+            ClientMsg::AgentMessage {
+                message_id: "am1".into(),
+                agent: "agent-1".into(),
+                text: "go on".into(),
+            },
+        );
+        assert!(matches!(handled, Handled::Accepted { message_id } if message_id == "am1"));
+        surface.client_message(
+            &node,
+            "l",
+            ClientMsg::StopAgent {
+                agent: "agent-1".into(),
+            },
+        );
+        let inputs = surface.take_inputs();
+        assert_eq!(inputs.len(), 2);
+        let DeviceInput::AgentMessage { by, agent, text } = &inputs[0] else {
+            panic!("an agent message");
+        };
+        assert_eq!(
+            (
+                by.node.as_str(),
+                by.message_id.as_str(),
+                agent.as_str(),
+                text.as_str()
+            ),
+            ("device-node", "am1", "agent-1", "go on")
+        );
+        assert!(matches!(&inputs[1], DeviceInput::StopAgent { agent, .. } if agent == "agent-1"));
+        assert!(steering.queued().is_empty());
+    }
+
+    #[test]
+    fn a_closed_surface_refuses_agent_messages_and_stops() {
+        let (surface, _) = surface();
+        surface.close();
+        for message in [
+            ClientMsg::AgentMessage {
+                message_id: "m".into(),
+                agent: "a".into(),
+                text: "x".into(),
+            },
+            ClientMsg::StopAgent { agent: "a".into() },
+        ] {
+            let handled = surface.client_message(&"n".into(), "l", message);
+            assert!(matches!(handled, Handled::Notice { .. }));
+        }
+        assert!(surface.take_inputs().is_empty());
     }
 
     #[tokio::test]

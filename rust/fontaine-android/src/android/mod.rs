@@ -713,6 +713,16 @@ impl Activity {
                 let action = self.app.interrupt();
                 self.perform(action);
             }
+            Tap::ViewAgent(agent) => self.app.view_agent(agent.as_deref()),
+            Tap::StopAgent => {
+                let action = self.app.stop_agent();
+                self.perform(action);
+            }
+            Tap::InsertCommand(line) => {
+                self.field.replace_all(&line);
+                self.ime.note_wholesale();
+                ime_bridge::show(&self.android);
+            }
             Tap::Approval(choice) => {
                 let action = self.app.answer_approval(&choice, None);
                 self.perform(action);

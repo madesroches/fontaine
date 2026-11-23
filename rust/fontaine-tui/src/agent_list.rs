@@ -187,7 +187,7 @@ pub(crate) fn wrapped_dimming_id(
 }
 
 /// The agents with each one's children right after it.
-fn depth_first(agents: &[AgentRow]) -> Vec<&AgentRow> {
+pub(crate) fn depth_first(agents: &[AgentRow]) -> Vec<&AgentRow> {
     fn walk<'a>(
         agents: &'a [AgentRow],
         parent: Option<&str>,
