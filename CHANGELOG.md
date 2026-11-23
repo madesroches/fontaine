@@ -202,6 +202,13 @@ All notable changes are recorded here. The format follows
   response when the CLI reports one (a synthetic `user` event with a `refused_message_id`), instead
   of refusing it as a native tool request; it is not retried (#714).
 
+#### Build and release
+
+- Every action in `.github/workflows/` is pinned to a full commit SHA with a version comment, and
+  Dependabot (`.github/dependabot.yml`) bumps the GitHub Actions and the Cargo dependencies weekly,
+  grouped by minor and patch, leaving the exact-pinned `rig-*` crates alone. A `ci.yml` step runs
+  `.github/scripts/check-pinned-actions.sh`, which fails on any unpinned `uses:` (#760).
+
 ### Fixed
 
 - `fontaine update` on the dev channel no longer fails with a bare `403 Forbidden` when GitHub's
