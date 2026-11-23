@@ -36,11 +36,11 @@ Dependabot security updates open fix PRs only for vulnerable dependencies; they 
 ## Implementation Steps
 1. Run the call above as a maintainer with admin rights on the repo (see Manual Verification).
 2. Add a short "Repository protections" paragraph to `SECURITY.md` naming the four controls.
-3. Add a `CHANGELOG.md` entry if the file tracks repo-process changes.
+3. Add a `CHANGELOG.md` entry under `[Unreleased]` in the "Build and release" subject, at the end of that subject's section.
 
 ## Files to Modify
 - `SECURITY.md`
-- `CHANGELOG.md` (if applicable)
+- `CHANGELOG.md`
 
 ## Trade-offs
 - Committing a `.github/settings.yml` (a settings-as-code app) was rejected: it needs a third-party
