@@ -193,7 +193,7 @@ newest build-tools' `d8` may need it): `JAVA_HOME_17_X64` when set, else both `j
 - AFK: The editor declares `TYPE_CLASS_TEXT | CAP_SENTENCES` with a Send action, not the issue's
   multi-line flag, because the field's Enter submits and the model never holds newlines; a
   multi-line editor makes keyboards insert newlines instead of sending.
-- AFK: Rust-to-Java pushes carry a generation counter that Java echoes in every report; a report from an older generation is applied but resets `last` so the field is re-pushed (converges without reverting a hardware key typed in between).
+- AFK: Rust-to-Java pushes carry a generation counter that Java echoes in every report; a report from an older generation is applied but resets `last` so the field is re-pushed (the IME's edit overwrites an app-side edit made in between; a report older than an unacknowledged wholesale push is dropped instead, so a submitted prompt is not restored).
 - AFK: `restartInput` only for wholesale pushes (submit-clear, paste/`replace_all`, cut), flagged on the push; incremental key and tap edits use `updateSelection` only.
 - AFK: The `Pending` lock uses `.expect("...")` rather than poison recovery, per AGENTS.md; its critical sections cannot panic.
 - AFK: `ImeSync::incoming` records the normalized `field.ime_state()` as `last`; `outgoing(&self)` is pure and `mark_sent(&mut self, ImeState)` commits a successful push.

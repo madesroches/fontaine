@@ -96,6 +96,10 @@ public class FontaineActivity extends NativeActivity {
         // The generation of the last Rust push applied, echoed by every report so Rust can tell a
         // report built before that push from one built after it.
         private int generation;
+        // A Rust push that arrived mid-batch waits for the batch's report, so it cannot wipe the
+        // batch's edits and stamp its generation on them; only the newest is kept.
+        private Connection live;
+        private Runnable deferred;
 
         ImeView(Context context) {
             super(context);
@@ -124,7 +128,9 @@ public class FontaineActivity extends NativeActivity {
                             | EditorInfo.IME_FLAG_NO_FULLSCREEN;
             outAttrs.initialSelStart = Selection.getSelectionStart(mirror);
             outAttrs.initialSelEnd = Selection.getSelectionEnd(mirror);
+            runDeferred();
             Connection connection = new Connection(this);
+            live = connection;
             outAttrs.initialCapsMode = connection.getCursorCapsMode(outAttrs.inputType);
             if (Build.VERSION.SDK_INT >= 30) {
                 outAttrs.setInitialSurroundingText(mirror);
@@ -132,7 +138,38 @@ public class FontaineActivity extends NativeActivity {
             return connection;
         }
 
+        private void runDeferred() {
+            live = null;
+            Runnable push = deferred;
+            deferred = null;
+            if (push != null) {
+                push.run();
+            }
+        }
+
         void apply(
+                final String text,
+                final int selStart,
+                final int selEnd,
+                final int compStart,
+                final int compEnd,
+                final int generation,
+                final boolean wholesale) {
+            if (live != null && live.batchDepth > 0) {
+                deferred =
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                applyNow(
+                                        text, selStart, selEnd, compStart, compEnd, generation, wholesale);
+                            }
+                        };
+                return;
+            }
+            applyNow(text, selStart, selEnd, compStart, compEnd, generation, wholesale);
+        }
+
+        private void applyNow(
                 String text,
                 int selStart,
                 int selEnd,
@@ -238,6 +275,13 @@ public class FontaineActivity extends NativeActivity {
                 }
                 if (batchDepth == 0 && dirty) {
                     flush();
+                }
+                if (batchDepth == 0 && live == this) {
+                    Runnable push = deferred;
+                    deferred = null;
+                    if (push != null) {
+                        push.run();
+                    }
                 }
                 return batchDepth > 0;
             }

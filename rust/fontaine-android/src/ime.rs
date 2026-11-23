@@ -65,18 +65,27 @@ pub struct ImeSync {
     last: Option<ImeState>,
     generation: u32,
     wholesale: bool,
+    /// The newest push was wholesale and no report of its generation has arrived yet.
+    unacked_wholesale: bool,
 }
 
 impl ImeSync {
     /// Applies a report from Java. The state recorded as already known is the field's own
     /// normalized form (NULs stripped, offsets rounded), so normalization is not echoed back. A
     /// report older than the last push is applied too, so the IME's edit is not lost, but it is
-    /// forgotten so the field is pushed again and Java converges.
+    /// forgotten so the field is pushed again and Java converges. The exception is a report older
+    /// than an unacknowledged wholesale push (submit-clear, paste, cut): it holds the text that
+    /// push replaced, so applying it would bring that text back, and it is dropped.
     pub fn incoming(&mut self, field: &mut Field, state: ImeState, report_generation: u32) {
-        state.apply_to(field);
         if report_generation >= self.generation {
+            self.unacked_wholesale = false;
+            state.apply_to(field);
             self.last = Some(ImeState::from_field(field));
+        } else if self.unacked_wholesale {
+            self.last = None;
+            self.wholesale = true;
         } else {
+            state.apply_to(field);
             self.last = None;
             self.wholesale = true;
         }
@@ -108,6 +117,7 @@ impl ImeSync {
     pub fn mark_sent(&mut self, state: ImeState) {
         self.last = Some(state);
         self.generation += 1;
+        self.unacked_wholesale = self.wholesale;
         self.wholesale = false;
     }
 }
@@ -283,6 +293,44 @@ mod tests {
         assert_eq!(field.as_str(), "abd");
         assert_eq!(sync.outgoing(&field).expect("re-push").text, "abd");
         assert!(sync.wholesale());
+    }
+
+    #[test]
+    fn a_stale_report_after_a_wholesale_push_is_dropped() {
+        let mut field = Field::default();
+        let mut sync = ImeSync::default();
+        sync.incoming(&mut field, state("prompt", (6, 6), None), 0);
+        field.clear();
+        sync.note_wholesale();
+        let pushed = sync.outgoing(&field).expect("clear");
+        sync.mark_sent(pushed);
+        sync.incoming(&mut field, state("prompt", (6, 6), None), 0);
+        assert_eq!(field.as_str(), "");
+        let again = sync.outgoing(&field).expect("re-push");
+        assert_eq!(again.text, "");
+        assert!(sync.wholesale());
+        sync.mark_sent(again);
+        // A second stale report is still dropped until one of the current generation arrives.
+        sync.incoming(&mut field, state("prompt", (6, 6), None), 1);
+        assert_eq!(field.as_str(), "");
+        sync.incoming(&mut field, state("x", (1, 1), None), 2);
+        assert_eq!(field.as_str(), "x");
+    }
+
+    #[test]
+    fn a_stale_report_after_an_incremental_push_is_applied_even_after_a_wholesale_one() {
+        let mut field = Field::default();
+        let mut sync = ImeSync::default();
+        field.replace_all("a");
+        sync.note_wholesale();
+        let pushed = sync.outgoing(&field).expect("paste");
+        sync.mark_sent(pushed);
+        sync.incoming(&mut field, state("a", (1, 1), None), 1);
+        field.insert("b");
+        let pushed = sync.outgoing(&field).expect("edit");
+        sync.mark_sent(pushed);
+        sync.incoming(&mut field, state("ac", (2, 2), None), 1);
+        assert_eq!(field.as_str(), "ac");
     }
 
     #[test]
