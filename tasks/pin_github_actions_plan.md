@@ -19,7 +19,7 @@ Third-party and first-party actions in use (count of `uses:` lines across all wo
   `actions/deploy-pages@v5`, `actions/upload-pages-artifact@v5`
 - `Swatinem/rust-cache@v2` x2, `taiki-e/install-action@v2` x3
 
-Files: `android.yml`, `ci.yml`, `dev.yml`, `docs.yml`, `pg2.yml`, `release.yml`, `update-e2e.yml`.
+Files with `uses:` lines: `android.yml`, `ci.yml`, `dev.yml`, `docs.yml`, `pg2.yml`, `release.yml` (`update-e2e.yml` has none).
 `release.yml` is hand-adapted from dist's generated file (`allow-dirty = ["ci"]`), so editing it by hand
 is the established practice. `dev.yml` and `release.yml` also install `dist` via a `curl | sh` of a
 version-pinned GitHub release URL; that is not an action and is out of scope.
@@ -56,7 +56,7 @@ Repo policy (`gh api repos/madesroches/fontaine/actions/permissions`): `allowed_
 1. Resolve each distinct `owner/repo@tag` to its commit SHA and full version with `gh api
    repos/<owner>/<repo>/git/ref/tags/<tag>` (dereference annotated tags via `git/tags/<sha>`); pick the
    latest release within the same major so the comment's version is exact.
-2. Rewrite every `uses:` in the seven workflow files per Design 1.
+2. Rewrite every `uses:` in the six workflow files per Design 1.
 3. Add `.github/dependabot.yml`.
 4. Add `.github/scripts/check-pinned-actions.sh` and a `ci.yml` step that runs it.
 5. Update docs (below) and `CHANGELOG.md`.
@@ -64,10 +64,10 @@ Repo policy (`gh api repos/madesroches/fontaine/actions/permissions`): `allowed_
 
 ## Files to Modify
 
-- `.github/workflows/{android,ci,dev,docs,pg2,release,update-e2e}.yml`
+- `.github/workflows/{android,ci,dev,docs,pg2,release}.yml`
 - `.github/dependabot.yml` (new)
 - `.github/scripts/check-pinned-actions.sh` (new)
-- `CONTRIBUTING.md` (CI/actions section, if one exists), `CHANGELOG.md`
+- `CONTRIBUTING.md` (short paragraph under "Build and test"), `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -81,7 +81,7 @@ Repo policy (`gh api repos/madesroches/fontaine/actions/permissions`): `allowed_
 
 ## Documentation
 
-`CONTRIBUTING.md`: one short note that actions are SHA-pinned with a version comment, Dependabot bumps
+`CONTRIBUTING.md`, under "Build and test": one short note that actions are SHA-pinned with a version comment, Dependabot bumps
 them, and new actions must be added to the allowlist in repo settings. No `docs/` page covers CI
 internals, so none changes.
 
@@ -91,10 +91,10 @@ internals, so none changes.
   scratch copy with one unpinned `uses:` it fails naming the file and line (checked once by hand in the
   scratch dir; the script is a few lines of shell, so no test harness is added).
 - `actionlint`, if available locally, over the workflows; otherwise YAML parse check.
-- The PR's own CI run is the end-to-end check: a wrong SHA fails at "Set up job" on every workflow it
-  touches (`ci.yml`, `docs.yml`, `android.yml` run on PRs; `dev.yml`, `release.yml`, `pg2.yml`,
-  `update-e2e.yml` do not, so their SHAs are cross-checked by the identical-tag-same-SHA rule and a
-  script that compares each pinned SHA against `gh api` for its commented tag).
+- The PR's own CI run is the end-to-end check: a wrong SHA fails at "Set up job". `ci.yml`, `docs.yml`,
+  `android.yml`, `release.yml` (`plan` job) and `pg2.yml` (its temporary path-filtered PR trigger) run on
+  the PR; only `dev.yml` does not, so its SHAs are verified once by hand with `gh api` against their
+  commented tags (same-tag-same-SHA makes this a small check).
 
 ## Manual Verification
 
@@ -113,5 +113,4 @@ Expected: a following `gh api repos/madesroches/fontaine/actions/permissions` sh
 
 ## Open Questions
 
-- Should `update-e2e.yml` and `pg2.yml` (scheduled/dispatch only) be exercised once via
-  `workflow_dispatch` after merge to confirm their pins? Default: yes, as part of the maintainer step.
+None.
