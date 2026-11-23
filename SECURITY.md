@@ -22,6 +22,11 @@ command outside the device allow-list are in scope.
 
 Include what you did, what you expected and what happened, and the version or commit you tested.
 
+## Repository protections
+
+The repository has GitHub secret scanning, push protection and Dependabot security updates
+enabled, alongside Dependabot alerts.
+
 ## Disclosure
 
 We follow a 90-day coordinated disclosure window. We will acknowledge a report, work on a fix with

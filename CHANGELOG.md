@@ -201,6 +201,8 @@ All notable changes are recorded here. The format follows
 - `claude-subscription` ends the turn with an error saying Anthropic's safety classifier stopped the
   response when the CLI reports one (a synthetic `user` event with a `refused_message_id`), instead
   of refusing it as a native tool request; it is not retried (#714).
+- `SECURITY.md` lists the repository's secret scanning, push protection and Dependabot security
+  updates (#759).
 
 #### Build and release
 
