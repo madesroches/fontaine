@@ -1,4 +1,4 @@
-# End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the newest one, and check the version changed and the receipt is intact.
+# End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the one the `dev` release's `latest-dev.json` names, and check the version changed and the receipt is intact.
 # Manual and nightly, never a PR gate: it needs two published `dev-<n>` builds and the network.
 # The binary ships no api-base override, so this uses the default feed. Every leg runs the manual
 # `fontaine update`; the TUI background pass would need the workspace trust prompt bypassed, so it
@@ -30,10 +30,11 @@ jobs:
       - name: Pick the previous dev build
         id: tags
         run: |
-          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' | grep -E '^dev-[0-9]+$' | sort -t- -k2 -n -r)
-          newest=$(echo "$tags" | sed -n 1p)
-          previous=$(echo "$tags" | sed -n 2p)
-          if [ -z "$previous" ]; then echo "fewer than two dev builds are published"; exit 1; fi
+          newest=$(curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/dev/latest-dev.json" | jq -r .tag)
+          case "$newest" in dev-[0-9]*) ;; *) echo "latest-dev.json names '$newest', not a dev build"; exit 1 ;; esac
+          n="${newest#dev-}"
+          previous=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' | grep -E '^dev-[0-9]+$' | sort -t- -k2 -n -r | awk -F- -v n="$n" '$2 < n { print; exit }')
+          if [ -z "$previous" ]; then echo "no published dev build older than $newest"; exit 1; fi
           echo "newest=$newest" >> "$GITHUB_OUTPUT"
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
 

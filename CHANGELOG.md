@@ -204,6 +204,11 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `fontaine update` on the dev channel no longer fails with a bare `403 Forbidden` when GitHub's
+  unauthenticated API rate limit is spent (#755). The dev workflow now publishes a small unsigned
+  `latest-dev.json` pointer on the `dev` release, which the updater reads from the release download
+  URL instead of paging through the release list; every archive is still verified as before. A
+  missing or invalid pointer is reported as a retryable network error.
 - The terminal UI no longer leaves part of the screen blank after a device pairs through
   `/remote-control` (#740): closing the ticket or pairing dialog, or any other one-off dialog that
   rows were committed under, prints the transcript again.

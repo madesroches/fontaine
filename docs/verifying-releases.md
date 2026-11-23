@@ -6,11 +6,17 @@ after CI has downloaded the finished draft and verified every archive, and each 
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
 The archives of a dev build live in the immutable `dev-<n>` prerelease. The long-lived `dev`
-prerelease holds only `fontaine-installer.sh`, `fontaine-installer.ps1` and `fontaine-android.apk` with their `.minisig`
-files, replaced after every successful dev publish; each installer is the dist script rewritten to
+prerelease holds `fontaine-installer.sh`, `fontaine-installer.ps1` and `fontaine-android.apk` with their `.minisig`
+files, plus `latest-dev.json`, all replaced after every successful dev publish; each installer is the dist script rewritten to
 download from that run's `dev-<n>`. The PowerShell installer is also patched, before it is signed, with a
 sha256 check of the archive, which dist's own script lacks; the signature covers exactly the script
 you download.
+
+`latest-dev.json` (`{"tag":"dev-<n>","assets":[...]}`) names the newest `dev-<n>` build and is what
+`fontaine update` reads on the dev channel, so the update does not spend GitHub API calls. It is
+unsigned, which is safe: the updater still verifies the minisign signature and the signed channel,
+file name and version of every archive it downloads, and only installs a build newer than the
+installed one, so a tampered pointer can at worst steer an update to a different published dev build.
 
 ## Channels and keys
 
