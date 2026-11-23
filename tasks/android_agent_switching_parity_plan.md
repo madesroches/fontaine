@@ -8,8 +8,8 @@ The Android app mirrors only the main conversation, so a session that spawns sub
 usable from a phone. This plan (1) publishes the agent tree and every agent's transcript over the
 remote protocol and lets the app list agents, switch between them, message them and stop them, and
 (2) audits the TUI's features against the app and closes the gaps that are safe for a device, with
-each deliberately kept gap recorded in `## Decisions`. Authority does not change: devices still send
-only prompts, slash lines, answers and interrupts, and the host floor, guardian and device-command
+each deliberately kept gap recorded in `## Decisions`. Authority does not change: devices additionally
+gain message-agent and stop-agent authority, and the host floor, guardian and device-command
 list apply unchanged.
 
 ## Current State
@@ -45,23 +45,28 @@ list apply unchanged.
 Mirror every agent through the existing broadcast mirror (one publish for all devices, no per-device
 host state):
 
-- `Status` gains `agents: Vec<AgentSummary>` (`#[serde(default)]`): `id`, `name`, `parent`,
-  `agent_type`, `model`, `status` (a string label from `agents_panel::status_label`/`row_label`),
-  `depth`, `spend` (the text `spend_text` already builds), `idle`. Built from the agent tree
-  directly: every agent whose transcript exists in `App::agent_views`, plus main (row 0 with
-  `id = None`/"main"). It does not use `agent_list::rows`, which depends on the host's
-  viewing/dismissed state. Running/failed ordering is done by the app.
+- `Status` gains `agents: Vec<AgentSummary>` (`#[serde(default)]`): `id: Option<String>` (`None` is main),
+  `name`, `parent`, `agent_type`, `model`, `status` (a string label from
+  `agents_panel::status_label`/`row_label`), `depth`, `spend` (the text `spend_text` already
+  builds), `idle`. Built from the unfiltered `AgentRow` tree: every agent in the tree, including
+  rows without a view, plus main (row 0, `id = None`); transcripts come from `App::agent_views`.
+  `Status::of(&App)` and `MirrorTracker::diff(&App)` see only `App`, so `Ui::refresh_agent_list`
+  (`ui/mod.rs`, which receives the tree) also stores an unfiltered per-agent summary list on a new
+  `App` field, written next to `agent_list.set_rows`, and `Status::of` reads it. It does not use
+  `agent_list::rows`, which depends on the host's viewing/dismissed state. Running/failed ordering
+  is done by the app.
 - `Snapshot` gains `agent_entries: BTreeMap<String, Vec<Entry>>` (`#[serde(default)]`), keyed by
   agent id, from `App::agent_views`. Each agent's list is capped to its last N entries
   (`AGENT_ENTRIES_CAP`, 200) and the snapshot builder keeps newest agents first so the total stays
   inside the existing multi-part snapshot limits; an agent trimmed this way is flagged
   (`AgentSummary.clipped`).
 - `RemoteEvent::{Set, Append, Truncate}` gain `agent: Option<String>` (`#[serde(default,
-  skip_serializing_if = "Option::is_none")]`; `None` is main, so the existing encoding is
+  skip_serializing_if = "Option::is_none")]`; `None`/absent is main, so the existing encoding is
   byte-identical). `MirrorTracker` holds one `Vec<Entry>` plus change counter per agent and runs the
   existing `diff_entries` per transcript (parameterised by transcript, not copied). A removed agent
   view (`/clear` drops them) emits `RemoteEvent::AgentGone { agent }`.
-- Dialogs need no change; the app uses `Dialog.agent` to badge the agent row that is waiting.
+- Dialogs need no change; the app uses `Dialog.agent` to badge the agent row that is waiting,
+  mapping `Dialog.agent == ""` to main.
 
 ### 2. Addressing an agent
 
@@ -74,11 +79,11 @@ Two new `ClientMsg` variants, both audited and routed through the same choke poi
   `Ui::kill_agent` (which write to host input history, the main transcript and
   `restore_to_input`), and turn the outcome into an audit/ledger entry plus
   `hub.notice_to(node, ...)`; host UI state is never touched. The audit record naming the node and
-  message id is the attribution. Same size cap as `Prompt`; replies `Accepted`/`PromptRejected` (an unknown or finished
-  agent that cannot be resumed is `Reason::Malformed`; the refusal text goes to the device as a
-  notice).
-- `StopAgent { agent }`: queued as `DeviceInput::StopAgent`, applied with `kill_agent`, audited
-  (`agent_stop`). Stopping `main` is not offered: main is interrupted with `Interrupt`.
+  message id is the attribution. Same size cap as `Prompt`; the surface replies `Accepted` once it queues the
+  `DeviceInput`, and every refusal (an unknown agent, or a finished one that cannot be resumed)
+  comes from the interface loop as `hub.notice_to(node, Warning, refusal.notice(..))`.
+- `StopAgent { agent: Option<String> }` (`None` is main, which is not stoppable here): queued as `DeviceInput::StopAgent`, applied with `kill_agent`, audited
+  (`agent_stop`). Main is interrupted with `Interrupt`.
 
 `Interrupt` stays main-only. The protocol `VERSION` stays 1: all additions are `serde(default)`
 fields or new message variants. Agent controls appear in the app only when `Status.agents` is
@@ -151,13 +156,17 @@ constant, like the contract test) asserts it equals the commands for which
    (reasoning, shell, attachment), todo panel, queued list, status chips, slash picker.
 7. **Contract test**: extend `the_android_mirror_decodes_what_the_host_publishes` with a snapshot
    holding a subagent view and tagged events.
-8. **Docs and changelog**.
+8. **Docs and changelog**, and a dated 2026-11-23 line at the end of the Remote-control subsection of
+   `## Decisions` in `tasks/fontaine_harness_plan.md`: `AgentMessage` and `StopAgent` are not
+   guardian-judged; the floor and guardian still gate everything the agent then does.
 
 ## Files to Modify
 
 - `rust/fontaine-remote/src/protocol.rs`, `rust/fontaine-remote/src/server.rs` (`precheck`/`dispatch`)
 - `rust/fontaine-tui/src/remote/{event.rs,surface.rs,client_ui.rs}`, `ui/remote.rs`, `app.rs` (read
-  access to agent views for the mirror)
+  access to agent views for the mirror; the unfiltered agent summary field), `ui/mod.rs`
+  (`refresh_agent_list` stores it)
+- `tasks/fontaine_harness_plan.md` (`## Decisions` line)
 - `rust/fontaine-android/src/{model.rs,app.rs,layout.rs,android/ui.rs}`
 - `docs/remote.md`, `docs/android.md`, `CHANGELOG.md`
 
@@ -205,9 +214,10 @@ constant, like the contract test) asserts it equals the commands for which
   snapshot with agents round-trips through `SnapshotAssembler`; `AgentGone` on `/clear`; the cap and
   `clipped` flag.
 - `server.rs`: an oversized or empty `AgentMessage` is rejected before the session sees it.
-- `surface.rs`: `AgentMessage`/`StopAgent` are queued as inputs and audited; an unknown agent id is
-  refused with a notice; neither reaches the steering queue as a main prompt; a closed surface
-  refuses them. The existing refused-command and plain-text prompt tests stay green.
+- `surface.rs`: `AgentMessage`/`StopAgent` are queued as inputs and audited; neither reaches the
+  steering queue as a main prompt; a closed surface refuses them. The existing refused-command and
+  plain-text prompt tests stay green.
+- `ui/remote.rs` (`sync_remote` tier): an unknown agent id is refused with a notice to the device.
 - `fontaine-android` unit tests: model decodes agent fields and ignores unknown ones; `app.rs`
   send routing (viewing a subagent -> `AgentMessage`, slash while viewing a subagent is refused
   locally, view falls back to main on `AgentGone`); `layout.rs` agents bar.
