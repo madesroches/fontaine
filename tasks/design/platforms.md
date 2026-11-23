@@ -46,7 +46,7 @@ section. A tag without that section fails in the `plan` job.
 
 Every archive is signed. Fontaine owns one minisign key per channel: `release` (tagged releases)
 and `dev` (the latest CI-passing build of `main`, published by `.github/workflows/dev.yml` as the
-prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`; the long-lived prerelease `dev` holds only the installers, the Android APK and their signatures, see below).
+prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`; the long-lived prerelease `dev` holds the installers, the Android APK and their signatures, plus the unsigned `latest-dev.json` pointer, see below).
 The public keys are in `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use (no self-update yet); the private keys exist
 only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
 GitHub Environments, which only the `sign` jobs name; each also holds that channel's Android keystore, a separate one per channel. The signed trusted comment binds channel,
@@ -72,7 +72,7 @@ results are signed with the dev key (`release-sign.sh dev-installer`, which requ
 `build-android` (`android-unsigned-apk`, versionCode the dev run number) and given its Android
 signature in `sign` from the dev keystore, which is not the release one. After `publish`, the
 `stable-installer` job verifies them, parses the `.ps1`, skips unless its `dev-<n>` is the highest
-published, replaces the six assets and byte-compares what users would download. On the release
+published, replaces the six assets, uploads the `latest-dev.json` pointer (the `dev-<n>` tag and asset names, which `fontaine update` reads on the dev channel instead of the rate-limited API) and byte-compares what users would download. On the release
 channel `sign` runs the same patch before signing and uploads the patched `.ps1` as the
 `windows-installer` artifact, which `host` copies over dist's stock one before creating the draft.
 

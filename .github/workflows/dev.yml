@@ -4,10 +4,11 @@
 # is granted per job to `host`, `verify-draft`, `publish` and `stable-installer` only. Every job
 # builds and records the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`,
 # because `main` may have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
-# the separate long-lived prerelease `dev` holds only dist's shell and PowerShell installers rewritten
+# the separate long-lived prerelease `dev` holds dist's shell and PowerShell installers rewritten
 # to fetch from the `dev-<n>` of its run (the PowerShell one also patched with a sha256 check of the
-# archive) and the Android APK, all signed in `sign`, and replaced by `stable-installer` after
-# `publish`, so one URL always installs the latest dev build. The APK is built unsigned by
+# archive) and the Android APK, all signed in `sign`, plus the unsigned pointer `latest-dev.json`
+# naming the newest `dev-<n>` (read by `fontaine update`, so it never spends GitHub API calls); all
+# are replaced by `stable-installer` after `publish`, so one URL always installs the latest dev build. The APK is built unsigned by
 # `build-android` and gets its Android signature, from a dev keystore distinct from the release
 # one, in `sign`. See docs/verifying-releases.md.
 name: Dev channel
@@ -411,8 +412,8 @@ jobs:
       - name: Publish the draft
         run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
 
-  # Replaces the installers and the APK at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
-  # is created once and never moved; it only anchors the release.
+  # Replaces the installers, the APK and the `latest-dev.json` pointer at the fixed `dev` release URL
+  # once `dev-<n>` is public. The tag `dev` is created once and never moved; it only anchors the release.
   stable-installer:
     needs:
       - plan
@@ -477,11 +478,21 @@ jobs:
       - name: Replace the installers and the APK
         if: steps.guard.outputs.skip != 'true'
         run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig artifacts/fontaine-installer.ps1 artifacts/fontaine-installer.ps1.minisig artifacts/fontaine-android.apk artifacts/fontaine-android.apk.minisig --clobber --repo "$GITHUB_REPOSITORY"
+      # `fontaine update` reads this pointer instead of listing releases through the rate-limited API.
+      # `--clobber` deletes the old asset first, so it can 404 briefly; the updater reports that as a
+      # retryable network error. It is unsigned: the updater verifies every archive it then fetches.
+      - name: Replace the latest-dev.json pointer
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          DEV_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,assets --jq '{tag: .tagName, assets: [.assets[].name]}' > artifacts/latest-dev.json
+          gh release upload dev artifacts/latest-dev.json --clobber --repo "$GITHUB_REPOSITORY"
       - name: Check what users download
         if: steps.guard.outputs.skip != 'true'
         run: |
           mkdir fetched
-          for f in fontaine-installer.sh fontaine-installer.sh.minisig fontaine-installer.ps1 fontaine-installer.ps1.minisig fontaine-android.apk fontaine-android.apk.minisig; do
+          for f in fontaine-installer.sh fontaine-installer.sh.minisig fontaine-installer.ps1 fontaine-installer.ps1.minisig fontaine-android.apk fontaine-android.apk.minisig latest-dev.json; do
             curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSL -o "fetched/$f" "https://github.com/$GITHUB_REPOSITORY/releases/download/dev/$f"
             cmp "artifacts/$f" "fetched/$f"
           done

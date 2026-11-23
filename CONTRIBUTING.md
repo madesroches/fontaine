@@ -152,7 +152,7 @@ reviewers), bootstrap the dev key, create the three `ANDROID_*` secrets for the 
 `enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. A newer
 build replaces a pending one, so intermediate builds may be skipped and the channel always
 publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Each run also
-replaces `fontaine-installer.sh`, `fontaine-installer.ps1`, `fontaine-android.apk` and their `.minisig` files on the long-lived
+replaces `fontaine-installer.sh`, `fontaine-installer.ps1`, `fontaine-android.apk`, their `.minisig` files and `latest-dev.json` on the long-lived
 `dev` prerelease, the stable installer and APK address, unless a newer `dev-<n>` is already published. Old dev prereleases are not
 pruned automatically.
 

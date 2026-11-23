@@ -18,6 +18,7 @@ use minisign::KeyPair;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+const DOWNLOAD: &str = "/madesroches/fontaine/releases/download";
 #[cfg(windows)]
 const TARGET: &str = "x86_64-pc-windows-msvc";
 #[cfg(windows)]
@@ -30,7 +31,6 @@ const TARGET: &str = "x86_64-unknown-linux-gnu";
 const ASSET: &str = "fontaine-x86_64-unknown-linux-gnu.tar.xz";
 #[cfg(not(windows))]
 const BIN: &str = "fontaine";
-const REPO: &str = "/repos/madesroches/fontaine";
 const OLD: &str = "0.1.0-dev.3+aaaaaaa";
 const NEW: &str = "0.1.0-dev.5+bbbbbbb";
 
@@ -141,8 +141,10 @@ impl Install {
     }
 
     fn params<'a>(&self, server: &'a MockServer, keys: &'a TrustedKeys) -> Params<'a> {
+        let base: &'static str = Box::leak(server.uri().into_boxed_str());
         Params {
-            api_base: Box::leak(server.uri().into_boxed_str()),
+            api_base: base,
+            download_base: base,
             receipt_path: self.receipt.clone(),
             current_exe: self.binary.clone(),
             target: TARGET,
@@ -166,34 +168,27 @@ struct Published<'a> {
 }
 
 async fn serve(server: &MockServer, releases: &[Published<'_>]) {
-    let base = server.uri();
-    let mut listing = Vec::new();
+    let mut pointer = None;
     for r in releases {
-        let mut assets = vec![serde_json::json!({
-            "name": ASSET,
-            "browser_download_url": format!("{base}/dl/{}/{ASSET}", r.tag),
-        })];
+        let mut names = vec![ASSET.to_string()];
         Mock::given(method("GET"))
-            .and(path(format!("/dl/{}/{ASSET}", r.tag)))
+            .and(path(format!("{DOWNLOAD}/{}/{ASSET}", r.tag)))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(r.archive.clone()))
             .mount(server)
             .await;
         if let Some(sig) = &r.signature {
-            assets.push(serde_json::json!({
-                "name": format!("{ASSET}.minisig"),
-                "browser_download_url": format!("{base}/dl/{}/{ASSET}.minisig", r.tag),
-            }));
+            names.push(format!("{ASSET}.minisig"));
             Mock::given(method("GET"))
-                .and(path(format!("/dl/{}/{ASSET}.minisig", r.tag)))
+                .and(path(format!("{DOWNLOAD}/{}/{ASSET}.minisig", r.tag)))
                 .respond_with(ResponseTemplate::new(200).set_body_string(sig.clone()))
                 .mount(server)
                 .await;
         }
-        listing.push(serde_json::json!({"tag_name": r.tag, "draft": false, "assets": assets}));
+        pointer.get_or_insert_with(|| serde_json::json!({"tag": r.tag, "assets": names}));
     }
     Mock::given(method("GET"))
-        .and(path(format!("{REPO}/releases")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&listing))
+        .and(path(format!("{DOWNLOAD}/dev/latest-dev.json")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pointer.unwrap()))
         .mount(server)
         .await;
 }
@@ -235,7 +230,7 @@ async fn pass(
 fn downloads(requests: &[wiremock::Request]) -> usize {
     requests
         .iter()
-        .filter(|r| r.url.path().starts_with("/dl/"))
+        .filter(|r| r.url.path().starts_with(&format!("{DOWNLOAD}/dev-")))
         .count()
 }
 
@@ -412,6 +407,7 @@ async fn an_offline_pass_still_writes_the_stamp() {
     let keys = Signer::new().keys();
     let params = Params {
         api_base: &uri,
+        download_base: &uri,
         receipt_path: install.receipt.clone(),
         current_exe: install.binary.clone(),
         target: TARGET,

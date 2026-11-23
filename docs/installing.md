@@ -182,8 +182,9 @@ is read from the install receipt, where a version with `-dev.` in it (`<version>
 is the `dev` channel and any other is `release`. An update never switches channels; to change
 channel, run the other channel's installer.
 
-- On `release` it installs the latest published `vX.Y.Z` release; on `dev` the highest published
-  `dev-<n>` build, compared by build number.
+- On `release` it installs the latest published `vX.Y.Z` release; on `dev` the build named by
+  `latest-dev.json` on the `dev` release (the newest `dev-<n>`), compared by build number. A missing
+  or invalid pointer is a network error (exit 4); retrying shortly usually helps.
 - A build that is the same or older than the installed one is reported as already up to date, and
   nothing is installed: an update never downgrades.
 - The archive and its `.minisig` are downloaded beside the installed binary and checked against the
@@ -206,10 +207,10 @@ nothing is written.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Updated, or already up to date |
-| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release exists on the channel, or the release has no archive for this platform) |
+| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release exists on the release channel, or the release has no archive for this platform) |
 | 2 | The configuration could not be loaded |
 | 3 | This install cannot update itself |
-| 4 | The release list or the download could not be fetched (not when it was fetched and held no release); retrying may help |
+| 4 | The release list, the dev release pointer or the download could not be fetched (not when it was fetched and held no release); retrying may help |
 | 5 | The download failed verification (missing or bad signature, wrong channel, file or version, or an archive larger than expected) |
 
 ### Automatic updates
@@ -246,7 +247,7 @@ Everything it writes is in the data directory (see [Where files live](configurat
 
 Each dev build is a `dev-<n>` [prerelease](https://github.com/madesroches/fontaine/releases) with one
 archive per platform: `fontaine-<target>.tar.xz`, or `.zip` on Windows. (The `dev` release itself
-holds only the installers and the Android APK.) Unpack it and put `fontaine` on your
+holds only the installers, the Android APK and the `latest-dev.json` pointer.) Unpack it and put `fontaine` on your
 `PATH`; it also holds the license, readme and changelog. Use it where there is no installer. Each archive
 has a detached signature; see [Verifying releases](verifying-releases.md). A manual install writes
 no receipt.

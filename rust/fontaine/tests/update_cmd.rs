@@ -12,6 +12,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+const DOWNLOAD: &str = "/madesroches/fontaine/releases/download";
 const ASSET: &str = "fontaine-x86_64-unknown-linux-gnu.tar.xz";
 const REPO: &str = "/repos/madesroches/fontaine";
 
@@ -118,34 +119,39 @@ struct Published<'a> {
 async fn serve(server: &MockServer, channel: Channel, releases: &[Published<'_>]) {
     let base = server.uri();
     let mut listing = Vec::new();
+    let mut pointer = None;
     for r in releases {
+        let url = format!("{base}{DOWNLOAD}/{}", r.tag);
         let mut assets = vec![serde_json::json!({
             "name": ASSET,
-            "browser_download_url": format!("{base}/dl/{}/{ASSET}", r.tag),
+            "browser_download_url": format!("{url}/{ASSET}"),
         })];
+        let mut names = vec![ASSET.to_string()];
         Mock::given(method("GET"))
-            .and(path(format!("/dl/{}/{ASSET}", r.tag)))
+            .and(path(format!("{DOWNLOAD}/{}/{ASSET}", r.tag)))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(r.archive.clone()))
             .mount(server)
             .await;
         if let Some(sig) = &r.signature {
             assets.push(serde_json::json!({
                 "name": format!("{ASSET}.minisig"),
-                "browser_download_url": format!("{base}/dl/{}/{ASSET}.minisig", r.tag),
+                "browser_download_url": format!("{url}/{ASSET}.minisig"),
             }));
+            names.push(format!("{ASSET}.minisig"));
             Mock::given(method("GET"))
-                .and(path(format!("/dl/{}/{ASSET}.minisig", r.tag)))
+                .and(path(format!("{DOWNLOAD}/{}/{ASSET}.minisig", r.tag)))
                 .respond_with(ResponseTemplate::new(200).set_body_string(sig.clone()))
                 .mount(server)
                 .await;
         }
+        pointer.get_or_insert_with(|| serde_json::json!({"tag": r.tag, "assets": names}));
         listing.push(serde_json::json!({"tag_name": r.tag, "draft": false, "assets": assets}));
     }
     match channel {
         Channel::Dev => {
             Mock::given(method("GET"))
-                .and(path(format!("{REPO}/releases")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&listing))
+                .and(path(format!("{DOWNLOAD}/dev/latest-dev.json")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(pointer.unwrap()))
                 .mount(server)
                 .await;
         }
@@ -175,6 +181,7 @@ async fn run_update(
     };
     let params = Params {
         api_base: &server.uri(),
+        download_base: &server.uri(),
         receipt_path: install.receipt.clone(),
         current_exe: install.binary.clone(),
         target: TARGET,
@@ -192,18 +199,11 @@ async fn dev_update_replaces_the_binary_and_the_receipt_version() {
     serve(
         &server,
         Channel::Dev,
-        &[
-            Published {
-                tag: "dev-5",
-                signature: Some(signer.sign(&new, "dev", "0.1.0-dev.5+bbbbbbb")),
-                archive: new,
-            },
-            Published {
-                tag: "dev-4",
-                archive: archive(b"MID"),
-                signature: None,
-            },
-        ],
+        &[Published {
+            tag: "dev-5",
+            signature: Some(signer.sign(&new, "dev", "0.1.0-dev.5+bbbbbbb")),
+            archive: new,
+        }],
     )
     .await;
     let outcome = run_update(&server, &install, &signer).await.unwrap();
@@ -352,7 +352,7 @@ async fn the_same_or_an_older_build_is_up_to_date_and_downloads_nothing() {
             .await
             .unwrap()
             .iter()
-            .filter(|r| r.url.path().starts_with("/dl/"))
+            .filter(|r| r.url.path().starts_with(&format!("{DOWNLOAD}/dev-")))
             .count();
         assert_eq!(downloads, 0);
         assert_untouched(&install, "0.1.0-dev.3+aaaaaaa").await;

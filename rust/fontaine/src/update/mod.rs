@@ -107,6 +107,8 @@ pub fn upgrade_hint(channel: Option<Channel>) -> String {
 
 pub struct Params<'a> {
     pub api_base: &'a str,
+    /// Where the dev pointer and dev release assets are downloaded from.
+    pub download_base: &'a str,
     pub receipt_path: PathBuf,
     pub current_exe: PathBuf,
     /// The target triple this binary was built for, which names its release asset.
@@ -384,7 +386,7 @@ pub async fn prepare(
         }
     })?;
 
-    let release = release_index::latest(client, params.api_base, channel)
+    let release = release_index::latest(client, params.api_base, params.download_base, channel)
         .await
         .map_err(index_error)?;
     opts.candidate = Some(release.tag.clone());
@@ -657,6 +659,7 @@ pub fn run(
     };
     let params = Params {
         api_base: release_index::DEFAULT_API_BASE,
+        download_base: release_index::DEFAULT_DOWNLOAD_BASE,
         receipt_path,
         current_exe,
         target: env!("FONTAINE_BUILD_TARGET"),
@@ -740,7 +743,7 @@ mod tests {
 
     #[test]
     fn a_missing_release_is_not_retryable() {
-        let missing = index_error(release_index::IndexError::NoRelease(Channel::Dev));
+        let missing = index_error(release_index::IndexError::NoRelease(Channel::Release));
         assert!(matches!(missing, UpdateError::Install(_)));
         assert_eq!(missing.exit_code(), 1);
         let status = index_error(release_index::IndexError::Status(
@@ -748,6 +751,11 @@ mod tests {
             "https://example.test".into(),
         ));
         assert_eq!(status.exit_code(), EXIT_UPDATE_NETWORK);
+        let pointer = index_error(release_index::IndexError::Pointer {
+            url: "https://example.test".into(),
+            cause: None,
+        });
+        assert_eq!(pointer.exit_code(), EXIT_UPDATE_NETWORK);
     }
 
     fn release(build: Build, tag: &str) -> Release {
