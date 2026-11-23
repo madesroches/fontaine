@@ -27,6 +27,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check actions are pinned
+        run: .github/scripts/check-pinned-actions.sh
+
       - name: Detect code changes
         id: diff
         env:
@@ -131,11 +134,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --workspace --features fontaine/pg2
-
-      - name: Check actions are pinned
-        if: runner.os == 'Linux'
-        working-directory: .
-        run: .github/scripts/check-pinned-actions.sh
 
       - name: Release signing
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
