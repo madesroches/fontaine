@@ -56,10 +56,9 @@ host state):
   `agent_list::rows`, which depends on the host's viewing/dismissed state. Running/failed ordering
   is done by the app.
 - `Snapshot` gains `agent_entries: BTreeMap<String, Vec<Entry>>` (`#[serde(default)]`), keyed by
-  agent id, from `App::agent_views`. Each agent's list is capped to its last N entries
-  (`AGENT_ENTRIES_CAP`, 200) and the snapshot builder keeps newest agents first so the total stays
-  inside the existing multi-part snapshot limits; an agent trimmed this way is flagged
-  (`AgentSummary.clipped`).
+  agent id, from `App::agent_views`, with full transcripts so event indices stay absolute. Size is
+  bounded by the existing per-entry `FIELD_CAP` and the hub's `snapshot_cap`; an oversize snapshot is
+  refused with `Reason::TooLarge` exactly as for the main transcript today.
 - `RemoteEvent::{Set, Append, Truncate}` gain `agent: Option<String>` (`#[serde(default,
   skip_serializing_if = "Option::is_none")]`; `None`/absent is main, so the existing encoding is
   byte-identical). `MirrorTracker` holds one `Vec<Entry>` plus change counter per agent and runs the
@@ -82,8 +81,8 @@ Two new `ClientMsg` variants, both audited and routed through the same choke poi
   message id is the attribution. Same size cap as `Prompt`; the surface replies `Accepted` once it queues the
   `DeviceInput`, and every refusal (an unknown agent, or a finished one that cannot be resumed)
   comes from the interface loop as `hub.notice_to(node, Warning, refusal.notice(..))`.
-- `StopAgent { agent: Option<String> }` (`None` is main, which is not stoppable here): queued as `DeviceInput::StopAgent`, applied with `kill_agent`, audited
-  (`agent_stop`). Main is interrupted with `Interrupt`.
+- `StopAgent { agent: String }`: queued as `DeviceInput::StopAgent`, applied with `kill_agent` (a child id only), audited
+  (`agent_stop`). Main is stopped with `Interrupt`.
 
 `Interrupt` stays main-only. The protocol `VERSION` stays 1: all additions are `serde(default)`
 fields or new message variants. Agent controls appear in the app only when `Status.agents` is
@@ -132,15 +131,15 @@ Decisions.
 
 A test pins the table: the exhaustive `device_allowed` match is unchanged (its existing test stays).
 The picker list is a constant in `fontaine-android`; a test in `fontaine-tui` (which reads that
-constant, like the contract test) asserts it equals the commands for which
-`Command::device_allowed` is true.
+constant, like the contract test) asserts it equals the `builtin_menu()` command names, each mapped through `parse_command` and
+filtered on `Command::device_allowed`; skills (`Command::Other`) are excluded.
 
 ## Implementation Steps
 
 1. **Wire types** (`rust/fontaine-remote/src/protocol.rs`): `ClientMsg::AgentMessage`,
    `ClientMsg::StopAgent`; round-trip tests; docs constants reuse `MAX_MESSAGE_BYTES`.
    `server.rs`: extend `precheck` to `AgentMessage` (message_id, blank text, `MAX_MESSAGE_BYTES`)
-   and `StopAgent` (agent id length).
+   and `StopAgent` (empty agent id, agent id length).
 2. **Host mirror** (`rust/fontaine-tui/src/remote/event.rs`): `AgentSummary`, `Status.agents`,
    `Snapshot.agent_entries`, `agent` on events, `AgentGone`; `MirrorTracker` per-agent diff
    (`diff_entries` generalised over a transcript). Build summaries from the agent tree and `App::agent_views`.
@@ -156,9 +155,9 @@ constant, like the contract test) asserts it equals the commands for which
    (reasoning, shell, attachment), todo panel, queued list, status chips, slash picker.
 7. **Contract test**: extend `the_android_mirror_decodes_what_the_host_publishes` with a snapshot
    holding a subagent view and tagged events.
-8. **Docs and changelog**, and a dated 2026-11-23 line at the end of the Remote-control subsection of
-   `## Decisions` in `tasks/fontaine_harness_plan.md`: `AgentMessage` and `StopAgent` are not
-   guardian-judged; the floor and guardian still gate everything the agent then does.
+8. **Docs and changelog**, and the dated 2026-11-23 line in the TUI subsection of `## Decisions`
+   in `tasks/fontaine_harness_plan.md` recording this plan's `## Decisions` bullet about
+   `AgentMessage`/`StopAgent`.
 
 ## Files to Modify
 
@@ -175,7 +174,7 @@ constant, like the contract test) asserts it equals the commands for which
 - **Mirror all agents to every device** vs a per-device `View { agent }` subscription: the hub
   publishes one stream to all devices and holds no per-device state; a subscription needs per-device
   mirrors and a resume story for each. Cost: bandwidth for transcripts a device is not looking at,
-  bounded by `AGENT_ENTRIES_CAP` and the snapshot caps.
+  bounded by `FIELD_CAP` and the hub's `snapshot_cap`.
 - **Tag events with `agent`** vs a separate event family for subagents: a tag reuses `diff_entries`
   and the apply path.
 - **Version bump** vs additive fields: additive keeps old apps working against a new host (they
@@ -198,6 +197,7 @@ constant, like the contract test) asserts it equals the commands for which
   inputs a human gives, and every call the agent then makes is still gated by the floor and guardian.
 - Protocol `VERSION` stays 1 (additive).
 - The attach TUI does not drive agents; it only applies agent-tagged events into `App::agent_views`.
+- AFK: no per-agent entry cap, `clipped` flag or "newest agents first" ordering; subagent snapshots carry full transcripts (absolute event indices, no new base contract), bounded by `FIELD_CAP` and refused by the hub's `snapshot_cap` with `Reason::TooLarge` as today (issue #746).
 
 ## Documentation
 
@@ -211,9 +211,8 @@ constant, like the contract test) asserts it equals the commands for which
   parse; an event with `agent: None` serializes without the key.
 - `event.rs`: a host with two subagent views, diffed event by event into a device `App`, renders the
   same lines per agent (extends `a_device_built_only_from_events_renders_the_host_transcript`);
-  snapshot with agents round-trips through `SnapshotAssembler`; `AgentGone` on `/clear`; the cap and
-  `clipped` flag.
-- `server.rs`: an oversized or empty `AgentMessage` is rejected before the session sees it.
+  snapshot with agents round-trips through `SnapshotAssembler`; `AgentGone` on `/clear`.
+- `server.rs`: an oversized or empty `AgentMessage`, and a `StopAgent` with an empty agent id, are rejected before the session sees them.
 - `surface.rs`: `AgentMessage`/`StopAgent` are queued as inputs and audited; neither reaches the
   steering queue as a main prompt; a closed surface refuses them. The existing refused-command and
   plain-text prompt tests stay green.
@@ -221,7 +220,7 @@ constant, like the contract test) asserts it equals the commands for which
 - `fontaine-android` unit tests: model decodes agent fields and ignores unknown ones; `app.rs`
   send routing (viewing a subagent -> `AgentMessage`, slash while viewing a subagent is refused
   locally, view falls back to main on `AgentGone`); `layout.rs` agents bar.
-- `fontaine-tui`: the slash picker constant equals the commands for which `device_allowed` is true.
+- `fontaine-tui`: the slash picker constant equals the `builtin_menu()` names mapped through `parse_command` and filtered on `device_allowed`, excluding skills (`Command::Other`).
 - Contract test extended as in step 7.
 - End to end: a headless `fontaine -p`-driven integration test is not applicable (attach is
   interactive); the `fontaine attach` client over a loopback hub is the wiring test in `client_ui.rs`.
