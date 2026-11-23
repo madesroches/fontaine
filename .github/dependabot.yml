@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    # rig crates are pinned to exact versions on purpose.
+    ignore:
+      - dependency-name: "rig-*"
+    groups:
+      cargo:
+        update-types: [minor, patch]

@@ -48,7 +48,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
@@ -66,7 +66,7 @@ jobs:
           done
           exit 1
       - name: Cache dist
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
@@ -92,7 +92,7 @@ jobs:
           echo "commit=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
           echo "tag=dev-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-plan-dist-manifest
           path: rust/plan-dist-manifest.json
@@ -116,7 +116,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
@@ -131,7 +131,7 @@ jobs:
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: rust/target/distrib/
@@ -153,7 +153,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
@@ -169,19 +169,19 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
           submodules: recursive
       - name: Install cached dist
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: rust/target/distrib/
@@ -198,7 +198,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-build-global
           path: |
@@ -217,7 +217,7 @@ jobs:
       FONTAINE_APK_VERSION_CODE: ${{ github.run_number }}
       FONTAINE_APK_VERSION_NAME: ${{ needs.plan.outputs.sign-version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
@@ -232,7 +232,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/apk"
           fontaine-android/build-apk.sh "$RUNNER_TEMP/apk/fontaine-android.apk"
       - name: Upload the unsigned APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-unsigned-apk
           path: ${{ runner.temp }}/apk/fontaine-android.apk
@@ -254,12 +254,12 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
       - name: Fetch artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: artifacts
@@ -272,7 +272,7 @@ jobs:
           mv artifacts/fontaine-installer.sh artifacts/fontaine-installer.ps1 dev-installer/
           rm -f artifacts/*-dist-manifest.json
       - name: Fetch the unsigned APK
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: android-unsigned-apk
           path: dev-installer
@@ -319,13 +319,13 @@ jobs:
           .github/scripts/release-sign.sh dev artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
           .github/scripts/release-sign.sh dev-installer dev-installer rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
       - name: Upload signatures
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-signatures
           path: artifacts/*.minisig
       # Not named `artifacts-*`, so `host` and `verify-draft` never pick it up.
       - name: Upload the signed installers and APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dev-installer
           path: dev-installer/*
@@ -349,7 +349,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     steps:
       - name: Download GitHub Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: artifacts
@@ -380,7 +380,7 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
@@ -427,14 +427,14 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Download the signed installers and APK
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dev-installer
           path: artifacts

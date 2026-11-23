@@ -34,6 +34,11 @@ fontaine/pg2`). The pg2 tests (`cargo test --features fontaine/pg2`) run nightly
 steps. The last command above is a local check that the Windows code compiles. Tests never call
 live model APIs.
 
+Every action in `.github/workflows/` is pinned to a full commit SHA followed by a version comment
+(`uses: owner/repo@<sha> # v1.2.3`); `.github/scripts/check-pinned-actions.sh` checks this in CI and
+Dependabot bumps the pins weekly. A new third-party action must also be added to the Actions
+allowlist in the repository settings, which only a maintainer can change.
+
 ## Docs
 
 `docs/` is published as an mdBook site. Preview it with `mdbook serve docs`, and run the checks
