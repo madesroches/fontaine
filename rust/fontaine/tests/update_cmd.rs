@@ -12,6 +12,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+const DOWNLOAD: &str = "/madesroches/fontaine/releases/download";
 const ASSET: &str = "fontaine-x86_64-unknown-linux-gnu.tar.xz";
 const REPO: &str = "/repos/madesroches/fontaine";
 
@@ -120,17 +121,14 @@ async fn serve(server: &MockServer, channel: Channel, releases: &[Published<'_>]
     let mut listing = Vec::new();
     let mut pointer = None;
     for r in releases {
-        let url = format!("{base}/madesroches/fontaine/releases/download/{}", r.tag);
+        let url = format!("{base}{DOWNLOAD}/{}", r.tag);
         let mut assets = vec![serde_json::json!({
             "name": ASSET,
             "browser_download_url": format!("{url}/{ASSET}"),
         })];
         let mut names = vec![ASSET.to_string()];
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/madesroches/fontaine/releases/download/{}/{ASSET}",
-                r.tag
-            )))
+            .and(path(format!("{DOWNLOAD}/{}/{ASSET}", r.tag)))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(r.archive.clone()))
             .mount(server)
             .await;
@@ -141,10 +139,7 @@ async fn serve(server: &MockServer, channel: Channel, releases: &[Published<'_>]
             }));
             names.push(format!("{ASSET}.minisig"));
             Mock::given(method("GET"))
-                .and(path(format!(
-                    "/madesroches/fontaine/releases/download/{}/{ASSET}.minisig",
-                    r.tag
-                )))
+                .and(path(format!("{DOWNLOAD}/{}/{ASSET}.minisig", r.tag)))
                 .respond_with(ResponseTemplate::new(200).set_body_string(sig.clone()))
                 .mount(server)
                 .await;
@@ -155,9 +150,7 @@ async fn serve(server: &MockServer, channel: Channel, releases: &[Published<'_>]
     match channel {
         Channel::Dev => {
             Mock::given(method("GET"))
-                .and(path(
-                    "/madesroches/fontaine/releases/download/dev/latest-dev.json",
-                ))
+                .and(path(format!("{DOWNLOAD}/dev/latest-dev.json")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(pointer.unwrap()))
                 .mount(server)
                 .await;
@@ -359,11 +352,7 @@ async fn the_same_or_an_older_build_is_up_to_date_and_downloads_nothing() {
             .await
             .unwrap()
             .iter()
-            .filter(|r| {
-                r.url
-                    .path()
-                    .starts_with("/madesroches/fontaine/releases/download/dev-")
-            })
+            .filter(|r| r.url.path().starts_with(&format!("{DOWNLOAD}/dev-")))
             .count();
         assert_eq!(downloads, 0);
         assert_untouched(&install, "0.1.0-dev.3+aaaaaaa").await;

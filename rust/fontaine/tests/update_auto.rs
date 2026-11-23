@@ -18,6 +18,7 @@ use minisign::KeyPair;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+const DOWNLOAD: &str = "/madesroches/fontaine/releases/download";
 #[cfg(windows)]
 const TARGET: &str = "x86_64-pc-windows-msvc";
 #[cfg(windows)]
@@ -171,20 +172,14 @@ async fn serve(server: &MockServer, releases: &[Published<'_>]) {
     for r in releases {
         let mut names = vec![ASSET.to_string()];
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/madesroches/fontaine/releases/download/{}/{ASSET}",
-                r.tag
-            )))
+            .and(path(format!("{DOWNLOAD}/{}/{ASSET}", r.tag)))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(r.archive.clone()))
             .mount(server)
             .await;
         if let Some(sig) = &r.signature {
             names.push(format!("{ASSET}.minisig"));
             Mock::given(method("GET"))
-                .and(path(format!(
-                    "/madesroches/fontaine/releases/download/{}/{ASSET}.minisig",
-                    r.tag
-                )))
+                .and(path(format!("{DOWNLOAD}/{}/{ASSET}.minisig", r.tag)))
                 .respond_with(ResponseTemplate::new(200).set_body_string(sig.clone()))
                 .mount(server)
                 .await;
@@ -192,9 +187,7 @@ async fn serve(server: &MockServer, releases: &[Published<'_>]) {
         pointer.get_or_insert_with(|| serde_json::json!({"tag": r.tag, "assets": names}));
     }
     Mock::given(method("GET"))
-        .and(path(
-            "/madesroches/fontaine/releases/download/dev/latest-dev.json",
-        ))
+        .and(path(format!("{DOWNLOAD}/dev/latest-dev.json")))
         .respond_with(ResponseTemplate::new(200).set_body_json(pointer.unwrap()))
         .mount(server)
         .await;
@@ -237,11 +230,7 @@ async fn pass(
 fn downloads(requests: &[wiremock::Request]) -> usize {
     requests
         .iter()
-        .filter(|r| {
-            r.url
-                .path()
-                .starts_with("/madesroches/fontaine/releases/download/dev-")
-        })
+        .filter(|r| r.url.path().starts_with(&format!("{DOWNLOAD}/dev-")))
         .count()
 }
 

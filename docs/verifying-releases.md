@@ -16,7 +16,7 @@ you download.
 `fontaine update` reads on the dev channel, so the update does not spend GitHub API calls. It is
 unsigned, which is safe: the updater still verifies the minisign signature and the signed channel,
 file name and version of every archive it downloads, and only installs a build newer than the
-installed one, so a tampered pointer can at worst steer an update to a different published dev build.
+installed one, so a tampered pointer can at worst hold updates back (an older or equal build makes the updater report up to date) or steer one to another newer, signed and published dev build, and can never install an older or unsigned one.
 
 ## Channels and keys
 
