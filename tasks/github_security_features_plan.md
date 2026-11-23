@@ -50,6 +50,8 @@ Dependabot security updates open fix PRs only for vulnerable dependencies; they 
 ## Decisions
 - AFK: the settings change is applied by the maintainer, not by the automated chain, because it
   mutates live repository configuration outside the PR's review gate.
+- Secret scanning non-provider patterns stays disabled: the API accepts the PATCH without applying it and the
+  settings UI offers no toggle, so `SECURITY.md` does not claim it.
 
 ## Documentation
 `SECURITY.md` only; `docs/` covers product behavior, not repo settings.

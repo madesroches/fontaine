@@ -24,8 +24,8 @@ Include what you did, what you expected and what happened, and the version or co
 
 ## Repository protections
 
-The repository has GitHub secret scanning (including non-provider patterns), push protection and
-Dependabot security updates enabled, alongside Dependabot alerts.
+The repository has GitHub secret scanning, push protection and Dependabot security updates
+enabled, alongside Dependabot alerts.
 
 ## Disclosure
 
