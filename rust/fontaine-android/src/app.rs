@@ -408,8 +408,8 @@ impl App {
                             self.status = snapshot.status;
                             if self
                                 .viewing
-                                .as_ref()
-                                .is_some_and(|id| !self.entries_by_agent.contains_key(id))
+                                .as_deref()
+                                .is_some_and(|id| !self.knows_agent(id))
                             {
                                 self.viewing = None;
                             }
@@ -1271,6 +1271,17 @@ mod tests {
         app.view_agent(Some("a1"));
         app.on_client_event(snapshot(json!({ "entries": [], "agent_entries": {} })));
         assert!(app.view().header.is_none());
+    }
+
+    #[test]
+    fn a_snapshot_keeps_a_view_of_an_agent_listed_without_a_transcript() {
+        let mut app = with_agents();
+        app.view_agent(Some("a3"));
+        app.on_client_event(snapshot(json!({
+            "entries": [], "agent_entries": {},
+            "status": { "agents": [{ "id": "a3", "name": "three", "status": "running" }] },
+        })));
+        assert!(app.view().header.is_some());
     }
 
     #[test]
