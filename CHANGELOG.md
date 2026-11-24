@@ -8,6 +8,7 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Android transcript block selection (#776): a long press in the transcript selects the block under the finger (a paragraph, a code block, a tool call, a shell command), dragging or the handles extend it across blocks, and a Copy bar above the prompt puts the selection on the clipboard; a plain drag still scrolls. See `docs/android.md`.
 - Android transcript drag scrolling (#775): the app's transcript now scrolls by dragging it, with fling
   momentum after release; the scroll bar still works, a drag does not toggle a reasoning row, and a tap
   that stops a fling is swallowed. See `docs/android.md`.
