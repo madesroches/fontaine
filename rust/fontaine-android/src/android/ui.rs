@@ -142,6 +142,9 @@ pub struct UiState {
     viewed_for_selection: String,
     /// Which end a handle drag moves: true is the start.
     handle_drag: Option<bool>,
+    /// How far below its handle's edge the press landed, taken off the finger so that touching a
+    /// handle without moving leaves the selection alone.
+    handle_grab_dy: f32,
     /// Left and right edge of the transcript's content in screen pixels, where the handles sit.
     content_x: (f32, f32),
     /// The press now held began over the transcript and was not given to anything else.
@@ -1103,6 +1106,15 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     state.footer_px = unsafe { sys::igGetCursorPosY() } - footer_top;
 }
 
+/// Screen x where the current window's scroll bar begins.
+fn scrollbar_left() -> f32 {
+    // SAFETY: a frame is open and the transcript child is the current window; this only reads
+    // window and style state.
+    unsafe {
+        sys::igGetWindowPos().x + sys::igGetWindowWidth() - (*sys::igGetStyle()).ScrollbarSize
+    }
+}
+
 /// Scrolls the transcript child, which must be the current window with its rows submitted, by a
 /// finger drag and the fling after it. `free` is whether no other widget owned the active ID when
 /// the child began, so a press on one (the reasoning button excepted, which is submitted inside)
@@ -1122,9 +1134,7 @@ fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
         if sys::igIsMouseClicked_Bool(0, false) {
             let max = sys::igGetScrollMaxY();
             // The scroll bar is submitted by `igEndChild`, so it is tested by its rect.
-            let bar_left = sys::igGetWindowPos().x + sys::igGetWindowWidth()
-                - (*sys::igGetStyle()).ScrollbarSize;
-            let on_bar = max > 0.0 && sys::igGetMousePos().x >= bar_left;
+            let on_bar = max > 0.0 && sys::igGetMousePos().x >= scrollbar_left();
             let hovered =
                 sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
             state.press_owned = free && !on_bar && hovered;
@@ -1300,6 +1310,9 @@ fn handle_press(state: &mut UiState, scale: f32, free: bool) -> bool {
             return false;
         }
         let at = sys::igGetMousePos();
+        if sys::igGetScrollMaxY() > 0.0 && at.x >= scrollbar_left() {
+            return false;
+        }
         let half = HANDLE_DP * scale * 0.5;
         let near = |(x, y): (f32, f32)| (at.x - x).abs() <= half && (at.y - y).abs() <= half;
         // The end handle wins a tie, which is a one-block selection whose handles are close.
@@ -1311,6 +1324,7 @@ fn handle_press(state: &mut UiState, scale: f32, free: bool) -> bool {
             return false;
         };
         state.handle_drag = Some(which);
+        state.handle_grab_dy = at.y - if which { start.1 } else { end.1 };
         state.long_press_handled = true;
         state.press_owned = false;
         state.swallow_tap = true;
@@ -1352,7 +1366,12 @@ fn selection_gestures(state: &mut UiState, scale: f32, line: f32) {
         }
 
         if down {
-            let at = select::block_at(&state.block_spans, mouse.y);
+            let grab = if state.handle_drag.is_some() {
+                state.handle_grab_dy
+            } else {
+                0.0
+            };
+            let at = select::block_at(&state.block_spans, mouse.y - grab);
             if let (Some(selection), Some(at)) = (state.block_selection.as_mut(), at) {
                 if state.selecting_blocks {
                     selection.extend_to(at);
