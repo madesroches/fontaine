@@ -1035,16 +1035,22 @@ fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
         let scroll = &mut state.transcript_scroll;
         let mut delta = 0.0;
 
-        if free && sys::igIsMouseClicked_Bool(0, false) {
+        if sys::igIsMouseClicked_Bool(0, false) {
             let max = sys::igGetScrollMaxY();
             // The scroll bar is submitted by `igEndChild`, so it is tested by its rect.
             let bar_left = sys::igGetWindowPos().x + sys::igGetWindowWidth()
                 - (*sys::igGetStyle()).ScrollbarSize;
             let on_bar = max > 0.0 && sys::igGetMousePos().x >= bar_left;
-            if !on_bar
-                && sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
-            {
+            let hovered =
+                sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+            if free && !on_bar && hovered {
                 state.swallow_tap = scroll.press(y, now);
+            } else {
+                scroll.abandon_press();
+                // The bar takes over scrolling, so a running fling must not resume after it.
+                if free && on_bar && hovered {
+                    scroll.cancel();
+                }
             }
         }
         if down {

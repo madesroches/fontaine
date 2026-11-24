@@ -52,6 +52,16 @@ impl DragScroll {
         interrupted
     }
 
+    /// A press the transcript did not take: drops a touch left held by a release that was never
+    /// delivered, so it cannot drive a later drag.
+    pub fn abandon_press(&mut self) {
+        self.pressed = false;
+        self.samples.clear();
+        if self.phase == Phase::Dragging {
+            self.stop();
+        }
+    }
+
     /// The pointer moved while held. Returns the pixels to scroll by: nothing until the movement
     /// passes `slop`, then everything accumulated so far so the content does not jump.
     pub fn drag(&mut self, y: f32, now: f32, slop: f32) -> f32 {
@@ -332,6 +342,18 @@ mod tests {
         }
         assert!(zero_steps > 0, "expected some steps under one pixel");
         assert!(total > 0.0);
+    }
+
+    #[test]
+    fn abandoned_press_no_longer_drags_or_releases() {
+        let mut scroll = DragScroll::default();
+        scroll.press(500.0, 0.0);
+        scroll.drag(450.0, 0.016, SLOP);
+        scroll.abandon_press();
+        assert!(!scroll.is_active());
+        assert_eq!(scroll.drag(300.0, 0.032, SLOP), 0.0);
+        scroll.release(0.033, 1.0);
+        assert!(!scroll.is_active());
     }
 
     #[test]
