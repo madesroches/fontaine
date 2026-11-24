@@ -76,6 +76,18 @@ until it commits. The keyboard's Send key submits the field, like Enter.
   it show the goal, running agents, scheduled work and background shells and monitors.
 - Drag the transcript to scroll it; a flick keeps it coasting until it slows to a stop or you touch
   it. The scroll bar at the right edge still works.
+- Hold a block of the transcript for half a second to select it: a message paragraph, a fenced code
+  block, a tool call with its output, a shell command with its output, a notice, an error, or opened
+  reasoning. Keep the finger down and drag to extend the selection across neighbouring blocks, or
+  drag the round handle at either end afterwards; near the top or bottom edge of the transcript it
+  scrolls so the selection can reach blocks off screen. Selection is by whole block, not by
+  character. A drag that starts before the half second still scrolls.
+- While blocks are selected a bar above the message field offers **Copy** and **Clear**. Copy puts
+  the blocks on the system clipboard, in order and separated by a blank line, and clears the
+  selection; a fenced code block is copied without its fence lines, and a tool call is copied as
+  shown (the summary and the first six lines of output). Tapping the transcript, toggling a
+  reasoning row or switching agents also clears the selection. Holding a reasoning toggle selects
+  nothing.
 - When the session has subagents, an **agents bar** lists main and every agent with its status:
   running ones first, then failed, then the rest. Tap one to read its transcript, live. An agent that
   waits on an approval or a question is marked `!`. The view you pick is yours alone and never moves
