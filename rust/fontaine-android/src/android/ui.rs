@@ -1197,8 +1197,12 @@ fn tag_color(tag: ColorTag) -> Option<[f32; 4]> {
 /// the block.
 fn draw_block(block: &Block, continues: bool, chosen: bool, spans: &mut Vec<(f32, f32)>) {
     if continues {
-        // Blocks of one message keep the blank line the paragraphs had.
-        gap(style_pair(|s| s.ItemSpacing).1);
+        // One blank line between paragraphs; the item spacing above and below the dummy is
+        // already part of it.
+        let spacing_y = style_pair(|s| s.ItemSpacing).1;
+        // SAFETY: a frame is open.
+        let line = unsafe { sys::igGetTextLineHeight() };
+        gap((line - 2.0 * spacing_y).max(0.0));
     }
     // SAFETY: a frame is open and a window is current.
     let left = unsafe { sys::igGetCursorScreenPos() }.x;

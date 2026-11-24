@@ -88,8 +88,8 @@ Splitting lives here. The text drawn cannot be the same string as the text copie
 fence lines, truncated output), so `blocks()` returns both per block: the display `parts` and the
 `copy` text. `entry_row` draws from the `parts` of `blocks()` output for the entries it covers, so
 the drawn items and the selectable blocks cannot drift apart (DRY). Assistant paragraphs are drawn
-as separate items with an explicit blank-line gap equal to `ItemSpacing`, so the original spacing
-is preserved.
+as separate items with an explicit blank-line gap (a dummy of one line height minus two `ItemSpacing.y`, since ImGui adds
+the spacing on both sides), so the original spacing is preserved.
 
 ### Android layer: `android/ui.rs`, `android/mod.rs`
 
