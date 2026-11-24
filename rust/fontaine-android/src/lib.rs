@@ -12,6 +12,7 @@ pub mod layout;
 pub mod link;
 pub mod model;
 pub mod scan;
+pub mod scroll;
 pub mod store;
 
 #[cfg(target_os = "android")]
