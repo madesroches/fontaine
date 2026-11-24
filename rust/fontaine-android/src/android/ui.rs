@@ -1047,10 +1047,9 @@ fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
                 state.swallow_tap = scroll.press(y, now);
             } else {
                 scroll.abandon_press();
-                // The bar takes over scrolling, so a running fling must not resume after it.
-                if free && on_bar && hovered {
-                    scroll.cancel();
-                }
+                // A fling left running would resume after release and scroll the next agent's
+                // transcript, which shares this scroll state.
+                scroll.cancel();
             }
         }
         if down {
