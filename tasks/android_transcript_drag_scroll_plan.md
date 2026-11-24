@@ -106,9 +106,10 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
 ## Implementation Steps
 
 1. Add `scroll.rs` with `DragScroll` and its unit tests; declare `pub mod scroll;` in `lib.rs`.
-2. Add `transcript_scroll` to `UiState` (`android/ui.rs`), constructed with the display scale.
-   `UiState` derives `Default`, so make `DragScroll: Default` and hold `scale` in
-   `FrameParams`/`Frame` (it already has one); pass it to `DragScroll` as an argument per call.
+2. Add `transcript_scroll` to `UiState` (`android/ui.rs`). `UiState` derives `Default`, so make
+   `DragScroll: Default` and pass the display scale to it as an argument per call. `Frame` has no
+   scale (only `margin`): add a `scale: f32` field to `Frame` and fill it from `params.scale` in
+   `render()` in `android/mod.rs`.
 3. Wire press/drag/release/step in `session()` as above; suppress the reasoning toggle on drag.
 4. `docs/android.md`: add a line that the transcript scrolls by dragging, with fling, and the
    scroll bar remains.
@@ -119,7 +120,7 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
 - `rust/fontaine-android/src/scroll.rs` (new)
 - `rust/fontaine-android/src/lib.rs`
 - `rust/fontaine-android/src/android/ui.rs`
-- `rust/fontaine-android/src/android/mod.rs` (scale plumbing only, if needed)
+- `rust/fontaine-android/src/android/mod.rs` (fill `Frame.scale` in `render()`)
 - `docs/android.md`
 - `CHANGELOG.md`
 
@@ -128,10 +129,6 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
 - ImGui-only config rejected: Dear ImGui has no built-in touch-drag scrolling for child windows, hence the small state machine.
 - Platform `VelocityTracker` over JNI rejected: cannot be unit-tested and adds a bridge call per event.
 - Linear scroll without fling rejected: the issue asks for momentum.
-
-## Documentation
-
-- `docs/android.md`: transcript scrolls by drag and fling; scroll bar still available.
 
 ## Testing Strategy
 
