@@ -37,11 +37,14 @@ writes the clipboard. Character-level selection is out of scope: the issue asks 
 
 ### Portable: `rust/fontaine-android/src/select.rs`
 
-No ImGui types; positions are `f32` pixels in the transcript child's content space.
+No ImGui types; positions are `f32` screen-space pixels of the current frame (spans come from
+`igGetItemRectMin/Max`, hit-tested with `igGetMousePos`).
 
 ```
-/// One selectable unit of the transcript.
-pub struct Block { pub entry: usize, pub text: String }
+/// One selectable unit of the transcript. `parts` are the drawn items (one per item, styled
+/// segment with a colour tag); `copy` is the separate text that goes on the clipboard.
+pub struct Block { pub entry: usize, pub parts: Vec<Part>, pub copy: String }
+pub struct Part { pub text: String, pub color: ColorTag }
 
 /// Splits entries into blocks, in order. Entries that draw nothing (`Other`) yield none.
 pub fn blocks(entries: &[Entry], open_reasoning: impl Fn(usize) -> bool) -> Vec<Block>;
@@ -62,13 +65,15 @@ impl BlockSelection {
 pub fn block_at(spans: &[(f32, f32)], y: f32) -> Option<usize>;
 
 /// The text to copy: the selected blocks joined by a blank line.
-pub fn copy_text(blocks: &[Block], selection: &BlockSelection) -> String;
+pub fn copy_text(blocks: &[Block], selection: &BlockSelection) -> String; // joins `Block::copy`
 ```
 
 Block rules (what the issue names: message, code block, tool output):
 
-- `User`, `Error`, `Notice`, `Attachment`: one block each, the text as drawn without decoration
+- `User`, `Error`, `Notice`, `Attachment`: one block each, the copy text as drawn without decoration
   (no `> `/`! ` prefix is added to what is copied).
+- A block whose display is several drawn items (`Tool`, `Shell`) gets one span covering all of
+  them: min of the first item's rect min, max of the last item's rect max.
 - `Assistant`: split into paragraphs on blank lines, except that a fenced code block
   (```` ``` ````-delimited, unterminated while streaming) is one block whose copied text is the
   fence body *without* the fence lines, so pasting a code block gives code. A prose paragraph is
@@ -79,8 +84,12 @@ Block rules (what the issue names: message, code block, tool output):
 - `Reasoning`: a block only while its text is open (`open_reasoning`); the toggle row is not
   selectable.
 
-Splitting lives here, and `entry_row` is changed to draw from `blocks()` output for the entries
-it covers, so the drawn items and the selectable blocks cannot drift apart (DRY).
+Splitting lives here. The text drawn cannot be the same string as the text copied (decorations,
+fence lines, truncated output), so `blocks()` returns both per block: the display `parts` and the
+`copy` text. `entry_row` draws from the `parts` of `blocks()` output for the entries it covers, so
+the drawn items and the selectable blocks cannot drift apart (DRY). Assistant paragraphs are drawn
+as separate items with an explicit blank-line gap equal to `ItemSpacing`, so the original spacing
+is preserved.
 
 ### Android layer: `android/ui.rs`, `android/mod.rs`
 
@@ -104,19 +113,22 @@ to), and `handle_drag: Option<bool>` (which end a handle drag moves).
    `frame.scale`). A press that begins on a handle sets `handle_drag` and is not given to
    `DragScroll` (checked before the scroll press); dragging calls `move_handle`.
 4. **Edge auto-scroll.** While extending or moving a handle with the finger within one line of
-   the child's top/bottom edge, scroll the child by a fixed per-frame step so a selection can
-   reach off-screen blocks. Decision of the speed constant is in the plan's Decisions.
-5. **Copy menu.** On release of the long press (as in the field) and whenever the selection is
-   shown idle, a small bar anchored above the first block shows **Copy** and **Clear** as buttons
-   (not selectables, same reasoning as the field's menu). A tap elsewhere in the transcript that
-   is not a scroll drag clears the selection.
+   the child's top/bottom edge, scroll the child at 12 dp per second, scaled by `frame.scale` and
+   the frame's `DeltaTime`, so a selection can reach off-screen blocks.
+5. **Copy bar.** Whenever a selection exists, a bar in the footer area (above the prompt field,
+   like the other footer items) shows **Copy** and **Clear** as buttons (not selectables, same
+   reasoning as the field's menu), so Copy is reachable regardless of scroll. A tap elsewhere in
+   the transcript that is not a scroll drag also clears the selection.
 6. **Copy.** Copy pushes `Tap::CopyBlocks(String)` built from `copy_text`. `handle_tap` writes it
    with a new `write_clipboard_text(&str) -> bool` helper that `write_clipboard` also uses, so
    the failure notice is not duplicated. On success the selection clears.
 7. **Staleness.** The selection is cleared when the viewed agent changes, and `clamp(blocks.len())`
    runs each frame so a `Truncate` event cannot leave an index past the end. Streaming appends
    only grow the tail, so indices before it stay valid; a message that is still streaming may
-   gain blocks, which a selection ending on its last block does not auto-include.
+   gain blocks, which a selection ending on its last block does not auto-include (the selection
+   is stable). Toggling a `reasoning` row (a tap that flips its open state) shifts global block
+   indices, so the selection is cleared on any such toggle; a streaming reasoning entry that is
+   the open one is not special-cased beyond the per-frame clamp.
 8. **Rows that must not select.** The `reasoning` toggle keeps its tap behaviour; a long press on
    it selects nothing and does not toggle (the existing `swallow_tap`/drag-past-threshold guard is
    extended to a held press that began a selection).
@@ -125,10 +137,10 @@ to), and `handle_drag: Option<bool>` (which end a handle drag moves).
 
 1. Add `select.rs` (`Block`, `blocks`, `BlockSelection`, `block_at`, `copy_text`) with unit
    tests; declare `pub mod select;` in `lib.rs`.
-2. `android/ui.rs`: make `entry_row` draw from `blocks()` and record spans; add the `UiState`
+2. `android/ui.rs`: make `entry_row` draw from `blocks()` parts and record one span per block; add the `UiState`
    fields; draw selection highlight and handles.
-3. `android/ui.rs`: long-press start, extension, handle drag, edge auto-scroll, Copy/Clear bar,
-   clearing rules; integrate with `drag_scroll` (`abandon_press`, handle presses bypass it).
+3. `android/ui.rs`: long-press start, extension, handle drag, edge auto-scroll, footer Copy/Clear bar,
+   clearing rules (including clear on reasoning toggle); integrate with `drag_scroll` (`abandon_press`, handle presses bypass it).
 4. `Tap::CopyBlocks(String)`; `android/mod.rs` `handle_tap` arm and the shared
    `write_clipboard_text`.
 5. `docs/android.md`: describe long-press block selection, handles, Copy.
@@ -143,27 +155,17 @@ to), and `handle_drag: Option<bool>` (which end a handle drag moves).
 - `docs/android.md`
 - `CHANGELOG.md`
 
-## Trade-offs
-
-- **Block selection vs character selection.** The issue's expected behaviour is whole blocks, and
-  ImGui text items give no glyph hit-testing outside the `Layout` the prompt field builds for its
-  own editable text; character selection would need that layout per row. Block selection reuses
-  the field's gesture vocabulary at a fraction of the cost and can be refined later.
-- **Fence stripping on copy.** Copying the body of a fenced block (no fence lines) matches the
-  stated use case ("copy a code block") and what a host terminal's selection of rendered code
-  yields.
-- **Spans from the current frame, not last frame.** Rows are submitted before the hit test in the
-  same frame, so spans are never stale after a scroll or a streaming append.
-- **Native Android text selection (a `TextView` overlay) rejected:** the UI is ImGui on a GL
-  surface; an overlay view would need per-row JNI layout and would fight the ImGui input path.
-
 ## Decisions
 
 - Copied text for a `Tool` block is what is on screen (summary plus the first six output lines),
   not the full output, so what is selected is what is copied.
-- Edge auto-scroll uses a fixed rate of 12 dp per frame-second-normalised step (`dt`-scaled), a
-  first value to be tuned on a device.
+- Edge auto-scroll runs at 12 dp per second, scaled by `frame.scale` and the frame's `DeltaTime`.
 - A long press on a `reasoning` toggle selects nothing; opened reasoning text is selectable.
+- Native Android text-selection overlay rejected (UI is ImGui on a GL surface).
+- AFK: `blocks()` returns per block both the display parts (styled segments, one per drawn item, with colour tag) and the separate copy text; a multi-item block (Tool, Shell) gets one span from the first item's rect min to the last item's rect max; assistant paragraphs are separate items with an explicit `ItemSpacing` blank-line gap.
+- AFK: the selection is cleared on any reasoning toggle (a tap that flips open state); a streaming open reasoning entry is not special-cased beyond the per-frame clamp.
+- AFK: the Copy/Clear bar is drawn in the footer area above the prompt field, visible whenever a selection exists; a non-scroll tap elsewhere in the transcript also clears.
+- AFK: blocks added by a streaming message do not join an existing selection (the selection is stable).
 
 ## Documentation
 
@@ -176,8 +178,8 @@ Unit tests in `select.rs` (host, every OS):
 
 - `blocks`: an assistant message with two paragraphs and a fenced block yields three blocks in
   order; a blank line inside a fence does not split it; an unterminated fence (streaming) is one
-  block; `Other` yields none; `Reasoning` yields a block only when open; `Tool` text holds the
-  summary, reason and at most six output lines; `Shell` holds command and output.
+  block; `Other` yields none; `Reasoning` yields a block only when open (the `blocks()` count changes with `open_reasoning`); `Tool` text holds the
+  summary, reason and at most six output lines; `Shell` holds command and output; display `parts` and `copy` text differ where expected (fence lines, decorations).
 - `copy_text`: fenced block copies without fence lines; multiple blocks join with a blank line;
   a reversed selection (cursor before anchor) copies in document order.
 - `BlockSelection`: `extend_to` and `move_handle` keep order-independent `range()`, a handle
@@ -194,7 +196,7 @@ On a device or emulator paired to a host, with a transcript holding prose, a fen
 tool call and a `+ reasoning` row. Not automated because the touch-to-ImGui and clipboard paths
 only run on Android.
 
-1. Long-press a paragraph: it highlights with handles; a Copy/Clear bar appears. Tap Copy, paste
+1. Long-press a paragraph: it highlights with handles; the Copy/Clear bar appears in the footer above the prompt field and stays reachable after scrolling. Tap Copy, paste
    into the prompt field: the paragraph text arrives.
 2. Long-press a code block and Copy: the pasted text is the code without fence lines.
 3. Long-press, then drag down across several blocks: the selection grows; near the bottom edge
@@ -203,8 +205,5 @@ only run on Android.
    the scroll bar still works; no selection starts.
 5. Switch agents with a selection active: it clears. Long-press the reasoning toggle: no toggle,
    no selection.
-
-## Open Questions
-
-- Whether a streaming message's new blocks should join an active selection that ends on its last
-  block (currently they do not).
+6. With a selection active, tap a `+ reasoning` row to toggle it: the selection clears. Tap
+   elsewhere in the transcript (no drag): the selection clears.
