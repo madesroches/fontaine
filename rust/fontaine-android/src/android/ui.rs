@@ -308,6 +308,9 @@ pub fn draw(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState) -> Vec<Tap>
     }
     if !matches!(view.screen, Screen::Session) {
         state.footer_px = 0.0;
+        // The selection indexes the session's blocks, so it must not outlive leaving them.
+        state.clear_block_selection();
+        state.press_owned = false;
     }
     match view.screen {
         Screen::Scan => scan(view, frame, state, &mut taps),
@@ -1051,6 +1054,7 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
             if frame.scroll_to_end
                 && !state.transcript_scroll.is_active()
                 && !state.selection_gesture()
+                && !state.press_owned
                 && sys::igGetScrollY() >= sys::igGetScrollMaxY() - line * 2.0
             {
                 sys::igSetScrollHereY(1.0);
@@ -1268,15 +1272,18 @@ fn reasoning_toggle(
 
 /// Where the two handles of the selection sit, as screen points: the top-left of its first block
 /// and the bottom-right of its last.
-fn handle_centers(state: &UiState) -> Option<((f32, f32), (f32, f32))> {
+fn handle_centers(state: &UiState, scale: f32) -> Option<((f32, f32), (f32, f32))> {
     let range = state.block_selection?.range();
     let first = state.block_spans.get(*range.start())?;
     let last = state.block_spans.get(*range.end())?;
-    Some(((state.content_x.0, first.0), (state.content_x.1, last.1)))
+    // Inset by the radius so the whole circle is inside the child's clip and touchable.
+    let inset = HANDLE_RADIUS_DP * scale;
+    let right = state.content_x.1.min(scrollbar_left()) - inset;
+    Some(((state.content_x.0 + inset, first.0), (right, last.1)))
 }
 
 fn draw_handles(state: &UiState, scale: f32) {
-    let Some((start, end)) = handle_centers(state) else {
+    let Some((start, end)) = handle_centers(state, scale) else {
         return;
     };
     // SAFETY: a frame is open; the draw list is the current window's, which clips the handles to
@@ -1303,7 +1310,7 @@ fn handle_press(state: &mut UiState, scale: f32, free: bool) -> bool {
         state.selecting_blocks = false;
         state.long_press_handled = false;
         state.edge_carry = 0.0;
-        let Some((start, end)) = handle_centers(state) else {
+        let Some((start, end)) = handle_centers(state, scale) else {
             return false;
         };
         if !free || !sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) {
@@ -1352,7 +1359,7 @@ fn selection_gestures(state: &mut UiState, scale: f32, line: f32) {
             && !past_threshold
         {
             state.long_press_handled = true;
-            let pressed = (*io).MouseClickedPos[0];
+            let pressed = mouse;
             let on_toggle = state.toggle_rects.iter().any(|&(x0, y0, x1, y1)| {
                 pressed.x >= x0 && pressed.x <= x1 && pressed.y >= y0 && pressed.y <= y1
             });
