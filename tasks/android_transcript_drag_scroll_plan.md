@@ -41,16 +41,19 @@ pub enum Phase { Idle, Dragging, Flinging }
 
 impl DragScroll {
     /// A press began over the transcript (caller decides that). Clears any running fling.
-    pub fn press(&mut self, y: f32, now: f32);
+    /// Returns true when it interrupted a running fling (that touch must not activate a row).
+    pub fn press(&mut self, y: f32, now: f32) -> bool;
     /// Pointer moved while held; returns pixels to scroll by (content moves with finger,
     /// so scroll offset change = -(y - last_y)). Returns 0 until `slop` is passed, then the
     /// whole accumulated movement so the content does not jump.
     pub fn drag(&mut self, y: f32, now: f32, slop: f32) -> f32;
     /// Finger lifted. Starts a fling if the velocity over the last ~100 ms exceeds `MIN_FLING`.
     pub fn release(&mut self, now: f32);
-    /// Advances a fling by `dt`; returns the scroll delta, stops below `STOP_SPEED`.
+    /// Advances a fling by `dt`; returns the whole-pixel scroll delta, stops below `STOP_SPEED`.
     pub fn step(&mut self, dt: f32) -> f32;
-    /// Stops a fling (content edge reached).
+    /// Reports that the view is at an edge in the scroll direction: stops the fling.
+    pub fn hit_edge(&mut self);
+    /// Stops a fling.
     pub fn cancel(&mut self);
     pub fn is_dragging(&self) -> bool;
     /// True while the phase is `Dragging` or `Flinging`.
@@ -60,12 +63,16 @@ impl DragScroll {
 
 - Velocity: least-effort estimate from the samples within the last 100 ms (distance / time), so a
   pause before lift-off yields no fling.
-- Fling: exponential decay, `v *= exp(-FRICTION * dt)` with `FRICTION` about 4.0/s; the step
+- Fling: exponential decay, `v *= exp(-FRICTION * dt)` with `FRICTION = 4.0`/s; the step
   delta is the closed form `v/FRICTION*(1-exp(-FRICTION*dt))`, so travel over a given total
-  duration does not depend on step size; stops under a
-  few px/s; velocity clamped to a max (a few thousand px/s scaled by `scale`).
-- Constants that are physical pixels (min fling, stop speed, max speed) take a `scale` factor from
-  the display density passed per call, as `TOUCH_SLOP_DP` is scaled.
+  duration does not depend on step size. Constants: min fling 50 dp/s, stop speed 20 dp/s, max
+  speed 8000 dp/s.
+- The dp constants are multiplied by a `scale` factor from the display density passed per call,
+  as `TOUCH_SLOP_DP` is scaled.
+- Sub-pixel carry: ImGui rounds the window scroll to an integer, so `drag` and `step` keep a
+  fractional remainder and return only whole-pixel deltas, carrying the rest to the next call.
+  Edge stop does not infer "unchanged" from the scroll value: the caller compares
+  `igGetScrollY()` with 0 / `ScrollMaxY` and calls `hit_edge`.
 
 ### Android layer: `android/ui.rs`
 
@@ -77,12 +84,14 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
    pressed this frame (`igIsMouseClicked_Bool(0, false)`), that recorded ID was zero, and
    `igIsWindowHovered` with `ImGuiHoveredFlags_AllowWhenBlockedByActiveItem` (a reasoning button is
    already the active item on the press frame) and the press is not on the scrollbar -> `press`.
+   `press` returns whether it interrupted a fling; remember that for the touch.
 2. While down and the press began in the transcript: call `drag` with `igGetMousePos().y` and
    the slop (the machine owns the slop; no `igIsMouseDragging` gate) and apply the result with
    `igSetScrollY(igGetScrollY() + delta)` (ImGui clamps to `[0, ScrollMaxY]`).
 3. On `igIsMouseReleased_Nil(0)` call `release`; every frame without the button down call `step`
-   and apply it; `cancel` the fling when `igGetScrollY()` equals last frame's value while
-   flinging (`igSetScrollY` is deferred, so this is the clamped result of the previous apply).
+   and apply it; call `hit_edge` while flinging when `igGetScrollY()` is at 0 and the fling moves
+   up, or at `ScrollMaxY` and it moves down (never by comparing with last frame's value, which
+   misfires on sub-pixel steps).
 4. The tail-follow `igSetScrollHereY` runs after this, still only when near the bottom, and is
    skipped while `is_active()`; a fling that ends at the bottom resumes following.
 5. The scroll bar keeps working. The child's scrollbar is submitted in `igEndChild`, so a grab is
@@ -92,6 +101,8 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
 
 ### Tap and selection conflicts
 
+- Reasoning toggle: suppress the toggle for a touch whose `press` interrupted a fling (as native
+  lists swallow that tap), stored in `UiState` until release and read by `entry_row`.
 - Reasoning toggle: suppress the toggle when the press became a drag. In `entry_row` the toggle
   condition becomes `clicked && !igIsMouseDragPastThreshold(0, -1.0)` (the release frame is still
   past-threshold; `igIsMouseDragging` is false once the button is up, as the field code already
@@ -129,6 +140,9 @@ DragScroll` and the frame time from `igGetIO().DeltaTime`:
 - ImGui-only config rejected: Dear ImGui has no built-in touch-drag scrolling for child windows, hence the small state machine.
 - Platform `VelocityTracker` over JNI rejected: cannot be unit-tested and adds a bridge call per event.
 - Linear scroll without fling rejected: the issue asks for momentum.
+- AFK: Sub-pixel scroll deltas: `DragScroll` carries a fractional remainder and returns whole-pixel deltas; edge stop compares against 0/`ScrollMaxY` via `hit_edge` instead of "scroll unchanged".
+- AFK: A tap that stops a running fling does not toggle a `+ reasoning` row: `press` returns whether it interrupted a fling and the toggle is suppressed for that touch.
+- AFK: Fling constants pinned initially: `FRICTION` 4.0/s, min fling 50 dp/s, stop speed 20 dp/s, max 8000 dp/s (dp scaled by `scale`); on-device tuning is a follow-up if the feel is off.
 
 ## Testing Strategy
 
@@ -140,7 +154,11 @@ Unit tests in `scroll.rs` (host, every OS), written against constructed samples:
   eventually returns zero and the phase goes `Idle`.
 - release after the finger paused (>100 ms since the last move) starts no fling.
 - velocity is clamped to the maximum.
-- `cancel` (press during a fling) stops it immediately.
+- `press` during a fling stops it immediately and returns true; `press` when idle returns false.
+- sub-pixel: many steps/drags each under 0.5 px sum to the whole-pixel total with the remainder
+  carried; returned deltas are whole numbers.
+- `hit_edge` stops a fling; a tiny sub-pixel step does not stop it.
+- the pinned constants (4.0/s, 50/20/8000 dp/s) are asserted, including scaling by `scale`.
 - scale factor scales the thresholds.
 - `is_active()` is true while dragging and flinging, false when idle.
 - frame-rate independence: with the closed-form step delta, stepping 60 x 16 ms and 30 x 32 ms
@@ -156,12 +174,7 @@ only runs on Android:
 
 1. Drag the transcript up/down: it follows the finger; flick: it coasts and stops.
 2. Press on a `+ reasoning` row and drag: it scrolls and the row does not toggle; a plain tap
-   still toggles it.
+   still toggles it; a tap that stops a coasting fling does not toggle it.
 3. Scroll up while the agent streams: the view is not pulled to the bottom; scroll back to the
    bottom: it follows again.
 4. The scroll bar still drags the transcript; drags in the prompt field still select text.
-
-## Open Questions
-
-- Fling friction and maximum velocity constants need on-device tuning; initial values above are a
-  starting point.
