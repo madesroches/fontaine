@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Android transcript drag scrolling (#775): the app's transcript now scrolls by dragging it, with fling
+  momentum after release; the scroll bar still works, a drag does not toggle a reasoning row, and a tap
+  that stops a fling is swallowed. See `docs/android.md`.
 - Android agent switching and TUI parity (#746): the host now publishes every agent of the session and
   each agent's transcript, and the app lists them in an agents bar, shows any agent's transcript live,
   messages it and stops it (new `AgentMessage` and `StopAgent` messages, audited and not

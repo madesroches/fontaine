@@ -12,6 +12,7 @@ use crate::commands::{DEVICE_COMMANDS, line_for};
 use crate::field::Field;
 use crate::layout::{self, Insets};
 use crate::model::{DiffKind, Entry, TodoItem, ToolStatus};
+use crate::scroll::DragScroll;
 
 /// What the person did this frame.
 pub enum Tap {
@@ -119,6 +120,10 @@ pub struct UiState {
     selecting: Option<Selecting>,
     /// Reasoning rows the person opened, by the agent on screen (empty is main) and entry index.
     open_reasoning: HashSet<(String, usize)>,
+    /// Touch-drag scrolling and fling of the transcript.
+    transcript_scroll: DragScroll,
+    /// The touch in progress stopped a fling, so it must not also toggle a reasoning row.
+    swallow_tap: bool,
     todos_open: bool,
     commands_open: bool,
 }
@@ -142,6 +147,8 @@ pub struct Frame<'a> {
     pub display: (f32, f32),
     pub insets: Insets,
     pub margin: f32,
+    /// Display density: pixels per dp.
+    pub scale: f32,
     /// The text typed so far, with its cursor and selection.
     pub field: &'a Field,
     /// Whether the scan screen can show the camera.
@@ -938,16 +945,28 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     // height as "fill the rest" and a negative one as "rest minus this".
     let height = (avail().1 - footer - spacing_y).max(3.0 * line);
     let id = c("transcript");
+    // SAFETY: a frame is open.
+    let active_before = unsafe { sys::igGetActiveID() };
     // SAFETY: a frame is open; the child is ended below whether or not it is visible.
     let open = unsafe { sys::igBeginChild_Str(id.as_ptr(), v2(0.0, height), 0, 0) };
     if open {
         let owner = view.viewed.unwrap_or_default();
         for (at, entry) in view.entries.iter().enumerate() {
-            entry_row(entry, owner, at, &mut state.open_reasoning);
+            entry_row(
+                entry,
+                owner,
+                at,
+                &mut state.open_reasoning,
+                state.swallow_tap,
+            );
         }
+        drag_scroll(state, frame.scale, active_before == 0);
         // SAFETY: inside the child window.
         unsafe {
-            if frame.scroll_to_end && sys::igGetScrollY() >= sys::igGetScrollMaxY() - line * 2.0 {
+            if frame.scroll_to_end
+                && !state.transcript_scroll.is_active()
+                && sys::igGetScrollY() >= sys::igGetScrollMaxY() - line * 2.0
+            {
                 sys::igSetScrollHereY(1.0);
             }
         }
@@ -1000,7 +1019,73 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     state.footer_px = unsafe { sys::igGetCursorPosY() } - footer_top;
 }
 
-fn entry_row(entry: &Entry, owner: &str, at: usize, open: &mut HashSet<(String, usize)>) {
+/// Scrolls the transcript child, which must be the current window with its rows submitted, by a
+/// finger drag and the fling after it. `free` is whether no other widget owned the active ID when
+/// the child began, so a press on one (the reasoning button excepted, which is submitted inside)
+/// is not taken for a scroll.
+fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
+    // SAFETY: a frame is open and the transcript child is the current window; this only reads
+    // input and window state, and sets the child's scroll for the next frame.
+    unsafe {
+        let io = sys::igGetIO_Nil();
+        let now = sys::igGetTime() as f32;
+        let down = sys::igIsMouseDown_Nil(0);
+        let released = sys::igIsMouseReleased_Nil(0);
+        let y = sys::igGetMousePos().y;
+        let scroll = &mut state.transcript_scroll;
+        let mut delta = 0.0;
+
+        if sys::igIsMouseClicked_Bool(0, false) {
+            let max = sys::igGetScrollMaxY();
+            // The scroll bar is submitted by `igEndChild`, so it is tested by its rect.
+            let bar_left = sys::igGetWindowPos().x + sys::igGetWindowWidth()
+                - (*sys::igGetStyle()).ScrollbarSize;
+            let on_bar = max > 0.0 && sys::igGetMousePos().x >= bar_left;
+            let hovered =
+                sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+            if free && !on_bar && hovered {
+                state.swallow_tap = scroll.press(y, now);
+            } else {
+                scroll.abandon_press();
+                // A fling left running would resume after release and scroll the next agent's
+                // transcript, which shares this scroll state.
+                scroll.cancel();
+            }
+        }
+        if down {
+            delta += scroll.drag(y, now, (*io).MouseDragThreshold);
+        } else {
+            if released {
+                scroll.release(now, scale);
+            }
+            if scroll.is_flinging() {
+                let at = sys::igGetScrollY();
+                let towards_top = scroll.velocity() < 0.0;
+                // Compared with the bounds rather than last frame's offset: a sub-pixel step
+                // leaves the offset unchanged without being at an edge.
+                if (towards_top && at <= 0.0) || (!towards_top && at >= sys::igGetScrollMaxY()) {
+                    scroll.hit_edge();
+                } else {
+                    delta += scroll.step((*io).DeltaTime, scale);
+                }
+            }
+            if !released {
+                state.swallow_tap = false;
+            }
+        }
+        if delta != 0.0 {
+            sys::igSetScrollY_Float(sys::igGetScrollY() + delta);
+        }
+    }
+}
+
+fn entry_row(
+    entry: &Entry,
+    owner: &str,
+    at: usize,
+    open: &mut HashSet<(String, usize)>,
+    swallow_tap: bool,
+) {
     match entry {
         Entry::User(body) => colored([0.5, 0.8, 1.0, 1.0], &format!("> {body}")),
         Entry::Assistant { text: body, .. } => wrapped(body),
@@ -1049,7 +1134,12 @@ fn entry_row(entry: &Entry, owner: &str, at: usize, open: &mut HashSet<(String, 
                 "{mark} reasoning{}##reasoning-{at}",
                 if *streaming { " ..." } else { "" }
             );
-            if styled_button(&label, avail_width(), &NEUTRAL) {
+            let clicked = styled_button(&label, avail_width(), &NEUTRAL);
+            // The release frame of a drag is still past the threshold; `igIsMouseDragging` is
+            // false by then.
+            // SAFETY: a frame is open.
+            let dragged = unsafe { sys::igIsMouseDragPastThreshold(0, -1.0) };
+            if clicked && !dragged && !swallow_tap {
                 if opened {
                     open.remove(&key);
                 } else {

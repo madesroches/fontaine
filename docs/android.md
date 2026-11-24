@@ -74,6 +74,8 @@ until it commits. The keyboard's Send key submits the field, like Enter.
 
 - The transcript follows the host, and the status line shows the model, mode and branch. Chips under
   it show the goal, running agents, scheduled work and background shells and monitors.
+- Drag the transcript to scroll it; a flick keeps it coasting until it slows to a stop or you touch
+  it. The scroll bar at the right edge still works.
 - When the session has subagents, an **agents bar** lists main and every agent with its status:
   running ones first, then failed, then the rest. Tap one to read its transcript, live. An agent that
   waits on an approval or a question is marked `!`. The view you pick is yours alone and never moves

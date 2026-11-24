@@ -465,6 +465,7 @@ fn render(surface: &Surface, app: &App, state: &mut UiState, params: &FrameParam
             display,
             insets: resolve_insets(params.raw_insets, params.content_rect.clone(), display),
             margin: layout::margin(params.scale),
+            scale: params.scale,
             field: params.field,
             camera_ready: params.camera_ready,
             camera_denied: params.camera_denied,
