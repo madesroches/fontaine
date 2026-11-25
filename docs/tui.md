@@ -336,7 +336,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-R (`history_search`) | Search the prompt history; see [History](#history). |
 | Ctrl-V or Alt-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Windows Terminal and conhost take Ctrl+V as their own paste action, so the text arrives as keystrokes and the key event never reaches Fontaine (see [Pasting](#pasting)); Alt+V is the alternative there. A dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. With no list open, it accepts the dimmed [suggestion or history completion](#prompt-suggestions-and-history-completion) when one is shown. |
-| Right | Moves the cursor right. At the end of the input, or in an empty one, it accepts the dimmed suggestion or history completion when one is shown, like Tab. Ctrl-Right and Alt-Right still move by word. |
+| Right | Moves the cursor right. At the end of the input, or in an empty one, it accepts the dimmed suggestion or history completion when one is shown, like Tab. Ctrl-Right and Alt-Right accept one word of the dimmed text when it is showing, and otherwise move by word. |
 | Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
@@ -344,7 +344,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-C (`interrupt`) when idle, or Ctrl-D on an empty input (`quit`), idle or not | Quit; see [Quitting](#quitting). Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state, and in an MCP elicitation it declines. While a turn runs Ctrl-C interrupts instead. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/B/F/H/D | Move by character or line and delete a character. Ctrl-H is Backspace, Ctrl-D is Delete. |
-| Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. |
+| Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. At the end of the input with dimmed text showing, Ctrl-Right, Alt-Right and Alt-F accept one word of it. |
 | Alt-Backspace, Ctrl-Backspace, Alt-D, Ctrl-Delete, Ctrl-W | Delete the previous word, or with Alt-D and Ctrl-Delete the next one. Ctrl-W deletes back to the previous whitespace, so a path goes in one piece. See [Terminal setup](terminal.md#word-movement-and-deletion) for Ctrl-Backspace. |
 | Ctrl-Home, Ctrl-End | Jump to the start or end of the whole input; Home and End stay on the current line. |
 | Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
@@ -545,7 +545,8 @@ be sent or copied until you accept it, and it is clipped to the row so the box n
   starts with `/` or `!` is dropped, so it never pre-types a command or a shell line.
 
 Tab or Right fills the input with the dimmed text, and Enter then sends it as an ordinary message
-(or runs it, for a `!` line).
+(or runs it, for a `!` line). Ctrl-Right, Alt-Right or Alt-F accepts only the next word, and the rest
+stays dimmed. Accepting a word counts as using the suggestion.
 Typing, Esc or sending something else dismisses a suggestion. Nothing is shown while a menu, an
 overlay or a search is open, with files attached, in an agent's view, or in vim Normal mode. The
 screen-reader renderer shows no dimmed text.

@@ -261,6 +261,19 @@ pub struct ContextFigures {
     pub window: Option<u32>,
 }
 
+/// The unaccepted rest of a partly accepted prompt suggestion, valid while the input still
+/// holds exactly `anchor`.
+struct SuggestionRest {
+    anchor: String,
+    rest: String,
+}
+
+/// How much ghost text a key takes.
+enum GhostAccept {
+    All,
+    Word,
+}
+
 pub struct App {
     /// The main conversation.
     pub transcript: Transcript,
@@ -437,6 +450,8 @@ pub struct App {
     /// The model's proposed next prompt, drawn dimmed in the empty input until the human types,
     /// presses Esc or starts a turn.
     pub suggestion: Option<String>,
+    /// What is left of a partly accepted suggestion, shown while the input is still `anchor`.
+    suggestion_rest: Option<SuggestionRest>,
     /// Suggestions dismissed unused since one was last accepted.
     pub unused_suggestions: u32,
     /// Human turns that ended while the back-off held; it expires after
@@ -642,6 +657,7 @@ impl App {
             slash_selected: (0, String::new(), 0),
             slash_dismissed: None,
             ghost_dismissed: None,
+            suggestion_rest: None,
             files: Arc::default(),
             mcp_mentions: Arc::default(),
             primary_root: PathBuf::new(),
@@ -783,6 +799,12 @@ impl App {
         if self.input.is_empty() {
             return self.suggestion.as_deref();
         }
+        if let Some(rest) = &self.suggestion_rest
+            && self.input.cursor() == self.input.text().chars().count()
+            && self.input.text() == rest.anchor
+        {
+            return Some(&rest.rest);
+        }
         if !self.history_completion {
             return None;
         }
@@ -815,6 +837,7 @@ impl App {
     /// gone.
     pub fn reset_suggestions(&mut self) {
         self.suggestion = None;
+        self.suggestion_rest = None;
         self.pending_suggestion = None;
         self.suggestion_due = false;
         self.completed_turns = 0;
@@ -835,25 +858,66 @@ impl App {
         }
     }
 
-    /// Tab or Right with nothing else claiming it writes the ghost text into the input.
+    /// How a key accepts ghost text: Tab or Right takes all of it, the forward-word keys the
+    /// next word. A key the user bound is theirs, not ours.
+    fn ghost_accept_kind(&self, key: KeyEvent) -> Option<GhostAccept> {
+        let mods = key.modifiers;
+        let kind = match key.code {
+            KeyCode::Tab | KeyCode::Right
+                if !mods.intersects(
+                    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL,
+                ) =>
+            {
+                GhostAccept::All
+            }
+            KeyCode::Right
+                if !mods.contains(KeyModifiers::SHIFT)
+                    && mods.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
+            {
+                GhostAccept::Word
+            }
+            KeyCode::Char('f' | 'F') if mods == KeyModifiers::ALT => GhostAccept::Word,
+            _ => return None,
+        };
+        self.keymap.lookup(key).is_none().then_some(kind)
+    }
+
+    /// Writes the ghost text, or its next word, into the input.
     fn accept_ghost(&mut self, key: KeyEvent) -> bool {
-        if !matches!(key.code, KeyCode::Tab | KeyCode::Right)
-            || key
-                .modifiers
-                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
-            || self.keymap.lookup(key).is_some()
-        {
+        let Some(kind) = self.ghost_accept_kind(key) else {
             return false;
-        }
+        };
         let Some(ghost) = self.ghost_text().map(str::to_string) else {
             return false;
         };
-        if self.suggestion.take().is_some() {
+        let take = match kind {
+            GhostAccept::All => ghost.chars().count(),
+            GhostAccept::Word => match crate::input::next_word_len(&ghost) {
+                0 => ghost.chars().count(),
+                n => n,
+            },
+        };
+        let accepted: String = ghost.chars().take(take).collect();
+        let rest: String = ghost.chars().skip(take).collect();
+        let from_rest = self
+            .suggestion_rest
+            .take()
+            .is_some_and(|r| r.rest == ghost && self.input.text() == r.anchor);
+        let from_suggestion = self.suggestion.take().is_some();
+        if from_suggestion {
             self.unused_suggestions = 0;
             self.backed_off_turns = 0;
         }
-        for c in ghost.chars() {
+        for c in accepted.chars() {
             self.input.insert(c);
+        }
+        // A history completion needs no bookkeeping: its entry still extends the longer text.
+        // A suggestion is dropped once the input is non-empty, so its rest is kept apart.
+        if !rest.is_empty() && (from_suggestion || from_rest) {
+            self.suggestion_rest = Some(SuggestionRest {
+                anchor: self.input.text(),
+                rest,
+            });
         }
         self.history.reset();
         true
@@ -1472,6 +1536,7 @@ impl App {
     /// count begin with it.
     pub fn set_running(&mut self, running: bool) {
         if running {
+            self.suggestion_rest = None;
             self.pending_suggestion = None;
             if self.automatic_turn {
                 // Nobody saw it to ignore it.
@@ -1915,6 +1980,11 @@ impl App {
             self.dismiss_suggestion();
             return Action::None;
         }
+        if key.code == KeyCode::Esc && self.suggestion_rest.is_some() && self.ghost_text().is_some()
+        {
+            self.suggestion_rest = None;
+            return Action::None;
+        }
         if key.code == KeyCode::Esc
             && !self.running
             && self.shell_mode()
@@ -1993,6 +2063,13 @@ impl App {
         }
         if self.ghost_dismissed.as_deref() != Some(&text) {
             self.ghost_dismissed = None;
+        }
+        if self
+            .suggestion_rest
+            .as_ref()
+            .is_some_and(|r| r.anchor != text)
+        {
+            self.suggestion_rest = None;
         }
         let token = complete::token_at(&text, '/', self.input.cursor());
         let current = token.as_ref().map(|t| (t.start, t.query.as_str()));
@@ -5403,16 +5480,95 @@ mod tests {
         }
 
         #[test]
-        fn modified_arrows_and_mapped_keys_do_not_accept() {
-            for modifiers in [
-                KeyModifiers::CONTROL,
-                KeyModifiers::ALT,
-                KeyModifiers::SHIFT,
-            ] {
+        fn shift_right_and_mapped_keys_do_not_accept_and_ctrl_alt_right_take_a_word() {
+            let mut app = suggesting("run the tests");
+            app.handle_input(key(KeyCode::Right, KeyModifiers::SHIFT));
+            assert!(app.input.is_empty());
+            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
                 let mut app = suggesting("run the tests");
                 app.handle_input(key(KeyCode::Right, modifiers));
-                assert!(!app.input.text().contains("run"), "{modifiers:?}");
+                assert_eq!(app.input.text(), "run", "{modifiers:?}");
             }
+            let mut app = suggesting("run the tests");
+            app.keymap = Keymap::resolve(
+                &[("ctrl+right".to_string(), "todos".to_string())]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+            app.handle_input(key(KeyCode::Right, KeyModifiers::CONTROL));
+            assert!(app.input.is_empty());
+        }
+
+        #[test]
+        fn a_word_of_a_history_completion_leaves_the_rest_dimmed() {
+            let mut app = with_history(&["fix the parser"]);
+            type_text(&mut app, "fix");
+            app.handle_input(key(KeyCode::Right, KeyModifiers::CONTROL));
+            assert_eq!(app.input.text(), "fix the");
+            assert_eq!(app.ghost_text(), Some(" parser"));
+            app.handle_input(key(KeyCode::Char('f'), KeyModifiers::ALT));
+            assert_eq!(app.input.text(), "fix the parser");
+            assert_eq!(app.ghost_text(), None);
+        }
+
+        #[test]
+        fn a_word_of_a_suggestion_counts_as_using_it_and_keeps_the_rest() {
+            for history_completion in [true, false] {
+                let mut app = suggesting("run the tests");
+                app.history_completion = history_completion;
+                app.unused_suggestions = 2;
+                app.handle_input(key(KeyCode::Right, KeyModifiers::ALT));
+                assert_eq!(app.input.text(), "run");
+                assert_eq!(app.ghost_text(), Some(" the tests"));
+                assert!(app.suggestion.is_none());
+                assert_eq!(app.unused_suggestions, 0);
+                app.handle_input(key(KeyCode::Right, KeyModifiers::CONTROL));
+                assert_eq!(app.input.text(), "run the");
+                assert_eq!(app.ghost_text(), Some(" tests"));
+                press(&mut app, KeyCode::Tab);
+                assert_eq!(app.input.text(), "run the tests");
+                assert_eq!(app.ghost_text(), None);
+                assert_eq!(
+                    press(&mut app, KeyCode::Enter),
+                    Action::Submit("run the tests".into(), Vec::new())
+                );
+            }
+        }
+
+        #[test]
+        fn the_suggestion_rest_dies_on_an_edit_without_counting_as_unused() {
+            let mut app = suggesting("run the tests");
+            app.handle_input(key(KeyCode::Right, KeyModifiers::ALT));
+            type_text(&mut app, "x");
+            assert!(app.suggestion_rest.is_none());
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.ghost_text(), None);
+            assert_eq!(app.unused_suggestions, 0);
+        }
+
+        #[test]
+        fn escape_and_a_turn_start_clear_the_suggestion_rest() {
+            let mut app = suggesting("run the tests");
+            app.handle_input(key(KeyCode::Right, KeyModifiers::ALT));
+            assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+            assert!(app.suggestion_rest.is_none());
+            assert_eq!(app.ghost_text(), None);
+
+            let mut app = suggesting("run the tests");
+            app.handle_input(key(KeyCode::Right, KeyModifiers::ALT));
+            app.set_running(true);
+            assert!(app.suggestion_rest.is_none());
+        }
+
+        #[test]
+        fn ctrl_right_without_ghost_text_still_moves_by_word() {
+            let mut app = app();
+            type_text(&mut app, "one two three");
+            app.input.buffer_start();
+            app.handle_input(key(KeyCode::Right, KeyModifiers::CONTROL));
+            assert_eq!(app.input.cursor(), 3);
+            assert_eq!(app.input.text(), "one two three");
         }
 
         #[test]
@@ -5428,6 +5584,12 @@ mod tests {
             assert_eq!(app.ghost_text(), Some("run the tests"));
             press(&mut app, KeyCode::Right);
             assert_eq!(app.input.text(), "run the tests");
+
+            let mut app = suggesting("run the tests");
+            app.input.mode = EditorMode::Vim;
+            app.input.vim = crate::input::VimState::Insert;
+            app.handle_input(key(KeyCode::Right, KeyModifiers::CONTROL));
+            assert_eq!(app.input.text(), "run");
         }
 
         #[test]

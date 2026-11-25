@@ -110,6 +110,25 @@ pub struct PendingAttachment {
     pub size: u64,
 }
 
+/// Chars of `chars` that forward-word moves over: separators first, then word chars.
+fn word_len(chars: &[char], is_word: fn(char) -> bool) -> usize {
+    let mut end = 0;
+    while end < chars.len() && !is_word(chars[end]) {
+        end += 1;
+    }
+    while end < chars.len() && is_word(chars[end]) {
+        end += 1;
+    }
+    end
+}
+
+/// Length in chars of the first word of `text`, with the separators before it: what
+/// forward-word would move over.
+pub fn next_word_len(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    word_len(&chars, char::is_alphanumeric)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct InputBuffer {
     chars: Vec<char>,
@@ -290,14 +309,7 @@ impl InputBuffer {
 
     /// End of the word after `pos`: skip separators forward, then word chars forward.
     fn word_end_after(&self, pos: usize, is_word: fn(char) -> bool) -> usize {
-        let mut end = pos;
-        while end < self.chars.len() && !is_word(self.chars[end]) {
-            end += 1;
-        }
-        while end < self.chars.len() && is_word(self.chars[end]) {
-            end += 1;
-        }
-        end
+        pos + word_len(&self.chars[pos..], is_word)
     }
 
     pub fn kill_to_end(&mut self) {
@@ -807,6 +819,15 @@ mod tests {
         let mut b = InputBuffer::default();
         b.insert_str(text);
         b
+    }
+
+    #[test]
+    fn next_word_len_counts_separators_and_one_word() {
+        assert_eq!(next_word_len(" the parser"), 4);
+        assert_eq!(next_word_len("arser"), 5);
+        assert_eq!(next_word_len("..."), 3);
+        assert_eq!(next_word_len("src/foo"), 3);
+        assert_eq!(next_word_len(""), 0);
     }
 
     #[test]
