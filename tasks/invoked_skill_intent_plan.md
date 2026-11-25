@@ -97,7 +97,7 @@ An invoked skill's text is user intent when all of these hold:
 
 In `SkillRuntime::expand` (`core/skills.rs`), the substituted `body` is computed before the `!`
 commands run. When `!by_model` and the skill qualifies, call
-`self.state.note_invoked_skill(agent, InvokedSkill { name, text: leading_chars(body, INVOKED_SKILL_CHARS) })`.
+`self.state.note_invoked_skill(agent, InvokedSkill { name, text: leading_chars(&body, INVOKED_SKILL_CHARS).to_string() })`.
 `body` still holds each `!`…`` ` `` command text unrun, so command output never reaches the
 intent block. The note is recorded right after `substitute`, before the `for part in parts(&body)` loop,
 so the skill's own `!` commands (run through the guardian-gated `run_command`, under the invoking
@@ -113,10 +113,10 @@ rule: every place the TUI abandons an expanded skill's turn before `run_turn` st
 `invoked_skill` stays live into the next turn. The sites are the `Submission::Expanded`
 early exit when `refresh_before_turn` returns `Some(end)` (`ui/turn.rs:914-918`); the
 `refuse_stopped` drop of a queued `Expanded` submission while `afk().stopped` is set
-(`ui/turn.rs:841-852`; the skill's own `!` commands can set it, `core/gate.rs:803`); the `Failed`
-returns before `run_turn` in `attempt` (`ui/turn.rs:1361`, `:1375`, `:1399`); and beside
-`clear_prompt_context()` after `drop(run)` (`ui/turn.rs:1551-1552`), which covers Esc, an AFK stop or
-input closing during compaction or persistence. `end_turn` only clears maps, so a call after a
+(`ui/turn.rs:843-853`; the skill's own `!` commands can set it, `core/gate.rs:803`); and beside
+`clear_prompt_context()` after `drop(run)` (`ui/turn.rs:1551-1552`), which covers Esc, an AFK stop,
+input closing during compaction or persistence, and the `Failed` returns in `attempt`
+(`ui/turn.rs:1361`, `:1375`, `:1399`), all inside the `run` future. `end_turn` only clears maps, so a call after a
 `run_turn` that already ended is idempotent.
 
 ### Request
@@ -247,7 +247,9 @@ skill's scope is Plugin (a user skill counts without trust, so the line would be
   actually says.
 - **Turn-scoped vs. persisted in the ledger.** Claude Code's skill text stays in the transcript
   for later turns. Turn scope reuses the `active_skill` lifetime and `end_turn` path, and needs
-  no ledger schema change. The cost is that a follow-up turn ("continue") loses the clearance.
+  no ledger schema change. The cost is that a follow-up turn ("continue"), or a retry, model fall-through or blocking
+  stop-hook continuation within the skill's turn (`turn_scoped` re-invokes `attempt` after the first
+  `run_turn`'s `EndTurnOnDrop` cleared the map), loses the clearance, as skill grants and notes do today.
 - **12 000-character budget.** It fits the step-by-step skills (`babysit-pr` 10 KB, `pr` 11.8 KB
   with front matter). The 26-31 KB orchestration skills are cut at their head. Those delegate to
   other skills rather than spelling out destructive steps themselves. The block appears only on
