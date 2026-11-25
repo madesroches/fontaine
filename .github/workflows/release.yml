@@ -26,7 +26,8 @@
 # `publish` make it public. `contents: write` is granted per job, to `host`, `verify-draft` and
 # `publish` only. The Android APK is built unsigned by `build-android`, joins the `artifacts-*` set,
 # and gets its Android signature (a keystore only `sign` can read) and its minisign signature in
-# `sign`. See docs/verifying-releases.md.
+# `sign`. `host` also uploads the unsigned `latest.json` pointer that `fontaine update` reads, and
+# `verify-draft` requires it. See docs/verifying-releases.md.
 name: Release
 permissions:
   "contents": "read"
@@ -461,6 +462,17 @@ jobs:
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
           gh release create "${{ needs.plan.outputs.tag }}" --draft --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+      # Unsigned, like latest-dev.json: every archive it names is minisign-verified by the updater.
+      # Built from the files just uploaded, outside artifacts/ so it does not list itself.
+      - name: Upload the latest.json pointer
+        working-directory: ${{ github.workspace }}
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          ls artifacts | jq -R . | jq -s --arg tag "$TAG" '{tag: $tag, assets: .}' > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+          cp "$RUNNER_TEMP/latest.json" latest.json
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY"
 
   # Downloads exactly what users would fetch from the draft and verifies it.
   verify-draft:
@@ -488,6 +500,7 @@ jobs:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
           FONTAINE_REQUIRE_APK: "1"
+          FONTAINE_REQUIRE_POINTER: "1"
         run: .github/scripts/release-verify.sh release draft rust/fontaine/keys/release.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
 
   # The only step that makes the release public.
