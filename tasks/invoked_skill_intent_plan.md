@@ -101,10 +101,15 @@ commands run. When `!by_model` and the skill qualifies, call
 `body` still holds each `!`…`` ` `` command text unrun, so command output never reaches the
 intent block. The note is recorded right after `substitute`, before the `for part in parts(&body)` loop,
 so the skill's own `!` commands (run through the guardian-gated `run_command`, under the invoking
-agent's id) are judged with the block. The qualifying test reuses the `trusted` value and `skill.scope` that `lend_rules`
-already computes. `lend_rules` returns `trusted` so the check is not repeated. A failed or
-abandoned expansion records nothing that outlives the turn: `EndTurnOnDrop` in `expand_skill`
-already calls `end_turn` on that path.
+agent's id) are judged with the block. The qualifying predicate is exactly
+`skill.scope == Scope::User || (skill.scope == Scope::Plugin && trusted)`, because a user-scope
+skill's trust state can be Trusted or Stale and `trusted` alone would wrongly exclude a stale user
+skill. `lend_rules` returns `trusted` so the check is not repeated. A failed expansion records
+nothing that outlives the turn: `EndTurnOnDrop` in `expand_skill` calls `end_turn` on that path.
+A successful expansion `mem::forget`s the guard (`core/agent.rs:712-718`), so when
+`Submission::Expanded` in `ui/turn.rs` (`:914-918`) exits early because `refresh_before_turn`
+returns `Some(end)`, it must call `end_turn` through the runtime's existing path next to
+`runtime.clear_prompt_context()`; otherwise `invoked_skill` stays live into the next turn.
 
 ### Request
 
@@ -120,7 +125,8 @@ the `active_skills` copy. It is keyed by caller, so a child's request carries no
 `agent_task`. `USER_MESSAGE_HEADER` names `invoked_skill` among the `source="user"` blocks.
 
 `Profile::Minimal.shape` sets `invoked_skill: None`. The minimal prompt was calibrated without
-it, and the 12 000-character text does not fit that profile's budget. The minimal profile keeps
+it, and the minimal profile caps intent at 500 characters (`MINIMAL_INTENT_CHARS`), which a
+12 000-character block would dwarf. The minimal profile keeps
 today's behaviour: the `active_skill` line, and no step a skill prescribes counts as intent.
 
 ### Prompt (full profile)
@@ -174,13 +180,16 @@ digest, so it already suspends the trust until re-trust.
 1. **Request types.** In `guardian/request.rs`, add `InvokedSkill`, `INVOKED_SKILL_CHARS` and
    `SessionFacts::invoked_skill`. Export them from `guardian.rs`. Fill
    `invoked_skill: None` at every `SessionFacts` literal (`prompt_builder.rs` tests,
-   `core/adjudication.rs:252`, `fontaine-evals/src/live.rs`) and `None` in `profile.rs` shaping.
+   `core/adjudication.rs:231-253`, the prompt_builder test `request()` at ~:521-545, and `profile.rs`
+   at ~:69); `fontaine-evals/src/live.rs` already uses `..SessionFacts::default()`.
 2. **Session state.** In `core/gate.rs`, add the map, `note_invoked_skill`, `invoked_skill` and
    the `end_turn` clear.
 3. **Capture.** In `core/skills.rs`, have `lend_rules` return whether the skill is trusted, and
    in `expand` note the invoked skill on the qualifying path, cut with `leading_chars`. `leading_chars`
    is already `pub` in `guardian/request.rs` and re-exported from `guardian.rs`, and is used for
    `agent_task` in `core/adjudication.rs`; reuse `crate::guardian::leading_chars` as is.
+   In `rust/fontaine-tui/src/ui/turn.rs`, call `end_turn` on the `Submission::Expanded` early exit
+   (see Capture).
 4. **Request build.** In `core/adjudication.rs::build`, copy `state.invoked_skill(caller)`.
 5. **Rendering.** In `guardian/prompt_builder.rs`, render the block (guardian view only) and
    update `USER_MESSAGE_HEADER`. Update the snapshots this changes (`cargo insta review`).
@@ -204,6 +213,7 @@ digest, so it already suspends the trust until re-trust.
 - `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`
 - `rust/fontaine-sdk/src/core/gate.rs`, `core/skills.rs`, `core/adjudication.rs`
 - `rust/fontaine-sdk/tests/trusted_skills.rs`
+- `rust/fontaine-tui/src/ui/turn.rs`
 - `rust/fontaine-tui/src/skill_trust_prompt.rs`, `rust/fontaine/src/plugin.rs`
 - `rust/fontaine-evals/src/case.rs`, `rust/fontaine-evals/src/live.rs`,
   `rust/fontaine-evals/tests/fixture.rs`
@@ -285,7 +295,11 @@ Unit tests (`gate.rs`): `note_invoked_skill` replaces, `invoked_skill` is per ag
 `end_turn` clears it.
 
 Integration tests (`rust/fontaine-sdk/tests/trusted_skills.rs`, the existing request-capture
-harness):
+harness). Tests involving the skill's own `!` commands install a stub `DynamicTool` through
+`SkillRuntime::set_shell` (without it `run_command` returns `[command not run: the shell tool is
+not available]`); the stub records `state.invoked_skill(agent)` and the command text when called
+and returns a sentinel output, so the tests assert the block exists during expansion and the
+sentinel never reaches it.
 - A `!` command run by the skill's own expansion has an adjudication request that carries
   `invoked_skill`.
 - A trusted plugin skill expanded with `by_model = false` puts its substituted body in the root
@@ -296,6 +310,8 @@ harness):
   user-scope skill carries it without trust.
 - A subagent of the invoking agent carries none. After the turn ends, the root carries none.
 - A body longer than `INVOKED_SKILL_CHARS` is cut to it.
+- TUI (`ui/turn.rs` tests): a `Submission::Expanded` whose `refresh_before_turn` returns `Some(end)`
+  leaves no `invoked_skill` for the root afterwards.
 
 Evals (`evals/dataset/skills.jsonl`, full profile; the fixture run checks format in CI, the live
 run is what scores them). The first case pins the #793 incident at the only tier that reproduces
