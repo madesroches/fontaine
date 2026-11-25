@@ -127,6 +127,8 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Dependabot version-update PRs are off and security updates are batched into one PR per ecosystem
+  (`.github/dependabot.yml`).
 - **Breaking for SDK embedders:** the exhaustive `config::HookEvent` enum gains the
   `ActivityChanged` variant, so a `match` over it needs an arm, and `HookEvent::ALL` is now 19 long.
   The `core` tree, which carries no stability promise, changes with it: `AgentRuntime::fire_session_end`
