@@ -5,6 +5,12 @@ next to it, `<file>.minisig`, made in CI with a key Fontaine owns. A release is 
 after CI has downloaded the finished draft and verified every archive, and each installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
+A tagged release also holds `latest.json`, which names its tag and its other files; `fontaine update` reads it
+through GitHub's `releases/latest/download` redirect instead of the rate-limited API. It is not signed: every
+archive the updater installs is still verified against the release key with a signed channel, file name and
+version, so a tampered pointer can at worst hold updates back or steer one to another newer, signed and
+published release. CI checks that it names the tag and exactly the other files before the release goes public.
+
 The archives of a dev build live in the immutable `dev-<n>` prerelease. The long-lived `dev`
 prerelease holds `fontaine-installer.sh`, `fontaine-installer.ps1` and `fontaine-android.apk` with their `.minisig`
 files, plus `latest-dev.json`, all replaced after every successful dev publish; each installer is the dist script rewritten to

@@ -106,8 +106,7 @@ pub fn upgrade_hint(channel: Option<Channel>) -> String {
 }
 
 pub struct Params<'a> {
-    pub api_base: &'a str,
-    /// Where the dev pointer and dev release assets are downloaded from.
+    /// Where the release pointers and release assets are downloaded from.
     pub download_base: &'a str,
     pub receipt_path: PathBuf,
     pub current_exe: PathBuf,
@@ -180,12 +179,8 @@ fn archive_name(target: &str) -> String {
     format!("fontaine-{target}.{ext}")
 }
 
-// A missing release is deterministic, so it is not the retryable network kind.
 fn index_error(e: release_index::IndexError) -> UpdateError {
-    match e {
-        release_index::IndexError::NoRelease(_) => UpdateError::Install(Box::new(e)),
-        _ => UpdateError::Network(Box::new(e)),
-    }
+    UpdateError::Network(Box::new(e))
 }
 
 fn not_self_updatable(e: ReceiptError) -> UpdateError {
@@ -386,7 +381,7 @@ pub async fn prepare(
         }
     })?;
 
-    let release = release_index::latest(client, params.api_base, params.download_base, channel)
+    let release = release_index::latest(client, params.download_base, channel)
         .await
         .map_err(index_error)?;
     opts.candidate = Some(release.tag.clone());
@@ -658,7 +653,6 @@ pub fn run(
         }
     };
     let params = Params {
-        api_base: release_index::DEFAULT_API_BASE,
         download_base: release_index::DEFAULT_DOWNLOAD_BASE,
         receipt_path,
         current_exe,
@@ -742,15 +736,7 @@ mod tests {
     use release_index::SemVer;
 
     #[test]
-    fn a_missing_release_is_not_retryable() {
-        let missing = index_error(release_index::IndexError::NoRelease(Channel::Release));
-        assert!(matches!(missing, UpdateError::Install(_)));
-        assert_eq!(missing.exit_code(), 1);
-        let status = index_error(release_index::IndexError::Status(
-            reqwest::StatusCode::BAD_GATEWAY,
-            "https://example.test".into(),
-        ));
-        assert_eq!(status.exit_code(), EXIT_UPDATE_NETWORK);
+    fn a_missing_release_pointer_is_retryable() {
         let pointer = index_error(release_index::IndexError::Pointer {
             url: "https://example.test".into(),
             cause: None,

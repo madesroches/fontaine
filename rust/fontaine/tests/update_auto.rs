@@ -143,7 +143,6 @@ impl Install {
     fn params<'a>(&self, server: &'a MockServer, keys: &'a TrustedKeys) -> Params<'a> {
         let base: &'static str = Box::leak(server.uri().into_boxed_str());
         Params {
-            api_base: base,
             download_base: base,
             receipt_path: self.receipt.clone(),
             current_exe: self.binary.clone(),
@@ -406,7 +405,6 @@ async fn an_offline_pass_still_writes_the_stamp() {
     let uri = "http://127.0.0.1:1".to_string();
     let keys = Signer::new().keys();
     let params = Params {
-        api_base: &uri,
         download_base: &uri,
         receipt_path: install.receipt.clone(),
         current_exe: install.binary.clone(),

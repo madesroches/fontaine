@@ -6,7 +6,6 @@ use serde::Deserialize;
 
 use crate::release_signature::Channel;
 
-pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_DOWNLOAD_BASE: &str = "https://github.com";
 const REPO: &str = "madesroches/fontaine";
 
@@ -103,11 +102,7 @@ pub fn tag_build(channel: Channel, tag: &str) -> Option<Build> {
 
 #[derive(Debug)]
 pub enum IndexError {
-    Request(reqwest::Error),
-    Status(reqwest::StatusCode, String),
-    Parse(serde_json::Error),
-    NoRelease(Channel),
-    /// The dev release pointer (`latest-dev.json`) could not be fetched or is invalid.
+    /// The release pointer {url} could not be fetched or is invalid.
     Pointer {
         url: String,
         cause: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -117,13 +112,9 @@ pub enum IndexError {
 impl std::fmt::Display for IndexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IndexError::Request(_) => f.write_str("the release list could not be fetched"),
-            IndexError::Status(status, url) => write!(f, "{url} answered {status}"),
-            IndexError::Parse(_) => f.write_str("the release list is not the expected JSON"),
-            IndexError::NoRelease(c) => write!(f, "no published {c} release was found"),
             IndexError::Pointer { url, .. } => write!(
                 f,
-                "the dev release pointer {url} could not be fetched or is invalid; try again shortly"
+                "the release pointer {url} could not be fetched or is invalid; try again shortly"
             ),
         }
     }
@@ -132,60 +123,9 @@ impl std::fmt::Display for IndexError {
 impl std::error::Error for IndexError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            IndexError::Request(e) => Some(e),
-            IndexError::Parse(e) => Some(e),
             IndexError::Pointer { cause, .. } => cause.as_deref().map(|e| e as _),
-            _ => None,
         }
     }
-}
-
-#[derive(Deserialize)]
-struct ApiRelease {
-    tag_name: String,
-    #[serde(default)]
-    assets: Vec<ApiAsset>,
-}
-
-#[derive(Deserialize)]
-struct ApiAsset {
-    name: String,
-    browser_download_url: String,
-}
-
-impl ApiRelease {
-    fn into_release(self, build: Build) -> Release {
-        Release {
-            tag: self.tag_name,
-            build,
-            assets: self
-                .assets
-                .into_iter()
-                .map(|a| Asset {
-                    name: a.name,
-                    url: a.browser_download_url,
-                })
-                .collect(),
-        }
-    }
-}
-
-async fn get(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, IndexError> {
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(IndexError::Request)?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(IndexError::Status(status, url.to_string()));
-    }
-    Ok(response
-        .bytes()
-        .await
-        .map_err(IndexError::Request)?
-        .to_vec())
 }
 
 #[derive(Deserialize)]
@@ -194,8 +134,8 @@ struct Pointer {
     assets: Vec<String>,
 }
 
-/// Fetches and parses the dev pointer with a plain GET: it lives on the download host, not the
-/// API, so it has no GitHub `Accept` header and every failure maps to `IndexError::Pointer`.
+/// Fetches and parses a pointer with a plain GET: it lives on the download host, not the API,
+/// so every failure maps to `IndexError`.
 async fn fetch_pointer(client: &reqwest::Client, url: &str) -> Result<Pointer, IndexError> {
     let fail = |cause: Option<Box<dyn std::error::Error + Send + Sync>>| IndexError::Pointer {
         url: url.to_string(),
@@ -216,43 +156,39 @@ async fn fetch_pointer(client: &reqwest::Client, url: &str) -> Result<Pointer, I
     serde_json::from_slice(&body).map_err(|e| fail(Some(Box::new(e))))
 }
 
-/// The newest published build on `channel`. `api_base` (release channel) and `download_base`
-/// (dev channel pointer and assets) are parameters so tests can point them at a mock server.
+/// Where a channel's pointer lives. The release one is GitHub's `latest` redirect, which skips
+/// prereleases and drafts.
+fn pointer_url(base: &str, channel: Channel) -> String {
+    match channel {
+        Channel::Release => format!("{base}/{REPO}/releases/latest/download/latest.json"),
+        Channel::Dev => format!("{base}/{REPO}/releases/download/dev/latest-dev.json"),
+    }
+}
+
+/// The newest published build on `channel`, read from its pointer. `download_base` is a
+/// parameter so tests can point it at a mock server.
 pub async fn latest(
     client: &reqwest::Client,
-    api_base: &str,
     download_base: &str,
     channel: Channel,
 ) -> Result<Release, IndexError> {
-    match channel {
-        Channel::Release => {
-            let base = api_base.trim_end_matches('/');
-            let body = get(client, &format!("{base}/repos/{REPO}/releases/latest")).await?;
-            let release: ApiRelease = serde_json::from_slice(&body).map_err(IndexError::Parse)?;
-            let build =
-                tag_build(channel, &release.tag_name).ok_or(IndexError::NoRelease(channel))?;
-            Ok(release.into_release(build))
-        }
-        Channel::Dev => {
-            let base = download_base.trim_end_matches('/');
-            let url = format!("{base}/{REPO}/releases/download/dev/latest-dev.json");
-            let pointer = fetch_pointer(client, &url).await?;
-            let build = tag_build(channel, &pointer.tag).ok_or_else(|| IndexError::Pointer {
-                url: url.clone(),
-                cause: Some(format!("{:?} is not a dev build tag", pointer.tag).into()),
-            })?;
-            let tag = pointer.tag;
-            let assets = pointer
-                .assets
-                .into_iter()
-                .map(|name| Asset {
-                    url: format!("{base}/{REPO}/releases/download/{tag}/{name}"),
-                    name,
-                })
-                .collect();
-            Ok(Release { tag, build, assets })
-        }
-    }
+    let base = download_base.trim_end_matches('/');
+    let url = pointer_url(base, channel);
+    let pointer = fetch_pointer(client, &url).await?;
+    let build = tag_build(channel, &pointer.tag).ok_or_else(|| IndexError::Pointer {
+        url: url.clone(),
+        cause: Some(format!("{:?} is not a {channel} build tag", pointer.tag).into()),
+    })?;
+    let tag = pointer.tag;
+    let assets = pointer
+        .assets
+        .into_iter()
+        .map(|name| Asset {
+            url: format!("{base}/{REPO}/releases/download/{tag}/{name}"),
+            name,
+        })
+        .collect();
+    Ok(Release { tag, build, assets })
 }
 
 #[cfg(test)]
@@ -302,36 +238,41 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const POINTER_PATH: &str = "/madesroches/fontaine/releases/download/dev/latest-dev.json";
+    const DEV_POINTER_PATH: &str = "/madesroches/fontaine/releases/download/dev/latest-dev.json";
+    const RELEASE_POINTER_PATH: &str = "/madesroches/fontaine/releases/latest/download/latest.json";
 
-    async fn serve_pointer(server: &MockServer, response: ResponseTemplate) {
+    async fn serve_pointer(server: &MockServer, at: &str, response: ResponseTemplate) {
         Mock::given(method("GET"))
-            .and(path(POINTER_PATH))
+            .and(path(at))
             .respond_with(response)
             .mount(server)
             .await;
     }
 
-    async fn dev_latest(server: &MockServer) -> Result<Release, IndexError> {
-        let uri = server.uri();
-        latest(&reqwest::Client::new(), &uri, &uri, Channel::Dev).await
+    async fn no_api_calls(server: &MockServer) {
+        Mock::given(wiremock::matchers::path_regex("^/repos/"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(0)
+            .mount(server)
+            .await;
+    }
+
+    async fn latest_on(server: &MockServer, channel: Channel) -> Result<Release, IndexError> {
+        latest(&reqwest::Client::new(), &server.uri(), channel).await
     }
 
     #[tokio::test]
     async fn the_dev_pointer_names_the_release_without_an_api_call() {
         let server = MockServer::start().await;
-        Mock::given(wiremock::matchers::path_regex("^/repos/"))
-            .respond_with(ResponseTemplate::new(403))
-            .expect(0)
-            .mount(&server)
-            .await;
+        no_api_calls(&server).await;
         serve_pointer(
             &server,
+            DEV_POINTER_PATH,
             ResponseTemplate::new(200)
                 .set_body_string(r#"{"tag":"dev-7","assets":["a.tar.gz","a.tar.gz.minisig"]}"#),
         )
         .await;
-        let release = dev_latest(&server).await.unwrap();
+        let release = latest_on(&server, Channel::Dev).await.unwrap();
         assert_eq!(release.tag, "dev-7");
         assert_eq!(release.build, Build::Dev(7));
         let asset = release.asset("a.tar.gz.minisig").unwrap();
@@ -346,36 +287,105 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_pointer_is_an_error_that_keeps_the_status() {
+    async fn the_release_pointer_names_the_release_without_an_api_call() {
         let server = MockServer::start().await;
-        serve_pointer(&server, ResponseTemplate::new(404)).await;
-        let err = dev_latest(&server).await.unwrap_err();
-        assert!(matches!(err, IndexError::Pointer { .. }));
-        let chain = fontaine_sdk::tools::error_chain::chain(&err);
-        assert!(chain.contains("404"), "{chain}");
+        no_api_calls(&server).await;
+        serve_pointer(
+            &server,
+            RELEASE_POINTER_PATH,
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"tag":"v1.2.3","assets":["a.tar.xz","a.tar.xz.minisig"]}"#),
+        )
+        .await;
+        let release = latest_on(&server, Channel::Release).await.unwrap();
+        assert_eq!(release.tag, "v1.2.3");
+        assert_eq!(release.build, Build::Release(SemVer(1, 2, 3)));
+        assert_eq!(
+            release.asset("a.tar.xz").unwrap().url,
+            format!(
+                "{}/madesroches/fontaine/releases/download/v1.2.3/a.tar.xz",
+                server.uri()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_release_pointer_is_followed_through_githubs_redirect() {
+        let server = MockServer::start().await;
+        serve_pointer(
+            &server,
+            RELEASE_POINTER_PATH,
+            ResponseTemplate::new(302).insert_header(
+                "location",
+                "/madesroches/fontaine/releases/download/v1.2.3/latest.json",
+            ),
+        )
+        .await;
+        serve_pointer(
+            &server,
+            "/madesroches/fontaine/releases/download/v1.2.3/latest.json",
+            ResponseTemplate::new(200).set_body_string(r#"{"tag":"v1.2.3","assets":["a"]}"#),
+        )
+        .await;
+        let client = crate::update::build_client(&Default::default())
+            .expect("the default network settings build a client");
+        let release = latest(&client, &server.uri(), Channel::Release)
+            .await
+            .unwrap();
+        assert_eq!(release.tag, "v1.2.3");
+    }
+
+    #[tokio::test]
+    async fn a_missing_pointer_is_an_error_that_keeps_the_status() {
+        for (channel, at) in [
+            (Channel::Dev, DEV_POINTER_PATH),
+            (Channel::Release, RELEASE_POINTER_PATH),
+        ] {
+            let server = MockServer::start().await;
+            serve_pointer(&server, at, ResponseTemplate::new(404)).await;
+            let err = latest_on(&server, channel).await.unwrap_err();
+            assert!(matches!(err, IndexError::Pointer { .. }));
+            let chain = fontaine_sdk::tools::error_chain::chain(&err);
+            assert!(chain.contains("404"), "{chain}");
+        }
     }
 
     #[tokio::test]
     async fn a_malformed_pointer_is_an_error() {
-        let server = MockServer::start().await;
-        serve_pointer(
-            &server,
-            ResponseTemplate::new(200).set_body_string("not json"),
-        )
-        .await;
-        let err = dev_latest(&server).await.unwrap_err();
-        assert!(matches!(err, IndexError::Pointer { .. }));
+        for (channel, at) in [
+            (Channel::Dev, DEV_POINTER_PATH),
+            (Channel::Release, RELEASE_POINTER_PATH),
+        ] {
+            let server = MockServer::start().await;
+            serve_pointer(
+                &server,
+                at,
+                ResponseTemplate::new(200).set_body_string("not json"),
+            )
+            .await;
+            let err = latest_on(&server, channel).await.unwrap_err();
+            assert!(matches!(err, IndexError::Pointer { .. }));
+        }
     }
 
     #[tokio::test]
     async fn a_pointer_with_a_bad_tag_is_an_error() {
-        let server = MockServer::start().await;
-        serve_pointer(
-            &server,
-            ResponseTemplate::new(200).set_body_string(r#"{"tag":"v1.0.0","assets":[]}"#),
-        )
-        .await;
-        let err = dev_latest(&server).await.unwrap_err();
-        assert!(matches!(err, IndexError::Pointer { .. }));
+        let cases = [
+            (Channel::Dev, DEV_POINTER_PATH, "v1.0.0"),
+            (Channel::Release, RELEASE_POINTER_PATH, "dev-3"),
+            (Channel::Release, RELEASE_POINTER_PATH, "v1.0.0-rc.1"),
+        ];
+        for (channel, at, tag) in cases {
+            let server = MockServer::start().await;
+            let body = format!(r#"{{"tag":"{tag}","assets":[]}}"#);
+            serve_pointer(
+                &server,
+                at,
+                ResponseTemplate::new(200).set_body_string(body),
+            )
+            .await;
+            let err = latest_on(&server, channel).await.unwrap_err();
+            assert!(matches!(err, IndexError::Pointer { .. }), "{tag}");
+        }
     }
 }

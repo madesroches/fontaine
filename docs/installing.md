@@ -182,8 +182,8 @@ is read from the install receipt, where a version with `-dev.` in it (`<version>
 is the `dev` channel and any other is `release`. An update never switches channels; to change
 channel, run the other channel's installer.
 
-- On `release` it installs the latest published `vX.Y.Z` release; on `dev` the build named by
-  `latest-dev.json` on the `dev` release (the newest `dev-<n>`), compared by build number. A missing
+- On `release` it installs the build named by `latest.json` on the latest published `vX.Y.Z` release; on `dev`
+  the build named by `latest-dev.json` on the `dev` release (the newest `dev-<n>`), compared by build number. A missing
   or invalid pointer is a network error (exit 4); retrying shortly usually helps.
 - A build that is the same or older than the installed one is reported as already up to date, and
   nothing is installed: an update never downgrades.
@@ -207,10 +207,10 @@ nothing is written.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Updated, or already up to date |
-| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release exists on the release channel, or the release has no archive for this platform) |
+| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, or the release has no archive for this platform) |
 | 2 | The configuration could not be loaded |
 | 3 | This install cannot update itself |
-| 4 | The release list, the dev release pointer or the download could not be fetched (not when it was fetched and held no release); retrying may help |
+| 4 | The release pointer (`latest.json` or `latest-dev.json`), or the download, could not be fetched or is invalid; retrying may help |
 | 5 | The download failed verification (missing or bad signature, wrong channel, file or version, or an archive larger than expected) |
 
 ### Automatic updates
