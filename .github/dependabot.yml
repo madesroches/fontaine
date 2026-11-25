@@ -1,19 +1,25 @@
 version: 2
+# Version-update PRs are off (limit 0); security updates are not subject to that
+# limit and are batched into one PR per ecosystem by the `security` groups.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
     groups:
-      actions:
-        update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /rust
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
     # rig crates are pinned to exact versions on purpose.
     ignore:
       - dependency-name: "rig-*"
     groups:
-      cargo:
-        update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
