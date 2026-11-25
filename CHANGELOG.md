@@ -8,15 +8,6 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
-- Invoked skill as user intent (#793): when you run a skill by typing its command, the guardian now
-  reads the skill's text as an `invoked_skill` block marked `source="user"`, so a step the text
-  explicitly prescribes (a `git push --force-with-lease=<branch>:<tip>`, a `git rebase --abort`) is
-  your instruction and no longer denied as Git Destructive. It applies to a skill in your own
-  skills directory and a plugin skill you trusted, never a project skill or a skill the model
-  loads; a push to a shared branch or tag, deleting a remote ref, sending data to a non-remote
-  destination and a write outside the workspace roots stay judged on your own words. The minimal
-  profile does not carry it. Trusting a plugin skill now says so. Eval cases and a
-  `project_instructions` case field were added. See `docs/guardian.md`.
 - Accept one word of ghost text (#788): with a prompt suggestion or history completion showing,
   Ctrl-Right, Alt-Right and Alt-F take the next word and leave the rest dimmed; Tab and Right still
   take all of it.
@@ -135,6 +126,18 @@ All notable changes are recorded here. The format follows
   A stdio server that exited mid-session keeps its tools as stand-ins behind the same permission
   gate, and an allowed call starts it again from its stored definition and runs on it, at most three
   times per server per run (Claude Code documents no cap). Interactive sessions are unchanged.
+
+#### Guardian
+
+- Invoked skill as user intent (#793): when you run a skill by typing its command, the guardian now
+  reads the skill's text as an `invoked_skill` block marked `source="user"`, so a step the text
+  explicitly prescribes (a `git push --force-with-lease=<branch>:<tip>`, a `git rebase --abort`) is
+  your instruction and no longer denied as Git Destructive. It applies to a skill in your own
+  skills directory and a plugin skill you trusted, never a project skill or a skill the model
+  loads; a push to a shared branch or tag, deleting a remote ref, sending data to a non-remote
+  destination and a write outside the workspace roots stay judged on your own words. The minimal
+  profile does not carry it. Trusting a plugin skill now says so. Eval cases and a
+  `project_instructions` case field were added. See `docs/guardian.md`.
 
 #### TUI
 
