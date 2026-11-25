@@ -14,6 +14,9 @@ updates:
     # rig crates are pinned to exact versions on purpose.
     ignore:
       - dependency-name: "rig-*"
+      # 0.22 splits JNIEnv into Env/EnvUnowned; fontaine-android needs a migration first.
+      - dependency-name: "jni"
+        update-types: ["version-update:semver-minor"]
     groups:
       cargo:
         update-types: [minor, patch]
