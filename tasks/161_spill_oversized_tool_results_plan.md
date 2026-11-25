@@ -34,28 +34,26 @@ storage, lifecycle and pre-summary pruning.
   with one footer line `[output cut; full output: <path>. Use read with offset/limit, or grep that
   file.]`. The path is in the result text, not only `OutputCut.spill`, and `OutputCut.spill` is also
   set so tool metadata agrees.
-- The shell tool gets the `Spill` the same way the MCP limits do (`OutputLimits.spill`, built from
-  the session scratch directory in `core/agent/mcp.rs`); no scratch directory means the current
-  cut with no footer. A failed write warns once through the existing `warn` hook
-  (`builtins.rs:1174`-style) and falls back to the current cut.
+- The shell tool gets its own `Spill` in a separate directory, `scratch/shell-output` (not
+  `mcp-results`), built from the session scratch directory in `core/agent/mcp.rs`; no scratch
+  directory means the current cut with no footer. `cut` and `render_read` return and propagate a
+  write error; callers warn once through the existing `warn` hook (`builtins.rs:1174`-style) and
+  fall back to the current cut.
 - Lost bytes: when `Chunk.missed > 0` the ring already dropped the front, so the file holds only the
   retained part. The footer says so (`first N lines were dropped before this file`), and never
   claims the file is complete. The spill file for a foreground call is written from the chunk the
   call holds; background jobs spill in `job_output` the same way, one file per read that cuts.
-- File lifetime: scratch files live until session end. Resume re-creates a scratch directory, so a
-  pointer in a resumed history can dangle; the footer wording says "this session" and the summarizer
-  prompt (already covers Output state) records the pointer. No cross-session store is added.
-- A spill file is capped at the 64 MiB `OUTPUT_CAP`, and the scratch directory is the only place
-  written, so no new write-surface and no new permission class: it is written by the tool process,
-  not by a model tool call.
+- The footer wording says "this session".
+- A spill file is capped at the 64 MiB `OUTPUT_CAP`.
 
 ### 2. Prune old results before summarising
-- New `core/prune.rs` (SDK core, no new dependency): `prune_old_results(messages, keep_recent,
-  min_chars)` returns a copy where each tool result older than the last `keep_recent` messages and
-  longer than `min_chars` (8,192 characters, head 4,096 and tail 1,024, as the issue's measurement)
+- New `core/prune.rs` (SDK core, no new dependency): `prune_old_results(messages, min_chars)`
+  returns a copy where each tool result in the summarized range (before `plan.keep_from`, which
+  already marks the kept tail) longer than `min_chars` (8,192 characters, head 4,096 and tail 1,024, as the issue's measurement)
   becomes head + `[… N chars pruned …]` + tail. A result that already carries a spill footer keeps
   the footer line. Images and error results are left alone.
-- It runs only on the copy handed to the summarizer in `compact_via`; the saved conversation is
+- `compact_via` prunes a clone passed to `plan_summary` and applies the summary (`apply_summary`)
+  to the unpruned conversation. Pruning preserves message count and order. The saved conversation is
   untouched, so the kept tail after compaction is byte-identical and the prompt cache is not
   invalidated by pruning (compaction invalidates it anyway).
 - Trigger floor: prune only when the conversation is over the compaction threshold (it is, by
@@ -73,7 +71,7 @@ storage, lifecycle and pre-summary pruning.
 
 ## Files to Modify
 `rust/fontaine-sdk/src/tools/jobs/cut.rs`, `tools/jobs/tools.rs`, `tools/builtins.rs`,
-`core/agent/mcp.rs` (or where the shell is built), `core/session.rs`, new `core/prune.rs`,
+`core/agent/mcp.rs`, `core/session.rs`, new `core/prune.rs`,
 `docs/` page on tools/context, `CHANGELOG.md`.
 
 ## Trade-offs
@@ -86,6 +84,7 @@ storage, lifecycle and pre-summary pruning.
 - Spill in the result text, not only `OutputCut.spill`, because the summarizer reads text only.
 - No cross-session artifact store: scratch lifetime is the session; resume dangling pointers are
   recorded by the summarizer's Output state, not recovered.
+- Prune thresholds are constants, no config key.
 
 ## Documentation
 Update the docs page that describes shell output limits and the context/compaction page to say
@@ -99,7 +98,3 @@ where full output goes and that old results are shortened before a summary.
   head/tail, spill footer kept, images and errors untouched, input not mutated.
 - A `ledger.rs` request-level test with `MockCompletionModel`: the summary request holds the pruned
   text while the saved history keeps the original.
-
-## Open Questions
-- Whether `min_chars` and the head/tail sizes should be configurable (default: constants, no config
-  key).
