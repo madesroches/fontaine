@@ -28,22 +28,21 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 
 ## Design
 1. **Publish.** In `release.yml` `host`, after `gh release create`, add a step that builds
-   `latest.json` from the draft with
-   `gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,assets --jq '{tag: .tagName, assets: [.assets[].name]}'`
-   into `latest.json` outside `artifacts/` and uploads it with `gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY"`. It is generated from
-   the draft, so it names exactly the assets that exist and not itself. It is unsigned, as `latest-dev.json` is:
+   `latest.json` from the file names in `artifacts/` (the exact set `gh release create` just uploaded), e.g.
+   `jq -n --arg tag "$TAG" '{tag: $tag, assets: $ARGS.positional}' --args $(ls artifacts)`,
+   into `latest.json` outside `artifacts/` and uploads it with `gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY"`. It names exactly the assets that exist and not itself. It is unsigned, as `latest-dev.json` is:
    archives are minisign-verified against the channel key with signed channel, file name and version, and `tag_build(Release, ..)`
    validates the tag, so a tampered pointer can at worst hold updates back or steer to another newer, signed, published release.
 2. **Verify.** `release-verify.sh`: in the release-channel asset loop, accept `latest.json` (any other channel still rejects it,
    like the installers). After the loop, when `latest.json` is present, check it: `jq` parses it, `tag` is the expected tag, and
    `assets` equals the sorted set of other file names in the directory. The script takes `<version>` (no `v`) so the tag is `v$version`.
    `FONTAINE_REQUIRE_APK`-style strictness: add `FONTAINE_REQUIRE_POINTER=1` set by `verify-draft`, making it mandatory there, so a
-   missing pointer cannot be published. The script's tests are the inline release-signing step in `.github/workflows/ci.yml` (`make_fixture`, `expect_fail`, the `FONTAINE_REQUIRE_APK` cases); add a pointer fixture (`make_fixture` plus `latest.json`), a `FONTAINE_REQUIRE_POINTER=1` pass/fail pair modelled on the APK cases, and `expect_fail` mutations for a wrong tag, a mismatched asset list and `latest.json` on `dev`.
+   missing pointer cannot be published. The script's tests are the inline release-signing step in `.github/workflows/ci.yml` (`make_fixture`, `expect_fail`, the `FONTAINE_REQUIRE_APK` cases); add a separate pointer fixture written from `ls` of the already-signed directory (like `apk_fixture`; `make_fixture` itself is unchanged, since `release-sign.sh` runs `release-verify.sh`, which would see an unlisted `latest.json`), a `FONTAINE_REQUIRE_POINTER=1` pass/fail pair modelled on the APK cases, and `expect_fail` mutations for a wrong tag, a mismatched asset list and `latest.json` on `dev`.
 3. **Client.** `latest()` becomes `latest(client, download_base, channel)`. A `pointer_url(base, channel)` helper returns
    `{base}/{REPO}/releases/latest/download/latest.json` for `Release` and `{base}/{REPO}/releases/download/dev/latest-dev.json` for
    `Dev`. The shared body is today's dev arm: `fetch_pointer`, `tag_build(channel, tag)`, asset URLs under `releases/download/{tag}/{name}`.
    Delete `get()`, `ApiRelease`, `ApiAsset`, `DEFAULT_API_BASE`, `Params.api_base`, `IndexError::Request`, `Status`, `Parse` and
-   `NoRelease` (they are used only in `release_index.rs` and in `index_error()` and its unit test in `mod.rs`); `Pointer`'s Display says "release pointer" with the channel name.
+   `NoRelease` (they are used only in `release_index.rs` and in `index_error()` and its unit test in `mod.rs`); `Pointer`'s Display and the variant's doc comment become channel-neutral ("the release pointer {url} could not be fetched or is invalid"), using the URL alone, so the variant gains no field.
    No API fallback: a missing or invalid release pointer, including a suffixed or garbage tag, is a network error (exit 4); exit 1 no longer covers a missing release.
    Every `IndexError` now maps to `UpdateError::Network`, so remove the `Install` arm of `index_error()` and reduce `a_missing_release_is_not_retryable` to the `Pointer` assertion.
 4. **Redirect.** `releases/latest/download/<asset>` answers `302` to `releases/download/<tag>/<asset>`. The update client (`update::build_client`, `mod.rs`) is built with the `[network]` settings and a custom redirect policy that follows up to 5 hops and never downgrades from https; it does not disable redirects, as the dev pointer fetch already relies on. Add a wiremock test with a 302 through `update::build_client`.
@@ -60,7 +59,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 ## Files to Modify
 - `rust/fontaine/src/update/release_index.rs`, `update/mod.rs`, `update/auto.rs`
 - `rust/fontaine/tests/update_cmd.rs`, `tests/update_auto.rs`
-- `.github/workflows/release.yml`, `.github/scripts/release-verify.sh`, `.github/workflows/ci.yml` (release-signing step tests)
+- `.github/workflows/release.yml`, `.github/scripts/release-verify.sh` (including its header comment), `.github/workflows/ci.yml` (release-signing step tests), `.github/workflows/update-e2e.yml` (header comment no longer mentions an api-base)
 - `docs/installing.md`, `docs/verifying-releases.md`, `tasks/design/platforms.md`, `CONTRIBUTING.md` (§Releasing)
 - `tasks/fontaine_harness_plan.md` (`## Decisions`), `CHANGELOG.md`
 
@@ -86,7 +85,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 - `cargo fmt --check`, clippy `-D warnings`, `cargo test`.
 
 ## Manual Verification
-After the first tagged release's `verify-draft`, `curl -sIL https://github.com/madesroches/fontaine/releases/latest/download/latest.json` shows the redirect to the tag. Not automatable before a release exists; the `update-e2e.yml` release leg needs two tagged releases.
+After the first tagged release's `verify-draft`, `curl -sIL https://github.com/madesroches/fontaine/releases/latest/download/latest.json` shows the redirect to the tag. Not automatable before a release exists; `update-e2e.yml` covers only the dev channel, so there is no automated release-channel end to end.
 
 ## Open Questions
 None.
