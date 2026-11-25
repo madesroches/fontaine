@@ -454,6 +454,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         jobs: Default::default(),
         shell_cwd: shell_cwd.clone(),
         scratch: Some(scratch.path().to_path_buf()),
+        shell_spill: None,
         agent_waits: None,
         agent_kills: None,
         wait_wake: None,

@@ -116,6 +116,8 @@ pub struct RegistryParams {
     pub shell_cwd: ShellCwd,
     /// The session scratch directory; with none, the shell directory never moves.
     pub scratch: Option<std::path::PathBuf>,
+    /// Where `shell` saves output it cut; `None` only cuts it.
+    pub shell_spill: Option<Arc<crate::tools::jobs::cut::ShellSpill>>,
     /// How `job_output` waits on a subagent; `None` refuses agent ids.
     pub agent_waits: Option<Arc<dyn AgentWaits>>,
     /// How `job_cancel` stops a subagent; `None` refuses agent ids.
@@ -208,6 +210,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         wait_wake: params.wait_wake,
         shell_cwd: params.shell_cwd,
         scratch: params.scratch,
+        shell_spill: params.shell_spill,
         git_fast_path_runner: Some(Arc::new(|cmd, repo_root, cwd| {
             crate::core::git_fast_path::run(cmd, repo_root, cwd)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)

@@ -142,6 +142,7 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         wait_wake: None,
         shell_cwd: Default::default(),
         scratch: None,
+        shell_spill: None,
         git_fast_path_runner: None,
     }
 }

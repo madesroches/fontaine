@@ -980,6 +980,10 @@ pub(super) fn retained(
         env: setup.env.clone(),
         searxng: Arc::default(),
         jobs: Arc::default(),
+        shell_spill: super::mcp::shell_spill(state.scratch.as_deref(), {
+            let approver = setup.approver.clone();
+            Arc::new(move |message: &str| approver.warn(message))
+        }),
         shell_cwd: ShellCwd::default(),
         lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
         store: setup.session.store(),

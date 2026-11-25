@@ -4,11 +4,100 @@
 //! time reads as it did before jobs existed. `split_status` keeps recognising the lines.
 
 use std::borrow::Cow;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rig_core::redact;
 use rig_core::tool::{ExitStatus, KeptEnd, OutputCut};
 use rig_tools::process::STOP_GRACE;
-use rig_tools::{OutputLimit, clip};
+use rig_tools::{OutputLimit, Spill, clip};
+
+use crate::tools::error_chain::chain;
+
+/// The most bytes of cut shell output a session saves to files. Scratch is typically memory-backed
+/// and nothing else bounds the number of files, so past this the output is only cut.
+pub const SPILL_BUDGET: u64 = 128 * 1024 * 1024;
+
+/// Where a session keeps the shell output it cut, and how much it may still keep.
+pub struct ShellSpill {
+    dir: Spill,
+    budget: u64,
+    written: AtomicU64,
+    warned: AtomicBool,
+    warn: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl std::fmt::Debug for ShellSpill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellSpill")
+            .field("dir", &self.dir)
+            .field("budget", &self.budget)
+            .field("written", &self.written)
+            .finish()
+    }
+}
+
+impl ShellSpill {
+    pub fn new(dir: Spill, warn: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        Self::with_budget(dir, SPILL_BUDGET, warn)
+    }
+
+    pub fn with_budget(dir: Spill, budget: u64, warn: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        ShellSpill {
+            dir,
+            budget,
+            written: AtomicU64::new(0),
+            warned: AtomicBool::new(false),
+            warn,
+        }
+    }
+
+    /// Reports that output could not be saved, once per session: the next calls fall back to the
+    /// plain cut quietly.
+    pub fn report(&self, error: &io::Error) {
+        if !self.warned.swap(true, Ordering::SeqCst) {
+            (self.warn)(&format!(
+                "shell output is not saved to a file; long output is only cut: {}",
+                chain(error)
+            ));
+        }
+    }
+
+    fn save(&self, lines: &[(u64, String)]) -> io::Result<PathBuf> {
+        let bytes: u64 = lines.iter().map(|(_, line)| line.len() as u64).sum();
+        let before = self.written.fetch_add(bytes, Ordering::SeqCst);
+        if before.saturating_add(bytes) > self.budget {
+            self.written.fetch_sub(bytes, Ordering::SeqCst);
+            return Err(io::Error::other(format!(
+                "the session's {} MiB limit on saved shell output is used up",
+                self.budget / 1024 / 1024
+            )));
+        }
+        let saved = self.write(lines);
+        if saved.is_err() {
+            self.written.fetch_sub(bytes, Ordering::SeqCst);
+        }
+        saved
+    }
+
+    fn write(&self, lines: &[(u64, String)]) -> io::Result<PathBuf> {
+        let (path, mut file) = self.dir.create("shell")?;
+        let written = lines
+            .iter()
+            .try_for_each(|(_, line)| file.write_all(line.as_bytes()))
+            .and_then(|()| file.flush());
+        match written {
+            Ok(()) => Ok(path),
+            Err(error) => {
+                // A half-written file would read as the whole output.
+                let _ = std::fs::remove_file(&path);
+                Err(error)
+            }
+        }
+    }
+}
 
 /// How many lines after a line that matters are kept with it.
 const CONTEXT: usize = 3;
@@ -99,21 +188,50 @@ pub(super) fn sanitize(piece: &str, in_key: &mut bool) -> String {
 /// `lines`, numbered, cut to `limit`: when they do not fit, the first lines (half of the limit),
 /// the lines that matter from the middle with a few after each (a quarter) and the last lines
 /// (the rest). `earlier` lines were dropped before the first of them and are counted as cut.
+///
+/// When they do not fit and `spill` is set, `lines` are first saved to a file and the text starts
+/// with a line naming it: the summarizer keeps only the start of a result, so a trailing pointer
+/// would never reach it. A failed save leaves the plain cut and comes back as the error.
 pub fn cut(
     lines: &[(u64, String)],
     earlier: u64,
     limit: OutputLimit,
-) -> (String, Option<OutputCut>) {
+    spill: Option<&ShellSpill>,
+) -> (String, Option<OutputCut>, Option<io::Error>) {
     let total_bytes: usize = lines.iter().map(|(_, line)| line.len()).sum();
     let mut text = String::new();
-    if earlier > 0 {
-        text.push_str(&format!("[{earlier} earlier lines dropped]\n"));
-    }
     if lines.len() <= limit.lines && total_bytes <= limit.bytes {
+        if earlier > 0 {
+            text.push_str(&format!("[{earlier} earlier lines dropped]\n"));
+        }
         for (_, line) in lines {
             text.push_str(line);
         }
-        return (text, None);
+        return (text, None, None);
+    }
+
+    let mut saved_at = None;
+    let mut failed = None;
+    if let Some(spill) = spill {
+        match spill.save(lines) {
+            Ok(path) => {
+                let dropped = if earlier > 0 {
+                    format!(" (the first {earlier} lines were dropped before this file)")
+                } else {
+                    String::new()
+                };
+                text.push_str(&format!(
+                    "[output cut; saved for this session: {}{dropped}. Use read with \
+                     offset/limit, or grep that file.]\n",
+                    path.display()
+                ));
+                saved_at = Some(path);
+            }
+            Err(error) => failed = Some(error),
+        }
+    }
+    if earlier > 0 {
+        text.push_str(&format!("[{earlier} earlier lines dropped]\n"));
     }
 
     let mut head_end = 0;
@@ -227,9 +345,9 @@ pub fn cut(
         kept: KeptEnd::Ends,
         kept_lines,
         total_lines: total as usize,
-        spill: None,
+        spill: saved_at.map(|path| path.to_string_lossy().into_owned()),
     };
-    (text, Some(fact))
+    (text, Some(fact), failed)
 }
 
 /// What this tool did to stop a command, as the status lines say it.
@@ -355,10 +473,129 @@ mod tests {
         (0..count).map(|n| (n as u64, format!("{n}\n"))).collect()
     }
 
+    const SMALL: OutputLimit = OutputLimit {
+        lines: 20,
+        bytes: 10_000,
+    };
+
+    type Warnings = Arc<std::sync::Mutex<Vec<String>>>;
+
+    fn spill_in(dir: &std::path::Path, budget: u64) -> (ShellSpill, Warnings) {
+        let warnings = Warnings::default();
+        let sink = warnings.clone();
+        let spill = ShellSpill::with_budget(
+            Spill(dir.join("shell-output")),
+            budget,
+            Arc::new(move |message| sink.lock().unwrap().push(message.to_owned())),
+        );
+        (spill, warnings)
+    }
+
+    #[test]
+    fn a_cut_output_is_saved_and_the_first_line_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spill, _) = spill_in(dir.path(), SPILL_BUDGET);
+        let lines = seq(100);
+        let (text, fact, failed) = cut(&lines, 0, SMALL, Some(&spill));
+        assert!(failed.is_none());
+        let first = text.lines().next().unwrap();
+        assert!(
+            first.starts_with("[output cut; saved for this session: "),
+            "{text}"
+        );
+        let path = fact.expect("cut").spill.expect("the fact names the file");
+        assert!(first.contains(&path), "{first}");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let whole: String = lines.iter().map(|(_, line)| line.as_str()).collect();
+        assert_eq!(saved, whole);
+        assert!(!first.contains("dropped"), "{first}");
+    }
+
+    #[test]
+    fn output_that_fits_is_not_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spill, _) = spill_in(dir.path(), SPILL_BUDGET);
+        let (text, fact, failed) = cut(&seq(3), 0, SMALL, Some(&spill));
+        assert_eq!(text, "0\n1\n2\n");
+        assert!(fact.is_none() && failed.is_none());
+        assert!(!dir.path().join("shell-output").exists());
+    }
+
+    #[test]
+    fn without_a_spill_the_text_is_the_plain_cut() {
+        let (text, fact, failed) = cut(&seq(100), 0, SMALL, None);
+        assert!(
+            text.starts_with("[") && text.contains("of 100 lines cut"),
+            "{text}"
+        );
+        assert!(!text.contains("saved for this session"));
+        assert_eq!(fact.expect("cut").spill, None);
+        assert!(failed.is_none());
+    }
+
+    #[test]
+    fn a_failed_write_falls_back_to_the_plain_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, "a file where the directory should be").unwrap();
+        let (spill, _) = spill_in(&blocker, SPILL_BUDGET);
+        let (text, fact, failed) = cut(&seq(100), 0, SMALL, Some(&spill));
+        assert!(failed.is_some());
+        assert!(
+            text.starts_with("[") && text.contains("of 100 lines cut"),
+            "{text}"
+        );
+        assert!(!text.contains("saved for this session"));
+        assert_eq!(fact.expect("cut").spill, None);
+    }
+
+    #[test]
+    fn dropped_lines_make_the_pointer_say_the_file_is_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spill, _) = spill_in(dir.path(), SPILL_BUDGET);
+        let lines: Vec<(u64, String)> = (7..107).map(|n| (n, format!("{n}\n"))).collect();
+        let (text, _, _) = cut(&lines, 7, SMALL, Some(&spill));
+        let first = text.lines().next().unwrap();
+        assert!(
+            first.contains("the first 7 lines were dropped before this file"),
+            "{first}"
+        );
+        assert!(text.contains("[7 earlier lines dropped]"), "{text}");
+    }
+
+    #[test]
+    fn a_spill_past_the_session_budget_falls_back_and_warns_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spill, warnings) = spill_in(dir.path(), 100);
+        for _ in 0..2 {
+            let (text, fact, failed) = cut(&seq(100), 0, SMALL, Some(&spill));
+            assert!(!text.contains("saved for this session"), "{text}");
+            assert_eq!(fact.expect("cut").spill, None);
+            spill.report(&failed.expect("the budget refused the save"));
+        }
+        let warnings = warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("not saved"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_secret_in_the_output_is_not_in_the_saved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spill, _) = spill_in(dir.path(), SPILL_BUDGET);
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut in_key = false;
+        let mut lines = seq(100);
+        lines[50].1 = sanitize(&format!("token {secret}\n"), &mut in_key);
+        let (_, fact, _) = cut(&lines, 0, SMALL, Some(&spill));
+        let saved = std::fs::read_to_string(fact.unwrap().spill.unwrap()).unwrap();
+        assert!(!saved.contains(secret), "{saved}");
+        assert!(saved.contains("token "), "{saved}");
+    }
+
     #[test]
     fn output_within_the_limit_is_kept_whole() {
         let lines = numbered(&["one", "two"]);
-        let (text, fact) = cut(&lines, 0, OutputLimit::default());
+        let (text, fact, _) = cut(&lines, 0, OutputLimit::default(), None);
         assert_eq!(text, "one\ntwo\n");
         assert_eq!(fact, None);
     }
@@ -370,7 +607,7 @@ mod tests {
             lines: 20,
             bytes: 10_000,
         };
-        let (text, fact) = cut(&lines, 0, limit);
+        let (text, fact, _) = cut(&lines, 0, limit, None);
         assert!(
             text.starts_with("[") && text.contains("of 100 lines cut"),
             "{text}"
@@ -394,7 +631,7 @@ mod tests {
             lines: 40,
             bytes: 100_000,
         };
-        let (text, _) = cut(&lines, 0, limit);
+        let (text, _, _) = cut(&lines, 0, limit, None);
         assert!(text.contains("error: it broke"), "{text}");
         assert!(text.contains("line 102"), "context after the error: {text}");
         assert!(text.contains("(lines"), "the gaps are marked: {text}");
@@ -407,7 +644,7 @@ mod tests {
             lines: 1000,
             bytes: 400,
         };
-        let (text, fact) = cut(&lines, 0, limit);
+        let (text, fact, _) = cut(&lines, 0, limit, None);
         assert!(fact.is_some());
         assert!(text.len() < 700, "{}", text.len());
     }
@@ -415,7 +652,7 @@ mod tests {
     #[test]
     fn dropped_earlier_lines_are_counted() {
         let lines: Vec<(u64, String)> = (5..8).map(|n| (n, format!("{n}\n"))).collect();
-        let (text, fact) = cut(&lines, 5, OutputLimit::default());
+        let (text, fact, _) = cut(&lines, 5, OutputLimit::default(), None);
         assert!(text.starts_with("[5 earlier lines dropped]\n"), "{text}");
         assert_eq!(fact, None);
     }

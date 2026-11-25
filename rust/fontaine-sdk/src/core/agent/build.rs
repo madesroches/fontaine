@@ -305,6 +305,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         jobs: p.setup.jobs.clone(),
         shell_cwd: p.setup.shell_cwd.clone(),
         scratch: p.state.scratch.clone(),
+        shell_spill: p.setup.shell_spill.clone(),
         agent_waits: Some(p.state.agents().clone()),
         agent_kills: Some(Arc::new(crate::agents::spawn::TreeKills {
             tree: p.state.agents().clone(),

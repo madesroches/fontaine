@@ -230,6 +230,7 @@ fn params(rig: &Rig) -> RegistryParams {
         jobs: Default::default(),
         shell_cwd: Default::default(),
         scratch: None,
+        shell_spill: None,
         agent_waits: None,
         agent_kills: None,
         wait_wake: None,

@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::tools::error_chain::chain;
 use crate::tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
 use crate::tools::guarded::Guard;
+use crate::tools::jobs::cut::ShellSpill;
 use crate::tools::lock::write_recovering;
 use crate::tools::mcp::output::{DEFAULT_MAX_TOKENS, OutputLimits, Spill};
 use crate::tools::mcp::{
@@ -683,6 +684,16 @@ pub(crate) fn output_limits(
         max_tokens,
         scratch.map(|dir| Spill(dir.join("mcp-results"))),
     )
+}
+
+/// Where `shell` output past the cut limit is saved: a directory of its own in the session's
+/// scratch root, apart from the MCP results. Built once per session so the budget and the
+/// warning outlive a registry rebuild.
+pub(crate) fn shell_spill(
+    scratch: Option<&Path>,
+    warn: Arc<dyn Fn(&str) + Send + Sync>,
+) -> Option<Arc<ShellSpill>> {
+    scratch.map(|dir| Arc::new(ShellSpill::new(Spill(dir.join("shell-output")), warn)))
 }
 
 /// How long a probe waits for a server to start and list its tools.

@@ -1094,6 +1094,7 @@ fn waiter(rig: &Rig) -> JobOutputTool {
     JobOutputTool {
         jobs: Arc::new(Jobs::new()),
         limit: OutputLimit::default(),
+        spill: None,
         agents: Some(rig.tree.clone() as Arc<dyn AgentWaits>),
         wake: None,
         posix_shell: true,

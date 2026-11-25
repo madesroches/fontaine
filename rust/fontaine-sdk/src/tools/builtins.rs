@@ -23,6 +23,7 @@ use crate::tools::error_chain::chain;
 use crate::tools::gate::{AgentId, ROOT_AGENT};
 use crate::tools::git_bash::{COMMAND_VAR, CWD_FILE_VAR, GitBash, RUN_TRACKED_SCRIPT, sh_command};
 use crate::tools::guarded::{Guard, GuardedTool};
+use crate::tools::jobs::cut::ShellSpill;
 use crate::tools::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
 use crate::tools::jobs::{
     AgentKills, AgentWaits, End, Foreground, JobError, Jobs, Kill, MAX_RUNNING, NoPromote,
@@ -374,6 +375,8 @@ pub struct ShellTool {
     pub scope: Option<Arc<Scope>>,
     /// The gix-based runner for supported read-only git commands.
     pub git_fast_path_runner: Option<GitFastPathRunner>,
+    /// Where output past the cut limit is saved; `None` only cuts it.
+    pub spill: Option<Arc<ShellSpill>>,
 }
 
 impl std::fmt::Debug for ShellTool {
@@ -386,6 +389,7 @@ impl std::fmt::Debug for ShellTool {
             .field("track", &self.track)
             .field("scope", &self.scope)
             .field("git_fast_path_runner", &self.git_fast_path_runner.is_some())
+            .field("spill", &self.spill)
             .finish()
     }
 }
@@ -519,7 +523,7 @@ async fn run_job(
     context: &mut ToolContext,
     (call, agent, max_timeout): (ShellCall, &str, u64),
     promotable: bool,
-    track: Option<&Tracking>,
+    (track, spill): (Option<&Tracking>, Option<&ShellSpill>),
     launch: impl FnOnce(ShellArgs, Option<&Path>) -> Result<Process, ToolExecutionError>,
 ) -> Result<String, ToolExecutionError> {
     let max = max_timeout.max(1);
@@ -562,7 +566,7 @@ async fn run_job(
         ));
     }
     let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
-    let mut rendered = render_foreground(shell, &ran, &id, (timeout, quiet), max)?;
+    let mut rendered = render_foreground(shell, &ran, &id, (timeout, quiet), max, spill)?;
     if let (Some(info), Some(file), Some(track)) = (&ran.end, &cwd_file, track)
         && matches!(info.end, End::Exited(_))
         && let Some(reported) = file.reported()
@@ -596,9 +600,13 @@ fn render_foreground(
     id: &str,
     (timeout, quiet): (Duration, Option<Duration>),
     max: u64,
+    spill: Option<&ShellSpill>,
 ) -> Result<Rendered, ToolExecutionError> {
     let limit = shell.cut.unwrap_or_default();
-    let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
+    let (mut text, fact, failed) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit, spill);
+    if let (Some(spill), Some(error)) = (spill, &failed) {
+        spill.report(error);
+    }
     let silent = ran.chunk.lines.is_empty();
     let status = match &ran.end {
         None => {
@@ -752,7 +760,7 @@ impl Tool for ShellTool {
                     context,
                     (args, &agent, self.max_timeout),
                     true,
-                    track,
+                    (track, self.spill.as_deref()),
                     launch,
                 )
                 .await
@@ -769,7 +777,7 @@ impl Tool for ShellTool {
                     context,
                     (args, &agent, self.max_timeout),
                     false,
-                    track,
+                    (track, self.spill.as_deref()),
                     launch,
                 )
                 .await
@@ -801,6 +809,8 @@ pub struct PowerShellTool {
     pub track: Option<Tracking>,
     /// Whether `shell` is registered; the description points at it only then.
     pub posix_shell: bool,
+    /// As for `shell`.
+    pub spill: Option<Arc<ShellSpill>>,
 }
 
 impl PowerShellTool {
@@ -842,7 +852,14 @@ impl PowerShellTool {
             )
             .map_err(|e| job_error(&e))?;
         let ran = jobs.foreground(&id, timeout, quiet, false).await;
-        let rendered = render_foreground(&self.shell, &ran, &id, (timeout, quiet), max)?;
+        let rendered = render_foreground(
+            &self.shell,
+            &ran,
+            &id,
+            (timeout, quiet),
+            max,
+            self.spill.as_deref(),
+        )?;
         Ok(ShellRun {
             output: rendered.text,
             status: rendered
@@ -939,7 +956,7 @@ impl Tool for PowerShellTool {
                     context,
                     (args, &agent, self.max_timeout),
                     true,
-                    track,
+                    (track, self.spill.as_deref()),
                     launch,
                 )
                 .await
@@ -955,7 +972,7 @@ impl Tool for PowerShellTool {
                     context,
                     (args, &agent, self.max_timeout),
                     false,
-                    track,
+                    (track, self.spill.as_deref()),
                     launch,
                 )
                 .await
@@ -1135,6 +1152,7 @@ pub fn shell_for(root: &Path, settings: &ShellSettings, scope: Arc<Scope>) -> Sh
         track: None,
         scope: Some(scope),
         git_fast_path_runner: None,
+        spill: None,
     }
 }
 
@@ -1162,6 +1180,7 @@ pub fn powershell_for(
         jobs: None,
         track: None,
         posix_shell: settings.posix_shell_available(cfg!(windows)),
+        spill: None,
     }
 }
 
@@ -1203,6 +1222,9 @@ pub struct BuiltinEnv {
     /// The gix-based runner for supported read-only git commands. With none, the shell tool
     /// falls back to normal shell execution for all git invocations.
     pub git_fast_path_runner: Option<GitFastPathRunner>,
+    /// Where `shell`, `powershell` and `job_output` save output they cut; with none it is only
+    /// cut.
+    pub shell_spill: Option<Arc<ShellSpill>>,
 }
 
 pub struct Registered {
@@ -1537,6 +1559,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                     tool.jobs = Some(env.jobs.clone());
                     tool.track = Some(tracking.clone());
                     tool.git_fast_path_runner = env.git_fast_path_runner.clone();
+                    tool.spill = env.shell_spill.clone();
                     tool
                 },
             )
@@ -1548,6 +1571,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             JobOutputTool {
                 jobs: env.jobs.clone(),
                 limit: OutputLimit::default(),
+                spill: env.shell_spill.clone(),
                 agents: env.agent_waits.clone(),
                 wake: env.wait_wake.clone(),
                 posix_shell,
@@ -1559,6 +1583,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             JobCancelTool {
                 jobs: env.jobs.clone(),
                 limit: OutputLimit::default(),
+                spill: env.shell_spill.clone(),
                 agents: env.agent_kills.clone(),
                 posix_shell,
             },
@@ -1615,6 +1640,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                 |root| PowerShellTool {
                     jobs: Some(env.jobs.clone()),
                     track: Some(tracking.clone()),
+                    spill: env.shell_spill.clone(),
                     ..powershell_for(root, &env.shell, interpreter)
                 },
             )
@@ -1680,6 +1706,7 @@ mod tests {
             jobs: None,
             track: None,
             posix_shell: true,
+            spill: None,
         };
         assert!(tool.description().contains("the lines with errors"));
         let uncut = PowerShellTool {

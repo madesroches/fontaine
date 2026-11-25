@@ -291,7 +291,13 @@ given (the primary root at the start).
   runs for its text. A command that prints more than 64 MB is killed.
   `run_in_background` starts the command as a job without waiting.
 - **Output.** Past 2,000 lines or 50 KB the result keeps the first and last lines and the lines
-  with errors or failures from between.
+  with errors or failures from between. The output the call retained (escape sequences removed,
+  secrets redacted) is saved to a file in the session scratch directory (`shell-output/`), and the
+  first line of the result names it, so `read` or `grep` can reach what was cut. A command that
+  printed more than the 1 MiB a job keeps is saved as its tail only, and the first line says how
+  many lines were dropped before the file. Saved output counts against a 128 MiB budget per
+  session; past it, or when the file cannot be written, the result is only cut and a warning says
+  so. The files go when the session ends. `job_output` and `job_cancel` save what they cut the same way.
 - **Environment.** The child process does not inherit the telemetry credentials (every
   `MICROMEGAS_*` variable, `OTEL_EXPORTER_OTLP_HEADERS` and `[telemetry] api_key_env`), the API key
   variable of any configured account (`[accounts.*] api_key_env`) or the guardian scanner's token
