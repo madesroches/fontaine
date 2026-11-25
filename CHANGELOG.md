@@ -9,7 +9,7 @@ All notable changes are recorded here. The format follows
 ### Added
 
 - Oversized `shell` output is saved (#161): when a foreground `shell` or `powershell` call, or a
-  `job_output` read, is cut, the retained output is written to `shell-output/` in the session
+  `job_output` or `job_cancel` read, is cut, the retained output is written to `shell-output/` in the session
   scratch directory and the first line of the result names the file (the summarizer keeps only the
   start of a tool result). Output past the 1 MiB a job keeps is saved as its tail, and the line says
   how many lines were dropped. A session saves at most 128 MiB; past it, or on a write error, the

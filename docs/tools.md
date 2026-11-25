@@ -297,7 +297,7 @@ given (the primary root at the start).
   printed more than the 1 MiB a job keeps is saved as its tail only, and the first line says how
   many lines were dropped before the file. Saved output counts against a 128 MiB budget per
   session; past it, or when the file cannot be written, the result is only cut and a warning says
-  so. The files go when the session ends. `job_output` saves what it cuts the same way.
+  so. The files go when the session ends. `job_output` and `job_cancel` save what they cut the same way.
 - **Environment.** The child process does not inherit the telemetry credentials (every
   `MICROMEGAS_*` variable, `OTEL_EXPORTER_OTLP_HEADERS` and `[telemetry] api_key_env`), the API key
   variable of any configured account (`[accounts.*] api_key_env`) or the guardian scanner's token

@@ -313,6 +313,8 @@ fn the_shell_is_confined_clamped_and_cut() {
 mod unix {
     use super::*;
     use common::{call, text};
+    use fontaine_sdk::tools::jobs::cut::ShellSpill;
+    use rig_tools::Spill;
     use serde_json::json;
 
     #[tokio::test]
@@ -369,6 +371,34 @@ mod unix {
             rendered.lines().count()
         );
         assert!(rendered.contains("20000"), "the last lines are kept");
+    }
+
+    #[tokio::test]
+    async fn the_session_spill_reaches_the_shell_tool() {
+        let d = Dirs::new();
+        let spill_dir = d.dir("scratch").join("shell-output");
+        let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+        env.shell_spill = Some(Arc::new(ShellSpill::new(
+            Spill(spill_dir.clone()),
+            Arc::new(|message| panic!("unexpected warning: {message}")),
+        )));
+        let tools = registry(&env);
+        let out = call(&tools, "shell", json!({"command": "seq 3000"}))
+            .await
+            .unwrap();
+        let rendered = text(&out);
+        let first = rendered.lines().next().unwrap();
+        let saved = std::fs::read_dir(&spill_dir)
+            .expect("the spill directory is created")
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(saved.len(), 1, "{first}");
+        let path = saved[0].to_str().unwrap();
+        assert!(first.contains(path), "{first}");
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.starts_with("1\n"), "{first}");
+        assert!(contents.ends_with("2999\n3000\n"), "{first}");
+        assert_eq!(contents.lines().count(), 3000);
     }
 
     fn through_the_environment(d: &Dirs) -> Vec<builtins::Registered> {
