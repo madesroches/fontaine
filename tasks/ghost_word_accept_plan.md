@@ -60,9 +60,9 @@ struct SuggestionRest { anchor: String, rest: String }
 ```
 
 - The first word-accept on a suggestion takes `suggestion` (counted as used: back-off reset, exactly as a full accept), inserts the word, and stores `SuggestionRest { anchor: <input text after insert>, rest }` when `rest` is non-empty.
-- `ghost_text`: when `ghost_allowed()`, `suggestion_rest` is `Some`, `input.text() == anchor` and the cursor is at the end, return `rest`. This check comes before the history-completion branch, so the suggestion's remainder outranks history.
+- `ghost_text`: when `ghost_allowed()`, `suggestion_rest` is `Some`, `input.text() == anchor` and the cursor is at the end, return `rest`. This check goes right after the empty-input suggestion return and before the `if !self.history_completion { return None; }` gate (~779-790), so the suggestion's remainder outranks history and `history_completion = false` does not hide it.
 - Word-accept and Tab/Right on a `rest` ghost work the same as on any ghost. A further word-accept moves `anchor` forward. A full accept clears `suggestion_rest`.
-- Any other edit changes the text, so the anchor no longer matches and the rest disappears without counting as unused (the suggestion was already used). Clear `suggestion_rest` in `refresh_slash` when `input.text() != anchor`, alongside its `ghost_dismissed` clear (`ghost_text` takes `&self` and cannot mutate), and also in `reset_suggestions`, when a turn starts (`set_running(true)`) and on submit, so a stale rest can never revive.
+- Any other edit changes the text, so the anchor no longer matches and the rest disappears without counting as unused (the suggestion was already used). Clear `suggestion_rest` in `refresh_slash` when `input.text() != anchor`, alongside its `ghost_dismissed` clear (`ghost_text` takes `&self` and cannot mutate), and also in `reset_suggestions` and when a turn starts (`set_running(true)`), so a stale rest can never revive.
 - Esc while a `rest` ghost is showing clears `suggestion_rest` and returns `Action::None`, mirroring Esc on a suggestion. Add this to the Esc block in `handle_key` (~1914) next to the empty-input suggestion case.
 
 ### Code shape
@@ -80,9 +80,9 @@ fn ghost_accept_kind(&self, key: KeyEvent) -> Option<GhostAccept>
 ## Implementation Steps
 
 1. `input.rs`: factor the word-skip into a helper over `&[char]`, add `pub fn next_word_len(text: &str) -> usize`, and keep `word_end_after` behavior identical.
-2. `app.rs`: add the `SuggestionRest` struct and the `suggestion_rest` field (initialized `None`). Add `GhostAccept` / `ghost_accept_kind`, extend `accept_ghost`, add the rest branch in `ghost_text`, add Esc handling, and clear the rest in `reset_suggestions`, in `set_running(true)` and on submit.
+2. `app.rs`: add the `SuggestionRest` struct and the `suggestion_rest` field (initialized `None`). Add `GhostAccept` / `ghost_accept_kind`, extend `accept_ghost`, add the rest branch in `ghost_text`, add Esc handling, clear `suggestion_rest` in `refresh_slash` when the input text differs from `anchor` (next to the `ghost_dismissed` clear), and clear the rest in `reset_suggestions` and in `set_running(true)`.
 3. Tests (see Testing Strategy). Replace `modified_arrows_and_mapped_keys_do_not_accept` with a test that Shift-Right still does not accept, Ctrl/Alt-Right accept one word, and a mapped Ctrl-Right does not.
-4. Docs (see Documentation).
+4. Docs (see Documentation), and a `CHANGELOG.md` `[Unreleased]` → `Added` line for #788.
 5. Master plan: append a dated line at the end of the `### TUI` Decisions subsection of `tasks/fontaine_harness_plan.md`. It records the deviation: Claude Code documents no partial accept of a prompt suggestion; Fontaine accepts one word with Ctrl/Alt-Right and Alt-F, following fish.
 
 ## Files to Modify
@@ -90,6 +90,7 @@ fn ghost_accept_kind(&self, key: KeyEvent) -> Option<GhostAccept>
 - `rust/fontaine-tui/src/input.rs`
 - `rust/fontaine-tui/src/app.rs`
 - `docs/tui.md`
+- `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions, TUI)
 
 ## Trade-offs
@@ -110,13 +111,13 @@ Unit tests in `app.rs`'s `ghost` module and `input.rs`, no live services:
 
 - `next_word_len`: `" the parser"` → 4, `"arser"` → 5, `"..."` → 3, `"src/foo"` → 3, `""` → 0. Also an existing `word_right` test still passes, which shows the factoring preserved behavior.
 - History completion: type `"fix"` with history `"fix the parser"`. Ctrl-Right gives input `"fix the"` and ghost `" parser"`. Alt-F then gives `"fix the parser"` and no ghost.
-- Suggestion: `"run the tests"`, with `unused_suggestions = 2`. Alt-Right gives input `"run"`, ghost `" the tests"`, `suggestion` `None` and `unused_suggestions == 0`. Ctrl-Right gives `"run the"`. Tab gives `"run the tests"`, then Enter submits it.
+- Suggestion: `"run the tests"`, with `unused_suggestions = 2`. Alt-Right gives input `"run"`, ghost `" the tests"`, `suggestion` `None` and `unused_suggestions == 0`. Ctrl-Right gives `"run the"`. Tab gives `"run the tests"`, then Enter submits it. Also run the word accept with `history_completion = false`: the rest still shows.
 - Suggestion rest dies on edit: after a word accept, typing `"x"` sets `suggestion_rest` to `None`, no ghost comes back after Backspace, and `unused_suggestions` stays 0.
 - Esc on a rest ghost: `suggestion_rest` is `None` and `ghost_text()` is `None` afterwards.
 - A turn start clears the rest.
 - Shift-Right does not accept. A keymap-bound Ctrl-Right does not accept (resolve a keymap with `ctrl+right`, as `a_bound_ctrl_alt_chord_still_fires_with_the_list_focused` does for its chord).
 - With no ghost, Ctrl-Right in the middle of text still moves by word (regression guard for the fall-through).
-- Vim Insert: Ctrl-Right accepts a word. Vim Normal: no ghost, so nothing is accepted.
+- Vim Insert: add a Ctrl-Right accept case to the existing `vim_normal_mode_neither_shows_nor_accepts_and_insert_does`.
 
 ## Open Questions
 
