@@ -207,7 +207,7 @@ nothing is written.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Updated, or already up to date |
-| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release pointer names a build on the release channel, or the release has no archive for this platform) |
+| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, or the release has no archive for this platform) |
 | 2 | The configuration could not be loaded |
 | 3 | This install cannot update itself |
 | 4 | The release pointer (`latest.json` or `latest-dev.json`), or the download, could not be fetched or is invalid; retrying may help |
