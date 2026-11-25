@@ -348,7 +348,9 @@ mod unix {
         .await
         .unwrap();
         assert!(
-            text(&out).contains("still running after 1s; moved to background job"),
+            text(&out).contains(
+                "still running after 1s, not an error: the command moved to background job"
+            ),
             "{}",
             text(&out)
         );

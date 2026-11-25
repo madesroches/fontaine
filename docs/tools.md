@@ -362,7 +362,9 @@ and macOS it never is. Without Git Bash, finding none is a startup error.
 Every `shell` call of the main conversation runs as a job. One that ends within its timeout
 returns exactly what a plain command returns and leaves nothing behind. One still running at its
 timeout is not stopped: the call returns the output so far and the id of the job, such as
-`job-3f2a`, and the command keeps running. `run_in_background: true` skips the wait and returns the
+`job-3f2a`, and the command keeps running. That is the normal outcome, not a failure: the result
+says so and tells the model to wait with `job_output`, since cancelling throws away the work done
+so far. `run_in_background: true` skips the wait and returns the
 id at once, which is how to start a server or a long build. Keep the command's process in the
 foreground of the command line (`npm start`, not `npm start &`): once the shell exits, what it left
 running is killed as soon as the shell exits, so `server &` dies with its shell. The terminal UI's
