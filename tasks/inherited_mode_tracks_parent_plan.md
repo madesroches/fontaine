@@ -74,10 +74,9 @@ is `Posture::child(setting.ceiling(), parent_posture).mode`.
   doc comment to say an `inherit` child follows its parent both ways and an explicit mode is a
   ceiling.
 - `rebuild` stores `agent_type.mode.ceiling()` (no parent posture needed).
-- `revival_request` sets `RevivalRequest::mode` to the child's current posture,
-  computed from the node's ceiling and `parent_posture(parent)` — the same "starts with" meaning
-  as `SpawnRequest::mode`. Compute the parent posture outside the tree lock (`posture` takes the
-  lock itself).
+- `revival_request` sets `RevivalRequest::mode` to `self.posture(id).mode`, computed before
+  taking the tree lock (`posture` takes the lock itself) — the same "starts with" meaning as
+  `SpawnRequest::mode`.
 
 `agents/spawn.rs`: pass `agent_type.mode.ceiling()` to `reserve_named`, and
 `SpawnRequest::mode = Posture::child(ceiling, self.tree.parent_posture(&caller)).mode`, so the
@@ -97,7 +96,8 @@ Ladder::Manual`; `posture` never reads the root's node value, so this is cosmeti
    `child(Manual.ceiling(), DontAsk) == DontAsk`, then `child(…, Auto) == Manual`;
    `DontAsk` stays `DontAsk` under any parent.
 2. `agents/tree.rs`: rename the field and parameters, update `posture` / `rebuild` /
-   `revival_request` as above, fix the imports.
+   `revival_request` as above, fix the imports, and reword the `rebuild` doc comment (~1308): the
+   node keeps its type's ceiling and its posture is derived from the parent's on every call.
 3. `agents/spawn.rs`: use `ceiling()` and compute the start mode as above.
 4. `agents/runner.rs`: doc comment on `SpawnRequest::mode`.
 5. Tests (see Testing Strategy).
@@ -140,7 +140,9 @@ Ladder::Manual`; `posture` never reads the root's node value, so this is cosmeti
   end: `- 2026-11-25: (#790) A subagent's mode is the tighter of its type's ceiling (inherit = no
   cap, manual, dontAsk) and its parent's current posture, recomputed on every call; inherit no
   longer snapshots the parent's mode at spawn. Reason: loosening the session must reach running
-  inherit children, as in Claude Code, and the child is still never looser than its parent.`
+  inherit children (restores the Phase 5 design intent that an inherited mode is re-evaluated
+  against the parent's current mode on every call), and the child is still never looser than its
+  parent.`
 - `CHANGELOG.md` is handled by the PR step.
 
 ## Testing Strategy
@@ -155,13 +157,10 @@ All unit/integration tests, no live services.
   raise (the chain fold). Add a `Manual` ceiling child: root `DontAsk` → `DontAsk`, root `Auto` →
   `Manual`.
 - `tests/seam.rs` — regression test pinning the reported bug end to end through the `agent`
-  tool: a rig whose root mode reads a shared cell starting at `AcceptEdits`; spawn `worker`
-  (`inherit`); assert `spawned()[0].mode == AcceptEdits`; raise the cell to `Auto`; assert
+  tool: a rig built with `rig_with(..., Ladder::AcceptEdits)`; spawn `worker`
+  (`inherit`); assert `spawned()[0].mode == AcceptEdits`; raise the root with `rig.tree.set_root_mode(|| Ladder::Auto)`; assert
   `tree.posture(child).mode == Auto`. Named after the bug (raising the session reaches a running
-  inherit subagent). `rig_with` takes a fixed `Ladder`; add a variant (or change it) that takes
-  the mode source so the cell can change. Existing seam assertions on `spawned()[..].mode`
+  inherit subagent). Existing seam assertions on `spawned()[..].mode`
   (`Auto`, `DontAsk`, `Manual`) must keep passing unchanged.
-- A revival test, if one already asserts `RevivalRequest::mode` (`tests/agent_resume.rs`), keeps
-  passing; no new one is needed since the value is informational.
 
 ## Open Questions
