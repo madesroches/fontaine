@@ -3,8 +3,9 @@
 //! deep-link text of the intent that started the activity.
 
 use android_activity::AndroidApp;
-use jni::JavaVM;
-use jni::objects::{JObject, JString, JValue};
+use jni::objects::{JObject, JObjectArray, JString, JValue};
+use jni::strings::JNIString;
+use jni::{Env, JavaVM, jni_sig, jni_str};
 
 const CAMERA: &str = "android.permission.CAMERA";
 const GRANTED: i32 = 0;
@@ -12,24 +13,20 @@ const GRANTED: i32 = 0;
 /// Runs `body` on a thread attached to the VM, with the activity object.
 pub(super) fn with_activity<T>(
     app: &AndroidApp,
-    body: impl FnOnce(&mut jni::JNIEnv<'_>, &JObject<'_>) -> jni::errors::Result<T>,
+    body: impl FnOnce(&mut Env<'_>, &JObject<'_>) -> jni::errors::Result<T>,
 ) -> Option<T> {
-    // SAFETY: android-activity hands out the process's JavaVM and the activity's global
-    // reference, both of which stay valid for the life of the activity.
-    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
-    let mut env = vm.attach_current_thread().ok()?;
-    // SAFETY: `activity_as_ptr` is a live global reference to the activity.
-    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
-    // The frame frees the local references `body` makes: a thread attached from native code never
-    // returns to Java, so nothing else would release them.
-    match env.with_local_frame(16, |env| body(env, &activity)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            // A pending Java exception must be cleared or the next JNI call aborts the process.
-            let _ = env.exception_clear();
-            None
-        }
-    }
+    // SAFETY: android-activity hands out the process's JavaVM, which stays valid for the life of
+    // the activity.
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    // The attachment pushes a frame that frees the local references `body` makes, and clears a
+    // pending Java exception on failure: a thread attached from native code never returns to
+    // Java, so nothing else would release either.
+    vm.attach_current_thread(|env| {
+        // SAFETY: `activity_as_ptr` is a live global reference to the activity.
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        body(env, &activity)
+    })
+    .ok()
 }
 
 pub fn camera_granted(app: &AndroidApp) -> bool {
@@ -37,8 +34,8 @@ pub fn camera_granted(app: &AndroidApp) -> bool {
         let permission = env.new_string(CAMERA)?;
         env.call_method(
             activity,
-            "checkSelfPermission",
-            "(Ljava/lang/String;)I",
+            jni_str!("checkSelfPermission"),
+            jni_sig!("(Ljava/lang/String;)I"),
             &[JValue::Object(&permission)],
         )?
         .i()
@@ -49,11 +46,11 @@ pub fn camera_granted(app: &AndroidApp) -> bool {
 pub fn request_camera(app: &AndroidApp) {
     with_activity(app, |env, activity| {
         let permission = env.new_string(CAMERA)?;
-        let array = env.new_object_array(1, "java/lang/String", &permission)?;
+        let array = JObjectArray::<JString>::new(env, 1, &permission)?;
         env.call_method(
             activity,
-            "requestPermissions",
-            "([Ljava/lang/String;I)V",
+            jni_str!("requestPermissions"),
+            jni_sig!("([Ljava/lang/String;I)V"),
             &[JValue::Object(&array), JValue::Int(1)],
         )?;
         Ok(())
@@ -64,9 +61,13 @@ pub fn request_camera(app: &AndroidApp) {
 pub fn device_model(app: &AndroidApp) -> String {
     with_activity(app, |env, _| {
         let value = env
-            .get_static_field("android/os/Build", "MODEL", "Ljava/lang/String;")?
+            .get_static_field(
+                jni_str!("android/os/Build"),
+                jni_str!("MODEL"),
+                jni_sig!("Ljava/lang/String;"),
+            )?
             .l()?;
-        let text: String = env.get_string(&JString::from(value))?.into();
+        let text = JString::cast_local(env, value)?.try_to_string(env)?;
         Ok(text)
     })
     .filter(|model| !model.trim().is_empty())
@@ -81,8 +82,8 @@ pub fn clipboard_text(app: &AndroidApp) -> Option<String> {
         let manager = env
             .call_method(
                 activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
+                jni_str!("getSystemService"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
                 &[JValue::Object(&name)],
             )?
             .l()?;
@@ -92,36 +93,48 @@ pub fn clipboard_text(app: &AndroidApp) -> Option<String> {
         let clip = env
             .call_method(
                 &manager,
-                "getPrimaryClip",
-                "()Landroid/content/ClipData;",
+                jni_str!("getPrimaryClip"),
+                jni_sig!("()Landroid/content/ClipData;"),
                 &[],
             )?
             .l()?;
         if clip.is_null() {
             return Ok(None);
         }
-        let count = env.call_method(&clip, "getItemCount", "()I", &[])?.i()?;
+        let count = env
+            .call_method(&clip, jni_str!("getItemCount"), jni_sig!("()I"), &[])?
+            .i()?;
         if count < 1 {
             return Ok(None);
         }
         let item = env
             .call_method(
                 &clip,
-                "getItemAt",
-                "(I)Landroid/content/ClipData$Item;",
+                jni_str!("getItemAt"),
+                jni_sig!("(I)Landroid/content/ClipData$Item;"),
                 &[JValue::Int(0)],
             )?
             .l()?;
         let text = env
-            .call_method(&item, "getText", "()Ljava/lang/CharSequence;", &[])?
+            .call_method(
+                &item,
+                jni_str!("getText"),
+                jni_sig!("()Ljava/lang/CharSequence;"),
+                &[],
+            )?
             .l()?;
         if text.is_null() {
             return Ok(None);
         }
         let text = env
-            .call_method(&text, "toString", "()Ljava/lang/String;", &[])?
+            .call_method(
+                &text,
+                jni_str!("toString"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
             .l()?;
-        let text: String = env.get_string(&JString::from(text))?.into();
+        let text = JString::cast_local(env, text)?.try_to_string(env)?;
         Ok(Some(text))
     })
     .flatten()
@@ -135,8 +148,8 @@ pub fn set_clipboard_text(app: &AndroidApp, text: &str) -> Option<()> {
         let manager = env
             .call_method(
                 activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
+                jni_str!("getSystemService"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
                 &[JValue::Object(&name)],
             )?
             .l()?;
@@ -147,16 +160,18 @@ pub fn set_clipboard_text(app: &AndroidApp, text: &str) -> Option<()> {
         let body = env.new_string(text)?;
         let clip = env
             .call_static_method(
-                "android/content/ClipData",
-                "newPlainText",
-                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                jni_str!("android/content/ClipData"),
+                jni_str!("newPlainText"),
+                jni_sig!(
+                    "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;"
+                ),
                 &[JValue::Object(&label), JValue::Object(&body)],
             )?
             .l()?;
         env.call_method(
             &manager,
-            "setPrimaryClip",
-            "(Landroid/content/ClipData;)V",
+            jni_str!("setPrimaryClip"),
+            jni_sig!("(Landroid/content/ClipData;)V"),
             &[JValue::Object(&clip)],
         )?;
         Ok(true)
@@ -169,18 +184,28 @@ pub fn set_clipboard_text(app: &AndroidApp, text: &str) -> Option<()> {
 pub fn intent_link(app: &AndroidApp) -> Option<String> {
     with_activity(app, |env, activity| {
         let intent = env
-            .call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?
+            .call_method(
+                activity,
+                jni_str!("getIntent"),
+                jni_sig!("()Landroid/content/Intent;"),
+                &[],
+            )?
             .l()?;
         if intent.is_null() {
             return Ok(None);
         }
         let data = env
-            .call_method(&intent, "getDataString", "()Ljava/lang/String;", &[])?
+            .call_method(
+                &intent,
+                jni_str!("getDataString"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
             .l()?;
         if data.is_null() {
             return Ok(None);
         }
-        let text: String = env.get_string(&JString::from(data))?.into();
+        let text = JString::cast_local(env, data)?.try_to_string(env)?;
         Ok(Some(text))
     })
     .flatten()
@@ -193,20 +218,21 @@ pub fn display_rotation(app: &AndroidApp) -> Option<i32> {
         let manager = env
             .call_method(
                 activity,
-                "getWindowManager",
-                "()Landroid/view/WindowManager;",
+                jni_str!("getWindowManager"),
+                jni_sig!("()Landroid/view/WindowManager;"),
                 &[],
             )?
             .l()?;
         let display = env
             .call_method(
                 &manager,
-                "getDefaultDisplay",
-                "()Landroid/view/Display;",
+                jni_str!("getDefaultDisplay"),
+                jni_sig!("()Landroid/view/Display;"),
                 &[],
             )?
             .l()?;
-        env.call_method(&display, "getRotation", "()I", &[])?.i()
+        env.call_method(&display, jni_str!("getRotation"), jni_sig!("()I"), &[])?
+            .i()
     })
 }
 
@@ -228,16 +254,26 @@ pub fn system_insets(app: &AndroidApp) -> Option<RawInsets> {
     let modern = AndroidApp::sdk_version() >= 30;
     with_activity(app, |env, activity| {
         let window = env
-            .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
+            .call_method(
+                activity,
+                jni_str!("getWindow"),
+                jni_sig!("()Landroid/view/Window;"),
+                &[],
+            )?
             .l()?;
         let decor = env
-            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?
+            .call_method(
+                &window,
+                jni_str!("getDecorView"),
+                jni_sig!("()Landroid/view/View;"),
+                &[],
+            )?
             .l()?;
         let insets = env
             .call_method(
                 &decor,
-                "getRootWindowInsets",
-                "()Landroid/view/WindowInsets;",
+                jni_str!("getRootWindowInsets"),
+                jni_sig!("()Landroid/view/WindowInsets;"),
                 &[],
             )?
             .l()?;
@@ -248,18 +284,26 @@ pub fn system_insets(app: &AndroidApp) -> Option<RawInsets> {
             let mut mask = 0;
             for kind in ["systemBars", "displayCutout", "ime"] {
                 mask |= env
-                    .call_static_method("android/view/WindowInsets$Type", kind, "()I", &[])?
+                    .call_static_method(
+                        jni_str!("android/view/WindowInsets$Type"),
+                        JNIString::new(kind),
+                        jni_sig!("()I"),
+                        &[],
+                    )?
                     .i()?;
             }
             let found = env
                 .call_method(
                     &insets,
-                    "getInsets",
-                    "(I)Landroid/graphics/Insets;",
+                    jni_str!("getInsets"),
+                    jni_sig!("(I)Landroid/graphics/Insets;"),
                     &[JValue::Int(mask)],
                 )?
                 .l()?;
-            let mut edge = |name: &str| env.get_field(&found, name, "I")?.i();
+            let mut edge = |name: &str| {
+                env.get_field(&found, JNIString::new(name), jni_sig!("I"))?
+                    .i()
+            };
             Ok(Some(RawInsets {
                 top: edge("top")?,
                 left: edge("left")?,
@@ -268,7 +312,10 @@ pub fn system_insets(app: &AndroidApp) -> Option<RawInsets> {
                 includes_keyboard: true,
             }))
         } else {
-            let mut edge = |name: &str| env.call_method(&insets, name, "()I", &[])?.i();
+            let mut edge = |name: &str| {
+                env.call_method(&insets, JNIString::new(name), jni_sig!("()I"), &[])?
+                    .i()
+            };
             Ok(Some(RawInsets {
                 top: edge("getSystemWindowInsetTop")?,
                 left: edge("getSystemWindowInsetLeft")?,

@@ -5,9 +5,9 @@
 use std::sync::Mutex;
 
 use android_activity::AndroidApp;
-use jni::JNIEnv;
 use jni::objects::{JClass, JString, JValue};
 use jni::sys::jint;
+use jni::{EnvUnowned, jni_sig, jni_str};
 
 use super::jni_bridge::with_activity;
 use crate::ime::{ImeState, Pending};
@@ -32,7 +32,7 @@ fn units(at: jint) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_fontaine_remote_FontaineActivity_nativeImeState(
-    mut env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     text: JString,
     sel_start: jint,
@@ -41,11 +41,22 @@ pub extern "system" fn Java_dev_fontaine_remote_FontaineActivity_nativeImeState(
     comp_end: jint,
     generation: jint,
 ) {
-    let text: String = match env.get_string(&text) {
-        Ok(text) => text.into(),
-        Err(e) => {
+    let text = match env
+        .with_env(|env| {
+            text.try_to_string(env).inspect_err(|_| {
+                // A pending Java exception must be cleared or the next JNI call aborts the process.
+                env.exception_clear();
+            })
+        })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(text) => text,
+        jni::Outcome::Err(e) => {
             log::warn!("cannot read the keyboard's text: {e}");
-            let _ = env.exception_clear();
+            return;
+        }
+        jni::Outcome::Panic(_) => {
+            log::warn!("panic while reading the keyboard's text");
             return;
         }
     };
@@ -61,7 +72,7 @@ pub extern "system" fn Java_dev_fontaine_remote_FontaineActivity_nativeImeState(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_fontaine_remote_FontaineActivity_nativeImeSubmit(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
 ) {
     pending().set_submit();
@@ -77,8 +88,8 @@ pub fn set_state(app: &AndroidApp, state: &ImeState, generation: u32, wholesale:
             .map_or((-1, -1), |(start, end)| (start as jint, end as jint));
         env.call_method(
             activity,
-            "setImeState",
-            "(Ljava/lang/String;IIIIIZ)V",
+            jni_str!("setImeState"),
+            jni_sig!("(Ljava/lang/String;IIIIIZ)V"),
             &[
                 JValue::Object(&text),
                 JValue::Int(state.sel.0 as jint),
@@ -86,7 +97,7 @@ pub fn set_state(app: &AndroidApp, state: &ImeState, generation: u32, wholesale:
                 JValue::Int(comp_start),
                 JValue::Int(comp_end),
                 JValue::Int(generation as jint),
-                JValue::Bool(wholesale.into()),
+                JValue::Bool(wholesale),
             ],
         )?;
         Ok(())
@@ -96,14 +107,14 @@ pub fn set_state(app: &AndroidApp, state: &ImeState, generation: u32, wholesale:
 
 pub fn show(app: &AndroidApp) {
     with_activity(app, |env, activity| {
-        env.call_method(activity, "showKeyboard", "()V", &[])?;
+        env.call_method(activity, jni_str!("showKeyboard"), jni_sig!("()V"), &[])?;
         Ok(())
     });
 }
 
 pub fn hide(app: &AndroidApp) {
     with_activity(app, |env, activity| {
-        env.call_method(activity, "hideKeyboard", "()V", &[])?;
+        env.call_method(activity, jni_str!("hideKeyboard"), jni_sig!("()V"), &[])?;
         Ok(())
     });
 }
