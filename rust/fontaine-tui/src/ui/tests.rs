@@ -1127,6 +1127,30 @@ async fn a_failed_pause_does_not_outlive_the_turn_that_met_it() {
 }
 
 #[tokio::test]
+async fn an_afk_stopped_expansion_does_not_leave_its_skill_text_for_the_next_turn() {
+    use fontaine_sdk::core::ledger::MessageOrigin;
+    use fontaine_sdk::guardian::InvokedSkill;
+    let (mut runtime, tmp) = runtime();
+    let mut ui = ui(unbounded_channel().1);
+    runtime.state.note_invoked_skill(
+        ROOT_AGENT,
+        InvokedSkill {
+            name: "ship".into(),
+            text: "push it".into(),
+        },
+    );
+    assert!(runtime.state.afk_stop(1.0, 0.5, Vec::new()));
+    let pending = VecDeque::from(vec![Submission::Expanded {
+        text: "/ship".into(),
+        prompt: "push it".into(),
+    }]);
+    let _ = ui
+        .converse(&mut runtime, tmp.path(), pending, MessageOrigin::Other)
+        .await;
+    assert!(runtime.state.invoked_skill(ROOT_AGENT).is_none());
+}
+
+#[tokio::test]
 async fn a_quit_latches_once_drops_what_was_pending_and_arms_the_exit_clock() {
     let (mut runtime, _tmp) = runtime();
     let (input_tx, input_rx) = unbounded_channel();
