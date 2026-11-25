@@ -13,7 +13,12 @@ When dimmed ghost text is shown in the input box (a prompt suggestion or a histo
 - `App::handle_input` (~1395) dismisses the suggestion (counting it unused) whenever the input is non-empty after any input. A suggestion therefore survives only in an empty input.
 - `InputBuffer::word_end_after` (`input.rs` ~292) defines a word as alphanumeric runs: skip separators, then skip word chars. This matches Claude Code's documented Alt+F boundaries ("a run of letters and digits").
 - Test `modified_arrows_and_mapped_keys_do_not_accept` (`app.rs` ~5405) asserts that Ctrl/Alt/Shift-Right do not accept anything.
-- Claude Code (interactive-mode docs, "Prompt suggestions"): Tab or Right places the whole suggestion, and typing dismisses it. Nothing is documented for accepting part of it, and Alt+F only moves the cursor. Fontaine's history completion is already a deviation from Claude Code (plan Decisions, TUI, 2026-11-13 #620).
+- Claude Code (researched 2026-11-25, v2.1.330):
+  - Interactive-mode docs, "Prompt suggestions": Tab or Right places the whole suggestion, and typing dismisses it.
+  - The keybindings reference has no action for accepting part of a suggestion, and Alt+F only moves the cursor.
+  - Word-at-a-time acceptance exists only as an open feature request (anthropics/claude-code#25877), which proposes plain Right for it. That conflicts with the shipped full-accept Right.
+  - In the CLI bundle, sending counts the suggestion as accepted only when the sent text equals it.
+  - So Claude Code has no partial accept. Fontaine's history completion is already a deviation (plan Decisions, TUI, 2026-11-13 #620).
 
 ## Design
 
