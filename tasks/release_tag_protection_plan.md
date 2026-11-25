@@ -26,11 +26,11 @@ is not on `main`.
    or more of the preceding character", so it matches the `v`-prefixed SemVer family dist
    accepts, such as `v0.1.0-rc.1`). Update the adjacent dist comment, which lists unprefixed
    example tags, to say only `v`-prefixed tags run.
-2. **Reachability gate.** New step in `plan`, run only for tag pushes, after checkout:
-   `git fetch --no-tags origin main` then
+2. **Reachability gate.** New step in `plan`, `if: ${{ !github.event.pull_request }}`, after checkout:
    `git merge-base --is-ancestor "$GITHUB_SHA" origin/main`, failing with an `::error::` that
-   names the tag. Checkout is shallow, so ancestry needs history: the `plan` checkout gets
-   `fetch-depth: 0`, which already fetches `main`, making the extra fetch unnecessary.
+   names the tag. Ancestry needs history, so the `plan` checkout gets `fetch-depth: 0` (which
+   also applies to PR runs; accepted). No separate fetch: the checkout already creates
+   `origin/main` and `persist-credentials: false` leaves no credentials for one.
 3. **Ruleset.** Commit `.github/rulesets/release-tags.json`, a GitHub ruleset export:
    `target: tag`, `enforcement: active`, include `refs/tags/v*`, rules `creation`, `update`,
    `deletion`, and `bypass_actors` for the repository admin role only (so the maintainer can
@@ -59,7 +59,7 @@ is not on `main`.
   tags, so the workflow checks it.
 
 ## Decisions
-(none yet)
+- AFK: the ruleset's bypass actor is the repository admin role, the conservative choice that keeps the maintainer able to tag and delete a failed release's tag.
 
 ## Documentation
 `CONTRIBUTING.md` Releasing and environments sections, as above.
@@ -73,7 +73,3 @@ and off the main branch.
 ## Manual Verification
 After the maintainer applies the ruleset: `git push origin :refs/tags/v0.0.0-test` on a throwaway
 tag by a non-admin is rejected. Not automatable: needs a second account and live repo settings.
-
-## Open Questions
-- Should the bypass actor be the admin role or only the maintainer's user? Admin role is the only
-  actor type usable by a personal-repo ruleset via API without a user id.
