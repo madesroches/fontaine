@@ -92,11 +92,15 @@ async fn a_command_past_its_timeout_is_handed_back_with_its_output_and_reports_i
     .unwrap();
     let shown = text(&out);
     assert!(
-        shown.starts_with("start\n[still running after 1s; moved to background job job-"),
+        shown.starts_with(
+            "start\n[still running after 1s, not an error: the command moved to background job job-"
+        ),
         "{shown}"
     );
     assert!(
-        shown.contains("job_output") && shown.contains("job_cancel"),
+        shown.contains("keeps running")
+            && shown.contains("Wait for it with job_output")
+            && shown.contains("job_cancel throws away"),
         "{shown}"
     );
     let id = job_id(&shown);

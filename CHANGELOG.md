@@ -238,6 +238,11 @@ All notable changes are recorded here. The format follows
   grouped by minor and patch, leaving the exact-pinned `rig-*` crates alone. A `ci.yml` step runs
   `.github/scripts/check-pinned-actions.sh`, which fails on any unpinned `uses:` (#760).
 
+- The note a `shell` or `powershell` call ends with when it moves to a background job at its
+  timeout or idle limit now says it is not an error, that the command keeps running, and that
+  waiting with `job_output` is the default; `job_cancel` is named as throwing away the work done.
+  The tool descriptions say a timeout does not stop the command (#792).
+
 ### Fixed
 
 - `fontaine update` on the dev channel no longer fails with a bare `403 Forbidden` when GitHub's

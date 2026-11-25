@@ -615,9 +615,10 @@ fn render_foreground(
                 _ => format!("still running after {}s", timeout.as_secs()),
             };
             text.push_str(&format!(
-                "[{why}; moved to background job {id}. Its output so far is above. Use \
-                 job_output to read more or wait for it, job_cancel to stop it. You are \
-                 told when it ends.]"
+                "[{why}, not an error: the command moved to background job {id} and keeps \
+                 running. Its output so far is above. Wait for it with job_output \
+                 (wait_secs); you are told when it ends. job_cancel throws away the work \
+                 done so far.]"
             ));
             None
         }
@@ -707,8 +708,8 @@ impl Tool for ShellTool {
             "Run a shell command with `sh -c` in the current directory, or in cwd. stdin is \
              empty. Returns the exit code and stdout and stderr interleaved line by line{kept}. \
              A command still running at timeout_secs (default {}, at most {max}), or, with the \
-             default, once it printed nothing for {}s, keeps running as a background job and \
-             you are told when it ends; pass run_in_background for a server or a long build you \
+             default, once it printed nothing for {}s, is not stopped: it keeps running as a \
+             background job and you are told when it ends; pass run_in_background for a server or a long build you \
              do not need to wait for, and keep its process in the foreground of the command \
              (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
              wait_secs. Background jobs are for the main agent only: a subagent's command is \
@@ -903,8 +904,8 @@ impl Tool for PowerShellTool {
                 program's code, and an earlier failure does not change it (end with `exit \
                 $LASTEXITCODE` to keep a native code). A command still \
                 running at timeout_secs (default {}, at most {max}), or, with the default, once it \
-                printed nothing for {}s, keeps running as a background job and you are told when \
-                it ends; pass run_in_background for a server or a long build you do not need to \
+                printed nothing for {}s, is not stopped: it keeps running as a background job and \
+                you are told when it ends; pass run_in_background for a server or a long build you do not need to \
                 wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background \
                 jobs are for the main agent only: a subagent's command is stopped at its timeout \
                 and run_in_background is refused. A command that prints more than {} MB is killed. \
@@ -1685,6 +1686,7 @@ impl std::error::Error for BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::jobs::Chunk;
 
     #[test]
     fn only_the_default_timeout_has_a_quiet_limit() {
@@ -1692,6 +1694,34 @@ mod tests {
         assert_eq!(quiet_for(None, two_minutes), Some(QUIET_LIMIT));
         assert_eq!(quiet_for(Some(120), two_minutes), None);
         assert_eq!(quiet_for(None, Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn a_quiet_move_to_the_background_says_it_is_not_an_error() {
+        let ran = Foreground {
+            id: "job-1".to_owned(),
+            chunk: Chunk::default(),
+            end: None,
+            quiet: true,
+        };
+        let rendered = render_foreground(
+            &Shell::default(),
+            &ran,
+            "job-1",
+            (Duration::from_secs(120), Some(Duration::from_secs(60))),
+            600,
+            None,
+        )
+        .unwrap();
+        assert!(
+            rendered
+                .text
+                .starts_with("[printed nothing for 60s, not an error:"),
+            "{}",
+            rendered.text
+        );
+        assert!(rendered.text.contains("Wait for it with job_output"));
+        assert!(rendered.status.is_none());
     }
 
     #[test]
