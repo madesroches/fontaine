@@ -30,7 +30,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 1. **Publish.** In `release.yml` `host`, after `gh release create`, add a step that builds
    `latest.json` from the draft with
    `gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,assets --jq '{tag: .tagName, assets: [.assets[].name]}'`
-   into `latest.json` outside `artifacts/` and uploads it with `gh release upload "$TAG" latest.json`. It is generated from
+   into `latest.json` outside `artifacts/` and uploads it with `gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY"`. It is generated from
    the draft, so it names exactly the assets that exist and not itself. It is unsigned, as `latest-dev.json` is:
    archives are minisign-verified against the channel key with signed channel, file name and version, and `tag_build(Release, ..)`
    validates the tag, so a tampered pointer can at worst hold updates back or steer to another newer, signed, published release.
@@ -38,16 +38,15 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
    like the installers). After the loop, when `latest.json` is present, check it: `jq` parses it, `tag` is the expected tag, and
    `assets` equals the sorted set of other file names in the directory. The script takes `<version>` (no `v`) so the tag is `v$version`.
    `FONTAINE_REQUIRE_APK`-style strictness: add `FONTAINE_REQUIRE_POINTER=1` set by `verify-draft`, making it mandatory there, so a
-   missing pointer cannot be published. The script's existing test harness (see `.github/scripts/` tests) gets cases for the new rules.
+   missing pointer cannot be published. The script's tests are the inline release-signing step in `.github/workflows/ci.yml` (`make_fixture`, `expect_fail`, the `FONTAINE_REQUIRE_APK` cases); add a pointer fixture (`make_fixture` plus `latest.json`), a `FONTAINE_REQUIRE_POINTER=1` pass/fail pair modelled on the APK cases, and `expect_fail` mutations for a wrong tag, a mismatched asset list and `latest.json` on `dev`.
 3. **Client.** `latest()` becomes `latest(client, download_base, channel)`. A `pointer_url(base, channel)` helper returns
    `{base}/{REPO}/releases/latest/download/latest.json` for `Release` and `{base}/{REPO}/releases/download/dev/latest-dev.json` for
    `Dev`. The shared body is today's dev arm: `fetch_pointer`, `tag_build(channel, tag)`, asset URLs under `releases/download/{tag}/{name}`.
    Delete `get()`, `ApiRelease`, `ApiAsset`, `DEFAULT_API_BASE`, `Params.api_base`, `IndexError::Request`, `Status`, `Parse` and
-   `NoRelease` if nothing else uses them (check `mod.rs` `index_error` and its unit tests); `Pointer`'s Display says "release pointer" with the channel name.
-   No API fallback: a missing pointer is a network error (exit 4).
-4. **Redirect.** `releases/latest/download/<asset>` answers `302` to `releases/download/<tag>/<asset>`. reqwest follows redirects by
-   default and the update client is the one built with the `[network]` settings, as the dev pointer fetch already is; verify in code
-   that the update client does not set `redirect(Policy::none())` and add a wiremock test with a 302.
+   `NoRelease` (they are used only in `release_index.rs` and in `index_error()` and its unit test in `mod.rs`); `Pointer`'s Display says "release pointer" with the channel name.
+   No API fallback: a missing or invalid release pointer, including a suffixed or garbage tag, is a network error (exit 4); exit 1 no longer covers a missing release.
+   Every `IndexError` now maps to `UpdateError::Network`, so remove the `Install` arm of `index_error()` and reduce `a_missing_release_is_not_retryable` to the `Pointer` assertion.
+4. **Redirect.** `releases/latest/download/<asset>` answers `302` to `releases/download/<tag>/<asset>`. The update client (`update::build_client`, `mod.rs`) is built with the `[network]` settings and a custom redirect policy that follows up to 5 hops and never downgrades from https; it does not disable redirects, as the dev pointer fetch already relies on. Add a wiremock test with a 302 through `update::build_client`.
 5. **Prerelease tags.** GitHub's `latest` skips prereleases and drafts, so `v0.2.0-rc.1` and `dev-<n>` are never the target, and
    `tag_build(Release, ..)` rejects a suffixed tag anyway (already unit-tested, `v1.2.3-rc.1`).
 
@@ -61,7 +60,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 ## Files to Modify
 - `rust/fontaine/src/update/release_index.rs`, `update/mod.rs`, `update/auto.rs`
 - `rust/fontaine/tests/update_cmd.rs`, `tests/update_auto.rs`
-- `.github/workflows/release.yml`, `.github/scripts/release-verify.sh` (and its test script)
+- `.github/workflows/release.yml`, `.github/scripts/release-verify.sh`, `.github/workflows/ci.yml` (release-signing step tests)
 - `docs/installing.md`, `docs/verifying-releases.md`, `tasks/design/platforms.md`, `CONTRIBUTING.md` (§Releasing)
 - `tasks/fontaine_harness_plan.md` (`## Decisions`), `CHANGELOG.md`
 
@@ -74,7 +73,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 - AFK: `FONTAINE_REQUIRE_POINTER=1` makes the pointer mandatory in `verify-draft` (conservative: a release without one would strand 0.1.0 users).
 
 ## Documentation
-- `docs/installing.md`: release channel reads `latest.json` from the latest release; missing pointer is exit 4; adjust the exit-code rows that mention a missing release.
+- `docs/installing.md`: release channel reads `latest.json` from the latest release; a missing or invalid pointer is exit 4; reword the exit-1 row ("no published release exists on the release channel") and the exit-4 row ("release list" becomes "release pointer"; drop "not when it was fetched and held no release").
 - `docs/verifying-releases.md`: releases also hold the unsigned `latest.json` and why it is safe.
 - `tasks/design/platforms.md`: release assets and `host`/`verify-draft` steps mention `latest.json`.
 - `CONTRIBUTING.md` §Releasing: step 6 mentions the pointer and that verify-draft checks it.
@@ -82,7 +81,7 @@ ship before the 0.1.0 tag: every later update starts from the updater in that bu
 
 ## Testing Strategy
 - `release_index.rs` wiremock unit tests: release pointer served (with an API mock expecting zero calls); served through a 302 from `releases/latest/download/latest.json` to the tag's pointer; 404, malformed JSON, and a bad tag (`dev-3`, `v1.0.0-rc.1`) each an error with the 404 kept in the chain.
-- `tests/update_cmd.rs` and `tests/update_auto.rs`: switch the release-channel mock to the pointer path, remove `api_base` from `Params`, and keep their existing assertions; update_auto gains a release-channel case if it only covers dev today.
+- `tests/update_cmd.rs`: switch the release-channel mock to the pointer path, remove `api_base` from `Params`, keep the existing assertions. `tests/update_auto.rs` (dev only; `latest()` is channel-agnostic) only needs `api_base` removed from `Params`.
 - `release-verify.sh` tests: valid pointer accepted; missing pointer fails under `FONTAINE_REQUIRE_POINTER=1`; wrong tag, an asset list that differs from the directory, and `latest.json` on the dev channel fail.
 - `cargo fmt --check`, clippy `-D warnings`, `cargo test`.
 
