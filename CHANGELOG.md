@@ -129,6 +129,9 @@ All notable changes are recorded here. The format follows
 
 - Dependabot version-update PRs are off and security updates are batched into one PR per ecosystem
   (`.github/dependabot.yml`).
+- Android agent dropdown (#777): the agents bar of wrapped chips under the status line is replaced by a
+  dropdown above the message field that shows the agent on screen and lists every agent only while
+  open; it carries a `!` while another agent waits on an approval or a question. See `docs/android.md`.
 - **Breaking for SDK embedders:** the exhaustive `config::HookEvent` enum gains the
   `ActivityChanged` variant, so a `match` over it needs an arm, and `HookEvent::ALL` is now 19 long.
   The `core` tree, which carries no stability promise, changes with it: `AgentRuntime::fire_session_end`

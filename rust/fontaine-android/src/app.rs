@@ -94,7 +94,7 @@ pub enum DialogView<'a> {
     HostWaiting(String),
 }
 
-/// One agent of the bar.
+/// One agent in the agent dropdown.
 pub struct AgentChip<'a> {
     /// `None` is main.
     pub id: Option<&'a str>,
@@ -520,7 +520,7 @@ impl App {
         }
     }
 
-    /// The bar's rows: main first, then agents that run or wait, then those that failed, then
+    /// The dropdown's entries: main first, then agents that run or wait, then those that failed, then
     /// the rest, each group in the host's order.
     fn chips(&self) -> Vec<AgentChip<'_>> {
         let Some(status) = &self.status else {

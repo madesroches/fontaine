@@ -969,7 +969,6 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
             &format!("Reconnecting in {:.1}s", ms as f32 / 1000.0),
         );
     }
-    agents_bar(&view.agents, taps);
     if let Some(header) = &view.header {
         agent_header(header);
     }
@@ -985,7 +984,8 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     let footer = if state.footer_px > 0.0 {
         state.footer_px
     } else {
-        row * 3.0 + line * dialog_rows
+        let combo_rows = if view.agents.is_empty() { 0.0 } else { 1.0 };
+        row * (3.0 + combo_rows) + line * dialog_rows
     };
     // The window scrolls rather than the transcript shrinking to nothing: ImGui reads a zero
     // height as "fill the rest" and a negative one as "rest minus this".
@@ -1083,6 +1083,7 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
         state.commands_open = false;
     }
     selection_bar(state, &blocks, taps);
+    agent_combo(&view.agents, view.viewed, taps);
     let hint = if view.header.is_some() {
         "message this agent"
     } else {
@@ -1461,54 +1462,49 @@ fn selection_bar(state: &mut UiState, blocks: &[Block], taps: &mut Vec<Tap>) {
         state.clear_block_selection();
     }
 }
-/// The row of agents under the status line: a chip each, wrapped to the width. A chip with a
-/// waiting dialog is marked with `!`.
-fn agents_bar(agents: &[AgentChip<'_>], taps: &mut Vec<Tap>) {
+
+/// The dropdown above the prompt field that picks the agent on screen. Collapsed it shows that
+/// agent, marked with `!` while another agent has a dialog waiting; open it lists every agent.
+fn agent_combo(agents: &[AgentChip<'_>], viewed: Option<&str>, taps: &mut Vec<Tap>) {
     if agents.is_empty() {
         return;
     }
-    let (spacing_x, _) = style_pair(|s| s.ItemSpacing);
-    let (padding_x, _) = style_pair(|s| s.FramePadding);
-    let labels: Vec<String> = agents
-        .iter()
-        .enumerate()
-        .map(|(i, chip)| {
-            format!(
-                "{}{}{} {}##agent-{i}",
-                if chip.selected { "> " } else { "" },
-                if chip.waiting { "! " } else { "" },
-                chip.name,
-                chip.status
-            )
-        })
-        .collect();
-    let widths: Vec<f32> = labels
-        .iter()
-        .map(|label| {
-            let shown = label.split("##").next().unwrap_or_default();
-            text_height_width(shown) + padding_x * 2.0
-        })
-        .collect();
-    for row in layout::chip_rows(&widths, avail_width(), spacing_x) {
-        for i in row.clone() {
-            if i != row.start {
-                // SAFETY: a frame is open.
-                unsafe { sys::igSameLine(0.0, -1.0) };
-            }
-            let chip = &agents[i];
-            let colors = if chip.selected { &ACCENT } else { &NEUTRAL };
-            if styled_button(&labels[i], widths[i], colors) {
-                taps.push(Tap::ViewAgent(chip.id.map(str::to_string)));
-            }
+    let preview = match agents.iter().find(|chip| chip.selected) {
+        Some(chip) => layout::agent_combo_preview(
+            chip.name,
+            chip.status,
+            agents.iter().any(|other| other.waiting && !other.selected),
+        ),
+        None => layout::agent_combo_preview(
+            viewed.unwrap_or_default(),
+            "",
+            agents.iter().any(|other| other.waiting),
+        ),
+    };
+    let label = c("##agent-combo");
+    let preview = c(&preview);
+    // SAFETY: a frame is open; both strings are NUL-terminated and outlive the calls.
+    let open = unsafe {
+        sys::igSetNextItemWidth(avail_width());
+        sys::igBeginCombo(label.as_ptr(), preview.as_ptr(), 0)
+    };
+    if !open {
+        return;
+    }
+    for (i, chip) in agents.iter().enumerate() {
+        let item = c(&format!(
+            "{}##agent-{i}",
+            layout::agent_combo_preview(chip.name, chip.status, chip.waiting)
+        ));
+        // SAFETY: inside the open combo; `item` is NUL-terminated.
+        let picked =
+            unsafe { sys::igSelectable_Bool(item.as_ptr(), chip.selected, 0, v2(0.0, 0.0)) };
+        if picked && !chip.selected {
+            taps.push(Tap::ViewAgent(chip.id.map(str::to_string)));
         }
     }
-    gap(half_line());
-}
-
-fn text_height_width(body: &str) -> f32 {
-    let body = c(body);
-    // SAFETY: a frame is open and `body` is NUL-terminated.
-    unsafe { sys::igCalcTextSize(body.as_ptr(), std::ptr::null(), false, -1.0) }.x
+    // SAFETY: balances the `igBeginCombo` that returned true.
+    unsafe { sys::igEndCombo() };
 }
 
 fn agent_header(header: &AgentHeader<'_>) {
