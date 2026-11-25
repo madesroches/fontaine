@@ -89,6 +89,9 @@ impl Profile {
                         scratch_dir: None,
                         project_environment: request.session_facts.project_environment.clone(),
                         active_skills: request.session_facts.active_skills.clone(),
+                        // The minimal prompt was calibrated without it, and its intent cap
+                        // is 500 characters.
+                        invoked_skill: None,
                         // The minimal prompt was calibrated without it, like the instructions.
                         agent_task: None,
                         git_operation: None,

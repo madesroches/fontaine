@@ -203,7 +203,15 @@ that user turn:
 - a **wildcard** shell rule (`Bash(git *)`, `Bash(npm run *)`, a bare `Bash`) is never an allow, in
   any mode. The [guardian](guardian.md#trusted-skills) is told that the skill is running and which
   classes of command it declares, so a routine step of that class is easier to allow, while a
-  force-push or a delete is still judged on its own.
+  force-push or a delete is still judged on its own, unless the skill's text prescribes that step
+  and you ran the skill by typing its command (below).
+
+Trusting a plugin skill also lets its text count as your instruction when you run it by typing its
+command: the guardian reads the steps the text spells out, such as a `git push
+--force-with-lease=<branch>:<tip>`, as if you had typed them (see
+[the guardian](guardian.md#trusted-skills) for what stays judged on your own words). A skill in
+your own skills directory counts without trust. A project skill never counts. A skill the model
+loads on its own with the `skill` tool never counts.
 
 A skill in your own skills directory keeps lending all of its rules as before, trusted or not;
 trusting it adds the note for the guardian.

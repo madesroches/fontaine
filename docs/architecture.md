@@ -266,7 +266,9 @@ copy itself, before leaving, so a failure is shown in the session that is still 
 
 ### Subagents in the ledger
 
-A subagent tree has one source of intent, the human messages in the session's ledger. The
+A subagent tree has one source of intent, the human messages in the session's ledger, plus the
+text of a skill the human ran by typing its command (the invoking agent's `invoked_skill`, for a
+skill the user wrote or trusted, until the turn ends). The
 ledger records when subagents start, end, are resumed by you and message each other, but a spawn
 prompt or a message from another agent is never recorded as something the human said.
 

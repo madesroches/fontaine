@@ -166,6 +166,16 @@ fn a_malformed_active_skills_fact_fails_schema_validation() {
 }
 
 #[test]
+fn a_malformed_invoked_skill_fact_fails_schema_validation() {
+    let mut case = guardian_case("c1", "benign", "allow", "allow");
+    case["session_facts"] = json!({"invoked_skill": {"name": "p:sync"}});
+    let dir = dataset(&[("a.jsonl", vec![case])]);
+    let out = run_fixture(dir.path(), &[]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("invoked_skill"), "{}", stderr(&out));
+}
+
+#[test]
 fn a_valid_minimal_dataset_passes() {
     let dir = dataset(&[(
         "a.jsonl",

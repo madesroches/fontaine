@@ -411,3 +411,200 @@ fn a_plugin_skill_keeps_its_declared_tools_but_lends_none() {
     assert_eq!(skill.declared_tools.len(), 2);
     assert!(skill.allowed_tools.is_empty());
 }
+
+const SENTINEL: &str = "SENTINEL-OUTPUT-AN-OUTSIDER-SHAPED";
+
+type Seen = Arc<Mutex<Vec<(String, Option<fontaine_sdk::guardian::InvokedSkill>)>>>;
+
+/// Records what the guardian's request would carry while the skill's own `!` command runs.
+fn stub_shell(rt: &SkillRuntime, state: &Arc<fontaine_sdk::core::gate::SessionState>) -> Seen {
+    use rig_core::message::ToolName;
+    use rig_core::tool::{DynamicTool, ToolOutput};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (record, state) = (seen.clone(), state.clone());
+    rt.set_shell(DynamicTool::new_with_context(
+        ToolName::new("shell").unwrap(),
+        "stub",
+        json!({}),
+        move |_context, args| {
+            let (record, state) = (record.clone(), state.clone());
+            Box::pin(async move {
+                let command = args["command"].as_str().unwrap_or_default().to_string();
+                record
+                    .lock()
+                    .unwrap()
+                    .push((command, state.invoked_skill(ROOT_AGENT)));
+                Ok(ToolOutput::text(SENTINEL))
+            })
+        },
+    ));
+    seen
+}
+
+fn invoked_text(tools: &str, body: &str) -> String {
+    format!("---\ndescription: d\nallowed-tools: {tools}\n---\n{body}\n")
+}
+
+fn root_request(s: &Setup, agent: &str) -> fontaine_sdk::guardian::AdjudicationRequest {
+    fontaine_sdk::core::adjudication::build(
+        &s.rig.state,
+        agent,
+        "shell",
+        &shell("git rebase origin/main"),
+        Vec::new(),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn a_typed_trusted_plugin_skill_is_user_intent_with_commands_as_text_and_nothing_after_the_turn()
+ {
+    let s = setup(Auto, "");
+    let text = invoked_text("Bash(git *)", "Rebase $ARGUMENTS then:\n!`git status`");
+    install_plugin_skill(&s.rig, &text);
+    trust_text(&s.rig, PLUGIN_SKILL, &text);
+    let rt = runtime(&s.rig);
+    let seen = stub_shell(&rt, &s.rig.state);
+    let out = rt
+        .expand(PLUGIN_SKILL, "main", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(out.contains(SENTINEL), "the model still gets the output");
+
+    // The skill's own command is judged with the block already in place.
+    let during = seen.lock().unwrap().clone();
+    assert_eq!(during.len(), 1);
+    let block = during[0]
+        .1
+        .clone()
+        .expect("the block exists during expansion");
+    assert_eq!(block.name, PLUGIN_SKILL);
+    assert!(block.text.contains("Rebase main then:"), "{}", block.text);
+    assert!(block.text.contains("!`git status`"), "the command as text");
+    assert!(!block.text.contains(SENTINEL), "never the output");
+
+    let request = root_request(&s, ROOT_AGENT);
+    assert_eq!(request.session_facts.invoked_skill, Some(block));
+    assert_eq!(request.session_facts.active_skills.len(), 1);
+
+    s.rig.state.end_turn();
+    assert!(
+        root_request(&s, ROOT_AGENT)
+            .session_facts
+            .invoked_skill
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_skill_the_model_loads_carries_no_invoked_skill_though_the_active_skill_line_stays() {
+    let s = setup(Auto, "");
+    let text = invoked_text("Bash(git *)", "body");
+    install_plugin_skill(&s.rig, &text);
+    trust_text(&s.rig, PLUGIN_SKILL, &text);
+    runtime(&s.rig)
+        .expand(PLUGIN_SKILL, "", ROOT_AGENT, true)
+        .await
+        .unwrap();
+    let request = root_request(&s, ROOT_AGENT);
+    assert!(request.session_facts.invoked_skill.is_none());
+    assert_eq!(request.session_facts.active_skills.len(), 1);
+}
+
+#[tokio::test]
+async fn only_a_user_skill_or_a_currently_trusted_plugin_skill_counts() {
+    let text = invoked_text("Bash(git *)", "body");
+
+    let untrusted = setup(Manual, "");
+    install_plugin_skill(&untrusted.rig, &text);
+    runtime(&untrusted.rig)
+        .expand(PLUGIN_SKILL, "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(untrusted.rig.state.invoked_skill(ROOT_AGENT).is_none());
+
+    let stale = setup(Manual, "");
+    install_plugin_skill(&stale.rig, &text);
+    trust_text(&stale.rig, PLUGIN_SKILL, &text);
+    install_plugin_skill(&stale.rig, &format!("{text}changed\n"));
+    runtime(&stale.rig)
+        .expand(PLUGIN_SKILL, "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(stale.rig.state.invoked_skill(ROOT_AGENT).is_none());
+
+    let project = setup(Manual, "");
+    write(
+        &project
+            .rig
+            .world
+            .work
+            .join(".fontaine/skills/proj/SKILL.md"),
+        &text,
+    );
+    trust_text(&project.rig, "proj", &text);
+    runtime(&project.rig)
+        .expand("proj", "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(project.rig.state.invoked_skill(ROOT_AGENT).is_none());
+
+    // Trust is not needed for a skill in the user's own directory, stale or not.
+    let user = setup(Manual, "");
+    user_skill(&user.rig, &text);
+    runtime(&user.rig)
+        .expand("mine", "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        user.rig.state.invoked_skill(ROOT_AGENT).map(|s| s.name),
+        Some("mine".to_string())
+    );
+
+    let stale_user = setup(Manual, "");
+    user_skill(&stale_user.rig, &format!("{text}more"));
+    trust_text(&stale_user.rig, "mine", &text);
+    runtime(&stale_user.rig)
+        .expand("mine", "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(stale_user.rig.state.invoked_skill(ROOT_AGENT).is_some());
+}
+
+#[tokio::test]
+async fn a_subagent_carries_no_invoked_skill_and_a_long_body_is_cut() {
+    let s = setup(Auto, "");
+    let long = "x".repeat(fontaine_sdk::guardian::INVOKED_SKILL_CHARS + 500);
+    let text = invoked_text("Bash(git *)", &long);
+    install_plugin_skill(&s.rig, &text);
+    trust_text(&s.rig, PLUGIN_SKILL, &text);
+    runtime(&s.rig)
+        .expand(PLUGIN_SKILL, "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    let child = s
+        .rig
+        .agents
+        .reserve(
+            ROOT_AGENT,
+            "worker",
+            "m",
+            vec!["shell".into()],
+            fontaine_sdk::agents::mode::Ladder::Auto,
+        )
+        .unwrap();
+    assert!(
+        root_request(&s, &child)
+            .session_facts
+            .invoked_skill
+            .is_none()
+    );
+    let held = root_request(&s, ROOT_AGENT)
+        .session_facts
+        .invoked_skill
+        .expect("the root carries it");
+    assert_eq!(
+        held.text.chars().count(),
+        fontaine_sdk::guardian::INVOKED_SKILL_CHARS
+    );
+}

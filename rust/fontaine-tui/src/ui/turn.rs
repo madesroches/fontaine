@@ -849,6 +849,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Submission::Skill { .. }
                 )
             {
+                // The skill's own `!` commands can set the stop, so an expansion that already ran
+                // must not leave its text for the next turn.
+                runtime.state.end_turn();
                 self.refuse_stopped(runtime, submission.raw());
                 continue;
             }
@@ -914,6 +917,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     match self.refresh_before_turn(runtime) {
                         Some(end) => {
                             runtime.clear_prompt_context();
+                            // No `run_turn` starts to end the expanded skill's turn.
+                            runtime.state.end_turn();
                             end
                         }
                         None => {
@@ -1550,6 +1555,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         drop(run);
         // A turn that never reached its drain leaves the gate's note for the next one.
         runtime.clear_prompt_context();
+        // A run cut short before `run_turn` armed its own end leaves an expanded skill's text.
+        runtime.state.end_turn();
         // Only a run cut short is unsettled: one that answered was saved, even when a stop
         // landed in the same poll and is relabelled below. A failure with the stop standing
         // was ended by the stop's dispatch denial and is kept with its marker.

@@ -27,6 +27,9 @@ impl SkillTrustFooter {
     }
 }
 
+/// What trusting a plugin skill also means for the guardian; a user skill counts without trust.
+pub const TRUST_INTENT_NOTE: &str = "When you run this skill by typing its command, the guardian reads the steps its text prescribes as your own instruction.";
+
 /// `previous` is the record the user made for an earlier version of the file, if any.
 /// `Some(true)` from the prompt records the trust, `Some(false)` leaves things as they are.
 pub fn new(
@@ -102,6 +105,10 @@ pub fn describe(
             );
         }
     }
+    if skill.scope == Scope::Plugin {
+        out.push(String::new());
+        out.push(TRUST_INTENT_NOTE.to_string());
+    }
     out.push(String::new());
     out.push(format!("file: {}", skill.path.display()));
     out.push(format!("digest: {}", current.digest));
@@ -155,6 +162,25 @@ mod tests {
         assert!(lines.contains("never an allow:\n  shell(git *)"), "{lines}");
         assert!(lines.contains("  !git log"), "{lines}");
         assert!(lines.contains("next session start"), "{lines}");
+    }
+
+    #[test]
+    fn a_plugin_skills_dialog_says_its_text_becomes_your_instruction_and_a_user_skills_does_not() {
+        let plugin = skill(&["shell(git status)"], "");
+        let before = TrustRecord {
+            name: "p:pr".into(),
+            digest: "sha256:old".into(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+        };
+        for previous in [None, Some(&before)] {
+            let lines = describe(&plugin, previous, SkillTrustFooter::Command).join("\n");
+            assert!(lines.contains(TRUST_INTENT_NOTE), "{lines}");
+        }
+        let mut user = skill(&["shell(git status)"], "");
+        user.scope = Scope::User;
+        let lines = describe(&user, None, SkillTrustFooter::Command).join("\n");
+        assert!(!lines.contains(TRUST_INTENT_NOTE), "{lines}");
     }
 
     #[test]

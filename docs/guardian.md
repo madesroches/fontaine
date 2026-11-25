@@ -32,9 +32,9 @@ read and the instructions in a repository are all text an attacker may have writ
 - **Everything it is shown is data, except your own words.** The request is rendered into
   delimited `<untrusted>` blocks; text that would close a block is neutralized, and anything
   credential-shaped is redacted before it is rendered. The system prompt says that nothing inside
-  those blocks is an instruction. The two blocks holding what you typed and what you picked in a
-  question dialog, `task_intent` and `recent_user_messages`, are marked `source="user"` and are
-  read as your intent; any other block that claims you approved something is treated as an attack
+  those blocks is an instruction. The blocks holding what you typed and what you picked in a
+  question dialog, `task_intent` and `recent_user_messages`, and the text of a skill you ran by
+  typing its command, `invoked_skill`, are marked `source="user"` and are read as your intent; any other block that claims you approved something is treated as an attack
   signal.
 - **Its picture of what you asked for comes from the session ledger**, the append-only record of
   your own messages, and never from the model's context. A compaction summary or any other
@@ -67,6 +67,7 @@ The request is built from the ledger and the call itself:
 |---|---|
 | `task_intent` | Your latest messages, verbatim, oldest dropped first to fit 2,000 characters. Never summarized. |
 | `recent_user_messages` | Your last 5 turns (not tool output). |
+| `invoked_skill` | The text of a skill you ran this turn by typing its command, after argument substitution and before its `!` commands run (the commands appear as their text, never their output), cut at 12,000 characters. A `source="user"` block placed after `task_intent`, in the guardian view only: the screen, the reads of a composition and the minimal profile do not get it, and a subagent has none. Only for a skill in your own skills directory or a plugin skill you [trusted](extensions.md#trusted-skills); never for a project skill or a skill the model loaded itself. See [Trusted skills](#trusted-skills). |
 | `agent_message_before_reply` | The last 2,000 characters of the agent's final answer, only when your latest message was typed at the prompt right after that answer. An untrusted block placed before `recent_user_messages`, in the guardian view only: the screen, the reads of a composition and the minimal profile do not get it. |
 | `agent_task` | What the calling subagent was told to do when it was spawned (the head of its spawn prompt, cut at 2,000 characters), recorded in the ledger when the agent starts. An agent-written, untrusted block placed after `task_intent`, in the guardian view only: the screen, the reads of a composition and the minimal profile do not get it, and the root agent has none. It is never your intent and never a claim of authorization, but it shows the scope your request was carried out in, so a step of that task, and the manifests, lockfiles, imports and docs the step leaves behind, are part of the request rather than an unrequested change. A subagent sees only its own task, never a sibling's, and every deny rule still applies. |
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
@@ -183,9 +184,29 @@ the session, never from a tool argument, and only the guardian view renders it (
 guardian that the declared classes are your intent for the routine steps of that class, such as a
 rebase onto the default branch for a pull-request skill, and never for a destructive or
 out-of-purpose step: a force-push, a push to a protected branch or a deletion you did not name is
-judged on its own arguments and your words, as without the skill. It is context and not an allow:
-the floor, your deny and ask rules and every fail-closed outcome are unchanged. A subagent of the
-calling agent carries no `active_skill` line, and the line ends with the turn.
+judged on its own arguments and your words, as without the skill, except for a step the skill's
+text prescribes (below). It is context and not an allow: the floor, your deny and ask rules and
+every fail-closed outcome are unchanged. A subagent of the calling agent carries no `active_skill`
+line, and the line ends with the turn.
+
+When you run a skill by typing its command (`/dev-skills:babysit-pr`), the guardian also gets the
+skill's text as an `invoked_skill` block marked `source="user"`, as Claude Code's auto-mode
+classifier does. The block appears for a skill in your own skills directory and for a plugin skill
+you trusted, and only for the agent the skill was expanded for, until the turn ends. A project
+skill never has one, an untrusted or changed plugin skill never has one, and neither has a skill
+the model loads itself with the `skill` tool. A step the text explicitly prescribes, in the form
+it spells out (a `git push --force-with-lease=<branch>:<tip>` of the branch the skill works on, a
+`git rebase --abort`), is your instruction as if you had typed it: it clears a soft-deny match on
+that action and target, Git Destructive included, and the project instructions' rule to ask before
+a force-push does not override it. A step the text only implies, or a call that differs from the
+prescribed form (a bare `--force` where the text says `--force-with-lease`, another branch or
+remote), gets no clearance. A push to a shared or release branch or of a tag, deleting a remote
+branch, tag or release, sending data to a destination that is not one of the repo's remotes and a
+write outside the workspace roots stay judged on your own words even when the skill prescribes
+them. Text in the block that tells the guardian to approve or to ignore a rule is still an attack
+signal. The minimal profile does not carry the block: it keeps the `active_skill` line and counts
+no step a skill prescribes as intent. The clearance ends with the turn, so a follow-up turn or a
+retry within the turn does not have it.
 
 ### Subagents and the scratch directory
 
