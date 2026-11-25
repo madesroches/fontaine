@@ -16,8 +16,8 @@ data-leaving steps stays judged on the user's own words.
 
 ## Current State
 
-- **What the guardian sees of a typed skill.** `run_skill_command`
-  (`rust/fontaine-tui/src/ui/turn.rs:636`) records only the raw line (`/dev-skills:babysit-pr`)
+- **What the guardian sees of a typed skill.** `expand_skill_command`
+  (`rust/fontaine-tui/src/ui/turn.rs:619`, recording at ~line 636) records only the raw line (`/dev-skills:babysit-pr`)
   as `Record::UserMessage`. The expansion goes to the model, never to the guardian.
   `AgentRuntime::expand_skill` (`rust/fontaine-sdk/src/core/agent.rs:706`) calls
   `SkillRuntime::expand(name, args, ROOT_AGENT, by_model = false)`. The `skill` tool goes through
@@ -99,8 +99,9 @@ In `SkillRuntime::expand` (`core/skills.rs`), the substituted `body` is computed
 commands run. When `!by_model` and the skill qualifies, call
 `self.state.note_invoked_skill(agent, InvokedSkill { name, text: leading_chars(body, INVOKED_SKILL_CHARS) })`.
 `body` still holds each `!`…`` ` `` command text unrun, so command output never reaches the
-intent block. Command output is tool output and may carry text from the repository or the
-network. The qualifying test reuses the `trusted` value and `skill.scope` that `lend_rules`
+intent block. The note is recorded right after `substitute`, before the `for part in parts(&body)` loop,
+so the skill's own `!` commands (run through the guardian-gated `run_command`, under the invoking
+agent's id) are judged with the block. The qualifying test reuses the `trusted` value and `skill.scope` that `lend_rules`
 already computes. `lend_rules` returns `trusted` so the check is not repeated. A failed or
 abandoned expansion records nothing that outlives the turn: `EndTurnOnDrop` in `expand_skill`
 already calls `end_turn` on that path.
@@ -148,7 +149,7 @@ today's behaviour: the `active_skill` line, and no step a skill prescribes count
   `invoked_skill` block prescribes it (see below)".
 
 The minimal prompt is unchanged, since its requests never carry the block. The cache key already
-includes the rendered request and a digest of the system prompt (`guardian.rs:311`), so earlier
+includes the rendered request and a digest of the system prompt (`guardian/guardian.rs:311`), so earlier
 cached verdicts do not match the new prompt.
 
 ### Trust wording
@@ -156,7 +157,8 @@ cached verdicts do not match the new prompt.
 Trusting a plugin skill now does two things: it honours the skill's `allowed-tools`, and when the
 user runs the skill, the guardian reads the steps its text prescribes as the user's instruction.
 The `/skills trust` dialog (`skill_trust_prompt::describe`, both the new-trust and the changed
-branches) and `fontaine plugin trust` add one line saying so. A body edit already changes the
+branches) and `print_trust_details` in `rust/fontaine/src/plugin.rs` (~line 345, shared by
+`fontaine plugin install` and `fontaine plugin trust`) add one line saying so. A body edit already changes the
 digest, so it already suspends the trust until re-trust.
 
 ## Implementation Steps
@@ -168,16 +170,17 @@ digest, so it already suspends the trust until re-trust.
 2. **Session state.** In `core/gate.rs`, add the map, `note_invoked_skill`, `invoked_skill` and
    the `end_turn` clear.
 3. **Capture.** In `core/skills.rs`, have `lend_rules` return whether the skill is trusted, and
-   in `expand` note the invoked skill on the qualifying path, cut with `leading_chars`. That
-   helper is already used for `agent_task` in `core/adjudication.rs`; reuse it, moving it to
-   `pub(crate)` if needed.
+   in `expand` note the invoked skill on the qualifying path, cut with `leading_chars`. `leading_chars`
+   is already `pub` in `guardian/request.rs` and re-exported from `guardian.rs`, and is used for
+   `agent_task` in `core/adjudication.rs`; reuse `crate::guardian::leading_chars` as is.
 4. **Request build.** In `core/adjudication.rs::build`, copy `state.invoked_skill(caller)`.
 5. **Rendering.** In `guardian/prompt_builder.rs`, render the block (guardian view only) and
    update `USER_MESSAGE_HEADER`. Update the snapshots this changes (`cargo insta review`).
 6. **Prompt.** Edit `prompts/guardian/guardian_prompt.md` as in Design, keeping the minimal
    prompt as it is.
 7. **Trust wording.** Add the line to `fontaine-tui/src/skill_trust_prompt.rs::describe` and to
-   the trust output in `fontaine/src/plugin.rs`. Update their tests.
+   `print_trust_details` in `fontaine/src/plugin.rs` (shared by `fontaine plugin install` and
+   `fontaine plugin trust`). Update their tests.
 8. **Evals.** In `fontaine-evals`, validate and load `session_facts.invoked_skill` (`case.rs`,
    `live.rs`, mirroring `active_skills`). Add cases to `evals/dataset/skills.jsonl` (see Testing
    Strategy).
@@ -195,7 +198,7 @@ digest, so it already suspends the trust until re-trust.
 - `rust/fontaine-evals/src/case.rs`, `rust/fontaine-evals/src/live.rs`,
   `rust/fontaine-evals/tests/fixture.rs`
 - `evals/dataset/skills.jsonl`
-- `docs/guardian.md`, `docs/extensions.md`, `docs/evals.md`
+- `docs/guardian.md`, `docs/extensions.md`, `docs/evals.md`, `docs/architecture.md`, `evals/README.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -241,6 +244,11 @@ Master plan lines to add, dated on landing:
   your instruction when you run it. A skill in your own directory counts without trust. A project
   skill never counts. A skill the model loads on its own never counts.
 - `docs/evals.md`, "The trusted-skill slice": the `invoked_skill` field and the new cases.
+- `docs/guardian.md:35-38` (intent paragraph): the `invoked_skill` block is a third `source="user"`
+  block; and the "What the guardian sees" blocks table (`:68-71`): add an `invoked_skill` row.
+- `docs/architecture.md` (~268, "one source ... the human messages in the session's ledger"):
+  note the invoked skill's text as a second user-sourced input.
+- `evals/README.md:96-102`: the trusted-skill slice and its `session_facts` fields.
 
 ## Testing Strategy
 
@@ -259,6 +267,8 @@ Unit tests (`gate.rs`): `note_invoked_skill` replaces, `invoked_skill` is per ag
 
 Integration tests (`rust/fontaine-sdk/tests/trusted_skills.rs`, the existing request-capture
 harness):
+- A `!` command run by the skill's own expansion has an adjudication request that carries
+  `invoked_skill`.
 - A trusted plugin skill expanded with `by_model = false` puts its substituted body in the root
   request's `invoked_skill`, and a `!` command appears as its command text, never its output.
 - The same skill loaded with `by_model = true` carries none, though the `active_skill` line is
