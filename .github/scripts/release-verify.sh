@@ -3,7 +3,9 @@
 # Fails on the first problem; success means every archive in <dir> is signed by <pubkey> with
 # the exact trusted comment binding and matches its checksums. The shell and PowerShell installers
 # are accepted on the release channel only, and there they must carry a valid .minisig too, as must
-# fontaine-android.apk, which FONTAINE_REQUIRE_APK=1 makes mandatory. The kind
+# fontaine-android.apk, which FONTAINE_REQUIRE_APK=1 makes mandatory. The release channel also
+# accepts the unsigned latest.json pointer, which must name tag v<version> and exactly the other
+# files in <dir>; FONTAINE_REQUIRE_POINTER=1 makes it mandatory. The kind
 # `dev-installer` checks a directory holding exactly both signed dev installers, optionally
 # fontaine-android.apk (mandatory under FONTAINE_REQUIRE_APK=1), and their .minisig.
 set -euo pipefail
@@ -90,6 +92,8 @@ for path in "$dir"/* "$dir"/.[!.]*; do
       [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
     fontaine-android.apk | fontaine-android.apk.minisig)
       [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
+    latest.json)
+      [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
     *) fail "unrecognised asset '$name'" ;;
   esac
 done
@@ -133,6 +137,21 @@ if [ -f "$dir/$apk" ]; then
   check_installer "$dir/$apk" release
 elif [ "${FONTAINE_REQUIRE_APK:-}" = 1 ]; then
   fail "$apk is missing"
+fi
+
+# Unsigned by design: archives are verified against the channel key, so a tampered pointer can
+# only hold updates back or point at another signed release.
+if [ -f "$dir/latest.json" ]; then
+  jq -e . "$dir/latest.json" >/dev/null 2>&1 || fail "latest.json is not valid JSON"
+  pointer_tag="$(jq -r '.tag | strings' "$dir/latest.json")"
+  [ "$pointer_tag" = "v$version" ] || fail "latest.json names tag '$pointer_tag', expected 'v$version'"
+  listed_assets="$(jq -r '.assets | arrays | map(strings) | sort | .[]' "$dir/latest.json")" \
+    || fail "latest.json has no assets list"
+  present_assets="$(cd "$dir" && ls -A | grep -vx 'latest.json' | LC_ALL=C sort)"
+  listed_assets="$(printf '%s\n' "$listed_assets" | LC_ALL=C sort)"
+  [ "$listed_assets" = "$present_assets" ] || fail "latest.json assets differ from the files in '$dir'"
+elif [ "${FONTAINE_REQUIRE_POINTER:-}" = 1 ]; then
+  fail "latest.json is missing"
 fi
 
 echo "release-verify: ${#archives[@]} archives verified for channel $channel"

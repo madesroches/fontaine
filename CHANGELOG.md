@@ -137,6 +137,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- The release channel of `fontaine update` reads a `latest.json` pointer (#787): every tagged release now holds
+  an unsigned `latest.json`, fetched through GitHub's `releases/latest/download` redirect, instead of the
+  rate-limited API. A missing or invalid pointer is a network error (exit 4), and `verify-draft` requires it. See
+  `docs/installing.md` and `docs/verifying-releases.md`.
 - Release tags are protected (#758): the release workflow now starts only for `v`-prefixed SemVer tags
   (matching the `release-signing` environment) and its `plan` job fails a tag whose commit is not on
   `main`. `.github/rulesets/release-tags.json` is an importable tag ruleset that blocks creating,

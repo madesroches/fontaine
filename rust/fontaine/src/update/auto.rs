@@ -574,7 +574,6 @@ pub(crate) fn spawn(
                 }
             };
             let params = Params {
-                api_base: release_index::DEFAULT_API_BASE,
                 download_base: release_index::DEFAULT_DOWNLOAD_BASE,
                 receipt_path,
                 current_exe,

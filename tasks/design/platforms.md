@@ -51,7 +51,9 @@ The public keys are in `rust/fontaine/keys/` and compiled into the verifier modu
 only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
 GitHub Environments, which only the `sign` jobs name; each also holds that channel's Android keystore, a separate one per channel. The signed trusted comment binds channel,
 asset name, version and commit. Publication is draft, verify, publish: `sign` signs after the
-build jobs, `host` creates a draft release, `verify-draft` downloads it and checks it with
+build jobs, `host` creates a draft release and uploads the unsigned `latest.json` pointer (tag and the
+file names it just uploaded; the release channel of `fontaine update` reads it through
+`releases/latest/download`), `verify-draft` downloads it and checks it, pointer required, with
 `.github/scripts/release-verify.sh`, and only then does `publish` make it public, so a failure
 leaves nothing public. The `fontaine` crate's `release_signature` module is the one Rust verifier
 (for the updater and `fontaine update`); CI checks the archives with the upstream minisign CLI,

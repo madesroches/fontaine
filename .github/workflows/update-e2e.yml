@@ -1,6 +1,6 @@
 # End-to-end self-update against the real GitHub feed: install the previous dev build from its archive, update to the one the `dev` release's `latest-dev.json` names, and check the version changed and the receipt is intact.
 # Manual and nightly, never a PR gate: it needs two published `dev-<n>` builds and the network.
-# The binary ships no api-base override, so this uses the default feed. Every leg runs the manual
+# The binary ships no download-base override, so this uses the default feed. Every leg runs the manual
 # `fontaine update`; the TUI background pass would need the workspace trust prompt bypassed, so it
 # and the Windows helper swap are verified by hand.
 name: Update E2E

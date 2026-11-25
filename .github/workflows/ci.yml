@@ -312,10 +312,49 @@ jobs:
             echo "::error::verify passed on a tampered APK"; exit 1
           fi
           echo "ok: the APK is signed, required and checked on release"
+          # latest.json is unsigned and written after signing, so it is listed from the signed directory.
+          write_pointer() { # write_pointer <dir> <tag>
+            (cd "$1" && ls | jq -R . | jq -s --arg tag "$2" '{tag: $tag, assets: .}' > "$work/latest.json.tmp")
+            mv "$work/latest.json.tmp" "$1/latest.json"
+          }
+          pointer_fixture="$work/release-pointer"
+          cp -r "$pristine" "$pointer_fixture"
+          write_pointer "$pointer_fixture" "v$version"
+          verify "$pointer_fixture" >/dev/null
+          FONTAINE_REQUIRE_POINTER=1 verify "$pointer_fixture" >/dev/null
+          if FONTAINE_REQUIRE_POINTER=1 verify "$pristine" >/dev/null 2>&1; then
+            echo "::error::verify passed with the pointer required and missing"; exit 1
+          fi
+          expect_pointer_fail() { # expect_pointer_fail <name> <mutation function> [verify args...]
+            local name="$1" mutate="$2"
+            shift 2
+            local d="$work/pointer-$name"
+            cp -r "$pointer_fixture" "$d"
+            "$mutate" "$d"
+            if verify "$d" "$@" >/dev/null 2>&1; then
+              echo "::error::verify passed on pointer case '$name'"; exit 1
+            fi
+            echo "ok: pointer '$name' rejected"
+          }
+          m_pointer_wrong_tag() { write_pointer "$1" v9.9.9; }
+          m_pointer_extra_asset() { (cd "$1" && jq '.assets += ["fontaine-ghost.tar.xz"]' latest.json > t && mv t latest.json); }
+          m_pointer_missing_asset() { (cd "$1" && jq '.assets |= .[1:]' latest.json > t && mv t latest.json); }
+          m_pointer_garbage() { echo 'not json' > "$1/latest.json"; }
+          expect_pointer_fail wrong-tag m_pointer_wrong_tag
+          expect_pointer_fail extra-asset m_pointer_extra_asset
+          expect_pointer_fail missing-asset m_pointer_missing_asset
+          expect_pointer_fail malformed m_pointer_garbage
+          echo "ok: the pointer is checked and required on release"
           dev_fixture="$work/dev-fixture"
           make_fixture "$dev_fixture"
           sign "$dev_fixture" main dev
           verify "$dev_fixture" dev >/dev/null
+          dev_pointer="$work/dev-pointer"
+          cp -r "$dev_fixture" "$dev_pointer"
+          write_pointer "$dev_pointer" "v$version"
+          if verify "$dev_pointer" dev >/dev/null 2>&1; then
+            echo "::error::verify passed on latest.json in the dev channel"; exit 1
+          fi
           for inst in $installers; do
             d="$work/dev-with-$inst"
             cp -r "$dev_fixture" "$d"

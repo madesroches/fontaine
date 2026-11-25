@@ -105,8 +105,9 @@ behalf.
    The workflow rejects a tag whose commit is not on `main`. It builds the archives, then pauses
    the `sign` job for your approval.
 6. Approve the `release-signing` deployment in the run. `sign` signs every archive, `host` creates
-   a draft release, `verify-draft` downloads the draft and verifies it, and `publish` makes it
-   public. If anything fails the draft stays a draft and nothing is public; delete the draft and
+   a draft release and uploads its `latest.json` pointer (what `fontaine update` reads), `verify-draft`
+   downloads the draft and verifies it, including that the pointer names the tag and the release's
+   files, and `publish` makes it public. If anything fails the draft stays a draft and nothing is public; delete the draft and
    the tag before retrying.
 
 ### Signing keys and environments
