@@ -127,6 +127,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Release tags are protected (#758): the release workflow now starts only for `v`-prefixed SemVer tags
+  (matching the `release-signing` environment) and its `plan` job fails a tag whose commit is not on
+  `main`. `.github/rulesets/release-tags.json` is an importable tag ruleset that blocks creating,
+  moving and deleting `v*` tags for everyone but repository admins; see `CONTRIBUTING.md`.
 - Dependabot version-update PRs are off and security updates are batched into one PR per ecosystem
   (`.github/dependabot.yml`).
 - Android agent dropdown (#777): the agents bar of wrapped chips under the status line is replaced by a

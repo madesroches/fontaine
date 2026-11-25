@@ -36,7 +36,8 @@ defaults:
     working-directory: rust
 
 # This task will run whenever you push a git tag that looks like a version
-# like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
+# like "v1.0.0" or "v0.1.0-prerelease.1". Only `v`-prefixed tags run: the `release-signing`
+# environment admits nothing else, so other shapes would build everything and then fail at `sign`.
 # Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
 # PACKAGE_NAME must be the name of a Cargo package in your workspace, and VERSION
 # must be a Cargo-style SemVer Version (must have at least major.minor.patch).
@@ -60,7 +61,7 @@ on:
   pull_request:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -80,6 +81,18 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
+      # Rulesets cannot say "on main" for a tag, so the workflow does. The checkout already
+      # created origin/main, and with no persisted credentials a separate fetch is not possible.
+      - name: Require the tagged commit to be on main
+        if: ${{ !github.event.pull_request }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $TAG points at $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
       # dist reads release notes only from the workspace root (`rust/`); the changelog lives at
       # the repository root.
       - name: Stage the changelog for dist

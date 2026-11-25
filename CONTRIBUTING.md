@@ -102,7 +102,8 @@ behalf.
    `cp ../CHANGELOG.md CHANGELOG.md && dist plan --tag vX.Y.Z --output-format=json | jq .announcement_changelog`
    (non-null), then remove the copy.
 5. Merge to `main`, then tag `vX.Y.Z` on the resulting merge commit on `main` and push the tag.
-   The release workflow builds the archives, then pauses the `sign` job for your approval.
+   The workflow rejects a tag whose commit is not on `main`. It builds the archives, then pauses
+   the `sign` job for your approval.
 6. Approve the `release-signing` deployment in the run. `sign` signs every archive, `host` creates
    a draft release, `verify-draft` downloads the draft and verifies it, and `publish` makes it
    public. If anything fails the draft stays a draft and nothing is public; delete the draft and
@@ -124,6 +125,15 @@ Environments, which are configured in GitHub, not in the repository:
 
 Only the `sign` jobs name an environment, and the deployment rules refuse runs from any other ref,
 pull requests included.
+
+**Tag ruleset.** `.github/rulesets/release-tags.json` is a GitHub ruleset that blocks creating,
+moving and deleting `v*` tags for everyone except repository admins, so the maintainer can still
+tag and delete a failed release's tag. It is a repository setting, inert until the maintainer
+applies it once:
+
+```sh
+gh api repos/madesroches/fontaine/rulesets --input .github/rulesets/release-tags.json
+```
 
 Until the keys are bootstrapped, the four files under `rust/fontaine/keys/` hold a placeholder
 comment, every verification fails with "no key for this channel", and the signing jobs fail their
