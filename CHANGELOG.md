@@ -230,6 +230,10 @@ All notable changes are recorded here. The format follows
   of refusing it as a native tool request; it is not retried (#714).
 - `SECURITY.md` lists the repository's secret scanning, push protection and Dependabot security
   updates (#759).
+- The note a `shell` or `powershell` call ends with when it moves to a background job at its
+  timeout or idle limit now says it is not an error, that the command keeps running, and that
+  waiting with `job_output` is the default; `job_cancel` is named as throwing away the work done.
+  The tool descriptions say a timeout does not stop the command (#792).
 
 #### Build and release
 
@@ -237,11 +241,6 @@ All notable changes are recorded here. The format follows
   Dependabot (`.github/dependabot.yml`) bumps the GitHub Actions and the Cargo dependencies weekly,
   grouped by minor and patch, leaving the exact-pinned `rig-*` crates alone. A `ci.yml` step runs
   `.github/scripts/check-pinned-actions.sh`, which fails on any unpinned `uses:` (#760).
-
-- The note a `shell` or `powershell` call ends with when it moves to a background job at its
-  timeout or idle limit now says it is not an error, that the command keeps running, and that
-  waiting with `job_output` is the default; `job_cancel` is named as throwing away the work done.
-  The tool descriptions say a timeout does not stop the command (#792).
 
 ### Fixed
 
