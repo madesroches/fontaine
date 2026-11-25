@@ -1309,10 +1309,9 @@ impl AgentTree {
 
     /// Brings back, as idle nodes with no handle yet, the agents of `records` (in spawn order,
     /// each with whether it ended `done`) that [`revivable_ids`] names. Tools are the type's cut
-    /// to the parent's, the mode is never looser than the parent's posture, and the depth comes
-    /// from the parent chain: all re-derived as at spawn. Each node keeps its type's ceiling and
-    /// its posture is derived from the parent's on every call. Call it once the root's tools and
-    /// posture are wired.
+    /// to the parent's and the depth comes from the parent chain: both re-derived as at spawn.
+    /// Each node keeps its type's ceiling and its posture is derived from the parent's on every
+    /// call. Call it once the root's tools are wired.
     pub fn rebuild(&self, records: &[(RebuildRecord, bool)], types: &AgentTypes) {
         let keep = revivable_ids(records, types);
         for (record, _) in records.iter().filter(|(r, _)| keep.contains(&r.id)) {
