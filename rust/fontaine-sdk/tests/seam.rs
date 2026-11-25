@@ -484,6 +484,22 @@ async fn an_explicit_mode_is_never_looser_than_the_parents() {
 }
 
 #[tokio::test]
+async fn raising_the_session_reaches_a_running_inherit_subagent() {
+    let rig = rig_with(
+        Limits::default(),
+        AgentTypes::builtin(),
+        Ladder::AcceptEdits,
+    );
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
+    spawn(&rig, args("worker", "x")).await.unwrap();
+    let child = rig.runner.spawned()[0].id.clone();
+    assert_eq!(rig.runner.spawned()[0].mode, Ladder::AcceptEdits);
+    assert_eq!(rig.tree.posture(&child).mode, Ladder::AcceptEdits);
+    rig.tree.set_root_mode(|| Ladder::Auto);
+    assert_eq!(rig.tree.posture(&child).mode, Ladder::Auto);
+}
+
+#[tokio::test]
 async fn the_models_precedence_is_the_call_then_the_type_then_the_session() {
     let rig = rig();
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));

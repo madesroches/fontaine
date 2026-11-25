@@ -267,6 +267,14 @@ All notable changes are recorded here. The format follows
 - Fix the flaky `free_ports_are_loopback_ports_that_can_be_bound` test: it retries with a fresh
   port when a parallel test takes the first one between the two steps (#700).
 
+#### Agents
+
+- A running subagent whose type inherits its mode now follows the session's current mode in both
+  directions (#790): loosening the session from `acceptEdits` to `auto` also loosens the subagent's
+  next call, where it used to stay at the mode it was spawned under. An explicit `manual` or
+  `dontAsk` type mode is a ceiling under the parent's current mode, and a subagent is still never
+  looser than its parent. See `docs/agents.md`.
+
 ### Removed
 
 - `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what

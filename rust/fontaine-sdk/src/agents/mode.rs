@@ -35,13 +35,15 @@ impl Posture {
     }
 }
 
-/// The mode a child starts with: its type's setting resolved against the parent's posture at
-/// spawn. `Inherit` takes the parent's mode as it is then; an explicit mode is capped by it.
-pub fn own_mode(setting: ModeSetting, parent: Posture) -> Ladder {
-    match setting {
-        ModeSetting::Inherit => parent.mode,
-        ModeSetting::Manual => Ladder::Manual.min(parent.mode),
-        ModeSetting::DontAsk => Ladder::DontAsk,
+impl ModeSetting {
+    /// The loosest mode a child of this type may ever run in; its effective mode is this
+    /// capped by its parent's current posture.
+    pub fn ceiling(self) -> Ladder {
+        match self {
+            ModeSetting::Inherit => Ladder::Auto,
+            ModeSetting::Manual => Ladder::Manual,
+            ModeSetting::DontAsk => Ladder::DontAsk,
+        }
     }
 }
 
@@ -49,29 +51,38 @@ pub fn own_mode(setting: ModeSetting, parent: Posture) -> Ladder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_child_is_never_looser_than_its_parent() {
-        let parent = Posture {
-            mode: Ladder::Manual,
-        };
-        assert_eq!(own_mode(ModeSetting::Inherit, parent), Ladder::Manual);
-        let auto = Posture { mode: Ladder::Auto };
-        let own = own_mode(ModeSetting::Inherit, auto);
-        assert_eq!(own, Ladder::Auto);
-        // The parent drops to manual later: the child follows.
-        assert_eq!(Posture::child(own, parent).mode, Ladder::Manual);
-        // And back up: the child's own mode is the ceiling.
-        assert_eq!(Posture::child(own, auto).mode, Ladder::Auto);
+    fn at(mode: Ladder) -> Posture {
+        Posture { mode }
     }
 
     #[test]
-    fn an_explicit_mode_never_exceeds_the_parent() {
-        let dont_ask = Posture {
-            mode: Ladder::DontAsk,
-        };
-        assert_eq!(own_mode(ModeSetting::Manual, dont_ask), Ladder::DontAsk);
-        let auto = Posture { mode: Ladder::Auto };
-        assert_eq!(own_mode(ModeSetting::Manual, auto), Ladder::Manual);
-        assert_eq!(own_mode(ModeSetting::DontAsk, auto), Ladder::DontAsk);
+    fn an_inherit_child_follows_the_parent_both_ways() {
+        let ceiling = ModeSetting::Inherit.ceiling();
+        assert_eq!(
+            Posture::child(ceiling, at(Ladder::AcceptEdits)).mode,
+            Ladder::AcceptEdits
+        );
+        assert_eq!(Posture::child(ceiling, at(Ladder::Auto)).mode, Ladder::Auto);
+        assert_eq!(
+            Posture::child(ceiling, at(Ladder::Manual)).mode,
+            Ladder::Manual
+        );
+    }
+
+    #[test]
+    fn an_explicit_mode_is_a_ceiling_under_the_parent() {
+        let manual = ModeSetting::Manual.ceiling();
+        assert_eq!(
+            Posture::child(manual, at(Ladder::DontAsk)).mode,
+            Ladder::DontAsk
+        );
+        assert_eq!(
+            Posture::child(manual, at(Ladder::Auto)).mode,
+            Ladder::Manual
+        );
+        let dont_ask = ModeSetting::DontAsk.ceiling();
+        for parent in [Ladder::Manual, Ladder::AcceptEdits, Ladder::Auto] {
+            assert_eq!(Posture::child(dont_ask, at(parent)).mode, Ladder::DontAsk);
+        }
     }
 }

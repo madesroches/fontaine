@@ -202,9 +202,12 @@ parent's mode), `manual` or `dontAsk`; an explicit mode can only be at or below 
 subagent can run in `acceptEdits` or `auto` only by inheriting it from a parent that is already
 there.
 
-The mode is not fixed when the subagent starts. On every call it is the tighter of the subagent's
-own mode and its parent's mode *at that moment*, so if you cycle the session from `auto` to
-`manual` while a subagent works, its next call asks you.
+The mode is not fixed when the subagent starts. On every call it is the tighter of the type's
+ceiling and its parent's mode *at that moment*. An `inherit` subagent has no ceiling of its own, so
+it follows the parent both ways: if you cycle the session from `auto` to `manual` while a subagent
+works, its next call asks you, and if you loosen the session from `acceptEdits` to `auto`, its next
+call is judged in `auto`. An explicit `manual` or `dontAsk` is a ceiling: the subagent runs in the
+tighter of it and the parent's current mode.
 
 ## Every call is gated
 

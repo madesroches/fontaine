@@ -11,7 +11,7 @@ use rig_core::tool::{Tool, ToolContext, ToolExecutionError, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::agents::mode::own_mode;
+use crate::agents::mode::Posture;
 use crate::agents::registry::{AgentTypes, ModelSpec};
 use crate::agents::root_ledger::{AgentEvent, RootLedger};
 use crate::agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
@@ -1135,7 +1135,8 @@ impl Tool for AgentTool {
         if depth >= limits.max_depth {
             tools.retain(|tool| tool != "agent");
         }
-        let mode = own_mode(agent_type.mode, self.tree.parent_posture(&caller));
+        let ceiling = agent_type.mode.ceiling();
+        let mode = Posture::child(ceiling, self.tree.parent_posture(&caller)).mode;
         let id = self
             .tree
             .reserve_named(
@@ -1143,7 +1144,7 @@ impl Tool for AgentTool {
                 &agent_type.name,
                 &model.as_text(),
                 tools.clone(),
-                mode,
+                ceiling,
                 args.name.as_deref(),
             )
             .map_err(|refusal| match refusal {
