@@ -38,17 +38,9 @@ defaults:
 # This task will run whenever you push a git tag that looks like a version
 # like "v1.0.0" or "v0.1.0-prerelease.1". Only `v`-prefixed tags run: the `release-signing`
 # environment admits nothing else, so other shapes would build everything and then fail at `sign`.
-# Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
-# PACKAGE_NAME must be the name of a Cargo package in your workspace, and VERSION
-# must be a Cargo-style SemVer Version (must have at least major.minor.patch).
-#
-# If PACKAGE_NAME is specified, then the announcement will be for that
-# package (erroring out if it doesn't have the given version or isn't dist-able).
-#
-# If PACKAGE_NAME isn't specified, then the announcement will be for all
-# (dist-able) packages in the workspace with that version (this mode is
-# intended for workspaces with only one dist-able package, or with all dist-able
-# packages versioned/released in lockstep).
+# The VERSION must be a Cargo-style SemVer Version (at least major.minor.patch), and the
+# announcement covers all (dist-able) packages in the workspace with that version. Tags that
+# carry a PACKAGE_NAME (`my-app/0.1.0`) do not start this workflow.
 #
 # If you push multiple tags at once, separate instances of this workflow will
 # spin up, creating an independent announcement for each one. However, GitHub
