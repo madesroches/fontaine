@@ -88,6 +88,17 @@ pub struct ActiveSkill {
     pub declared: Vec<String>,
 }
 
+/// A skill the user ran by typing its command this turn: its text after argument substitution,
+/// with each `!` command left as its command text, never its output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvokedSkill {
+    pub name: String,
+    pub text: String,
+}
+
+/// The most of an [`InvokedSkill`]'s text the guardian reads.
+pub const INVOKED_SKILL_CHARS: usize = 12_000;
+
 /// The kinds of multi-step git operation that can be stopped halfway in a work tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -155,6 +166,9 @@ pub struct SessionFacts {
     pub project_environment: Option<ProjectEnvironmentFacts>,
     /// Trusted skills active for the calling agent this turn. Only the guardian sees them.
     pub active_skills: Vec<ActiveSkill>,
+    /// The skill the user ran by typing its command this turn, for the agent it was expanded for,
+    /// when the user wrote it or trusted it. User-sourced intent for the guardian only.
+    pub invoked_skill: Option<InvokedSkill>,
     /// What the calling subagent was told to do when it was spawned, cut to
     /// [`AGENT_TASK_CHARS`]. Agent-written, so the guardian treats it as untrusted data and
     /// never as the user's intent; `None` for the root agent. Only the guardian sees it.

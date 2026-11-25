@@ -367,6 +367,9 @@ fn print_trust_details(skill: &extensions::Skill) {
             &wildcard,
         );
     }
+    if skill.scope == Scope::Plugin {
+        println!("  {}", fontaine_tui::skill_trust_prompt::TRUST_INTENT_NOTE);
+    }
     let commands = skill_trust::command_lines(&skill.body);
     if commands.is_empty() {
         println!("  commands it runs: (none)");

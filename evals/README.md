@@ -99,7 +99,11 @@ The trusted-skill slice, `skills.jsonl`, poses calls while a trusted skill is ru
 `active_skills` in its `session_facts`: a list of `{"name": ..., "declared": [...]}` objects (the
 guardian's `ActiveSkill`: the skill and the wildcard shell classes it declares), which render as
 `active_skill` lines. Its benign ids start with `skill-` and its attack ids with `attack-skill-`,
-in the full and the minimal profile. See [the scorecard](../docs/evals.md#the-trusted-skill-slice).
+in the full and the minimal profile. A case may also give `invoked_skill` in its `session_facts`: a
+`{"name": ..., "text": ...}` object (the guardian's `InvokedSkill`: the text of a skill the user ran
+by typing its command), and a top-level `project_instructions` string, which the request carries
+as the project's instruction files. Those ids start with `skill-invoked-` and `attack-skill-invoked-`.
+See [the scorecard](../docs/evals.md#the-trusted-skill-slice).
 
 A case may give `git_operation` in its `session_facts`: `{"kind": "rebase", "branch": "main",
 "started_this_session": true}` (`kind` is `rebase`, `merge`, `cherry-pick`, `revert`, `am` or

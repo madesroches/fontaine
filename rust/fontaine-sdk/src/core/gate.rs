@@ -12,7 +12,9 @@ use crate::agents::mode::Ladder;
 use crate::agents::registry::AgentTypes;
 use crate::agents::tree::AgentTree;
 use crate::guardian::composition::Composition;
-use crate::guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Settings};
+use crate::guardian::{
+    EnvironmentConfig, Guardian, InvokedSkill, LoopBreaker, RuleConfig, Settings,
+};
 use crate::tools::gate::ROOT_AGENT;
 use crate::tools::live::Live;
 use crate::tools::lock::{lock, lock_recovering, read, write};
@@ -455,6 +457,7 @@ pub struct SessionState {
     usage: UsageLedger,
     skill_grants: Mutex<HashMap<String, Vec<SourcedRule>>>,
     skill_notes: Mutex<HashMap<String, Vec<TrustedSkillNote>>>,
+    invoked_skill: Mutex<HashMap<String, InvokedSkill>>,
     /// Skills the human was told lend nothing, so a session says it once per skill.
     skill_warned: Mutex<HashSet<String>>,
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
@@ -531,6 +534,7 @@ impl SessionState {
             usage: UsageLedger::default(),
             skill_grants: Mutex::default(),
             skill_notes: Mutex::default(),
+            invoked_skill: Mutex::default(),
             skill_warned: Mutex::default(),
             child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
@@ -1513,6 +1517,18 @@ impl SessionState {
             .unwrap_or_default()
     }
 
+    /// Records the skill the user ran for `agent` until the turn ends; a later one in the same
+    /// turn replaces it. The guardian reads it as the user's own instruction.
+    pub fn note_invoked_skill(&self, agent: &str, skill: InvokedSkill) {
+        lock(&self.invoked_skill, "invoked skill").insert(agent.to_string(), skill);
+    }
+
+    pub fn invoked_skill(&self, agent: &str) -> Option<InvokedSkill> {
+        lock(&self.invoked_skill, "invoked skill")
+            .get(agent)
+            .cloned()
+    }
+
     /// Tells the human, once per skill, that `skill` declares `allowed-tools` the session does not
     /// honour because the user has not trusted this version of it.
     pub fn warn_skill_not_trusted(&self, skill: &str, stale: bool) {
@@ -1534,6 +1550,7 @@ impl SessionState {
     pub fn end_turn(&self) {
         lock(&self.skill_grants, "skill grants").clear();
         lock(&self.skill_notes, "skill notes").clear();
+        lock(&self.invoked_skill, "invoked skill").clear();
     }
 
     pub fn set_child_restrictions(&self, agent: &str, restrictions: ChildRestrictions) {
@@ -1983,6 +2000,22 @@ mod tests {
             effort: None,
             retry: crate::core::retry::RetryPolicy::default(),
         }))
+    }
+
+    #[test]
+    fn an_invoked_skill_is_per_agent_replaced_by_a_later_one_and_cleared_by_the_turn_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), "invoked");
+        let skill = |name: &str| InvokedSkill {
+            name: name.into(),
+            text: "text".into(),
+        };
+        state.note_invoked_skill(ROOT_AGENT, skill("a"));
+        state.note_invoked_skill(ROOT_AGENT, skill("b"));
+        assert_eq!(state.invoked_skill(ROOT_AGENT), Some(skill("b")));
+        assert_eq!(state.invoked_skill("child"), None);
+        state.end_turn();
+        assert_eq!(state.invoked_skill(ROOT_AGENT), None);
     }
 
     const HINT: &str = "chain, pipe, redirect or substitution";

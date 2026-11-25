@@ -169,6 +169,9 @@ pub struct Case {
     pub agent_message_before_reply: Option<String>,
     pub prior_denials: Option<Vec<PriorDenial>>,
     pub session_facts: Option<serde_json::Value>,
+    /// `guardian` cases: the project instructions (CLAUDE.md or AGENTS.md text) the request
+    /// carries; absent means none.
+    pub project_instructions: Option<String>,
     pub mode: Option<PermissionMode>,
     pub workspace: Option<Workspace>,
     pub auto_mode: Option<AutoModeOverrides>,
@@ -312,6 +315,15 @@ pub fn validate_case(case: &Case) -> Vec<String> {
             serde_json::from_value::<Vec<fontaine_sdk::guardian::ActiveSkill>>(value.clone())
     {
         err(format!("`session_facts.active_skills` does not parse: {e}"));
+    }
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
+        .and_then(|facts| facts.get("invoked_skill"))
+        && let Err(e) =
+            serde_json::from_value::<fontaine_sdk::guardian::InvokedSkill>(value.clone())
+    {
+        err(format!("`session_facts.invoked_skill` does not parse: {e}"));
     }
     if let Some(value) = case
         .session_facts

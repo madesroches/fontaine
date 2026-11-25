@@ -250,6 +250,7 @@ fn facts(
             .as_ref()
             .map(crate::core::project_env::to_facts),
         active_skills: Vec::new(),
+        invoked_skill: None,
         agent_task: None,
         git_operation: git_operation(view, scope.primary()),
     }
@@ -363,6 +364,7 @@ pub fn build(
             declared: note.declared,
         })
         .collect();
+    session_facts.invoked_skill = state.invoked_skill(caller);
     session_facts.agent_task = agent_task(&view, caller);
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     let auto = state.auto_context();

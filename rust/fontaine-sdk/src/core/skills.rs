@@ -18,6 +18,7 @@ use crate::core::extensions::{Extensions, Scope, Skill};
 use crate::core::gate::{SessionState, TrustedSkillNote};
 use crate::core::permission_rules::{Rule, is_broad_code_execution};
 use crate::core::skill_trust::TrustState;
+use crate::guardian::{INVOKED_SKILL_CHARS, InvokedSkill, leading_chars};
 use crate::tools::live::Live;
 
 /// Whether a declared rule names a whole class of shell commands: a shell-class tool with no
@@ -237,7 +238,8 @@ impl SkillRuntime {
     /// rules, as it always has. A plugin skill lends nothing until the user trusts this version
     /// of the file, and then only its specific rules; the wildcard shell rules of a trusted skill
     /// are never an allow in any mode and reach the guardian as context instead.
-    fn lend_rules(&self, skill: &Skill, agent: &str) {
+    /// Returns whether the user trusts this version of the skill.
+    fn lend_rules(&self, skill: &Skill, agent: &str) -> bool {
         let extensions = self.extensions.get();
         let trusted = extensions.trust_state(skill) == TrustState::Trusted;
         match skill.scope {
@@ -287,6 +289,7 @@ impl SkillRuntime {
                 );
             }
         }
+        trusted
     }
 
     /// The text of skill `name` for `agent`: arguments substituted first, then its commands
@@ -321,8 +324,19 @@ impl SkillRuntime {
                 "the skill `{name}` is for the user to run with /{name}; it cannot be loaded by the model"
             ));
         }
-        self.lend_rules(skill, agent);
+        let trusted = self.lend_rules(skill, agent);
         let body = substitute(&skill.body, arguments);
+        // A user-scope skill's trust state can be Stale, so `trusted` alone would wrongly exclude
+        // it. The `!` commands are still unrun here, so their output never reaches the block.
+        if !by_model && (skill.scope == Scope::User || (skill.scope == Scope::Plugin && trusted)) {
+            self.state.note_invoked_skill(
+                agent,
+                InvokedSkill {
+                    name: skill.name.clone(),
+                    text: leading_chars(&body, INVOKED_SKILL_CHARS).to_string(),
+                },
+            );
+        }
         let mut out = String::new();
         for part in parts(&body) {
             match part {
