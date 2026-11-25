@@ -39,11 +39,15 @@ Presentation-only change; no wire, host or `App` state-machine change.
 - **Popup**: one `igSelectable` per chip in the existing order, label `[! ]name status`, the viewed
   one drawn selected. Choosing a different one pushes `Tap::ViewAgent(id)` (same tap as today);
   choosing the viewed one is a no-op. ImGui closes the popup on selection.
-- **Label logic** moves into portable `layout.rs` as a pure function
-  `agent_combo_preview(chips: &[AgentChip]) -> String` (or equivalent over plain fields) so it is
-  unit tested on the host; `ui.rs` only draws.
-- **Removed**: `agents_bar`, `layout::chip_rows` and its tests (dead after the change; no other
-  caller). `agent_header` stays (model and spend), drawn where it is today.
+- **Label logic** moves into portable `layout.rs` as a pure function over plain fields,
+  `agent_combo_preview(name, status, waiting_elsewhere) -> String` (no `app` import), so it is unit
+  tested on the host; `ui.rs` only draws. When the viewed agent is not among the chips (it left the
+  list but stays viewable), the preview falls back to the viewed id.
+- **Widget details**: `igSetNextItemWidth(avail_width())` and a hidden label (`##agent-combo`) so
+  the box is full width; each `igSelectable` gets a unique `##agent-{i}` suffix.
+- **Removed**: `agents_bar`, `text_height_width` (only `agents_bar` calls it), `layout::chip_rows`
+  and its tests (no other callers). `agent_header` stays (model and spend), drawn where it is today.
+  The `app.rs` doc comments "The bar's rows" and "One agent of the bar" are reworded.
 - Footer height: `footer_px` is measured per frame, so one combo row replaces N wrapped chip rows
   above the transcript with no further layout work. The first frame uses the existing estimate
   (`row * 3.0`); add one row to that fallback when the combo shows.
@@ -51,17 +55,18 @@ Presentation-only change; no wire, host or `App` state-machine change.
 ## Implementation Steps
 
 1. `layout.rs`: add the preview-label function and tests; delete `chip_rows` and its tests.
-2. `android/ui.rs`: delete `agents_bar` and its call; add `agent_combo(agents, taps)` and call it
+2. `android/ui.rs`: delete `agents_bar`, `text_height_width` and the call; add `agent_combo(agents, taps)` and call it
    in the footer before `field_frame`; adjust the `footer` fallback estimate.
 3. `docs/android.md`: rewrite the agents-bar bullet as the dropdown above the message field.
 4. `CHANGELOG.md`: user-visible entry for #777.
 5. Run the gates from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test -p fontaine-android`; compile-check the Android layer if the target is installed
-   (`cargo check -p fontaine-android --target aarch64-linux-android`).
+   `cargo test -p fontaine-android`; the Android layer is cfg-gated, so also run
+   `cargo clippy -p fontaine-android --target aarch64-linux-android -- -D warnings` if the target
+   is installed (it catches dead code the host clippy cannot see).
 
 ## Files to Modify
 
-- `rust/fontaine-android/src/layout.rs`
+- `rust/fontaine-android/src/layout.rs`, `rust/fontaine-android/src/app.rs` (doc comments only)
 - `rust/fontaine-android/src/android/ui.rs`
 - `docs/android.md`, `CHANGELOG.md`
 
@@ -87,7 +92,8 @@ Presentation-only change; no wire, host or `App` state-machine change.
 
 ## Testing Strategy
 
-- `layout.rs` unit tests for the preview label: selected only; waiting badge when another agent
+- `layout.rs` unit tests for the preview label: viewed agent missing from the chips (falls back to
+  the id); selected only; waiting badge when another agent
   waits and not when only the selected one does; status included; main selected.
 - Existing `app.rs` tests (`chips` order, selected, waiting, `view_agent`) stay green unchanged.
 - The ImGui drawing cannot be unit tested on the host; compile-checked for Android (see step 5).
