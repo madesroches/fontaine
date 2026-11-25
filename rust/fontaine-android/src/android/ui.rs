@@ -11,8 +11,9 @@ use crate::app::{AgentChip, AgentHeader, DialogView, Screen, View};
 use crate::commands::{DEVICE_COMMANDS, line_for};
 use crate::field::Field;
 use crate::layout::{self, Insets};
-use crate::model::{DiffKind, Entry, TodoItem, ToolStatus};
+use crate::model::{DiffKind, Entry, TodoItem};
 use crate::scroll::DragScroll;
+use crate::select::{self, Block, BlockSelection, ColorTag};
 
 /// What the person did this frame.
 pub enum Tap {
@@ -22,6 +23,8 @@ pub enum Tap {
     SelectRange(usize, usize),
     Cut,
     Copy,
+    /// Put this text, the selected transcript blocks, on the system clipboard.
+    CopyBlocks(String),
     SelectAll,
     SubmitField,
     PasteField,
@@ -109,6 +112,11 @@ const DIM: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const LONG_PRESS_SECS: f32 = 0.5;
 const SELECTION: [f32; 4] = [0.23, 0.50, 0.92, 0.45];
 const HEADING_SCALE: f32 = 1.4;
+/// Side of the touch target of a selection handle.
+const HANDLE_DP: f32 = 36.0;
+const HANDLE_RADIUS_DP: f32 = 6.0;
+/// How fast the transcript scrolls while a selection is dragged to its top or bottom edge.
+const EDGE_SCROLL_DP: f32 = 12.0;
 
 /// Per-frame state that outlives a frame and is not the app's.
 #[derive(Default)]
@@ -124,8 +132,43 @@ pub struct UiState {
     transcript_scroll: DragScroll,
     /// The touch in progress stopped a fling, so it must not also toggle a reasoning row.
     swallow_tap: bool,
+    /// The transcript's blocks the person selected, as indices into this frame's block list.
+    block_selection: Option<BlockSelection>,
+    /// Top and bottom of each block's drawn items in screen pixels, rebuilt every frame.
+    block_spans: Vec<(f32, f32)>,
+    /// Screen rects of the reasoning toggles drawn this frame, which a long press must skip.
+    toggle_rects: Vec<(f32, f32, f32, f32)>,
+    /// The agent the selection belongs to, by the id the transcript uses (empty is main).
+    viewed_for_selection: String,
+    /// Which end a handle drag moves: true is the start.
+    handle_drag: Option<bool>,
+    /// How far below its handle's edge the press landed, taken off the finger so that touching a
+    /// handle without moving leaves the selection alone.
+    handle_grab_dy: f32,
+    /// Left and right edge of the transcript's content in screen pixels, where the handles sit.
+    content_x: (f32, f32),
+    /// The press now held began over the transcript and was not given to anything else.
+    press_owned: bool,
+    /// The held press already got its long-press decision, so it is not made twice.
+    long_press_handled: bool,
+    /// A long press started a selection that the finger still extends.
+    selecting_blocks: bool,
+    /// The part of an edge auto-scroll step below one pixel.
+    edge_carry: f32,
     todos_open: bool,
     commands_open: bool,
+}
+
+impl UiState {
+    pub fn clear_block_selection(&mut self) {
+        self.block_selection = None;
+        self.handle_drag = None;
+        self.selecting_blocks = false;
+    }
+
+    fn selection_gesture(&self) -> bool {
+        self.selecting_blocks || self.handle_drag.is_some()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -265,6 +308,9 @@ pub fn draw(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState) -> Vec<Tap>
     }
     if !matches!(view.screen, Screen::Session) {
         state.footer_px = 0.0;
+        // The selection indexes the session's blocks, so it must not outlive leaving them.
+        state.clear_block_selection();
+        state.press_owned = false;
     }
     match view.screen {
         Screen::Scan => scan(view, frame, state, &mut taps),
@@ -945,26 +991,70 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     // height as "fill the rest" and a negative one as "rest minus this".
     let height = (avail().1 - footer - spacing_y).max(3.0 * line);
     let id = c("transcript");
+    let owner = view.viewed.unwrap_or_default();
+    let blocks = select::blocks(view.entries, |at| {
+        state.open_reasoning.contains(&(owner.to_string(), at))
+    });
+    if state.viewed_for_selection != owner {
+        state.viewed_for_selection = owner.to_string();
+        state.clear_block_selection();
+    }
+    if let Some(selection) = state.block_selection.as_mut()
+        && !selection.clamp(blocks.len())
+    {
+        state.clear_block_selection();
+    }
+    // A toggle row released after a long hold is not a tap on it.
+    // SAFETY: a frame is open; this only reads input state.
+    let long_release = unsafe {
+        sys::igIsMouseReleased_Nil(0)
+            && (*sys::igGetIO_Nil()).MouseDownDurationPrev[0] >= LONG_PRESS_SECS
+    };
     // SAFETY: a frame is open.
     let active_before = unsafe { sys::igGetActiveID() };
     // SAFETY: a frame is open; the child is ended below whether or not it is visible.
     let open = unsafe { sys::igBeginChild_Str(id.as_ptr(), v2(0.0, height), 0, 0) };
     if open {
-        let owner = view.viewed.unwrap_or_default();
+        state.block_spans.clear();
+        // SAFETY: a frame is open and the child is the current window.
+        let left = unsafe { sys::igGetCursorScreenPos() }.x;
+        state.content_x = (left, left + avail_width());
+        state.toggle_rects.clear();
+        let selected = state.block_selection.map(|s| s.range());
+        let no_toggle = state.swallow_tap || long_release;
+        let mut toggled = false;
+        let mut next = 0;
         for (at, entry) in view.entries.iter().enumerate() {
-            entry_row(
-                entry,
-                owner,
-                at,
-                &mut state.open_reasoning,
-                state.swallow_tap,
-            );
+            if let Entry::Reasoning { streaming, .. } = entry {
+                toggled |= reasoning_toggle(
+                    *streaming,
+                    owner,
+                    at,
+                    &mut state.open_reasoning,
+                    no_toggle,
+                    &mut state.toggle_rects,
+                );
+            }
+            while let Some(block) = blocks.get(next).filter(|b| b.entry == at) {
+                let continues = next > 0 && blocks[next - 1].entry == at;
+                let chosen = selected.as_ref().is_some_and(|r| r.contains(&next));
+                draw_block(block, continues, chosen, &mut state.block_spans);
+                next += 1;
+            }
         }
-        drag_scroll(state, frame.scale, active_before == 0);
+        if toggled {
+            // Opening or closing reasoning shifts every later block index.
+            state.clear_block_selection();
+        }
+        let handle_pressed = handle_press(state, frame.scale, active_before == 0);
+        drag_scroll(state, frame.scale, active_before == 0 && !handle_pressed);
+        selection_gestures(state, frame.scale, line);
         // SAFETY: inside the child window.
         unsafe {
             if frame.scroll_to_end
                 && !state.transcript_scroll.is_active()
+                && !state.selection_gesture()
+                && !state.press_owned
                 && sys::igGetScrollY() >= sys::igGetScrollMaxY() - line * 2.0
             {
                 sys::igSetScrollHereY(1.0);
@@ -992,6 +1082,7 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     } else {
         state.commands_open = false;
     }
+    selection_bar(state, &blocks, taps);
     let hint = if view.header.is_some() {
         "message this agent"
     } else {
@@ -1019,6 +1110,15 @@ fn session(view: &View<'_>, frame: &Frame<'_>, state: &mut UiState, taps: &mut V
     state.footer_px = unsafe { sys::igGetCursorPosY() } - footer_top;
 }
 
+/// Screen x where the current window's scroll bar begins.
+fn scrollbar_left() -> f32 {
+    // SAFETY: a frame is open and the transcript child is the current window; this only reads
+    // window and style state.
+    unsafe {
+        sys::igGetWindowPos().x + sys::igGetWindowWidth() - (*sys::igGetStyle()).ScrollbarSize
+    }
+}
+
 /// Scrolls the transcript child, which must be the current window with its rows submitted, by a
 /// finger drag and the fling after it. `free` is whether no other widget owned the active ID when
 /// the child began, so a press on one (the reasoning button excepted, which is submitted inside)
@@ -1038,12 +1138,11 @@ fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
         if sys::igIsMouseClicked_Bool(0, false) {
             let max = sys::igGetScrollMaxY();
             // The scroll bar is submitted by `igEndChild`, so it is tested by its rect.
-            let bar_left = sys::igGetWindowPos().x + sys::igGetWindowWidth()
-                - (*sys::igGetStyle()).ScrollbarSize;
-            let on_bar = max > 0.0 && sys::igGetMousePos().x >= bar_left;
+            let on_bar = max > 0.0 && sys::igGetMousePos().x >= scrollbar_left();
             let hovered =
                 sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-            if free && !on_bar && hovered {
+            state.press_owned = free && !on_bar && hovered;
+            if state.press_owned {
                 state.swallow_tap = scroll.press(y, now);
             } else {
                 scroll.abandon_press();
@@ -1079,86 +1178,289 @@ fn drag_scroll(state: &mut UiState, scale: f32, free: bool) {
     }
 }
 
-fn entry_row(
-    entry: &Entry,
-    owner: &str,
-    at: usize,
-    open: &mut HashSet<(String, usize)>,
-    swallow_tap: bool,
-) {
-    match entry {
-        Entry::User(body) => colored([0.5, 0.8, 1.0, 1.0], &format!("> {body}")),
-        Entry::Assistant { text: body, .. } => wrapped(body),
-        Entry::Tool {
-            tool,
-            summary,
-            status,
-            output,
-        } => {
-            let (mark, color) = match status {
-                ToolStatus::Pending => ("...", [0.7, 0.7, 0.7, 1.0]),
-                ToolStatus::Done => ("ok", [0.5, 0.9, 0.5, 1.0]),
-                ToolStatus::Failed(_) => ("failed", [1.0, 0.45, 0.4, 1.0]),
-                ToolStatus::Denied(_) => ("denied", [1.0, 0.7, 0.3, 1.0]),
-                ToolStatus::Interrupted => ("interrupted", [1.0, 0.7, 0.3, 1.0]),
-                ToolStatus::Unknown => ("?", [0.7, 0.7, 0.7, 1.0]),
-            };
-            colored(color, &format!("[{tool}] {summary} - {mark}"));
-            if let ToolStatus::Failed(why) | ToolStatus::Denied(why) = status {
-                wrapped(why);
-            }
-            if let Some(body) = output {
-                let shown: String = body.lines().take(6).collect::<Vec<_>>().join("\n");
-                colored([0.6, 0.6, 0.6, 1.0], &shown);
-            }
-        }
-        Entry::Notice {
-            warning, headline, ..
-        } => colored(
-            if *warning {
-                [1.0, 0.8, 0.3, 1.0]
-            } else {
-                [0.6, 0.6, 0.6, 1.0]
-            },
-            headline,
-        ),
-        Entry::Error(body) => colored([1.0, 0.45, 0.4, 1.0], &format!("! {body}")),
-        Entry::Reasoning {
-            text: body,
-            streaming,
-        } => {
-            let key = (owner.to_string(), at);
-            let opened = open.contains(&key);
-            let mark = if opened { "-" } else { "+" };
-            let label = format!(
-                "{mark} reasoning{}##reasoning-{at}",
-                if *streaming { " ..." } else { "" }
-            );
-            let clicked = styled_button(&label, avail_width(), &NEUTRAL);
-            // The release frame of a drag is still past the threshold; `igIsMouseDragging` is
-            // false by then.
-            // SAFETY: a frame is open.
-            let dragged = unsafe { sys::igIsMouseDragPastThreshold(0, -1.0) };
-            if clicked && !dragged && !swallow_tap {
-                if opened {
-                    open.remove(&key);
-                } else {
-                    open.insert(key);
-                }
-            }
-            if opened {
-                colored(DIM, body);
-            }
-        }
-        Entry::Shell { command, output } => {
-            colored([0.5, 0.8, 1.0, 1.0], &format!("$ {command}"));
-            colored([0.6, 0.6, 0.6, 1.0], output);
-        }
-        Entry::Attachment(name) => colored(DIM, &format!("attached: {name}")),
-        Entry::Other(_) => {}
+fn tag_color(tag: ColorTag) -> Option<[f32; 4]> {
+    match tag {
+        ColorTag::Plain => None,
+        ColorTag::User => Some([0.5, 0.8, 1.0, 1.0]),
+        ColorTag::Dim => Some(DIM),
+        ColorTag::Output => Some([0.6, 0.6, 0.6, 1.0]),
+        ColorTag::Pending => Some([0.7, 0.7, 0.7, 1.0]),
+        ColorTag::Ok => Some([0.5, 0.9, 0.5, 1.0]),
+        ColorTag::Failed => Some([1.0, 0.45, 0.4, 1.0]),
+        ColorTag::Caution => Some([1.0, 0.7, 0.3, 1.0]),
+        ColorTag::Warning => Some([1.0, 0.8, 0.3, 1.0]),
     }
 }
 
+/// Draws one block's parts, records its vertical span and highlights it when selected. The span
+/// runs from the first item's top to the last item's bottom, so the gaps between items belong to
+/// the block.
+fn draw_block(block: &Block, continues: bool, chosen: bool, spans: &mut Vec<(f32, f32)>) {
+    if continues {
+        // One blank line between paragraphs; the item spacing above and below the dummy is
+        // already part of it.
+        let spacing_y = style_pair(|s| s.ItemSpacing).1;
+        // SAFETY: a frame is open.
+        let line = unsafe { sys::igGetTextLineHeight() };
+        gap((line - 2.0 * spacing_y).max(0.0));
+    }
+    // SAFETY: a frame is open and a window is current.
+    let left = unsafe { sys::igGetCursorScreenPos() }.x;
+    let width = avail_width();
+    let mut top = None;
+    let mut bottom = 0.0;
+    for part in &block.parts {
+        match tag_color(part.color) {
+            Some(color) => colored(color, &part.text),
+            None => wrapped(&part.text),
+        }
+        // SAFETY: a frame is open; the last item is the text just drawn.
+        let (min, max) = unsafe { (sys::igGetItemRectMin(), sys::igGetItemRectMax()) };
+        top.get_or_insert(min.y);
+        bottom = max.y;
+    }
+    let Some(top) = top else {
+        return;
+    };
+    spans.push((top, bottom));
+    if chosen {
+        // SAFETY: a frame is open; the draw list is the current window's. The fill is translucent
+        // so the text under it stays readable.
+        unsafe {
+            sys::ImDrawList_AddRectFilled(
+                sys::igGetWindowDrawList(),
+                v2(left, top),
+                v2(left + width, bottom),
+                sys::igGetColorU32_Vec4(rgba(SELECTION)),
+                0.0,
+                0,
+            );
+        }
+    }
+}
+
+/// The toggle row of a reasoning entry. Returns whether this frame flipped its open state.
+fn reasoning_toggle(
+    streaming: bool,
+    owner: &str,
+    at: usize,
+    open: &mut HashSet<(String, usize)>,
+    no_toggle: bool,
+    rects: &mut Vec<(f32, f32, f32, f32)>,
+) -> bool {
+    let key = (owner.to_string(), at);
+    let opened = open.contains(&key);
+    let mark = if opened { "-" } else { "+" };
+    let label = format!(
+        "{mark} reasoning{}##reasoning-{at}",
+        if streaming { " ..." } else { "" }
+    );
+    let clicked = styled_button(&label, avail_width(), &NEUTRAL);
+    // SAFETY: a frame is open; the last item is the button.
+    let (min, max) = unsafe { (sys::igGetItemRectMin(), sys::igGetItemRectMax()) };
+    rects.push((min.x, min.y, max.x, max.y));
+    // The release frame of a drag is still past the threshold; `igIsMouseDragging` is false by
+    // then.
+    // SAFETY: a frame is open.
+    let dragged = unsafe { sys::igIsMouseDragPastThreshold(0, -1.0) };
+    if clicked && !dragged && !no_toggle {
+        if opened {
+            open.remove(&key);
+        } else {
+            open.insert(key);
+        }
+        return true;
+    }
+    false
+}
+
+/// Where the two handles of the selection sit, as screen points: the top-left of its first block
+/// and the bottom-right of its last.
+fn handle_centers(state: &UiState, scale: f32) -> Option<((f32, f32), (f32, f32))> {
+    let range = state.block_selection?.range();
+    let first = state.block_spans.get(*range.start())?;
+    let last = state.block_spans.get(*range.end())?;
+    // Inset by the radius so the whole circle is inside the child's clip and touchable.
+    let inset = HANDLE_RADIUS_DP * scale;
+    let right = state.content_x.1.min(scrollbar_left()) - inset;
+    Some(((state.content_x.0 + inset, first.0), (right, last.1)))
+}
+
+fn draw_handles(state: &UiState, scale: f32) {
+    let Some((start, end)) = handle_centers(state, scale) else {
+        return;
+    };
+    // SAFETY: a frame is open; the draw list is the current window's, which clips the handles to
+    // the transcript.
+    unsafe {
+        let list = sys::igGetWindowDrawList();
+        let color = sys::igGetColorU32_Vec4(rgba(ACCENT[1]));
+        for (x, y) in [start, end] {
+            sys::ImDrawList_AddCircleFilled(list, v2(x, y), HANDLE_RADIUS_DP * scale, color, 0);
+        }
+    }
+}
+
+/// Starts a handle drag when the press that just began is on a handle, and keeps that press from
+/// scrolling. Returns whether it did.
+fn handle_press(state: &mut UiState, scale: f32, free: bool) -> bool {
+    // SAFETY: a frame is open and the transcript child is the current window; this only reads
+    // input state.
+    unsafe {
+        if !sys::igIsMouseClicked_Bool(0, false) {
+            return false;
+        }
+        state.handle_drag = None;
+        state.selecting_blocks = false;
+        state.long_press_handled = false;
+        state.edge_carry = 0.0;
+        let Some((start, end)) = handle_centers(state, scale) else {
+            return false;
+        };
+        if !free || !sys::igIsWindowHovered(sys::ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) {
+            return false;
+        }
+        let at = sys::igGetMousePos();
+        if sys::igGetScrollMaxY() > 0.0 && at.x >= scrollbar_left() {
+            return false;
+        }
+        let half = HANDLE_DP * scale * 0.5;
+        let near = |(x, y): (f32, f32)| (at.x - x).abs() <= half && (at.y - y).abs() <= half;
+        // The end handle wins a tie, which is a one-block selection whose handles are close.
+        let which = if near(end) {
+            false
+        } else if near(start) {
+            true
+        } else {
+            return false;
+        };
+        state.handle_drag = Some(which);
+        state.handle_grab_dy = at.y - if which { start.1 } else { end.1 };
+        state.long_press_handled = true;
+        state.press_owned = false;
+        state.swallow_tap = true;
+        true
+    }
+}
+
+/// The long press that starts a selection, its extension by the finger or a handle, the
+/// auto-scroll at the edges and the clearing taps. Runs inside the transcript child after its
+/// rows, so the spans are this frame's.
+fn selection_gestures(state: &mut UiState, scale: f32, line: f32) {
+    // SAFETY: a frame is open and the transcript child is the current window; this only reads
+    // input and window state and sets the child's scroll for the next frame.
+    unsafe {
+        let io = sys::igGetIO_Nil();
+        let down = sys::igIsMouseDown_Nil(0);
+        let released = sys::igIsMouseReleased_Nil(0);
+        let mouse = sys::igGetMousePos();
+        let past_threshold = sys::igIsMouseDragPastThreshold(0, -1.0);
+
+        if down
+            && state.press_owned
+            && !state.long_press_handled
+            && (*io).MouseDownDuration[0] >= LONG_PRESS_SECS
+            && !past_threshold
+        {
+            state.long_press_handled = true;
+            let pressed = mouse;
+            let on_toggle = state.toggle_rects.iter().any(|&(x0, y0, x1, y1)| {
+                pressed.x >= x0 && pressed.x <= x1 && pressed.y >= y0 && pressed.y <= y1
+            });
+            // The press is a long one either way, so it must not scroll or toggle afterwards.
+            state.transcript_scroll.abandon_press();
+            state.swallow_tap = true;
+            if !on_toggle && let Some(at) = select::block_at(&state.block_spans, pressed.y) {
+                state.block_selection = Some(BlockSelection::new(at));
+                state.selecting_blocks = true;
+            }
+        }
+
+        if down {
+            let grab = if state.handle_drag.is_some() {
+                state.handle_grab_dy
+            } else {
+                0.0
+            };
+            let at = select::block_at(&state.block_spans, mouse.y - grab);
+            if let (Some(selection), Some(at)) = (state.block_selection.as_mut(), at) {
+                if state.selecting_blocks {
+                    selection.extend_to(at);
+                } else if let Some(start) = state.handle_drag {
+                    state.handle_drag = Some(selection.move_handle(start, at));
+                }
+            }
+            if state.selection_gesture() {
+                edge_scroll(state, mouse.y, scale, line, (*io).DeltaTime);
+            }
+        }
+
+        if released
+            && state.press_owned
+            && !state.long_press_handled
+            && !past_threshold
+            && state.block_selection.is_some()
+        {
+            state.clear_block_selection();
+        }
+        if !down {
+            state.handle_drag = None;
+            state.selecting_blocks = false;
+            state.edge_carry = 0.0;
+        }
+        if released {
+            state.press_owned = false;
+        }
+    }
+    draw_handles(state, scale);
+}
+
+/// Scrolls the transcript while the finger is within a line of its top or bottom edge, so a
+/// selection can reach blocks that are off screen.
+fn edge_scroll(state: &mut UiState, mouse_y: f32, scale: f32, line: f32, dt: f32) {
+    // SAFETY: a frame is open and the transcript child is the current window.
+    unsafe {
+        let top = sys::igGetWindowPos().y;
+        let bottom = top + sys::igGetWindowHeight();
+        let direction = if mouse_y < top + line {
+            -1.0
+        } else if mouse_y > bottom - line {
+            1.0
+        } else {
+            state.edge_carry = 0.0;
+            return;
+        };
+        state.edge_carry += direction * EDGE_SCROLL_DP * scale * dt;
+        let whole = state.edge_carry.trunc();
+        if whole != 0.0 {
+            state.edge_carry -= whole;
+            sys::igSetScrollY_Float(sys::igGetScrollY() + whole);
+        }
+    }
+}
+
+/// The bar above the prompt field while blocks are selected. Buttons rather than selectables, so
+/// the release that ends a long press cannot trigger them.
+fn selection_bar(state: &mut UiState, blocks: &[Block], taps: &mut Vec<Tap>) {
+    let Some(selection) = state.block_selection else {
+        return;
+    };
+    let count = selection.range().count();
+    caption(&format!(
+        "{count} block{} selected",
+        if count == 1 { "" } else { "s" }
+    ));
+    let (spacing_x, _) = style_pair(|s| s.ItemSpacing);
+    let half = (avail_width() - spacing_x) * 0.5;
+    if primary_button_sized("Copy##copy-blocks", half) {
+        taps.push(Tap::CopyBlocks(select::copy_text(blocks, &selection)));
+    }
+    // SAFETY: a frame is open.
+    unsafe { sys::igSameLine(0.0, -1.0) };
+    if secondary_button_sized("Clear##clear-blocks", avail_width()) {
+        state.clear_block_selection();
+    }
+}
 /// The row of agents under the status line: a chip each, wrapped to the width. A chip with a
 /// waiting dialog is marked with `!`.
 fn agents_bar(agents: &[AgentChip<'_>], taps: &mut Vec<Tap>) {

@@ -596,11 +596,17 @@ impl Activity {
     /// Puts the selection on the clipboard; false, with a notice, when it could not be written or
     /// nothing is selected.
     fn write_clipboard(&mut self) -> bool {
-        let selected = self.field.selected();
-        if selected.is_empty() {
+        let selected = self.field.selected().to_string();
+        self.write_clipboard_text(&selected)
+    }
+
+    /// Puts `text` on the clipboard; false, with a notice, when it is empty or could not be
+    /// written.
+    fn write_clipboard_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
             return false;
         }
-        if jni_bridge::set_clipboard_text(&self.android, selected).is_some() {
+        if jni_bridge::set_clipboard_text(&self.android, text).is_some() {
             return true;
         }
         self.app
@@ -667,6 +673,11 @@ impl Activity {
             Tap::SelectAll => self.field.select_all(),
             Tap::Copy => {
                 self.write_clipboard();
+            }
+            Tap::CopyBlocks(text) => {
+                if self.write_clipboard_text(&text) {
+                    self.ui_state.clear_block_selection();
+                }
             }
             Tap::Cut => {
                 if self.write_clipboard() {
