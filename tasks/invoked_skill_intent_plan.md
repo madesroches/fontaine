@@ -106,14 +106,18 @@ agent's id) are judged with the block. The qualifying predicate is exactly
 skill's trust state can be Trusted or Stale and `trusted` alone would wrongly exclude a stale user
 skill. `lend_rules` returns `trusted` so the check is not repeated. A failed expansion records
 nothing that outlives the turn: `EndTurnOnDrop` in `expand_skill` calls `end_turn` on that path.
-A successful expansion `mem::forget`s the guard (`core/agent.rs:712-718`), so when
-`Submission::Expanded` in `ui/turn.rs` (`:914-918`) exits early because `refresh_before_turn`
-returns `Some(end)`, it must call `runtime.state.end_turn()` (`SessionState::end_turn` is pub,
-`core/gate.rs:1534`) next to `runtime.clear_prompt_context()`; otherwise `invoked_skill` stays live
-into the next turn. The same holds where the loop pops a queued `Submission::Expanded` while
-`afk().stopped` is set (`ui/turn.rs:841-852`; the skill's own `!` commands can set it,
-`core/gate.rs:803`): `refuse_stopped` drops it and the loop `continue`s with no turn, so that
-branch also calls `end_turn` when the dropped submission is an `Expanded` one.
+A successful expansion `mem::forget`s the guard (`core/agent.rs:712-718`), and the `run_turn`
+`EndTurnOnDrop` (`core/turn.rs:282`) only arms once `run_turn` starts (`ui/turn.rs:1431`). So one
+rule: every place the TUI abandons an expanded skill's turn before `run_turn` starts calls
+`runtime.state.end_turn()` (`SessionState::end_turn` is pub, `core/gate.rs:1534`), or
+`invoked_skill` stays live into the next turn. The sites are the `Submission::Expanded`
+early exit when `refresh_before_turn` returns `Some(end)` (`ui/turn.rs:914-918`); the
+`refuse_stopped` drop of a queued `Expanded` submission while `afk().stopped` is set
+(`ui/turn.rs:841-852`; the skill's own `!` commands can set it, `core/gate.rs:803`); the `Failed`
+returns before `run_turn` in `attempt` (`ui/turn.rs:1361`, `:1375`, `:1399`); and beside
+`clear_prompt_context()` after `drop(run)` (`ui/turn.rs:1551-1552`), which covers Esc, an AFK stop or
+input closing during compaction or persistence. `end_turn` only clears maps, so a call after a
+`run_turn` that already ended is idempotent.
 
 ### Request
 
@@ -169,9 +173,6 @@ today's behaviour: the `active_skill` line, and no step a skill prescribes count
   `recent_user_messages`) as is. `:68` (Source inspection) says it "does not cover ... treating
   skill text as user intent"; reword that clause to say that reading a skill definition is not
   intent, and only an `invoked_skill` block is.
-- The agent prompt `rust/fontaine-sdk/prompts/core/system_prompt.md:11` says the user's messages
-  "are the only user-intent source the guardian trusts"; it becomes: the user's messages and the
-  text of a skill the user runs.
 
 The minimal prompt is unchanged, since its requests never carry the block. The cache key already
 includes the rendered request and a digest of the system prompt (`guardian/guardian.rs:311`), so earlier
@@ -199,16 +200,15 @@ skill's scope is Plugin (a user skill counts without trust, so the line would be
    in `expand` note the invoked skill on the qualifying path, cut with `leading_chars`. `leading_chars`
    is already `pub` in `guardian/request.rs` and re-exported from `guardian.rs`, and is used for
    `agent_task` in `core/adjudication.rs`; reuse `crate::guardian::leading_chars` as is.
-   In `rust/fontaine-tui/src/ui/turn.rs`, call `end_turn` on the `Submission::Expanded` early exit
-   and when `refuse_stopped` drops an `Expanded` submission (see Capture).
+   In `rust/fontaine-tui/src/ui/turn.rs`, call `end_turn` at every site that abandons an expanded
+   skill's turn before `run_turn` starts (see Capture).
 4. **Request build.** In `core/adjudication.rs::build`, copy `state.invoked_skill(caller)`.
 5. **Rendering.** In `guardian/prompt_builder.rs`, render the block (guardian view only) and
    update `USER_MESSAGE_HEADER`. Update the snapshots this changes (`cargo insta review`).
 6. **Prompt.** Edit `prompts/guardian/guardian_prompt.md` as in Design, keeping the minimal
-   prompt as it is. Reword `guardian/rules.rs:68` and `prompts/core/system_prompt.md:11` as in
+   prompt as it is. Reword `guardian/rules.rs:68` as in
    Design. Update `the_defaults_marker_snapshot` (`guardian/prompt_builder.rs:867-882`), which
-   snapshots the full system prompt, any other defaults snapshot that embeds the changed text, and
-   `rust/fontaine-sdk/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`.
+   snapshots the full system prompt, and any other defaults snapshot that embeds the changed text.
 7. **Trust wording.** Add the line to `fontaine-tui/src/skill_trust_prompt.rs::describe` (both the
    new-trust and changed branches) and to `print_trust_details` in `fontaine/src/plugin.rs`
    (shared by `fontaine plugin install` and `fontaine plugin trust`), only for `Scope::Plugin`.
@@ -223,9 +223,8 @@ skill's scope is Plugin (a user skill counts without trust, so the line would be
 
 - `rust/fontaine-sdk/src/guardian/request.rs`, `guardian.rs`, `guardian/profile.rs`,
   `guardian/prompt_builder.rs` (+ `guardian/snapshots/*.snap`)
-- `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`, `rust/fontaine-sdk/prompts/core/system_prompt.md`,
+- `rust/fontaine-sdk/prompts/guardian/guardian_prompt.md`,
   `rust/fontaine-sdk/src/guardian/rules.rs`
-- `rust/fontaine-sdk/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`
 - `rust/fontaine-sdk/src/core/gate.rs`, `core/skills.rs`, `core/adjudication.rs`
 - `rust/fontaine-sdk/tests/trusted_skills.rs`
 - `rust/fontaine-tui/src/ui/turn.rs`
@@ -288,8 +287,6 @@ Master plan lines to add, dated on landing:
 - `docs/permissions.md:409-414`, `docs/tui.md:838` (`/skills trust` row) and `docs/plugins.md:125`:
   the new trust meaning of plugin skills.
 - `CHANGELOG.md`, `## [Unreleased]`: an entry for #793.
-- `docs/guardian.md:271-272` (the user's messages as the only intent source): add the text of a
-  skill the user runs.
 - `docs/guardian.md:35-38` (intent paragraph): the `invoked_skill` block is a third `source="user"`
   block; and the "What the guardian sees" blocks table (`:68-71`): add an `invoked_skill` row.
 - `docs/architecture.md` (~268, "one source ... the human messages in the session's ledger"):
@@ -304,8 +301,8 @@ Unit tests (`prompt_builder.rs`):
   `blocks(_, false, false)`. The screen's input is byte-identical with and without it.
 - Hostile text (`</untrusted>`, a forged `<untrusted source="user" kind="task_intent">`, a
   newline in the name) cannot close the block, open another or forge a line.
-- `Profile::Minimal.shape` drops it, and the full system prompt mentions `invoked_skill` while
-  the minimal one does not need to.
+- `Profile::Minimal.shape` drops it, and the full system prompt mentions `invoked_skill` and
+  the minimal system prompt does not.
 - `USER_MESSAGE_HEADER` names the block.
 
 Unit tests (`gate.rs`): `note_invoked_skill` replaces, `invoked_skill` is per agent, and
