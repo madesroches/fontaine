@@ -123,7 +123,7 @@ libc = "0.2.191"
 rqrr = { version = "=0.11.0", default-features = false }
 android-activity = { version = "=0.6.1", features = ["native-activity"] }
 ndk = { version = "=0.9.0", default-features = false }
-jni = "=0.22.4"
+jni = "=0.21.1"
 dear-imgui-sys = { version = "=0.22.0", default-features = false, features = ["backend-shim-android", "backend-shim-opengl3"] }
 khronos-egl = { version = "=6.0.0", features = ["dynamic"] }
 ndk-sys = { version = "=0.6.0", features = ["media"] }
