@@ -15,7 +15,7 @@ use tokio::sync::Notify;
 
 use crate::agents::budget::{Budget, Exhausted, Spend};
 use crate::agents::effort::Effort;
-use crate::agents::mode::{Ladder, Posture, own_mode};
+use crate::agents::mode::{Ladder, Posture};
 use crate::agents::registry::{AgentType, AgentTypes, ModelSpec};
 use crate::agents::root_ledger::RootLedger;
 use crate::agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, RevivalRequest};
@@ -331,7 +331,7 @@ pub struct NodeInfo {
 
 struct Node {
     info: NodeInfo,
-    own_mode: Ladder,
+    ceiling: Ladder,
     budget: Budget,
     spend: Spend,
     status: ChildStatus,
@@ -676,7 +676,7 @@ impl AgentTree {
                 effort: None,
                 tools: Vec::new(),
             },
-            own_mode: Ladder::Manual,
+            ceiling: Ladder::Manual,
             budget: Budget::default(),
             spend: Spend::default(),
             status: ChildStatus::Running,
@@ -925,8 +925,9 @@ impl AgentTree {
     }
 
     /// How the pipeline should treat `agent`'s call right now: the root's mode for the root
-    /// (the pipeline reads that directly), and for a child the tighter of its own mode and its
-    /// parent's current posture, recomputed up the chain on every call.
+    /// (the pipeline reads that directly), and for a child the tighter of its type's ceiling and its
+    /// parent's current posture, recomputed up the chain on every call. An `inherit` child
+    /// therefore follows its parent both ways; an explicit mode is only a ceiling.
     pub fn posture(&self, agent: &str) -> Posture {
         let mut chain: Vec<Ladder> = Vec::new();
         {
@@ -939,7 +940,7 @@ impl AgentTree {
                 };
                 match &node.info.parent {
                     Some(parent) => {
-                        chain.push(node.own_mode);
+                        chain.push(node.ceiling);
                         at = parent;
                     }
                     None => break,
@@ -983,9 +984,9 @@ impl AgentTree {
         agent_type: &str,
         model: &str,
         tools: Vec<String>,
-        own_mode: Ladder,
+        ceiling: Ladder,
     ) -> Result<String, Refusal> {
-        self.reserve_named(parent, agent_type, model, tools, own_mode, None)
+        self.reserve_named(parent, agent_type, model, tools, ceiling, None)
     }
 
     /// Takes a place for a new child of `parent`. The count of running agents covers the
@@ -997,7 +998,7 @@ impl AgentTree {
         agent_type: &str,
         model: &str,
         tools: Vec<String>,
-        own_mode: Ladder,
+        ceiling: Ladder,
         name: Option<&str>,
     ) -> Result<String, Refusal> {
         let mut inner = self.lock();
@@ -1047,7 +1048,7 @@ impl AgentTree {
                     effort: None,
                     tools,
                 },
-                own_mode,
+                ceiling,
                 budget: self.limits.subagent,
                 spend: Spend::default(),
                 status: ChildStatus::Running,
@@ -1283,6 +1284,7 @@ impl AgentTree {
     /// What a runner needs to build the conversation of an agent a resumed session rebuilt, or
     /// `None` for one that already has its handle.
     pub fn revival_request(&self, id: &str, ledger: Arc<dyn RootLedger>) -> Option<RevivalRequest> {
+        let mode = self.posture(id).mode;
         let inner = self.lock();
         let node = inner.nodes.get(id)?;
         let agent_type = node.revival.clone()?;
@@ -1298,7 +1300,7 @@ impl AgentTree {
             agent_type,
             model,
             tools: node.info.tools.clone(),
-            mode: node.own_mode,
+            mode,
             budget: node.budget,
             depth: node.info.depth,
             ledger,
@@ -1308,7 +1310,8 @@ impl AgentTree {
     /// Brings back, as idle nodes with no handle yet, the agents of `records` (in spawn order,
     /// each with whether it ended `done`) that [`revivable_ids`] names. Tools are the type's cut
     /// to the parent's, the mode is never looser than the parent's posture, and the depth comes
-    /// from the parent chain: all re-derived as at spawn. Call it once the root's tools and
+    /// from the parent chain: all re-derived as at spawn. Each node keeps its type's ceiling and
+    /// its posture is derived from the parent's on every call. Call it once the root's tools and
     /// posture are wired.
     pub fn rebuild(&self, records: &[(RebuildRecord, bool)], types: &AgentTypes) {
         let keep = revivable_ids(records, types);
@@ -1323,7 +1326,6 @@ impl AgentTree {
             if depth >= self.limits.max_depth {
                 tools.retain(|tool| tool != "agent");
             }
-            let own = own_mode(agent_type.mode, self.parent_posture(parent));
             let model = record.model.clone().unwrap_or_else(|| {
                 agent_type
                     .model
@@ -1348,7 +1350,7 @@ impl AgentTree {
                         effort: None,
                         tools,
                     },
-                    own_mode: own,
+                    ceiling: agent_type.mode.ceiling(),
                     budget: self.limits.subagent,
                     spend: Spend::default(),
                     status: ChildStatus::Done,
@@ -2238,6 +2240,7 @@ impl AgentWaits for AgentTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::mode::ModeSetting;
     use futures::FutureExt;
 
     fn tree(max_parallel: u32) -> AgentTree {
@@ -2418,6 +2421,39 @@ mod tests {
         assert_eq!(tree.posture(&child).mode, Ladder::Manual);
         *mode.lock().unwrap() = Ladder::Auto;
         assert_eq!(tree.posture(&child).mode, Ladder::Auto);
+    }
+
+    #[test]
+    fn an_inherit_child_follows_a_parent_raised_above_its_spawn_mode() {
+        let tree = tree(4);
+        let mode = Arc::new(Mutex::new(Ladder::AcceptEdits));
+        let source = mode.clone();
+        tree.set_root_mode(move || *source.lock().unwrap());
+        let inherit = ModeSetting::Inherit.ceiling();
+        let child = tree
+            .reserve(ROOT_AGENT, "worker", "m", vec![], inherit)
+            .unwrap();
+        let grandchild = tree
+            .reserve(&child, "worker", "m", vec![], inherit)
+            .unwrap();
+        let capped = tree
+            .reserve(
+                ROOT_AGENT,
+                "worker",
+                "m",
+                vec![],
+                ModeSetting::Manual.ceiling(),
+            )
+            .unwrap();
+        assert_eq!(tree.posture(&child).mode, Ladder::AcceptEdits);
+        *mode.lock().unwrap() = Ladder::Auto;
+        assert_eq!(tree.posture(&child).mode, Ladder::Auto);
+        assert_eq!(tree.posture(&grandchild).mode, Ladder::Auto);
+        assert_eq!(tree.posture(&capped).mode, Ladder::Manual);
+        *mode.lock().unwrap() = Ladder::DontAsk;
+        assert_eq!(tree.posture(&capped).mode, Ladder::DontAsk);
+        *mode.lock().unwrap() = Ladder::Auto;
+        assert_eq!(tree.posture(&capped).mode, Ladder::Manual);
     }
 
     #[test]

@@ -52,8 +52,8 @@ pub struct SpawnRequest {
     pub model: ModelSpec,
     /// The tools the child gets, already cut down to the parent's.
     pub tools: Vec<String>,
-    /// The mode the child starts with; the runner holds the child to the tighter of this and
-    /// its parent's mode on every call.
+    /// The mode the child starts with; the tree re-derives it from the type's ceiling and the
+    /// parent's posture on every call.
     pub mode: Ladder,
     pub budget: Budget,
     /// Layers below the main conversation.
