@@ -126,29 +126,16 @@ pub fn agents_bar_visible(listed: usize) -> bool {
     listed > 1
 }
 
-/// Breaks chips of the given widths into rows that fit `avail`, keeping their order. A chip wider
-/// than a row gets a row to itself. Returns the index ranges of the rows.
-pub fn chip_rows(widths: &[f32], avail: f32, gap: f32) -> Vec<std::ops::Range<usize>> {
-    let mut rows = Vec::new();
-    let (mut start, mut used) = (0, 0.0);
-    for (i, width) in widths.iter().enumerate() {
-        let next = if i == start {
-            *width
-        } else {
-            used + gap + width
-        };
-        if i > start && next > avail {
-            rows.push(start..i);
-            start = i;
-            used = *width;
-        } else {
-            used = next;
-        }
+/// The text of an agent in the combo box, collapsed or listed. `waiting` marks a pending dialog
+/// the reader could otherwise miss; an empty `status` (the viewed agent left the list, so only its
+/// id is known) leaves the bare name.
+pub fn agent_combo_preview(name: &str, status: &str, waiting: bool) -> String {
+    let mark = if waiting { "! " } else { "" };
+    if status.is_empty() {
+        format!("{mark}{name}")
+    } else {
+        format!("{mark}{name} {status}")
     }
-    if start < widths.len() {
-        rows.push(start..widths.len());
-    }
-    rows
 }
 
 /// Side of the square scan card: as wide as the window allows, shrunk so the paste section below
@@ -330,23 +317,23 @@ mod tests {
     }
 
     #[test]
-    fn chips_wrap_into_rows_in_order() {
-        assert!(chip_rows(&[], 100.0, 4.0).is_empty());
-        assert_eq!(chip_rows(&[30.0, 30.0, 30.0], 100.0, 4.0), vec![0..3]);
+    fn the_combo_preview_names_the_agent_and_its_status() {
+        assert_eq!(agent_combo_preview("main", "idle", false), "main idle");
         assert_eq!(
-            chip_rows(&[30.0, 30.0, 30.0, 30.0], 100.0, 4.0),
-            vec![0..3, 3..4]
+            agent_combo_preview("reviewer", "running", false),
+            "reviewer running"
         );
-        // 30 + 4 + 30 + 4 + 30 = 98 fits; one more pixel does not.
-        assert_eq!(chip_rows(&[30.0, 30.0, 31.0], 98.0, 4.0), vec![0..2, 2..3]);
     }
 
     #[test]
-    fn a_chip_wider_than_a_row_stands_alone() {
-        assert_eq!(
-            chip_rows(&[20.0, 500.0, 20.0], 100.0, 4.0),
-            vec![0..1, 1..2, 2..3]
-        );
+    fn the_combo_preview_marks_a_waiting_dialog() {
+        assert_eq!(agent_combo_preview("main", "idle", true), "! main idle");
+    }
+
+    #[test]
+    fn the_combo_preview_falls_back_to_the_bare_id() {
+        assert_eq!(agent_combo_preview("agent-7", "", false), "agent-7");
+        assert_eq!(agent_combo_preview("agent-7", "", true), "! agent-7");
     }
 
     #[test]

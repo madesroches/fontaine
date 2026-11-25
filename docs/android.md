@@ -88,9 +88,11 @@ until it commits. The keyboard's Send key submits the field, like Enter.
   shown (the summary and the first six lines of output). Tapping the transcript, toggling a
   reasoning row or switching agents also clears the selection. Holding a reasoning toggle selects
   nothing.
-- When the session has subagents, an **agents bar** lists main and every agent with its status:
-  running ones first, then failed, then the rest. Tap one to read its transcript, live. An agent that
-  waits on an approval or a question is marked `!`. The view you pick is yours alone and never moves
+- When the session has subagents, an **agent dropdown** above the message field
+  shows the agent on screen. Tap it to list main and every agent with its status: running ones
+  first, then failed, then the rest. Choose one to read its transcript, live. An agent that waits on
+  an approval or a question is marked `!`, and the closed dropdown carries the mark while another
+  agent than the one on screen waits. The view you pick is yours alone and never moves
   the host's. The message field then writes to that agent, **Stop agent** ends it, and a slash line is
   refused with "switch to main to run commands". The agent stays viewable after it leaves the list.
 - Reasoning rows are collapsed: tap one to read it. Shell lines, attachments, the host's todo list
