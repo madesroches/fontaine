@@ -31,34 +31,37 @@ storage, lifecycle and pre-summary pruning.
 - `jobs/cut.rs::cut` gains the spill step ahead of the cut: when the output does not fit the
   limit and a spill directory is configured, the full sanitized text (already escape-stripped and
   redacted per line by `sanitize`) is written with `Spill::create("shell")`, and the cut text ends
-  with one footer line `[output cut; full output: <path>. Use read with offset/limit, or grep that
+  with one footer line `[output cut; full output saved for this session: <path>. Use read with offset/limit, or grep that
   file.]`. The path is in the result text, not only `OutputCut.spill`, and `OutputCut.spill` is also
   set so tool metadata agrees.
 - The shell tool gets its own `Spill` in a separate directory, `scratch/shell-output` (not
   `mcp-results`), built from the session scratch directory in `core/agent/mcp.rs`; no scratch
-  directory means the current cut with no footer. `cut` and `render_read` return and propagate a
-  write error; callers warn once through the existing `warn` hook (`builtins.rs:1174`-style) and
-  fall back to the current cut.
+  directory means the current cut with no footer. `cut` does the fallback itself on a write
+  error: it returns the cut text without a footer, the `OutputCut` fact and an `Option<io::Error>`.
+  `render_read` (`tools/jobs/tools.rs`, two callers) and `render_foreground` pass the error up, and the
+  caller warns once through the existing `warn` hook (`builtins.rs:1174`-style). Both
+  `render_foreground` callers, the tool call (`builtins.rs:565`) and the `ShellRun::run` path
+  (`builtins.rs:845`), spill.
 - Lost bytes: when `Chunk.missed > 0` the ring already dropped the front, so the file holds only the
   retained part. The footer says so (`first N lines were dropped before this file`), and never
   claims the file is complete. The spill file for a foreground call is written from the chunk the
   call holds; background jobs spill in `job_output` the same way, one file per read that cuts.
-- The footer wording says "this session".
 - A spill file is capped at the 64 MiB `OUTPUT_CAP`.
 
 ### 2. Prune old results before summarising
 - New `core/prune.rs` (SDK core, no new dependency): `prune_old_results(messages, min_chars)`
-  returns a copy where each tool result in the summarized range (before `plan.keep_from`, which
-  already marks the kept tail) longer than `min_chars` (8,192 characters, head 4,096 and tail 1,024, as the issue's measurement)
+  returns a copy where each tool result in the summarized range (`messages[from..upto]`, before the kept tail) longer than `min_chars` (8,192 characters, head 4,096 and tail 1,024, as the issue's measurement)
   becomes head + `[… N chars pruned …]` + tail. A result that already carries a spill footer keeps
   the footer line. Images and error results are left alone.
-- `compact_via` prunes a clone passed to `plan_summary` and applies the summary (`apply_summary`)
-  to the unpruned conversation. Pruning preserves message count and order. The saved conversation is
+- `plan_summary(&Conversation, ..)` picks the cut and embeds the older messages in one call, so
+  `compact_via` does not call it. It calls `policy.cut_summary` on the unpruned conversation for
+  `keep_from` and the state, prunes `messages[from..upto]` into a new `Vec<Arc<Message>>`, calls the
+  public `policy.plan(state, &pruned, from, upto, spec, reason)`, and applies the summary
+  (`apply_summary`) to the unpruned conversation. The `UnsupportedOption` error of `plan` replaces
+  the one `plan_summary` returns and keeps the existing handling near `session.rs:659`. Pruning
+  preserves message count and order. The saved conversation is
   untouched, so the kept tail after compaction is byte-identical and the prompt cache is not
   invalidated by pruning (compaction invalidates it anyway).
-- Trigger floor: prune only when the conversation is over the compaction threshold (it is, by
-  definition, when `compact_via` runs), and never below `min_chars`, so a threshold far below the
-  window cannot turn pruning into a loop.
 - Measure whether it pays: a ledger-style counter of tokens before and after pruning goes into the
   existing compaction event (`CompactResult::Compacted` already reports `before` and `after`), so the
   issue's question is answered from real sessions.
@@ -66,13 +69,14 @@ storage, lifecycle and pre-summary pruning.
 ## Implementation Steps
 1. `jobs/cut.rs`: spill-aware `cut` (new parameter `Option<&Spill>`), footer, tests.
 2. Thread the spill through `render_foreground` and `job_output`; build it from the scratch dir.
-3. `core/prune.rs` plus the call in `compact_via`; tests.
+3. `core/prune.rs`; rewire `compact_via` to `cut_summary`, prune, `plan`, `apply_summary`; tests.
 4. Docs, CHANGELOG, snapshot updates if any prompt text changes.
 
 ## Files to Modify
 `rust/fontaine-sdk/src/tools/jobs/cut.rs`, `tools/jobs/tools.rs`, `tools/builtins.rs`,
-`core/agent/mcp.rs`, `core/session.rs`, new `core/prune.rs`,
-`docs/` page on tools/context, `CHANGELOG.md`.
+`core/agent/mcp.rs` (builds the shell spill from the scratch directory), the plumbing that carries it
+into `BuiltinEnv`, `ShellSettings` and `ShellTool` in `tools/builtins.rs`, `core/session.rs`, new `core/prune.rs`,
+`docs/tools.md`, `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`.
 
 ## Trade-offs
 - Spilling in `cut` rather than raising the ring size: the ring is bounded memory; a file is not.
@@ -87,8 +91,9 @@ storage, lifecycle and pre-summary pruning.
 - Prune thresholds are constants, no config key.
 
 ## Documentation
-Update the docs page that describes shell output limits and the context/compaction page to say
-where full output goes and that old results are shortened before a summary.
+Update the Output bullet in `docs/tools.md` (shell limits) to say where full output goes, and the
+compaction text in `docs/tui.md` (`/compact`, Context) and `docs/configuration.md` to say that old
+results are shortened before a summary.
 
 ## Testing Strategy
 - `cut.rs` unit tests: output over the limit with a spill writes the full text and the footer holds
