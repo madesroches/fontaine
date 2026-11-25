@@ -12,6 +12,7 @@ use rig_tools::{OutputLimit, clip};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::cut::ShellSpill;
 use super::{
     AgentDelivery, AgentKilled, AgentKills, AgentState, AgentWaitError, AgentWaits, End, EndInfo,
     JobError, JobInfo, JobOutput, Jobs, MAX_RUNNING, MonitorSpec, Read, Start, WaitWake, cut,
@@ -72,7 +73,7 @@ fn how_it_ended(info: &EndInfo) -> String {
 }
 
 /// A read of a job as the model sees it.
-pub fn render_read(read: &Read, limit: OutputLimit) -> String {
+pub fn render_read(read: &Read, limit: OutputLimit, spill: Option<&ShellSpill>) -> String {
     if read.already_reported {
         return format!(
             "[{} ended ({}); that was already reported to you, so its output is not shown again]",
@@ -82,7 +83,10 @@ pub fn render_read(read: &Read, limit: OutputLimit) -> String {
                 .map_or_else(String::new, EndInfo::describe),
         );
     }
-    let (mut text, _) = cut::cut(&read.chunk.lines, read.chunk.missed, limit);
+    let (mut text, _, failed) = cut::cut(&read.chunk.lines, read.chunk.missed, limit, spill);
+    if let (Some(spill), Some(error)) = (spill, &failed) {
+        spill.report(error);
+    }
     if text.is_empty() {
         text.push_str("(no new output)\n");
     }
@@ -189,6 +193,8 @@ pub struct JobOutputArgs {
 pub struct JobOutputTool {
     pub jobs: Arc<Jobs>,
     pub limit: OutputLimit,
+    /// Where a read that cuts is saved; `None` only cuts it.
+    pub spill: Option<Arc<ShellSpill>>,
     pub agents: Option<Arc<dyn AgentWaits>>,
     pub wake: Option<Arc<dyn WaitWake>>,
     /// Whether `shell` and `monitor` are registered; the description names `powershell` and
@@ -234,7 +240,7 @@ impl JobOutputTool {
             .await
             .map_err(|e| job_error(&e))?
         {
-            JobOutput::Read(read) => Ok(render_read(&read, self.limit)),
+            JobOutput::Read(read) => Ok(render_read(&read, self.limit, self.spill.as_deref())),
             JobOutput::MonitorWait {
                 id,
                 age,
@@ -373,6 +379,8 @@ pub struct JobCancelArgs {
 pub struct JobCancelTool {
     pub jobs: Arc<Jobs>,
     pub limit: OutputLimit,
+    /// As for `job_output`.
+    pub spill: Option<Arc<ShellSpill>>,
     pub agents: Option<Arc<dyn AgentKills>>,
     /// Whether `monitor` is registered; the description names monitors only then.
     pub posix_shell: bool,
@@ -472,7 +480,7 @@ impl Tool for JobCancelTool {
             .cancel(&args.id)
             .await
             .map_err(|e| job_error(&e))?;
-        Ok(render_read(&read, self.limit))
+        Ok(render_read(&read, self.limit, self.spill.as_deref()))
     }
 }
 

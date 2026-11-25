@@ -359,6 +359,9 @@ pub(crate) struct Setup {
     /// The session's background jobs, created once so a registry rebuild keeps the running
     /// ones. Dropping the runtime terminates them.
     pub(crate) jobs: Arc<Jobs>,
+    /// Where `shell` saves output it cut, created once so its budget and warning outlive a
+    /// registry rebuild.
+    pub(crate) shell_spill: Option<Arc<crate::tools::jobs::cut::ShellSpill>>,
     /// Where each agent's shell calls start, created once so a registry rebuild keeps them.
     pub(crate) shell_cwd: ShellCwd,
     /// The language servers, created once so a registry rebuild keeps the running ones. They

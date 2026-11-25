@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Oversized `shell` output is saved (#161): when a foreground `shell` or `powershell` call, or a
+  `job_output` read, is cut, the retained output is written to `shell-output/` in the session
+  scratch directory and the first line of the result names the file (the summarizer keeps only the
+  start of a tool result). Output past the 1 MiB a job keeps is saved as its tail, and the line says
+  how many lines were dropped. A session saves at most 128 MiB; past it, or on a write error, the
+  result is only cut and one warning is shown. No pre-summary pruning of old results was added:
+  rig-memory already cuts every tool result to its first 2,000 characters. See `docs/tools.md`.
 - Android transcript block selection (#776): a long press in the transcript selects the block under the finger (a paragraph, a code block, a tool call, a shell command), dragging or the handles extend it across blocks, and a Copy bar above the prompt puts the selection on the clipboard; a plain drag still scrolls. See `docs/android.md`.
 - Android transcript drag scrolling (#775): the app's transcript now scrolls by dragging it, with fling
   momentum after release; the scroll bar still works, a drag does not toggle a reasoning row, and a tap
