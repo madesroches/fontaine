@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Accept one word of ghost text (#788): with a prompt suggestion or history completion showing,
+  Ctrl-Right, Alt-Right and Alt-F take the next word and leave the rest dimmed; Tab and Right still
+  take all of it.
 - Oversized `shell` output is saved (#161): when a foreground `shell` or `powershell` call, or a
   `job_output` or `job_cancel` read, is cut, the retained output is written to `shell-output/` in the session
   scratch directory and the first line of the result names the file (the summarizer keeps only the
