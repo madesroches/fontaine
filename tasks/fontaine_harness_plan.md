@@ -122,14 +122,16 @@ an item here by changing `[ ]` to `[x]` and adding the date when its issue close
 Apart from the ticked repo-side items, each item needs live provider keys, a live model, or a maintainer decision, so none of them runs in CI.
 
 - **Guardian scorecard**
-  - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
-        (`design/testing.md` §Eval harness). (#102)
+  - [x] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
+        (`design/testing.md` §Eval harness). (#102; 2026-11-26, on dataset `578d7b4a9d1e`, with
+        the live scorecard of #104)
   - [x] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
         fills `rust/fontaine-guardian/data/guardian_models.toml`. (2026-10-23; run with
         `kimi/kimi-for-coding` and `local/qwen3:4b`, no model cleared the inclusion bar, so the file stays
         empty; see `completed/release_live_checks_plan.md` `## Results`)
   - [ ] Check the run against the Risk Gates' catch-rate kill floor. (#105; needs #96, #97)
-  - [ ] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104)
+  - [x] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104;
+        2026-11-26, dataset `578d7b4a9d1e`, ranked list `openrouter` `anthropic/claude-haiku-5.5`)
 - **Claude Code baselines (`claude -p`)**
   - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
         `completed/release_live_checks_plan.md`; #101 resolved 2026-11-15: 66 baseline records, every
