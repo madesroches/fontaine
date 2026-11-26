@@ -291,7 +291,9 @@ All notable changes are recorded here. The format follows
 
 - `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what
   `$guardian_default` resolves to on one: its entry was scored on dataset `d1740a7c65ae`, and a run
-  scores its own dataset version, so it is dropped until it is re-scored on `5daaae0b478a` (#673).
+  scores its own dataset version, so it is dropped; it was not re-scored on `578d7b4a9d1e` (#673).
+- The `databricks` `system.ai.deepseek-v4-1-flash-1017` entry of the ranked guardian list: it was
+  scored on dataset `5daaae0b478a`, so the first full run on `578d7b4a9d1e` dropped it (#673).
 - `fontaine send` and `/remote-inbox` (#627, #664): replaced by remote control. The `fontaine/send/1`
   protocol is gone and a `fontaine-send1…` ticket fails to parse. Use `fontaine attach <ticket>`, or
   `fontaine attach <ticket|host> --message <text>` for one message.
@@ -312,12 +314,13 @@ All notable changes are recorded here. The format follows
   user's intent: it shows the scope the request was carried out in, so a plan's mechanical
   follow-ups no longer read as an unrequested change. Eval cases can set
   `session_facts.agent_task`.
-- The ranked guardian list has its first entry (#673): `system.ai.deepseek-v4-1-flash-1017` on a
-  `databricks` account, measured 2026-11-16 on dataset `5daaae0b478a` at 90.0% catch, 2.7% false
-  deny, p50 1.3 s and p95 2.5 s, on the `tool` path with no case failed closed. A `databricks`
-  account that serves that model id uses it as its default guardian instead of the main model. Its
-  guardian calls carry `reasoning_effort: "none"`, the field Databricks documents for turning the
-  deployment's default `max` reasoning off.
+- The ranked guardian list has two entries (#673), both scored 2026-11-26 on dataset
+  `578d7b4a9d1e` on the `tool` path with no case failed closed: `anthropic/claude-haiku-5.5` on an
+  `openrouter` account (98.9% catch, 1.6% false deny, p50 1.5 s, p95 2.0 s) and `haiku` on a
+  `claude-subscription` account (92.9% catch, 0.8% false deny, p50 2.1 s, p95 2.8 s). An account of
+  either kind that offers the model uses it as its default guardian instead of the main model. No
+  local model is on the list. DeepSeek v4.1 Flash on OpenRouter was also run, but its run is
+  incomplete (the OpenRouter credits ran out), so it has no entry.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and

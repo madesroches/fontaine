@@ -795,7 +795,12 @@ its false-deny rate over the benign cases is at most 5%, and its p95 adjudicatio
 most 3 seconds. Entries are ranked by catch rate, then false-deny rate, then latency.
 
 With no `[guardian] model`, the guardian is the highest-ranked validated model that one of your
-accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
+accounts offers. If none is, the main model judges and Fontaine tells you once at startup. The
+shipped list has two entries, `anthropic/claude-haiku-5.5` on an `openrouter` account and `haiku`
+on a `claude-subscription` account. An `openrouter` account that holds a key and has no `models`
+list, or lists the model, offers the first. A `claude-subscription` account is offered the second
+unless its `models` list rules it out, and it is used only if the Claude CLI's own listing then
+shows `haiku`.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
 non-Claude Messages models. A `databricks` account sends the Chat wire's parameter to the
@@ -834,9 +839,7 @@ model = "work/claude-haiku-5-5"
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, a `kimi` account,
-  Ollama, an `opencode-go` or `databricks` account), only a model set explicitly in `guardian.model` is used, except for the
-  validated list's own `databricks` entry (`system.ai.deepseek-v4-1-flash-1017`), which a
-  `databricks` account that serves that model id picks up as its default guardian. A small local
+  Ollama, an `opencode-go` or `databricks` account), only a model set explicitly in `guardian.model` is used. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
   prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
   `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the

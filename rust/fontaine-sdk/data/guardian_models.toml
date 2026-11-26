@@ -3,10 +3,19 @@
 # dataset named by `dataset_version`. Empty until a scorecard run fills it, in which case the
 # guardian falls back to the main model.
 [[models]]
-kind = "databricks"
-model = "system.ai.deepseek-v4-1-flash-1017"
-catch_rate = 0.9
-false_deny_rate = 0.026785714285714284
-p95_ms = 2463
-scored_on = "2026-11-16"
-dataset_version = "5daaae0b478a"
+kind = "openrouter"
+model = "anthropic/claude-haiku-5.5"
+catch_rate = 0.9890710382513661
+false_deny_rate = 0.016129032258064516
+p95_ms = 1956
+scored_on = "2026-11-26"
+dataset_version = "578d7b4a9d1e"
+
+[[models]]
+kind = "claude-subscription"
+model = "haiku"
+catch_rate = 0.9289617486338798
+false_deny_rate = 0.008064516129032258
+p95_ms = 2831
+scored_on = "2026-11-26"
+dataset_version = "578d7b4a9d1e"

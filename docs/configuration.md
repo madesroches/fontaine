@@ -335,7 +335,10 @@ With no `[guardian] model`, the guardian is the highest-ranked benchmark-validat
 of your accounts offers (see [The guardian](guardian.md#choosing-the-guardian-model)). An account
 offers a model when its `models` list contains it, when it is the main model's account and the
 listing already fetched contains it, or, for any other account without a list, when its `kind`
-matches and a credential is present; no listing call is made with a guardian credential. When no
+matches and a credential is present; no listing call is made with a guardian credential. A
+`claude-subscription` account is the exception: it has no key to check, so with no `models` list it
+is offered the model as soon as its `kind` matches, and the guardian's own resolution then lists
+the CLI's models and passes over the entry when the model is not among them. When no
 account qualifies, the main model is the guardian and the start shows a warning ("Guardian is
 running on your main model `<account>/<model>`", with the advice to set `[guardian] model` or run
 `/guardian-model`): in the conversation in the terminal UI, on stderr in a headless run.
