@@ -34,7 +34,7 @@ run for real on the host. The rest is live runs, data, and the triage record.
 - **Fontaine side** (`rust/fontaine-evals/src/runner.rs:920-960`): `--guardian none` skips any case
   whose mode is `auto` ("auto mode needs the guardian"). A `live:` run already scores pipeline
   cases through `none::decide(case, Some(guardian))` (`runner.rs:1113`). `score_pipeline`
-  (`runner.rs:1395`) writes the case's own mode into `CaseResult.mode`, which `baseline diff`
+  (`runner.rs:1394`) writes the case's own mode into `CaseResult.mode`, which `baseline diff`
   matches against the record's `mode` (`baseline.rs:420`). A live run exits 0 whatever it scored
   (`runner.rs:1039`). It rewrites `guardian_models.toml` only on an unfiltered `--profile full` run.
 - **Dataset**: 92 pipeline cases. `tier05-adversarial` has 41 `manual` and 1 `dontAsk`. `floor` has
@@ -52,8 +52,7 @@ run for real on the host. The rest is live runs, data, and the triage record.
   `NETWORK_CLIENT_WORDS`, `GIT_NETWORK_SUBCOMMANDS`, `INSTALLERS` + `MORE_INSTALLERS` and
   `FIND_DESTRUCTIVE_FLAGS`. `destructive_argv` (`:406`) adds `sed -i`, `perl -i`, `git_destructive`
   and the `code_execution::LAUNCHERS` / `starts_with_entry` code-execution entries. The flag is
-  derived from the call, never from the guardian's label. It decides only whether a low-confidence
-  guardian Allow becomes a Deny (`guardian.rs:454`). The 2026-10-23 live checks left this
+  derived from the call, never from the guardian's label. The 2026-10-23 live checks left this
   comparison open because "Claude Code publishes no such list". Its auto-mode classifier prompt has
   since been captured verbatim (`research/research-claude-code-auto-mode-prompt.md`, cc 2.1.310).
   Its HARD BLOCK (`:177`) and SOFT BLOCK (`:186-261`) rules and its Definitions (`:157-175`, e.g.
@@ -68,8 +67,9 @@ the cases stay as they are, and the run states the mode.
 
 - `baseline capture --mode <MODE>`: every selected case is posed in `MODE` instead of its own,
   and each record's `mode` is `MODE`. Without the flag, each case keeps its own mode, as today.
-  The value parses as a Fontaine `PermissionMode` (`manual`, `acceptEdits`, `dontAsk`, `auto`,
-  `afk`, …) and maps through `cc_mode` as today. Factor the argv that `capture_one` builds into a
+  The value parses through `PermissionMode`'s serde `Deserialize` (a clap `value_parser`, since it
+  has no `FromStr`/`ValueEnum`), so names match the dataset's `mode` values (`manual`, `acceptEdits`,
+  `dontAsk`, `auto`, `afk`); Claude Code's `default` is not accepted. It maps through `cc_mode` as today. Factor the argv that `capture_one` builds into a
   pure `claude_command_args(case, mode) -> Vec<String>` so a unit test can pin
   `--permission-mode auto` and the `--settings` leg without the real binary.
 - Run `--mode <MODE>` (pipeline cases only): `none::decide` takes the effective mode
@@ -90,11 +90,12 @@ Add an optional pipeline-only case field `host_reaching: true` (in `case.rs`, wi
 the cases whose call reaches host files outside the scratch workspace, re-derived from
 `evals/dataset/{floor,tier05,spawn}.jsonl`: `floor-critical-deletion-{home-manual,dont-ask,allow-rule}`;
 `floor-external-read-{deny-rule,deny-rule-dont-ask,ask-rule,ask-rule-dont-ask,allow-rule,manual,dont-ask,auto-no-guardian,deny-beats-allow}`;
-`floor-external-write-` with the same nine suffixes; and `tier05-{chain-curl-sh,out-of-scope-home-path,command-substitution-rm,symlink-escape,tilde-argument,parameter-expansion,brace-expansion-escape,brace-expansion-rm-root,out-of-scope-cwd,dont-ask-chain}`; and every
+`floor-external-write-` with the same nine suffixes; `floor-external-{read,write}-symlink-home-rule`
+(`../home` resolves outside scratch, `case.rs:539`); and `tier05-{chain-curl-sh,out-of-scope-home-path,command-substitution-rm,symlink-escape,tilde-argument,parameter-expansion,brace-expansion-escape,brace-expansion-rm-root,out-of-scope-cwd,dont-ask-chain}`; and every
 pipeline `agent` spawn case in `spawn.jsonl` except `spawn-agent-deny-rule`, since Claude Code can run a
 spawn's subagent with the real HOME and its tools: `spawn-readme-escalated-toolset{,-dont-ask}`,
 `spawn-agent-ask-rule`, `spawn-explore-fast-path{,-auto}` and `spawn-worker-auto-gate` (the deny rule
-stops the spawn before any subagent exists) (37 cases). `floor-secret-*` are not marked: they never leave the scratch dir. The marker applies
+stops the spawn before any subagent exists) (39 cases). `floor-secret-*` are not marked: they never leave the scratch dir. The marker applies
 in every mode, so #101's manual/dontAsk external-path captures are skipped too unless
 `--host-reaching=yes`. `capture_skip_reason` returns "reaches host files outside
 the scratch workspace; capture it only in a disposable container or VM" for such a case, unless
@@ -105,11 +106,12 @@ where Claude Code may run what it allows.
 
 ### The live runs
 
-From `rust/`, with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)"`:
+From `rust/`, with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)"`; the commands
+below are `cargo run -p fontaine-evals -- <args>`:
 
 1. Smoke test first: `baseline capture --dataset <scratch>/smoke-dataset --mode auto --out <scratch>/smoke.jsonl`,
-   where the scratch dataset dir holds one case Claude Code's classifier is known to block (a
-   `tier05-git-push`-like case, or an external destructive call that is harmless in scratch). It
+   where the scratch dataset dir holds one unmarked case Claude Code's classifier is known to block,
+   such as `tier05-git-push`. It
    confirms that `claude -p --permission-mode auto` runs headless on this account, and that on
    2.1.332 a classifier block lands in `permission_denials`. The classifier's output is binary
    (`<block>yes|no</block>`, `research/research-claude-code-auto-mode-prompt.md:307-316`), so asks in
@@ -134,10 +136,10 @@ Code outcome (three-run tally where rerun), and resolution.
 - **Fontaine tier is deterministic** (`deny_rule`, `ask_rule`, `protected_path`, `hook`,
   `read_only_fast_path`, `tracked_edit`, `scratch_write`, `shell_edit`, `tier05`, `spawn`,
   `coordination`, `allow_rule`, `mode`, `dont_ask`): first check whether an existing Decision already covers
-  it, and cite it if so. Examples: the 2026-10-22 out-of-root file-tool deny, the
-  2026-10-30/31 spawn lines, and the 2026-10-23 broad-hook line. Otherwise it is a new deviation. Fix
+  it, and cite it if so. Examples: the 2026-10-30 (reads) and 2026-11-06 (writes)
+  out-of-root file-tool denies, the 2026-10-30/31 spawn and 2026-11-02 coordination lines, and the 2026-10-23 broad-hook line. Otherwise it is a new deviation. Fix
   Fontaine toward Claude Code if the difference is unintended. If it's deliberate, add a dated line
-  at the end of the owning subsection (`### Permissions` for pipeline tiers, `### Agents` for spawn).
+  at the end of the owning subsection (`### Permissions`, which also holds the spawn and coordination lines).
   The security invariants in `AGENTS.md` win over parity. A fix never loosens the floor and never
   adds a fast path outside the six listed exceptions.
 - **Fontaine tier is `guardian`** (model against model). First check the result's `fail_closed`: a
@@ -175,7 +177,7 @@ Code outcome (three-run tally where rerun), and resolution.
    none fits), with its test row. Membership raises the confidence bar on an Allow and
    never denies by itself, but it also feeds the guardian prompt (`prompt_builder.rs:469-471` renders
    `destructive:`), composition scripts (`call.destructive()` in `guardian/composition/host.rs`) and
-   the cache key (`guardian/cache.rs:84`), so an addition can change verdicts on those commands.
+   the cache key (`guardian/guardian.rs:306-313`, through the rendered request), so an addition can change verdicts on those commands.
    A term outside Fontaine's scope gets one dated `### Guardian` line covering the group:
    browser/Chrome-MCP terms (Fontaine has no browser tools), Claude Code scheduling, and the
    memory-directory allow. A Fontaine-only term is listed and needs no action.
@@ -183,7 +185,8 @@ Code outcome (three-run tally where rerun), and resolution.
 ### Hook legs
 
 Run the documented three-variant observation once on `claude` 2.1.332: no hook, a narrow hook and a
-broad hook, with `--include-hook-events`, using the probe from `release_live_checks_plan.md`.
+broad hook, with `--include-hook-events`, using the settings and command from `release_live_checks_plan.md` §Baselines and the probe at
+`:335-340` (Results).
 Record the outcome in `## Results`. If Claude Code still honors the broad hook, the 2026-10-23
 `### Permissions` Decision stands: cite it, and update its version in a new dated line only if the
 behavior changed.
@@ -191,7 +194,7 @@ behavior changed.
 ## Implementation Steps
 
 1. **Marker**: add `host_reaching: Option<bool>` to `Case` (`case.rs`). Make `validate_case` reject
-   it off pipeline cases, with a unit test. Set it on the 37 cases listed in Design, in `evals/dataset/floor.jsonl`,
+   it off pipeline cases, with a unit test. Set it on the 39 cases listed in Design, in `evals/dataset/floor.jsonl`,
    `tier05.jsonl` and `spawn.jsonl`. The dataset version hash changes, which makes
    `--screen-reference <scorecard>` a usage error against existing scorecards (`runner.rs:882-891`),
    makes the next unfiltered `--profile full` live run drop every other model's entry from
@@ -206,10 +209,7 @@ behavior changed.
    `score_pipeline`. Add the effective `--mode` to the sidecar `Header` (`output.rs`) and to `check_header`, so
    resuming a run made under a different mode is refused. Make it a usage error with `fixture`/`screen:`. Print the summary note and count `--mode` as a measurement for the exit code.
 4. **Tests**: see Testing Strategy.
-5. **Docs**: `evals/README.md` §Baselines gets `--mode`, `--host-reaching`, the auto-mode
-   recipe, and the field in the case table. Update the run's flag table for `--mode`.
-   `tasks/design/testing.md` §Differential baselines gets one sentence on `--mode` and the
-   host-reaching marker.
+5. **Docs**: see Documentation.
 6. **Live**: the smoke test, then capture, run, diff and reruns as above. Commit
    `evals/baselines/auto.jsonl`.
 7. **Word lists**: the comparison, the pinning test, any list additions and the scope-out Decision
@@ -240,7 +240,7 @@ behavior changed.
   triage finds a guardian gap
 - `evals/dataset/floor.jsonl`, `evals/dataset/tier05.jsonl`, `evals/dataset/spawn.jsonl`: the marker
 - `evals/baselines/auto.jsonl` (new)
-- `evals/README.md`, `tasks/design/testing.md`
+- `evals/README.md`, `tasks/design/testing.md`, `docs/architecture.md`
 - `tasks/fontaine_harness_plan.md`: tracker tick and Decisions
 
 ## Trade-offs
@@ -263,11 +263,15 @@ behavior changed.
 
 ## Documentation
 
-- `evals/README.md`: §Baselines (flags, the auto recipe, the host-reaching skip) and the run flag
-  table (`--mode`)
-- `tasks/design/testing.md`: §Differential baselines
-- No `docs/` page covers the baseline runner. `docs/evals.md` covers scorecards only, so it needs
-  no change.
+- `evals/README.md`: §Baselines (flags, the auto recipe, the host-reaching skip); the run flag
+  table (`--mode`); the `## Case format` table (:27-47, `host_reaching`); the "Exit codes" table
+  (:458-471: `--mode` measurement exits 0, `--mode` usage errors, `--resume` mode mismatch)
+- `tasks/design/testing.md`: the runner CLI table (:86-98, add `--mode`/`--host-reaching`) and the
+  "Differential baselines" paragraph (:130-142: one sentence on `--mode` and the marker; the diff
+  compares a `live:` run for auto, not `--guardian none`; drop the stale `--output-format json`, :134)
+- `docs/architecture.md:337-346`: `--guardian none` no longer runs non-`auto` modes only, `live:`
+  routes pipeline cases under the effective mode, and the baseline capture/diff mention
+- `docs/evals.md` covers scorecards only; no change
 
 ## Testing Strategy
 
