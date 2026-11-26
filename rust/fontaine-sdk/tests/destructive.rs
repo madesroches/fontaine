@@ -3,8 +3,8 @@
 
 use fontaine_sdk::core::code_execution::PROGRAMS;
 use fontaine_sdk::core::destructive::{
-    Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS, NETWORK_CLIENT_WORDS, REMOVAL_OVERWRITE_WORDS,
-    derive, touched_paths,
+    CLOUD_CLI_WORDS, CLUSTER_CLI_WORDS, Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS,
+    NETWORK_CLIENT_WORDS, REMOTE_WRITE_SUBCOMMANDS, REMOVAL_OVERWRITE_WORDS, derive, touched_paths,
 };
 use fontaine_sdk::core::ledger::{LedgerView, path_key};
 use fontaine_sdk::tools::scope::Scope;
@@ -95,7 +95,12 @@ fn plain_builds_and_tests_are_not_destructive() {
 
 #[test]
 fn every_removal_and_network_word_is_destructive() {
-    for word in REMOVAL_OVERWRITE_WORDS.iter().chain(&NETWORK_CLIENT_WORDS) {
+    for word in REMOVAL_OVERWRITE_WORDS
+        .iter()
+        .chain(&NETWORK_CLIENT_WORDS)
+        .chain(&CLOUD_CLI_WORDS)
+        .chain(&CLUSTER_CLI_WORDS)
+    {
         assert!(shell_is(&format!("{word} a b")), "{word}");
         assert!(shell_is(&format!("ls && {word} a")), "{word} in a list");
         assert!(shell_is(&format!("/usr/bin/{word} a")), "{word} by path");
@@ -121,6 +126,295 @@ fn every_installer_and_git_network_subcommand_is_destructive() {
     }
     for program in ["dnf", "yum"] {
         assert!(shell_is(&format!("{program} install pkg")), "{program}");
+    }
+}
+
+#[test]
+fn every_remote_write_subcommand_is_destructive_and_its_reads_are_not() {
+    for (program, subcommands) in REMOTE_WRITE_SUBCOMMANDS {
+        for subcommand in subcommands {
+            assert!(
+                shell_is(&format!("{program} {subcommand} x")),
+                "{program} {subcommand}"
+            );
+            assert!(
+                shell_is(&format!("{program} --quiet {subcommand} x")),
+                "{program} --quiet {subcommand}"
+            );
+        }
+    }
+    for command in [
+        "docker compose -f docker-compose.yml up -d",
+        "docker compose -p proj up",
+        "docker compose --env-file .env up",
+        "docker --tlscacert ca.pem push img",
+        "npm --otp 123456 publish",
+        "systemctl --root /x enable foo",
+        "npm --unknown-option value publish",
+    ] {
+        assert!(shell_is(command), "{command}");
+    }
+    for command in [
+        "gh pr view 1",
+        "gh pr checks",
+        "gh issue list",
+        "docker build -t app .",
+        "docker ps",
+        "systemctl status x",
+        "tmux display-message -p x",
+        "npm test",
+    ] {
+        assert!(!shell_is(command), "{command}");
+    }
+}
+
+/// The commands the classifier prompt Claude Code's auto mode runs on names (its hard and soft
+/// block rules and their definitions), each with a representative call and whether `derive`
+/// flags it. A term Fontaine leaves out is asserted `false` so that changing the lists shows up
+/// here; the Decisions on the guardian say why.
+#[test]
+fn the_commands_claude_codes_auto_mode_names_are_compared_term_by_term() {
+    const TERMS: &[(&str, &str, bool)] = &[
+        // Removal, overwrite and history rewrite.
+        ("rm", "rm -rf build", true),
+        ("rmdir", "rmdir build", true),
+        ("mv", "mv a b", true),
+        ("cp", "cp a b", true),
+        ("sed -i", "sed -i s/a/b/ f", true),
+        ("find -delete", "find . -name x -delete", true),
+        ("rsync --delete", "rsync --delete a/ b/", true),
+        ("git reset --hard", "git reset --hard origin/main", true),
+        ("git clean", "git clean -fd", true),
+        ("git checkout --", "git checkout -- .", true),
+        ("git restore", "git restore .", true),
+        ("git stash drop", "git stash drop", true),
+        ("git push --force", "git push --force origin main", true),
+        ("git push", "git push origin main", true),
+        ("git pull", "git pull", true),
+        (
+            "git remote add",
+            "git remote add x http://example.com/r.git",
+            true,
+        ),
+        (
+            "git remote set-url",
+            "git remote set-url origin http://example.com/r.git",
+            true,
+        ),
+        ("git commit --amend", "git commit --amend", true),
+        (
+            "git worktree remove --force",
+            "git worktree remove --force wt",
+            true,
+        ),
+        ("git branch -D", "git branch -D x", true),
+        ("git filter-branch", "git filter-branch", true),
+        ("crontab", "crontab -e", true),
+        // Merges, reviews and other writes to a code host.
+        ("gh pr merge", "gh pr merge --auto 1", true),
+        ("gh pr review", "gh pr review --approve 1", true),
+        ("gh pr comment", "gh pr comment 1 --body x", true),
+        ("gh pr edit", "gh pr edit 1 --base main", true),
+        ("gh pr ready", "gh pr ready 1", true),
+        ("gh release create", "gh release create v1", true),
+        ("gh repo create", "gh repo create x", true),
+        ("gh repo fork", "gh repo fork x", true),
+        ("gh secret set", "gh secret set X", true),
+        ("gh workflow disable", "gh workflow disable ci", true),
+        ("gh gist create", "gh gist create f", true),
+        ("gh api", "gh api repos/a/b", true),
+        // Clusters and infrastructure.
+        ("kubectl apply", "kubectl apply -f x.yaml", true),
+        ("kubectl delete", "kubectl delete pod x", true),
+        ("kubectl exec", "kubectl exec -it pod -- sh", true),
+        ("kubectl get secret", "kubectl get secret x -o yaml", true),
+        ("kubectl port-forward", "kubectl port-forward pod 80", true),
+        ("kubectl cordon", "kubectl cordon n", true),
+        ("kubectl drain", "kubectl drain n", true),
+        ("kubectl attach", "kubectl attach p", true),
+        ("helm upgrade", "helm upgrade x y", true),
+        ("argocd app sync", "argocd app sync x", true),
+        ("scancel", "scancel 1", true),
+        ("scontrol update", "scontrol update x", true),
+        ("nomad job stop", "nomad job stop x", true),
+        ("ray stop", "ray stop", true),
+        ("docker service rm", "docker service rm s", true),
+        ("terraform apply", "terraform apply", true),
+        ("terraform destroy", "terraform destroy", true),
+        ("terragrunt destroy", "terragrunt destroy", true),
+        ("pulumi up", "pulumi up", true),
+        ("pulumi destroy", "pulumi destroy", true),
+        ("cdk deploy", "cdk deploy", true),
+        ("cdk destroy", "cdk destroy", true),
+        ("atlantis apply", "atlantis apply", true),
+        // Cloud providers.
+        (
+            "aws eks delete-nodegroup",
+            "aws eks delete-nodegroup --cluster-name c",
+            true,
+        ),
+        ("aws s3 rm", "aws s3 rm s3://b --recursive", true),
+        (
+            "aws sts get-session-token",
+            "aws sts get-session-token",
+            true,
+        ),
+        ("gsutil rm", "gsutil rm gs://b/x", true),
+        (
+            "gcloud node-pools delete",
+            "gcloud container node-pools delete p",
+            true,
+        ),
+        (
+            "gcloud auth print-access-token",
+            "gcloud auth print-access-token",
+            true,
+        ),
+        ("bq rm", "bq rm -r -d ds", true),
+        // Publishing and containers.
+        ("docker push", "docker push img", true),
+        (
+            "global option: docker -H tcp://host run img",
+            "docker -H tcp://host run img",
+            true,
+        ),
+        (
+            "global option: docker --context prod push img",
+            "docker --context prod push img",
+            true,
+        ),
+        (
+            "global option: tmux -L sock send-keys -t 1 ls",
+            "tmux -L sock send-keys -t 1 ls",
+            true,
+        ),
+        (
+            "global option: tmux -S /tmp/s send-keys ls",
+            "tmux -S /tmp/s send-keys ls",
+            true,
+        ),
+        (
+            "global option: npm --prefix dir publish",
+            "npm --prefix dir publish",
+            true,
+        ),
+        (
+            "global option: systemctl -H host restart x",
+            "systemctl -H host restart x",
+            true,
+        ),
+        (
+            "global option: gh pr -R o/r merge 1",
+            "gh pr -R o/r merge 1",
+            true,
+        ),
+        (
+            "global option: cargo +nightly publish",
+            "cargo +nightly publish",
+            true,
+        ),
+        (
+            "global option: docker --host=tcp://h run img",
+            "docker --host=tcp://h run img",
+            true,
+        ),
+        ("podman push", "podman push img", true),
+        ("docker exec", "docker exec c ls", true),
+        ("docker container run", "docker container run img", true),
+        ("docker container exec", "docker container exec c ls", true),
+        ("docker image push", "docker image push img", true),
+        ("docker compose up", "docker compose up -d", true),
+        ("docker compose run", "docker compose run web sh", true),
+        (
+            "global option: docker -H h container run",
+            "docker -H h container run img",
+            true,
+        ),
+        ("podman container run", "podman container run img", true),
+        ("docker run -v /:/host", "docker run -v /:/host img", true),
+        (
+            "docker run --privileged",
+            "docker run --privileged img",
+            true,
+        ),
+        ("npm publish", "npm publish", true),
+        ("cargo publish", "cargo publish", true),
+        ("gem push", "gem push x.gem", true),
+        ("twine upload", "twine upload dist/x", true),
+        (
+            "npm install --registry",
+            "npm install --registry=http://x pkg",
+            true,
+        ),
+        (
+            "pip install --index-url",
+            "pip install --index-url http://x pkg",
+            true,
+        ),
+        // The network, tunnels and scanners.
+        ("curl", "curl http://x", true),
+        ("nc", "nc host 80", true),
+        ("ncat", "ncat host 80", true),
+        ("socat", "socat - TCP:host:80", true),
+        ("ssh -R", "ssh -R 80:localhost:80 host", true),
+        ("autossh", "autossh -R 80:localhost:80 host", true),
+        ("ngrok", "ngrok http 80", true),
+        ("cloudflared tunnel", "cloudflared tunnel run", true),
+        ("localtunnel", "localtunnel --port 80", true),
+        ("chisel", "chisel client x R:80", true),
+        ("frp", "frp -c x", true),
+        ("bore", "bore local 80 --to x", true),
+        ("tailscale funnel", "tailscale funnel 80", true),
+        ("nmap", "nmap host", true),
+        ("masscan", "masscan host", true),
+        // Code execution and the machine's own state.
+        ("python -c", "python -c print(1)", true),
+        ("python -m http.server", "python -m http.server", true),
+        ("bash -i", "bash -i", true),
+        ("sh", "sh -c ls", true),
+        ("systemctl restart", "systemctl restart x", true),
+        ("systemctl try-restart", "systemctl try-restart x", true),
+        ("systemctl isolate", "systemctl isolate rescue.target", true),
+        ("systemctl daemon-reload", "systemctl daemon-reload", true),
+        ("systemctl poweroff", "systemctl poweroff", true),
+        ("tmux send-keys", "tmux send-keys -t 1 ls Enter", true),
+        ("nsenter", "nsenter -t 1 rm x", true),
+        // Left out on purpose; see the guardian Decision on the auto-mode comparison.
+        ("git add", "git add .", false),
+        ("git stage", "git stage .", false),
+        ("git status", "git status", false),
+        ("tar -x", "tar -x -f a.tar", false),
+        ("unzip -o", "unzip -o a.zip", false),
+        ("aider --yes-always", "aider --yes-always", false),
+        ("codex --full-auto", "codex --full-auto", false),
+        (
+            "claude --dangerously-skip-permissions",
+            "claude --dangerously-skip-permissions",
+            false,
+        ),
+        ("sleep", "sleep 1", false),
+        ("cat", "cat f", false),
+        ("head", "head f", false),
+    ];
+    for (term, command, expected) in TERMS {
+        assert_eq!(shell_is(command), *expected, "{term}: `{command}`");
+    }
+}
+
+#[test]
+fn a_browser_or_scheduling_tool_is_destructive_as_any_tool_without_a_class_is() {
+    let (_dir, scope, view) = world();
+    let facts = Facts {
+        scope: &scope,
+        view: &view,
+    };
+    for tool in [
+        "mcp__claude-in-chrome__navigate",
+        "mcp__Claude_Browser__click",
+        "CronCreate",
+        "ScheduleWakeup",
+    ] {
+        assert!(derive(tool, &json!({}), &facts), "{tool}");
     }
 }
 

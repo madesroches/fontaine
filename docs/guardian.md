@@ -338,7 +338,10 @@ written by Fontaine and never quoting the model's own text; if it still fails it
 Fontaine, structurally, never from the label the guardian chose: a call is destructive when it
 removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset --hard`, a
 redirect to a file, a write over a path that existed), writes outside every workspace root, reaches
-the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), schedules a prompt to
+the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), acts on a cloud account,
+cluster or code host (`aws`, `terraform`, `kubectl`, `gh pr merge`), publishes or runs a container
+(`npm publish`, `docker push`, `docker run`), changes what the machine starts (`crontab`,
+`systemctl restart`), schedules a prompt to
 run later (`cron_create`), runs a command as a `monitor` (judged like `shell`), starts a code runner
 (`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher
 such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the

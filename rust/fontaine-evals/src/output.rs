@@ -82,6 +82,9 @@ pub struct Header {
     pub guardian: String,
     pub profile: String,
     pub filter: Option<String>,
+    /// The `--mode` override; absent in a sidecar written before the flag existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 pub struct Sidecar {
@@ -198,6 +201,7 @@ fn check_header(path: &Path, found: &Header, expected: &Header) -> Result<(), Ou
         ),
         ("profile", found.profile.clone(), expected.profile.clone()),
         ("filter", show(&found.filter), show(&expected.filter)),
+        ("mode", show(&found.mode), show(&expected.mode)),
     ]
     .into_iter()
     .find(|(_, found, expected)| found != expected);
