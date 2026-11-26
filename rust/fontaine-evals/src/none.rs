@@ -57,8 +57,14 @@ pub fn auto_context(case: &Case) -> AutoContext {
 }
 
 /// The first decision record is the one scored: a prompt scores `prompt` even though the
-/// approver then answers deny. `guardian` is the live guardian of a `live:` run, if any.
-pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outcome, String> {
+/// approver then answers deny. `mode` overrides the case's own, and `guardian` is the live
+/// guardian of a `live:` run, if any.
+pub async fn decide(
+    case: &Case,
+    mode: Option<PermissionMode>,
+    guardian: Option<Arc<Guardian>>,
+) -> Result<Outcome, String> {
+    let mode = mode.or(case.mode).unwrap_or(PermissionMode::Manual);
     // A POSIX-rooted path is not absolute on Windows, so the case would score a different
     // question than the one it asks.
     if cfg!(windows)
@@ -97,11 +103,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     let append = |record| ledger.append(record).map_err(|e| format!("ledger: {e}"));
     append(Record::SessionStart {
         session_id: session_id.clone(),
-        permission_mode: case
-            .mode
-            .unwrap_or(PermissionMode::Manual)
-            .as_str()
-            .to_string(),
+        permission_mode: mode.as_str().to_string(),
         workspace_roots: vec![cwd.display().to_string()],
         workspace_trust: "trusted".to_string(),
         git_remotes: Vec::new(),
@@ -137,7 +139,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     });
     let state = Arc::new(SessionState::new(StateParams {
         session_id,
-        mode: case.mode.unwrap_or(PermissionMode::Manual),
+        mode,
         scope: Arc::new(fontaine_sdk::tools::scope::Scope::new(cwd, [])),
         deny: sourced(&permissions.deny)?,
         ask: sourced(&permissions.ask)?,

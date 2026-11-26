@@ -109,10 +109,17 @@ pub fn claude_settings(case: &Case) -> Result<Value, String> {
     Ok(json!({ "permissions": out }))
 }
 
-/// Why `capture` cannot pose this case to Claude Code, if it cannot.
-pub fn capture_skip_reason(case: &Case) -> Option<String> {
+/// Why `capture` cannot pose this case to Claude Code, if it cannot. `allow_host` is for a run in a
+/// disposable container, where a call that reaches the host's files is harmless.
+pub fn capture_skip_reason(case: &Case, allow_host: bool) -> Option<String> {
     if case.kind != Kind::Pipeline {
         return Some("not a pipeline case".into());
+    }
+    if case.host_reaching == Some(true) && !allow_host {
+        return Some(
+            "reaches host files outside the scratch workspace; capture it only in a disposable container or VM"
+                .into(),
+        );
     }
     if case
         .permissions
@@ -279,8 +286,31 @@ pub(crate) async fn claude_version(claude: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<BaselineRecord, String> {
-    let mode = case.mode.unwrap_or(PermissionMode::Manual);
+/// The arguments `claude` is run with for `case` in `mode`.
+pub fn claude_command_args(case: &Case, mode: PermissionMode) -> Result<Vec<String>, String> {
+    let mut args: Vec<String> = Vec::new();
+    // Claude Code ignores a project's `allow` rules in a headless run, so the same settings also
+    // go in as the flag source, which it honors.
+    if case.permissions.is_some() {
+        args.extend(["--settings".into(), ".claude/settings.json".into()]);
+    }
+    args.extend(["-p".into(), render_prompt(case)?]);
+    args.extend(["--permission-mode".into(), cc_mode(mode).into()]);
+    args.extend(
+        ["--output-format", "stream-json", "--verbose"]
+            .into_iter()
+            .map(String::from),
+    );
+    args.extend(["--setting-sources".into(), "project".into()]);
+    Ok(args)
+}
+
+async fn capture_one(
+    claude: &str,
+    case: &Case,
+    version: &str,
+    mode: PermissionMode,
+) -> Result<BaselineRecord, String> {
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let cwd = match materialize(case.workspace.as_ref(), scratch.path()) {
         Ok(cwd) => cwd,
@@ -294,17 +324,8 @@ async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<Baselin
         std::fs::write(dir.join("settings.json"), settings.to_string())
             .map_err(|e| e.to_string())?;
     }
-    let mut command = tokio::process::Command::new(claude);
-    // Claude Code ignores a project's `allow` rules in a headless run, so the same settings also
-    // go in as the flag source, which it honors.
-    if case.permissions.is_some() {
-        command.args(["--settings", ".claude/settings.json"]);
-    }
-    let child = command
-        .args(["-p", &render_prompt(case)?])
-        .args(["--permission-mode", cc_mode(mode)])
-        .args(["--output-format", "stream-json", "--verbose"])
-        .args(["--setting-sources", "project"])
+    let child = tokio::process::Command::new(claude)
+        .args(claude_command_args(case, mode)?)
         .current_dir(&cwd)
         .kill_on_drop(true)
         .output();
@@ -326,8 +347,14 @@ async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<Baselin
     })
 }
 
-/// Poses each case to `claude -p` in a fresh scratch workspace, in the case's own mode.
-pub async fn capture(claude: &str, cases: &[&Case]) -> Result<CaptureReport, String> {
+/// Poses each case to `claude -p` in a fresh scratch workspace, in `mode` or, without one, the
+/// case's own. A host-reaching case is skipped unless `allow_host`.
+pub async fn capture(
+    claude: &str,
+    cases: &[&Case],
+    mode: Option<PermissionMode>,
+    allow_host: bool,
+) -> Result<CaptureReport, String> {
     let version = claude_version(claude).await?;
     let mut report = CaptureReport {
         records: Vec::new(),
@@ -335,11 +362,12 @@ pub async fn capture(claude: &str, cases: &[&Case]) -> Result<CaptureReport, Str
         failed: Vec::new(),
     };
     for case in cases {
-        if let Some(why) = capture_skip_reason(case) {
+        if let Some(why) = capture_skip_reason(case, allow_host) {
             report.skipped.push((case.id.clone(), why));
             continue;
         }
-        match capture_one(claude, case, &version).await {
+        let mode = mode.or(case.mode).unwrap_or(PermissionMode::Manual);
+        match capture_one(claude, case, &version, mode).await {
             Ok(record) => report.records.push(record),
             Err(e) => match e.strip_prefix("skip: ") {
                 Some(why) => report.skipped.push((case.id.clone(), why.to_string())),

@@ -114,12 +114,30 @@ enum BaselineAction {
         /// The Claude Code executable
         #[arg(long, value_name = "PATH", default_value = "claude")]
         claude: String,
+
+        /// Pose every case in this mode instead of its own (`manual`, `acceptEdits`, `dontAsk`,
+        /// `auto` or `afk`); each record's `mode` is then this one
+        #[arg(long, value_name = "MODE", value_parser = parse_mode)]
+        mode: Option<PermissionMode>,
+
+        /// Also pose the cases marked `host_reaching`, whose calls may run against the host's real
+        /// files. Only inside a disposable container or VM
+        #[arg(
+            long,
+            value_name = "yes|no",
+            default_value = "no",
+            default_missing_value = "yes",
+            num_args = 0..=1,
+            require_equals = true,
+            value_parser = parse_yes_no
+        )]
+        host_reaching: bool,
     },
     /// Report every case whose outcome differs between a baseline and a Fontaine run
     Diff {
         /// A baseline file written by `baseline capture`
         baseline: PathBuf,
-        /// A `--guardian none --out` file
+        /// A `--guardian none` or `live:` `--out` file
         run: PathBuf,
     },
 }
@@ -142,6 +160,13 @@ struct RunArgs {
     /// `screen:<model>` (a typed-decision model behind `--screen-url`, guardian cases only)
     #[arg(long, value_name = "MODE")]
     guardian: Option<String>,
+
+    /// Score every pipeline case in this mode (`manual`, `acceptEdits`, `dontAsk`, `auto` or
+    /// `afk`) instead of its own, with `none` or `live:`. The cases' `expected` labels belong to
+    /// their own modes, so `pass` means nothing under it: the run is a measurement, for
+    /// `baseline diff`
+    #[arg(long, value_name = "MODE", value_parser = parse_mode)]
+    mode: Option<PermissionMode>,
 
     /// Compose a `live:` guardian with the `screen` preset: `live:<account>/<model>`, an `ollama`
     /// or `openrouter` account. On an `ollama` account it needs `--stop-threshold`,
@@ -431,7 +456,16 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
                 filter,
                 out,
                 claude,
-            } => run_capture(&dataset, filter.as_deref(), &out, &claude),
+                mode,
+                host_reaching,
+            } => run_capture(
+                &dataset,
+                filter.as_deref(),
+                &out,
+                &claude,
+                mode,
+                host_reaching,
+            ),
             BaselineAction::Diff { baseline, run } => run_diff(&baseline, &run),
         },
         Some(Command::CacheBench {
@@ -513,6 +547,20 @@ fn forced_mode(transport: Option<TransportArg>) -> Option<fontaine_sdk::guardian
     }
 }
 
+fn parse_mode(text: &str) -> Result<PermissionMode, String> {
+    serde_json::from_value(serde_json::Value::String(text.to_string())).map_err(|_| {
+        format!("`{text}` is not a mode; expected manual, acceptEdits, dontAsk, auto or afk")
+    })
+}
+
+fn parse_yes_no(text: &str) -> Result<bool, String> {
+    match text {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        other => Err(format!("`{other}` is not `yes` or `no`")),
+    }
+}
+
 fn usage(message: &str) -> u8 {
     eprintln!("fontaine-evals: {message}");
     EXIT_USAGE
@@ -561,6 +609,11 @@ fn run_score(args: &RunArgs) -> u8 {
     if args.verdict_transport.is_some() && live_spec.is_none() {
         return usage(
             "`--verdict-transport` chooses how a `live:` guardian is asked; `fixture`, `none` and `screen:` have no model to ask",
+        );
+    }
+    if args.mode.is_some() && guardian != "none" && live_spec.is_none() {
+        return usage(
+            "`--mode` poses the pipeline cases in another mode, which needs `--guardian none` or `live:<account>/<model>`; `fixture` and `screen:` do not run the pipeline",
         );
     }
     if args.resume.is_some() && live_spec.is_none() {
@@ -788,6 +841,7 @@ fn run_score(args: &RunArgs) -> u8 {
             guardian: label.clone(),
             profile: profile_name(profile).to_string(),
             filter: args.filter.clone(),
+            mode: args.mode.map(|m| m.as_str().to_string()),
         };
         let kept = match &args.resume {
             Some(from) => match output::resume(from, &header) {
@@ -862,8 +916,13 @@ fn run_score(args: &RunArgs) -> u8 {
                 Err(e) => return usage(&chain(&e)),
             }
         }
-        let (results, scored, missed) =
-            rt.block_on(score_live(&selected, &connected, kept, &mut sidecar));
+        let (results, scored, missed) = rt.block_on(score_live(
+            &selected,
+            &connected,
+            args.mode,
+            kept,
+            &mut sidecar,
+        ));
         skipped = missed;
         selected = scored;
         live_run = Some((connected, header.dataset_version));
@@ -930,20 +989,20 @@ fn run_score(args: &RunArgs) -> u8 {
         let mut results = Vec::new();
         let mut scored = Vec::new();
         for case in &selected {
-            if case.mode.map(PermissionMode::rules) == Some(PermissionMode::Auto) {
+            if args.mode.or(case.mode).map(PermissionMode::rules) == Some(PermissionMode::Auto) {
                 skipped.push(Skipped {
                     id: case.id.clone(),
                     reason: "auto mode needs the guardian".into(),
                 });
                 continue;
             }
-            match rt.block_on(none::decide(case, None)) {
+            match rt.block_on(none::decide(case, args.mode, None)) {
                 Ok(Outcome::Decided {
                     decision,
                     tier,
                     latency_ms,
                 }) => {
-                    results.push(score_pipeline(case, decision, tier, latency_ms));
+                    results.push(score_pipeline(case, args.mode, decision, tier, latency_ms));
                     scored.push(*case);
                 }
                 Ok(Outcome::Skipped(reason)) => skipped.push(Skipped {
@@ -974,7 +1033,9 @@ fn run_score(args: &RunArgs) -> u8 {
     if let Some((live, version)) = &live_run {
         summary.verdict_transport = common_transport(&results);
         // A cascade's rates are not the guardian model's, so they never enter the models file.
+        // A `--mode` run scores the pipeline cases against labels that do not apply to it.
         if cascade_screen.is_none()
+            && args.mode.is_none()
             && let Err(e) = update_models(args, live, profile, &summary, version)
         {
             return usage(&e);
@@ -995,6 +1056,12 @@ fn run_score(args: &RunArgs) -> u8 {
         &results,
         live_run.is_some() || screen_spec.is_some(),
     );
+    if let Some(mode) = args.mode {
+        println!(
+            "mode={}: every pipeline case ran in this mode, but its `expected` label belongs to its own, so passed/failed mean nothing; compare with `baseline diff`",
+            mode.as_str()
+        );
+    }
     if let Some(analysis) = &summary.screen {
         print!("{}", screen_report::render(analysis));
     }
@@ -1038,7 +1105,7 @@ fn run_score(args: &RunArgs) -> u8 {
     }
     // A live or screen run reports and exits 0 whatever it scored: it is a measurement, not a
     // gate. Only an unreliable measurement fails it.
-    let measurement = live_run.is_some() || screen_spec.is_some();
+    let measurement = live_run.is_some() || screen_spec.is_some() || args.mode.is_some();
     if !summary.infrastructure_failures.is_empty()
         || (!measurement && (summary.failed > 0 || sequences_failed))
     {
@@ -1081,6 +1148,7 @@ fn run_sequences(file: &std::path::Path, live: Option<&Live>) -> Result<bool, u8
 async fn score_live<'a>(
     selected: &[&'a Case],
     live: &Live,
+    mode: Option<PermissionMode>,
     kept: Vec<CaseResult>,
     sidecar: &mut Option<Sidecar>,
 ) -> (Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>) {
@@ -1110,12 +1178,14 @@ async fn score_live<'a>(
             Kind::Guardian => live::adjudicate(case, live)
                 .await
                 .unwrap_or_else(|e| unscored(case, e)),
-            Kind::Pipeline => match none::decide(case, Some(live.guardian.clone())).await {
+            Kind::Pipeline => match none::decide(case, mode, Some(live.guardian.clone())).await {
                 Ok(Outcome::Decided {
                     decision,
                     tier,
                     latency_ms,
-                }) => Scored::Result(Box::new(score_pipeline(case, decision, tier, latency_ms))),
+                }) => Scored::Result(Box::new(score_pipeline(
+                    case, mode, decision, tier, latency_ms,
+                ))),
                 Ok(Outcome::Skipped(reason)) => Scored::Skipped(reason),
                 Err(e) => unscored(case, e),
             },
@@ -1391,7 +1461,13 @@ fn update_models(
     Ok(())
 }
 
-fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) -> CaseResult {
+fn score_pipeline(
+    case: &Case,
+    mode: Option<PermissionMode>,
+    decision: String,
+    tier: String,
+    latency_ms: u64,
+) -> CaseResult {
     let expected_tier = case.expected_tier.map(|t| t.to_string());
     CaseResult {
         id: case.id.clone(),
@@ -1403,7 +1479,7 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
         expected_tier,
         actual_tier: Some(tier),
         mode: Some(
-            case.mode
+            mode.or(case.mode)
                 .unwrap_or(PermissionMode::Manual)
                 .as_str()
                 .to_string(),
@@ -1424,6 +1500,8 @@ fn run_capture(
     filter: Option<&str>,
     out: &std::path::Path,
     claude: &str,
+    mode: Option<PermissionMode>,
+    allow_host: bool,
 ) -> u8 {
     let cases = match load_or_report(dataset) {
         Ok(cases) => cases,
@@ -1441,7 +1519,7 @@ fn run_capture(
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    let report = match rt.block_on(baseline::capture(claude, &selected)) {
+    let report = match rt.block_on(baseline::capture(claude, &selected, mode, allow_host)) {
         Ok(report) => report,
         Err(e) => return usage(&e),
     };

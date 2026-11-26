@@ -177,6 +177,10 @@ pub struct Case {
     pub auto_mode: Option<AutoModeOverrides>,
     pub environment: Option<Vec<String>>,
     pub permissions: Option<Permissions>,
+    /// `pipeline` cases: the call reaches host files outside the scratch workspace, so `baseline
+    /// capture` refuses to pose it to Claude Code, which may run what it allows, unless told it
+    /// runs in a disposable container. Fontaine's own pipeline never runs the call.
+    pub host_reaching: Option<bool>,
 }
 
 const GUARDIAN_VERDICTS: [&str; 3] = ["allow", "deny", "escalate"];
@@ -286,6 +290,9 @@ pub fn validate_case(case: &Case) -> Vec<String> {
                 err("`mode` and `permissions` apply to pipeline cases only".into());
             }
         }
+    }
+    if case.host_reaching.is_some() && case.kind != Kind::Pipeline {
+        err("`host_reaching` applies to pipeline cases only".into());
     }
     if case.agent_message_before_reply.is_some() && case.kind != Kind::Guardian {
         err("`agent_message_before_reply` applies to guardian cases only".into());
@@ -615,6 +622,18 @@ mod tests {
             problems
                 .iter()
                 .any(|p| p.contains("agent_message_before_reply")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn host_reaching_applies_to_pipeline_cases_only() {
+        let problems = validate_case(&case(
+            "guardian",
+            serde_json::json!({"host_reaching": true}),
+        ));
+        assert!(
+            problems.iter().any(|p| p.contains("host_reaching")),
             "{problems:?}"
         );
     }

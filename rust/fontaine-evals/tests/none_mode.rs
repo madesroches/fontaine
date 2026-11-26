@@ -302,3 +302,62 @@ fn a_selection_without_pipeline_cases_is_a_usage_error() {
     let out = run_none(dir.path(), &["--filter", "scanner"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn mode_poses_every_case_in_that_mode_and_exits_0_on_a_label_mismatch() {
+    let dir = dataset(&[pipeline(
+        "floor-protected-path-write",
+        "manual",
+        "write",
+        json!({"path": ".git/config", "content": "x"}),
+        "prompt",
+        "protected_path",
+    )]);
+    let report = dir.path().join("out/report.json");
+    let out = run_none(
+        dir.path(),
+        &["--mode", "dontAsk", "--out", report.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("mode=dontAsk"), "{}", stdout(&out));
+    let json: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    let case = &json["cases"][0];
+    assert_eq!(case["mode"], "dontAsk");
+    assert_eq!(case["actual"], "deny", "{case}");
+    assert_eq!(case["pass"], false);
+}
+
+#[test]
+fn mode_auto_skips_every_case_because_it_needs_the_guardian() {
+    let dir = dataset(&modes_cases());
+    let out = run_none(dir.path(), &["--mode", "auto"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("SKIP manual-ls: auto mode needs the guardian"),
+        "{text}"
+    );
+    assert!(text.contains("scored=0/"), "{text}");
+}
+
+#[test]
+fn mode_with_fixture_or_screen_is_a_usage_error() {
+    let dir = dataset(&modes_cases());
+    for guardian in ["fixture", "screen:some-model"] {
+        let out = run(&[
+            "--dataset",
+            dir.path().to_str().unwrap(),
+            "--guardian",
+            guardian,
+            "--mode",
+            "auto",
+        ]);
+        assert_eq!(out.status.code(), Some(2), "{guardian}");
+    }
+}
+
+#[test]
+fn an_unknown_mode_is_a_usage_error() {
+    let dir = dataset(&modes_cases());
+    let out = run_none(dir.path(), &["--mode", "default"]);
+    assert_eq!(out.status.code(), Some(2));
+}

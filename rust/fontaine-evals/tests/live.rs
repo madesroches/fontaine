@@ -911,6 +911,11 @@ async fn resume_refuses_a_sidecar_from_another_dataset_guardian_or_profile() {
     assert_eq!(run.code, Some(2), "{}", run.stderr);
     assert!(run.stderr.contains("profile `full`"), "{}", run.stderr);
 
+    let run = lab.run(&["--mode", "dontAsk", resume[0], resume[1]]).await;
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+    assert!(run.stderr.contains("mode `none`"), "{}", run.stderr);
+    assert!(run.stderr.contains("`dontAsk`"), "{}", run.stderr);
+
     let mut lines = lab.sidecar_lines();
     lines[0]["guardian"] = json!("live:judge/other");
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();

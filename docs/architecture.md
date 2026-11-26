@@ -337,12 +337,12 @@ binaries.
 `fontaine-evals` reads `evals/dataset/*.jsonl` and validates every case against the schema. With
 `--guardian fixture` it scores the canned `fixture_verdict` of each selected case against its
 `expected` outcome; with `--guardian none` it runs the `pipeline` cases through the real permission
-pipeline (no guardian, non-`auto` modes) and scores the first decision. Both run offline. With
+pipeline (no guardian; `auto` cases are skipped, since they need one) and scores the first decision. Both run offline. With
 `--guardian live:<account>/<model>` it resolves the account through the same configuration and
 credential loading as `fontaine -p`, routes `guardian` cases to the guardian and `pipeline` cases to
-the pipeline under the case's mode, records each case's latency, and writes the models that clear
+the pipeline under the case's mode (or the mode `--mode` states for the whole run), records each case's latency, and writes the models that clear
 the inclusion bar to the shipped model list; see [the scorecard](evals.md). The
-`baseline capture` and `baseline diff` subcommands compare the pipeline with Claude Code. The case
+`baseline capture` and `baseline diff` subcommands compare the pipeline with Claude Code, in the cases' own modes or all in one (`auto`, against a `live:` run); a case whose call reaches host files is never posed to the real `claude` unless the operator says it runs in a container. The case
 format and the runner flags are documented in [evals/README.md](https://github.com/madesroches/fontaine/blob/main/evals/README.md).
 
 ## Platforms

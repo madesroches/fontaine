@@ -1,10 +1,12 @@
 use std::path::Path;
 
 use fontaine_evals::baseline::{
-    BaselineRecord, CcOutcome, attempted, capture_skip_reason, claude_args, claude_rules,
-    claude_settings, diff, extract_denials, outcome_of, read_records, render_prompt, write_records,
+    BaselineRecord, CcOutcome, attempted, capture_skip_reason, claude_args, claude_command_args,
+    claude_rules, claude_settings, diff, extract_denials, outcome_of, read_records, render_prompt,
+    write_records,
 };
 use fontaine_evals::{Case, run};
+use fontaine_sdk::core::config::PermissionMode;
 use serde_json::{Value, json};
 
 fn case(extra: Value) -> Case {
@@ -153,24 +155,71 @@ fn agent_arguments_map_to_claude_codes() {
 
 #[test]
 fn capture_skips_what_claude_code_cannot_express() {
-    assert_eq!(capture_skip_reason(&case(json!({}))), None);
+    assert_eq!(capture_skip_reason(&case(json!({})), false), None);
     let extra = case(json!({"permissions": {"allow_extra": ["ls"]}}));
-    assert!(capture_skip_reason(&extra).unwrap().contains("allow_extra"));
+    assert!(
+        capture_skip_reason(&extra, false)
+            .unwrap()
+            .contains("allow_extra")
+    );
     let facts = case(json!({"session_facts": {"in_container": true}}));
     assert!(
-        capture_skip_reason(&facts)
+        capture_skip_reason(&facts, false)
             .unwrap()
             .contains("session_facts")
     );
     let ls = case(json!({"tool": "ls", "args": {"path": "."}}));
     assert!(
-        capture_skip_reason(&ls)
+        capture_skip_reason(&ls, false)
             .unwrap()
             .contains("no Claude Code equivalent")
     );
     // `auto` is posed to `claude -p --permission-mode auto`.
     let auto = case(json!({"mode": "auto"}));
-    assert_eq!(capture_skip_reason(&auto), None);
+    assert_eq!(capture_skip_reason(&auto, false), None);
+}
+
+#[test]
+fn a_host_reaching_case_is_skipped_unless_the_run_is_in_a_container() {
+    let host = case(json!({"host_reaching": true}));
+    assert!(
+        capture_skip_reason(&host, false)
+            .unwrap()
+            .contains("disposable container")
+    );
+    assert_eq!(capture_skip_reason(&host, true), None);
+}
+
+fn mode_of(args: &[String]) -> &str {
+    let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+    &args[at + 1]
+}
+
+#[test]
+fn the_command_poses_the_case_in_the_requested_mode() {
+    let manual = case(json!({"mode": "manual"}));
+    assert_eq!(
+        mode_of(&claude_command_args(&manual, PermissionMode::Auto).unwrap()),
+        "auto"
+    );
+    assert_eq!(
+        mode_of(&claude_command_args(&manual, PermissionMode::Manual).unwrap()),
+        "default"
+    );
+    assert_eq!(
+        mode_of(&claude_command_args(&manual, PermissionMode::Afk).unwrap()),
+        "auto"
+    );
+}
+
+#[test]
+fn a_case_with_permissions_passes_them_as_the_settings_flag() {
+    let with = case(json!({"permissions": {"deny": ["shell(ls)"]}}));
+    let args = claude_command_args(&with, PermissionMode::Auto).unwrap();
+    let at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[at + 1], ".claude/settings.json");
+    let without = claude_command_args(&case(json!({})), PermissionMode::Auto).unwrap();
+    assert!(!without.contains(&"--settings".to_string()));
 }
 
 fn record(id: &str, outcome: CcOutcome) -> BaselineRecord {
