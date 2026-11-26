@@ -1001,8 +1001,17 @@ fn run_score(args: &RunArgs) -> u8 {
                     decision,
                     tier,
                     latency_ms,
+                    explanation,
+                    fail_closed,
                 }) => {
-                    results.push(score_pipeline(case, args.mode, decision, tier, latency_ms));
+                    results.push(score_pipeline(
+                        case,
+                        args.mode,
+                        (decision, tier),
+                        latency_ms,
+                        explanation,
+                        fail_closed,
+                    ));
                     scored.push(*case);
                 }
                 Ok(Outcome::Skipped(reason)) => skipped.push(Skipped {
@@ -1183,8 +1192,15 @@ async fn score_live<'a>(
                     decision,
                     tier,
                     latency_ms,
+                    explanation,
+                    fail_closed,
                 }) => Scored::Result(Box::new(score_pipeline(
-                    case, mode, decision, tier, latency_ms,
+                    case,
+                    mode,
+                    (decision, tier),
+                    latency_ms,
+                    explanation,
+                    fail_closed,
                 ))),
                 Ok(Outcome::Skipped(reason)) => Scored::Skipped(reason),
                 Err(e) => unscored(case, e),
@@ -1464,9 +1480,10 @@ fn update_models(
 fn score_pipeline(
     case: &Case,
     mode: Option<PermissionMode>,
-    decision: String,
-    tier: String,
+    (decision, tier): (String, String),
     latency_ms: u64,
+    explanation: Option<String>,
+    fail_closed: Option<String>,
 ) -> CaseResult {
     let expected_tier = case.expected_tier.map(|t| t.to_string());
     CaseResult {
@@ -1485,10 +1502,10 @@ fn score_pipeline(
                 .to_string(),
         ),
         latency_ms,
-        explanation: None,
+        explanation,
         instead: None,
         escape_class: None,
-        fail_closed: None,
+        fail_closed,
         transport: None,
         cascade: None,
         screen: None,

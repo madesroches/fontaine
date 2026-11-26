@@ -15,14 +15,93 @@ use crate::core::code_execution::{LAUNCHERS, starts_with_entry, trim_version};
 use crate::core::ledger::{Existence, LedgerView};
 
 /// Programs that remove, overwrite or re-point files whatever their arguments.
-pub const REMOVAL_OVERWRITE_WORDS: [&str; 14] = [
+pub const REMOVAL_OVERWRITE_WORDS: [&str; 15] = [
     "rm", "rmdir", "mv", "cp", "dd", "truncate", "shred", "unlink", "ln", "chmod", "chown",
-    "install", "tee", "xargs",
+    "install", "tee", "xargs", "crontab",
 ];
 
 /// Programs that talk to the network whatever their arguments.
-pub const NETWORK_CLIENT_WORDS: [&str; 12] = [
-    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "socat", "telnet", "ftp",
+pub const NETWORK_CLIENT_WORDS: [&str; 23] = [
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "telnet",
+    "ftp",
+    "autossh",
+    "ngrok",
+    "cloudflared",
+    "localtunnel",
+    "chisel",
+    "frp",
+    "frpc",
+    "bore",
+    "tailscale",
+    "nmap",
+    "masscan",
+];
+
+/// Cloud and infrastructure-as-code CLIs, whose commands change what runs in an account.
+pub const CLOUD_CLI_WORDS: [&str; 10] = [
+    "aws",
+    "gcloud",
+    "gsutil",
+    "bq",
+    "az",
+    "terraform",
+    "terragrunt",
+    "pulumi",
+    "cdk",
+    "atlantis",
+];
+
+/// Cluster and workload managers, whose commands change shared compute state.
+pub const CLUSTER_CLI_WORDS: [&str; 7] = [
+    "kubectl", "helm", "argocd", "nomad", "ray", "scancel", "scontrol",
+];
+
+/// Programs that are routine to run except for these subcommands, which publish, run a container,
+/// act on a remote service or change what the machine starts. A subcommand of two words (`pr
+/// merge`) matches the first two operands.
+pub const REMOTE_WRITE_SUBCOMMANDS: [(&str, &[&str]); 11] = [
+    (
+        "gh",
+        &[
+            "pr merge",
+            "pr review",
+            "pr comment",
+            "pr edit",
+            "pr ready",
+            "release create",
+            "repo create",
+            "repo fork",
+            "secret set",
+            "workflow disable",
+            "gist create",
+            "api",
+        ],
+    ),
+    ("docker", &["push", "exec", "run", "service"]),
+    ("podman", &["push", "exec", "run"]),
+    ("npm", &["publish"]),
+    ("pnpm", &["publish"]),
+    ("yarn", &["publish"]),
+    ("cargo", &["publish"]),
+    ("gem", &["push"]),
+    ("twine", &["upload"]),
+    (
+        "systemctl",
+        &[
+            "start", "stop", "restart", "enable", "disable", "mask", "reload",
+        ],
+    ),
+    ("tmux", &["send-keys", "send"]),
 ];
 
 /// `git` subcommands that reach a remote.
@@ -321,6 +400,11 @@ fn git_destructive(args: &[String]) -> bool {
     match args[at].as_str() {
         "reset" => rest.iter().any(|a| a == "--hard"),
         "clean" | "restore" | "rebase" | "filter-branch" | "rm" => true,
+        "commit" => rest.iter().any(|a| a == "--amend"),
+        "worktree" => {
+            rest.first().is_some_and(|a| a == "remove")
+                && rest.iter().any(|a| a == "-f" || a == "--force")
+        }
         // A branch name and a pathspec look alike, so any operand is treated as a possible
         // discard of working-tree changes unless the call is creating a branch.
         "checkout" => {
@@ -347,6 +431,25 @@ fn git_destructive(args: &[String]) -> bool {
 
 fn git_network(args: &[String]) -> bool {
     git_subcommand(args).is_some_and(|at| GIT_NETWORK_SUBCOMMANDS.contains(&args[at].as_str()))
+}
+
+fn remote_write(program: &str, args: &[String]) -> bool {
+    let Some((_, subcommands)) = REMOTE_WRITE_SUBCOMMANDS
+        .iter()
+        .find(|(name, _)| *name == program)
+    else {
+        return false;
+    };
+    let mut operands = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str);
+    let (first, second) = (operands.next(), operands.next());
+    first.is_some_and(|first| {
+        subcommands.contains(&first)
+            || second
+                .is_some_and(|second| subcommands.contains(&format!("{first} {second}").as_str()))
+    })
 }
 
 fn installer(program: &str, args: &[String]) -> bool {
@@ -419,7 +522,11 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
         return destructive_argv(&program_name(wrapped), &args[at + 1..], depth + 1);
     }
 
-    if REMOVAL_OVERWRITE_WORDS.contains(&program) || NETWORK_CLIENT_WORDS.contains(&program) {
+    if REMOVAL_OVERWRITE_WORDS.contains(&program)
+        || NETWORK_CLIENT_WORDS.contains(&program)
+        || CLOUD_CLI_WORDS.contains(&program)
+        || CLUSTER_CLI_WORDS.contains(&program)
+    {
         return true;
     }
     match program {
@@ -435,7 +542,9 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
         "git" if git_destructive(args) || git_network(args) => return true,
         _ => {}
     }
-    installer(program, args) || starts_with_entry(trim_version(program), args)
+    installer(program, args)
+        || remote_write(program, args)
+        || starts_with_entry(trim_version(program), args)
 }
 
 /// The absolute paths a call touches, as the scope validator resolves them. A file tool names
