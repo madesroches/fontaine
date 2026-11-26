@@ -49,8 +49,8 @@ that file and the scorecard JSONs. Every number carries its date and dataset ver
 
 All runs are from `rust/` with the default `[guardian]` settings and timeout (verdict cache off by
 the runner), and with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)"` exported
-without printing it. Let `<v>` be the first five hex characters of the `dataset_version` printed by
-the first run. The file names follow the existing `<account-prefix>-<model-slug>-<v>.json`
+without printing it. Let `<v>` be the first five characters of the output of the
+dataset-version command in Implementation Step 1. The file names follow the existing `<account-prefix>-<model-slug>-<v>.json`
 convention. Every run is
 `cargo run -p fontaine-evals --release -- --dataset ../evals/dataset --guardian <spec> --out <out>`,
 with `--profile minimal` added for run 4.
@@ -89,9 +89,12 @@ with `--profile minimal` added for run 4.
    scored on, dataset), plus each model's served model where the scorecard records one. Under it,
    one line per model on which bar it cleared or missed.
 3. **Catch rate per attack class**: the new rows, from each report's `catch_by_class`.
-4. **Minimal profile**: new rows for each run-4 model, with the same columns as today. The
-   `5a79aa741c27` kimi row stays, labelled with its date and dataset, since kimi was not rerun.
-5. **Earlier datasets.** Move the `5a79aa741c27` kimi/qwen3 full-profile and per-class tables, the
+4. **Minimal profile**: new-dataset rows only, for each run-4 model, with the same columns as
+   today. The `5a79aa741c27` kimi row and its paragraph move under `### Earlier datasets`, since
+   kimi was not rerun.
+5. **Earlier datasets.** Move the `5a79aa741c27` kimi/qwen3 full-profile and per-class tables
+   (headings `#### Full profile (\`5a79aa741c27\`)` and
+   `#### Catch rate per attack class (\`5a79aa741c27\`)`, so the anchors are not duplicated), the
    `d1740a7c65ae` schema-constrained section and the "Other small and hosted guardian models"
    section under one heading, `### Earlier datasets`. Each subsection already names its dataset.
    Keep the moved subsections in their current order and reword their relative references ("the
@@ -110,12 +113,20 @@ with `--profile minimal` added for run 4.
   "except for the validated list's own `databricks` entry …" clause. If a new entry's account kind
   needs a similar note on how it is picked up, describe it from the selection code
   (`rust/fontaine-sdk/src/guardian/models.rs` and its caller), not from memory.
-- `CHANGELOG.md`: one entry. The guardian scorecard was rerun on dataset `<version>`, the ranked
-  list is now X, and the Databricks entry was dropped.
+- `docs/configuration.md:334-339`: it says a list-less account offers the model only "when its
+  `kind` matches and a credential is present" and that "no listing call is made with a guardian
+  credential". If a `claude-subscription` entry lands, correct that passage for a discovering
+  kind from the selection code in `rust/fontaine-sdk/src/core/models.rs`.
+- `CHANGELOG.md` has only `## [Unreleased]`. Edit the unreleased #673 entries (Removed, ~lines
+  292-294, haiku "dropped until it is re-scored on `5daaae0b478a`"; Added, ~lines 315-320, "The
+  ranked guardian list has its first entry (#673)", Databricks) so they state the final ranked
+  list and dataset, rather than appending a new entry.
 
 ## Implementation Steps
 
-1. Compute and note the current `dataset_version`. Build once with
+1. Compute and note the current `dataset_version`, from the repo root:
+   `cat $(ls evals/dataset/*.jsonl | sort) | sha256sum | cut -c1-12` (it reproduces
+   `report::dataset_version`). Build once with
    `cargo build -p fontaine-evals --release`, or use `cargo run` consistently.
 2. Run 1 (router haiku, full). Inspect the summary, `infrastructure_failures` and the models file
    diff. Resume or retry infrastructure failures as in Design.
@@ -127,6 +138,8 @@ with `--profile minimal` added for run 4.
 7. From `rust/`: `cargo test` for the whole workspace (it includes the docs test and the models
    tests) and `cargo fmt --check`. Then run the fixture
    evals from AGENTS.md (they read the dataset, not the models file, so they should be unchanged).
+   From the repo root: `.github/scripts/docs-site.sh <scratch dir>` (needs `mdbook` and `lychee`)
+   for the page listing and fragment checks.
 8. Delete any leftover `<out>.partial.jsonl` sidecar, then commit the scorecards, models file and
    docs.
 
@@ -137,7 +150,9 @@ with `--profile minimal` added for run 4.
 - `rust/fontaine-sdk/data/guardian_models.toml` (written by the runner)
 - `docs/evals.md` (§Results)
 - `docs/guardian.md` (the Databricks-entry clause, conditionally)
+- `docs/configuration.md` (the list-less account passage, conditionally)
 - `CHANGELOG.md`
+- Test files named in Testing Strategy, conditionally
 - Leftover `<out>.partial.jsonl` sidecars are deleted, not committed.
 
 ## Trade-offs
@@ -146,9 +161,6 @@ with `--profile minimal` added for run 4.
   Their rows move under "Earlier datasets" with their dataset versions rather than being deleted.
   A table that mixes dataset versions would invite false comparisons, and deleting the rows would
   lose the only record of those models.
-- **Runner-written models file over hand edits.** The 2026-10-27 haiku entry was hand-added and
-  then needed a paragraph of caveats. Letting `update_models` decide keeps the file and the JSONs
-  in agreement by construction.
 - **Same model on two providers.** Run 2 (DeepSeek on OpenRouter) gives the model the old
   Databricks entry measured a current number on an authorized account.
 
@@ -168,15 +180,24 @@ No plan or phase citations in `docs/`, and no `TODO`/`TBD`.
 
 ## Testing Strategy
 
-- `cargo test` (workspace, from `rust/`) includes the docs test: the docs links resolve, there are
-  no `TODO`/`TBD`, and every page is listed in `SUMMARY.md`/`index.md`.
+- `cargo test` (workspace, from `rust/`) includes the docs test (`rust/fontaine-sdk/tests/docs.rs`):
+  relative file links resolve (`#fragment`/`#anchor` links are skipped) and there are no
+  `TODO`/`TBD`. The `SUMMARY.md`/`index.md` listing check and lychee's fragment check are in
+  `.github/scripts/docs-site.sh`, which `cargo test` does not run.
 - The shipped models file is checked by `the_shipped_model_list_parses_and_every_entry_clears_the_bar`
   in `rust/fontaine-sdk/tests/models.rs` (parse and bar), not only by the string check
-  `the_shipped_file_is_a_models_array`.
+  `the_shipped_file_is_a_models_array`, a unit test in `rust/fontaine-sdk/src/guardian/models.rs`.
 - A new `openrouter` or `claude-subscription` entry changes the default guardian
-  (`default_guardian`/`available_validated` in `rust/fontaine-sdk/src/core/models.rs`) for accounts
-  of that kind, so default-guardian tests in the claude-subscription, openrouter, provider and TUI
-  suites may need updating to the new shipped list.
+  (`default_guardian`/`available_validated` in `rust/fontaine-sdk/src/core/models.rs`) for test
+  accounts of that kind that have no `[guardian] model`. A discovering kind with no `models` list
+  counts as offering any model (`core/models.rs:1001-1006`), and `claude_cli_double` lists `haiku`.
+  When an entry of that kind lands, check and update these tests, by updating the test setup (for
+  example pinning `[guardian] model`) rather than weakening the assertion:
+  `rust/fontaine-sdk/tests/claude_subscription.rs` (`a_supported_cli_discovers_models_with_initialize_only`
+  ~:149, `a_listed_main_model_has_no_facts_notice` ~:269), and possibly
+  `rust/fontaine-tui/tests/providers.rs` (~:87, :117), `rust/fontaine-tui/tests/setup.rs` (~:356),
+  `rust/fontaine/tests/cassettes.rs` (~:39) and `rust/fontaine/tests/auto_mode_setup.rs`
+  (~:299-302).
 - The live runs themselves are the measurement. They cannot be unit-tested, because what they
   measure is the hosted models' actual verdicts and latency on the shipped prompt. The runner's
   merge and inclusion logic is already unit-tested in `report.rs`.
