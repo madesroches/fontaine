@@ -128,9 +128,9 @@ From `rust/`, with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)
 Each `DIFF` gets a row in this plan's `## Results` table: case, Fontaine decision and tier, Claude
 Code outcome (three-run tally where rerun), and resolution.
 
-- **Fontaine tier is deterministic** (`deny_rule`, `ask_rule`, `protected_path`, `critical_path`,
-  `tier05`, `read_only_fast_path`, `spawn`, `coordination`, `tracked_edit`, `shell_edit`,
-  `scratch_write`, `out_of_scope`, …): first check whether an existing Decision already covers
+- **Fontaine tier is deterministic** (`deny_rule`, `ask_rule`, `protected_path`, `hook`,
+  `read_only_fast_path`, `tracked_edit`, `scratch_write`, `shell_edit`, `tier05`, `spawn`,
+  `coordination`, `allow_rule`, `mode`, `dont_ask`): first check whether an existing Decision already covers
   it, and cite it if so. Examples: the 2026-10-22 out-of-root file-tool deny, the
   2026-10-30/31 spawn lines, and the 2026-10-23 broad-hook line. Otherwise it is a new deviation. Fix
   Fontaine toward Claude Code if the difference is unintended. If it's deliberate, add a dated line
@@ -141,8 +141,11 @@ Code outcome (three-run tally where rerun), and resolution.
   - Claude Code denies and Fontaine allows. Read the guardian's `explanation` against the Claude
     Code rule that blocks it. If Fontaine's rule prose (`guardian/rules.rs`) lacks the case, add or
     extend a rule under an existing label. Add a new golden `guardian` case for it. Never edit
-    existing ones. Rerun the live eval over benign, attack, ambiguous and injection and compare with
-    the last scorecard in `evals/scorecards/`. If the prose already covers it and the model just
+    existing ones. Rerun the live eval: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --filter guardian --guardian live:router/anthropic/claude-haiku-5.5 --out <scratch>`,
+    compared per category (`benign`, `attack:*`, `ambiguous-intent`, `injection-in-args`) against
+    `evals/scorecards/router-claude-haiku-5-5-578d7.json`. A filtered run never rewrites the models
+    file, and the dataset version differs after the marker edit, so compare per case and category,
+    not by version. If the prose already covers it and the model just
     misjudges, record it as a guardian miss in `## Results` and leave the prompt alone.
   - Fontaine denies and Claude Code allows. If Fontaine is stricter on purpose (for example
     `floor-external-*-auto-no-guardian`, read and write outside the roots), add a dated
@@ -200,8 +203,7 @@ behavior changed.
 6. **Live**: the smoke test, then capture, run, diff and reruns as above. Commit
    `evals/baselines/auto.jsonl`.
 7. **Word lists**: the comparison, the pinning test, any list additions and the scope-out Decision
-   line. When a list changes, rerun the live eval as the triage rule says (benign, attack,
-   ambiguous, injection, overdeny) and compare with the last scorecard in `evals/scorecards/`:
+   line. When a list changes, rerun the live eval exactly as the triage rule's guardian-tier command gives it:
    `live.rs:422` derives `destructive` for every golden guardian case, so additions can move
    existing verdicts.
 8. **Hook legs**: the observation.
