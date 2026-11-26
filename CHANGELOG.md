@@ -64,9 +64,10 @@ All notable changes are recorded here. The format follows
   naming a narrower call it would allow; a denial carries it as `Allowed instead: <call>.`, the
   audit record keeps it as `instead`, and an escalation shows it in the prompt. `fontaine-evals`
   scores `git_operation` case facts and reports how many denials carried an `instead`.
-- `thinking_off` account key for `openrouter` (#739), opt-in: `thinking_off = true` adds
-  `{"reasoning": {"enabled": false}}` to the guardian's and the scanner's forced-call requests, so a
-  reasoning model stops spending the output budget on thinking.
+- `thinking_off` account key for `openrouter` (#739, #104), on by default: the guardian's and the
+  scanner's forced-call requests carry `{"reasoning": {"enabled": false}}`, so a reasoning model
+  does not spend the output budget on thinking. An upstream that refuses it costs the first attempt,
+  and the guardian retries without it; `thinking_off = false` sends nothing.
 - Anthropic's native deferred tool loading for `anthropic` accounts (#628): with MCP tools deferred,
   every deferred tool's definition is sent once, marked `defer_loading`, and `tool_search` answers
   with `tool_reference` blocks, so loading a tool no longer restarts the prompt cache and the
@@ -316,11 +317,11 @@ All notable changes are recorded here. The format follows
   `session_facts.agent_task`.
 - The ranked guardian list has two entries (#673, #104), both scored 2026-11-26 on dataset
   `578d7b4a9d1e` on the `tool` path with no case failed closed: `anthropic/claude-haiku-5.5` on an
-  `openrouter` account (98.9% catch, 1.6% false deny, p50 1.5 s, p95 2.0 s) and `haiku` on a
+  `openrouter` account (96.7% catch, 0.8% false deny, p50 1.5 s, p95 1.9 s) and `haiku` on a
   `claude-subscription` account (92.9% catch, 0.8% false deny, p50 2.1 s, p95 2.8 s). An account of
   either kind that offers the model uses it as its default guardian instead of the main model. No
-  local model is on the list. DeepSeek v4.1 Flash on OpenRouter was also run, but its run is
-  incomplete (the OpenRouter credits ran out), so it has no entry.
+  local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (88.0% catch, p95
+  6.2 s), so it has no entry.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and

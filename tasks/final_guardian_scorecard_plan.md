@@ -173,6 +173,8 @@ with `--profile minimal` added for run 4.
 - 2026-11-26 AFK: if no model clears the bar, ship the empty ranked list the runner writes and say
   so in `docs/evals.md`. Do not hand-add an entry.
 
+- 2026-11-26: the maintainer's ruling that the guardian always runs with reasoning minimal or off made `openrouter` send `{"reasoning": {"enabled": false}}` by default (`thinking_off` opts out); the three `router` runs were redone on that default, and the OpenRouter credit gap that had cut the first DeepSeek and minimal runs short was closed by a top-up.
+
 ## Documentation
 
 `docs/evals.md` §Results (rewrite), `docs/guardian.md` (conditional, see Design), `CHANGELOG.md`.
