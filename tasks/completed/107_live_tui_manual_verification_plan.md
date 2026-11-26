@@ -87,3 +87,17 @@ reproduces becomes an issue, and the fix that follows pins it with an automated 
 
 - Does the `claudemax/sonnet` agent account run unattended here, and does `opencode-go` have a stored
   credential on this machine? If not, the run cannot start and the issue stays open.
+
+## Results
+
+Run 2026-11-26 at `4b50126b`, agent `claudemax/sonnet`, guardian `router/anthropic/claude-haiku-5.5`
+(scratch config without the `screen` composition), tmux 140x45, scratch git workspace.
+
+- Item 2 pass: `ls -la` ran with audit `tier05`, `allow`, no guardian model; the curl was audited
+  `guardian`, `deny`, rule `Download+Execute`, confidence 0.97, 1958 ms, and shown inline as
+  `denied: [Download+Execute] ...`.
+- Item 3 pass: `/denied` listed the curl with its rule; `r` printed "approved once: ...; the agent is
+  told it may retry" and the row read `(approved once)`.
+- Item 5 pass: four background subagents ran at once; killing the second row with `x` showed it as
+  `killed` with its spend (`20.8k tok · $0.0005 · 8.9k unpriced tok`) while the other three stayed
+  `running`. A first attempt finished before the kill and was discarded, not counted.

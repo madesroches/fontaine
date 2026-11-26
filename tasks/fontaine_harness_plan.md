@@ -146,11 +146,11 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
   - [x] Record the Phase 4 auto-mode cassette (agent `openai/gpt-4o-mini`, guardian `anthropic/claude-haiku-5.5`; `gpt-4o-mini` as guardian denied a new-file write).
   - [x] Record the PDF text-stub cassette.
 - **Manual verification** (`design/testing.md` §Manual Verification)
-  - [ ] Item 1: live TUI, manual mode, Anthropic. (#107)
-  - [ ] Items 2–3: live guardian denial and `/denied` retry. (#107)
+  - [x] Item 1: live TUI, manual mode, Anthropic. (2026-11-19, #107)
+  - [x] Items 2–3: live guardian denial and `/denied` retry. (2026-11-26, #107)
   - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian. (Run
         2026-10-23 with `local/qwen3:4b`: the guardian timed out at 30 s, so check 2 did not hold; #108, needs #96.)
-  - [ ] Item 5: agents-panel look and feel. (#107)
+  - [x] Item 5: agents-panel look and feel. (2026-11-26, #107)
   - [x] Item 6, Docker leg: minimal profile with `--in-container`. (2026-10-23)
 - **PromptGuard 2 with real weights** (needs a Hugging Face token)
   - [x] Logit spike against the model card. (2026-10-23; against a `transformers` reference, the model card itself is gated)
