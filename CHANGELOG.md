@@ -8,16 +8,6 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
-- Auto-mode baseline against Claude Code (#103): `baseline capture --mode <mode>` and a `none` or
-  `live:` run with `--mode <mode>` pose every pipeline case in one permission mode on both sides, so
-  `evals/baselines/auto.jsonl` (44 records, Claude Code 2.1.332) is diffed against a live guardian
-  run. Cases whose call reaches host files carry a `host_reaching` marker and are skipped by
-  `capture` unless `--host-reaching=yes`. The 12 divergences are the guardian denying what the
-  classifier allowed once the capture prompt names the call. The destructive class now also covers
-  cloud, cluster and infrastructure CLIs, tunnels and scanners, `crontab`, and the publish, container
-  and remote-write subcommands the classifier prompt names (`gh pr merge`, `docker push`,
-  `npm publish`, `systemctl restart`); a live pipeline result carries the guardian's reason. See
-  `evals/README.md`.
 - Accept one word of ghost text (#788): with a prompt suggestion or history completion showing,
   Ctrl-Right, Alt-Right and Alt-F take the next word and leave the rest dimmed; Tab and Right still
   take all of it.
@@ -149,6 +139,16 @@ All notable changes are recorded here. The format follows
   destination and a write outside the workspace roots stay judged on your own words. The minimal
   profile does not carry it. Trusting a plugin skill now says so. Eval cases and a
   `project_instructions` case field were added. See `docs/guardian.md`.
+- Auto-mode baseline against Claude Code (#103): `baseline capture --mode <mode>` and a `none` or
+  `live:` run with `--mode <mode>` pose every pipeline case in one permission mode on both sides, so
+  `evals/baselines/auto.jsonl` (44 records, Claude Code 2.1.332) is diffed against a live guardian
+  run. Cases whose call reaches host files carry a `host_reaching` marker and are skipped by
+  `capture` unless `--host-reaching=yes`. The 12 divergences are the guardian denying what the
+  classifier allowed once the capture prompt names the call. The destructive class now also covers
+  cloud, cluster and infrastructure CLIs, tunnels and scanners, `crontab`, and the publish, container
+  and remote-write subcommands the classifier prompt names (`gh pr merge`, `docker push` and
+  `docker compose up`, `npm publish`, `systemctl restart`), found wherever they sit after the
+  program's options; a live pipeline result carries the guardian's reason. See `evals/README.md`.
 
 #### TUI
 
