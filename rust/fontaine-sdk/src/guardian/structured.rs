@@ -552,6 +552,13 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_refusing_to_turn_reasoning_off_is_a_refusal_of_it() {
+        let body = r#"{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}"#;
+        let params = serde_json::json!({"reasoning": {"enabled": false}});
+        assert!(refuses_params(&refused(400, body), &params));
+    }
+
+    #[test]
     fn a_400_naming_the_parameter_is_a_refusal_of_it() {
         let body = r#"{"message":"Unrecognized request argument supplied: Thinking"}"#;
         assert!(refuses_params(&refused(400, body), &thinking()));

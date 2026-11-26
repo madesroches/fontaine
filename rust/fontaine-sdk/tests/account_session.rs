@@ -472,8 +472,12 @@ async fn an_openrouter_account_with_prompt_caching_false_sends_no_marker() {
 }
 
 #[tokio::test]
-async fn an_openrouter_guardian_disables_reasoning_only_when_the_account_opts_in() {
-    for (extra, off) in [("thinking_off = true\n", true), ("", false)] {
+async fn an_openrouter_guardian_disables_reasoning_unless_the_account_opts_out() {
+    for (extra, off) in [
+        ("thinking_off = true\n", true),
+        ("", true),
+        ("thinking_off = false\n", false),
+    ] {
         let server = gateway().await;
         let w = World::new();
         let runtime = openrouter_session(&w, &server, extra).await;

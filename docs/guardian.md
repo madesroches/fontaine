@@ -795,7 +795,11 @@ its false-deny rate over the benign cases is at most 5%, and its p95 adjudicatio
 most 3 seconds. Entries are ranked by catch rate, then false-deny rate, then latency.
 
 With no `[guardian] model`, the guardian is the highest-ranked validated model that one of your
-accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
+accounts offers. If none is, the main model judges and Fontaine tells you once at startup. The
+shipped list has one entry, `anthropic/claude-haiku-5.5` on an `openrouter` account. An
+`openrouter` account that holds a key offers it when it lists the model, or, with no `models`
+list, when it is not the main model's account; the main model's account needs the model in the
+listing already fetched.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
 non-Claude Messages models. A `databricks` account sends the Chat wire's parameter to the
@@ -809,7 +813,8 @@ deployment that does not honour it leaves the model thinking, and the guardian's
 budget can then go entirely to reasoning — the call answers nothing and fails closed as `error`
 with `finish_reason=Length`, which no retry fixes, so the model is not usable as a guardian there.
 An `openrouter` account sends `{"reasoning": {"enabled": false}}` on the guardian's and the
-scanner's calls when `thinking_off = true`; it is off by default there.
+scanner's calls unless it sets `thinking_off = false`; an upstream that refuses it costs the first
+attempt, as on `databricks`.
 On an `openai-compatible` or `kimi` account, a model that thinks by default cannot be the guardian:
 every call is denied as `GuardianUnavailable`. Pick a model without default thinking.
 
@@ -834,9 +839,7 @@ model = "work/claude-haiku-5-5"
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, a `kimi` account,
-  Ollama, an `opencode-go` or `databricks` account), only a model set explicitly in `guardian.model` is used, except for the
-  validated list's own `databricks` entry (`system.ai.deepseek-v4-1-flash-1017`), which a
-  `databricks` account that serves that model id picks up as its default guardian. A small local
+  Ollama, an `opencode-go` or `databricks` account), only a model set explicitly in `guardian.model` is used. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
   prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
   `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the

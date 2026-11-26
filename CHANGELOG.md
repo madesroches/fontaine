@@ -64,9 +64,10 @@ All notable changes are recorded here. The format follows
   naming a narrower call it would allow; a denial carries it as `Allowed instead: <call>.`, the
   audit record keeps it as `instead`, and an escalation shows it in the prompt. `fontaine-evals`
   scores `git_operation` case facts and reports how many denials carried an `instead`.
-- `thinking_off` account key for `openrouter` (#739), opt-in: `thinking_off = true` adds
-  `{"reasoning": {"enabled": false}}` to the guardian's and the scanner's forced-call requests, so a
-  reasoning model stops spending the output budget on thinking.
+- `thinking_off` account key for `openrouter` (#739, #104), on by default: the guardian's and the
+  scanner's forced-call requests carry `{"reasoning": {"enabled": false}}`, so a reasoning model
+  does not spend the output budget on thinking. An upstream that refuses it costs the first attempt,
+  and the guardian retries without it; `thinking_off = false` sends nothing.
 - Anthropic's native deferred tool loading for `anthropic` accounts (#628): with MCP tools deferred,
   every deferred tool's definition is sent once, marked `defer_loading`, and `tool_search` answers
   with `tool_reference` blocks, so loading a tool no longer restarts the prompt cache and the
@@ -291,7 +292,9 @@ All notable changes are recorded here. The format follows
 
 - `opencode-go/claude-haiku-5-5` as the default guardian of an `opencode-go` account, and as what
   `$guardian_default` resolves to on one: its entry was scored on dataset `d1740a7c65ae`, and a run
-  scores its own dataset version, so it is dropped until it is re-scored on `5daaae0b478a` (#673).
+  scores its own dataset version, so it is dropped; it was not re-scored on `578d7b4a9d1e` (#673).
+- The `databricks` `system.ai.deepseek-v4-1-flash-1017` entry of the ranked guardian list: it was
+  scored on dataset `5daaae0b478a`, so the first full run on `578d7b4a9d1e` dropped it (#673).
 - `fontaine send` and `/remote-inbox` (#627, #664): replaced by remote control. The `fontaine/send/1`
   protocol is gone and a `fontaine-send1…` ticket fails to parse. Use `fontaine attach <ticket>`, or
   `fontaine attach <ticket|host> --message <text>` for one message.
@@ -312,12 +315,13 @@ All notable changes are recorded here. The format follows
   user's intent: it shows the scope the request was carried out in, so a plan's mechanical
   follow-ups no longer read as an unrequested change. Eval cases can set
   `session_facts.agent_task`.
-- The ranked guardian list has its first entry (#673): `system.ai.deepseek-v4-1-flash-1017` on a
-  `databricks` account, measured 2026-11-16 on dataset `5daaae0b478a` at 90.0% catch, 2.7% false
-  deny, p50 1.3 s and p95 2.5 s, on the `tool` path with no case failed closed. A `databricks`
-  account that serves that model id uses it as its default guardian instead of the main model. Its
-  guardian calls carry `reasoning_effort: "none"`, the field Databricks documents for turning the
-  deployment's default `max` reasoning off.
+- The ranked guardian list has one entry (#673, #104): `anthropic/claude-haiku-5.5` on an
+  `openrouter` account, scored 2026-11-26 on dataset `578d7b4a9d1e` on the `tool` path with no case
+  failed closed (96.7% catch, 0.8% false deny, p50 1.5 s, p95 1.9 s). An `openrouter` account that
+  offers the model uses it as its default guardian instead of the main model. `haiku` on a
+  `claude-subscription` account also cleared the bar (92.9% catch, 0.8% false deny, p95 2.8 s) but
+  is left off: it is the same model family and scores lower. No local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (88.0% catch, p95
+  6.2 s), so it has no entry.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and

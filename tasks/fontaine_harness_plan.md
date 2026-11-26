@@ -122,14 +122,16 @@ an item here by changing `[ ]` to `[x]` and adding the date when its issue close
 Apart from the ticked repo-side items, each item needs live provider keys, a live model, or a maintainer decision, so none of them runs in CI.
 
 - **Guardian scorecard**
-  - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
-        (`design/testing.md` §Eval harness). (#102)
+  - [x] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
+        (`design/testing.md` §Eval harness). (#102; 2026-11-26, on dataset `578d7b4a9d1e`, with
+        the live scorecard of #104)
   - [x] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
         fills `rust/fontaine-guardian/data/guardian_models.toml`. (2026-10-23; run with
         `kimi/kimi-for-coding` and `local/qwen3:4b`, no model cleared the inclusion bar, so the file stays
         empty; see `completed/release_live_checks_plan.md` `## Results`)
   - [ ] Check the run against the Risk Gates' catch-rate kill floor. (#105; needs #96, #97)
-  - [ ] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104)
+  - [x] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104;
+        2026-11-26, dataset `578d7b4a9d1e`, ranked list `openrouter` `anthropic/claude-haiku-5.5`)
 - **Claude Code baselines (`claude -p`)**
   - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
         `completed/release_live_checks_plan.md`; #101 resolved 2026-11-15: 66 baseline records, every
@@ -1150,6 +1152,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-16: (#677) A model takes a price only from an exact catalog entry, never from a shape-derived one: a derived entry's limits already come from a model of the same shape, and its price would be a second guess stacked on the first. Such a model keeps its spend in `unpriced tok`, which the user can act on by mapping it under `model_facts`.
 - 2026-11-16: (#677) A `model_facts`-mapped endpoint on `databricks` takes its target's list price in the ledger and `/cost`, while the same mapping on `anthropic` stays unpriced: there the mapping exists for limits and tool behavior, and changing its pricing is outside this issue. A mapped dbx endpoint has no OpenTelemetry cost metric, because its span carries only the endpoint name.
 - 2026-11-20: (#737) `claude-subscription` has an opt-in, development-only capture, switched on only by the user-level `FONTAINE_CLAUDE_CAPTURE` variable (`1`/`full` records every request's post-layout frames, `delta` only the new messages; any other value is off with one warning), with no config key at any scope so project scope cannot enable it. It writes the frames sent to the CLI and its final result events, unredacted by design, to an owner-only JSON Lines file under `<data dir>/claude-capture/`, never to telemetry, the ledger or a remote device, and warns once when the file is created. Divergence uses the layout-neutral pre-layout message hash, because the layout moves the cache marker between requests. It also points the CLI's own raw-body capture (`OTEL_LOG_RAW_API_BODIES`) at a private `.bodies` directory on request launches only, non-fatally, because the CLI's capture redacts thinking text, the suspect field, and so supplements rather than replaces ours.
+- 2026-11-26: (#104) On `openrouter`, `thinking_off` is on by default: unset sends `{"reasoning": {"enabled": false}}` on the guardian's and the scanner's calls, and `false` opts out. This supersedes #739's opt-in default. Reason: the guardian should always run with reasoning minimal or off (maintainer), and a reasoning upstream such as DeepSeek v4.1 Flash otherwise spends the 1024-token guardian budget on thinking and fails closed. An upstream that refuses the field costs the first attempt, through the same refused-parameter retry as `databricks`.
 
 ### Sessions
 

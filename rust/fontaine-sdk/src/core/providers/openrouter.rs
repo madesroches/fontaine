@@ -59,7 +59,7 @@ impl Provider for OpenRouter {
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
             caching: PromptCaching::of(ctx.account),
             warn: ctx.warn.clone(),
-            thinking_off: ctx.account.thinking_off.unwrap_or(false),
+            thinking_off: ctx.account.thinking_off.unwrap_or(true),
         }))
     }
 }
@@ -71,11 +71,13 @@ struct Connected {
     thinking_off: bool,
 }
 
-/// Opt-in: OpenRouter routes to upstreams that cannot all disable reasoning, so unset means off.
-/// The `reasoning` object is gateway-normalized, so one value serves every model.
+/// On unless the account says `false`: a guardian that reasons by default spends its output budget
+/// before answering. An upstream that cannot turn reasoning off refuses the field with a 400 naming
+/// it, and the guardian retries without it. The `reasoning` object is gateway-normalized, so one
+/// value serves every model.
 fn thinking_off(account: Option<bool>) -> Option<Value> {
     account
-        .unwrap_or(false)
+        .unwrap_or(true)
         .then(|| json!({"reasoning": {"enabled": false}}))
 }
 
@@ -133,10 +135,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thinking_off_is_sent_only_when_the_account_sets_true() {
+    fn thinking_off_is_sent_unless_the_account_sets_false() {
         let off = Some(json!({"reasoning": {"enabled": false}}));
         assert_eq!(thinking_off(Some(true)), off);
+        assert_eq!(thinking_off(None), off);
         assert_eq!(thinking_off(Some(false)), None);
-        assert_eq!(thinking_off(None), None);
     }
 }
