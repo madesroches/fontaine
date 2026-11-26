@@ -90,8 +90,11 @@ Add an optional pipeline-only case field `host_reaching: true` (in `case.rs`, wi
 the cases whose call reaches host files outside the scratch workspace, re-derived from
 `evals/dataset/{floor,tier05,spawn}.jsonl`: `floor-critical-deletion-{home-manual,dont-ask,allow-rule}`;
 `floor-external-read-{deny-rule,deny-rule-dont-ask,ask-rule,ask-rule-dont-ask,allow-rule,manual,dont-ask,auto-no-guardian,deny-beats-allow}`;
-`floor-external-write-` with the same nine suffixes; and `tier05-{chain-curl-sh,out-of-scope-home-path,command-substitution-rm,symlink-escape,tilde-argument,parameter-expansion,brace-expansion-escape,brace-expansion-rm-root,out-of-scope-cwd,dont-ask-chain}`
-(31 cases). `floor-secret-*` are not marked: they never leave the scratch dir. The marker applies
+`floor-external-write-` with the same nine suffixes; and `tier05-{chain-curl-sh,out-of-scope-home-path,command-substitution-rm,symlink-escape,tilde-argument,parameter-expansion,brace-expansion-escape,brace-expansion-rm-root,out-of-scope-cwd,dont-ask-chain}`; and every
+pipeline `agent` spawn case in `spawn.jsonl` except `spawn-agent-deny-rule`, since Claude Code can run a
+spawn's subagent with the real HOME and its tools: `spawn-readme-escalated-toolset{,-dont-ask}`,
+`spawn-agent-ask-rule`, `spawn-explore-fast-path{,-auto}` and `spawn-worker-auto-gate` (the deny rule
+stops the spawn before any subagent exists) (37 cases). `floor-secret-*` are not marked: they never leave the scratch dir. The marker applies
 in every mode, so #101's manual/dontAsk external-path captures are skipped too unless
 `--host-reaching=yes`. `capture_skip_reason` returns "reaches host files outside
 the scratch workspace; capture it only in a disposable container or VM" for such a case, unless
@@ -137,7 +140,10 @@ Code outcome (three-run tally where rerun), and resolution.
   at the end of the owning subsection (`### Permissions` for pipeline tiers, `### Agents` for spawn).
   The security invariants in `AGENTS.md` win over parity. A fix never loosens the floor and never
   adds a fast path outside the six listed exceptions.
-- **Fontaine tier is `guardian`** (model against model):
+- **Fontaine tier is `guardian`** (model against model). First check the result's `fail_closed`: a
+  low-confidence destructive Allow-to-Deny conversion is triaged against the destructive flag and the
+  confidence bar, not rule prose; an infrastructure fail-closed (error, timeout, unparseable output)
+  is rerun, not triaged.
   - Claude Code denies and Fontaine allows. Read the guardian's `explanation` against the Claude
     Code rule that blocks it. If Fontaine's rule prose (`guardian/rules.rs`) lacks the case, add or
     extend a rule under an existing label. Add a new golden `guardian` case for it. Never edit
@@ -185,9 +191,13 @@ behavior changed.
 ## Implementation Steps
 
 1. **Marker**: add `host_reaching: Option<bool>` to `Case` (`case.rs`). Make `validate_case` reject
-   it off pipeline cases, with a unit test. Set it on the 31 cases listed in Design, in `evals/dataset/floor.jsonl`
-   and `tier05.jsonl`. The dataset version hash changes, so check `evals/scorecards` don't assert
-   it (they record it, which is fine).
+   it off pipeline cases, with a unit test. Set it on the 37 cases listed in Design, in `evals/dataset/floor.jsonl`,
+   `tier05.jsonl` and `spawn.jsonl`. The dataset version hash changes, which makes
+   `--screen-reference <scorecard>` a usage error against existing scorecards (`runner.rs:882-891`),
+   makes the next unfiltered `--profile full` live run drop every other model's entry from
+   `rust/fontaine-sdk/data/guardian_models.toml` (`report.rs:207-212`), and makes `--resume` refuse an
+   old sidecar (`output.rs:191`).
+   Step 11 reruns the scorecards on the new version.
 2. **Capture**: in `baseline.rs`, add the host-reaching skip to `capture_skip_reason`, gated by an
    `allow_host` argument. Extract `claude_command_args(case, mode)`, and thread `mode: Option<PermissionMode>`
    and `allow_host: bool` through `capture`. In `runner.rs` `BaselineAction::Capture`, add
@@ -212,6 +222,9 @@ behavior changed.
 10. **Bookkeeping**: tick `tasks/fontaine_harness_plan.md:139` with the date and a one-line result.
     Tick #80's matching box (`gh issue edit 80 --body-file`). Add an `### Evals` Decision line for
     the `--mode` override and the host-reaching marker.
+11. **Rerun scorecards**: as #797 did (commit a409881d), rerun the published guardian scorecards and
+    the models file on the new dataset version, and update `-578d7` in the scorecard paths this plan
+    and the docs cite.
 
 ## Files to Modify
 
@@ -225,7 +238,7 @@ behavior changed.
 - `rust/fontaine-sdk/tests/destructive.rs`: the pinning table
 - `rust/fontaine-sdk/src/guardian/rules.rs` and `evals/dataset/*.jsonl` (new cases only): only if
   triage finds a guardian gap
-- `evals/dataset/floor.jsonl`, `evals/dataset/tier05.jsonl`: the marker
+- `evals/dataset/floor.jsonl`, `evals/dataset/tier05.jsonl`, `evals/dataset/spawn.jsonl`: the marker
 - `evals/baselines/auto.jsonl` (new)
 - `evals/README.md`, `tasks/design/testing.md`
 - `tasks/fontaine_harness_plan.md`: tracker tick and Decisions
