@@ -492,6 +492,15 @@ fn remote_write(program: &str, args: &[String]) -> bool {
             "--connection",
             "--url",
             "--identity",
+            "--tlscacert",
+            "--tlscert",
+            "--tlskey",
+            "-f",
+            "--file",
+            "-p",
+            "--project-name",
+            "--env-file",
+            "--profile",
         ],
         "tmux" => &["-L", "-S", "-f", "-c", "-T"],
         "npm" | "pnpm" => &[
@@ -540,21 +549,24 @@ fn remote_write(program: &str, args: &[String]) -> bool {
             skipped.push(arg);
         }
     }
-    // An option this list does not know may take a value, so the plain reading of the operands
-    // counts too: an ambiguous call is flagged rather than missed.
+    // An option this list does not know may take a value, so the plain reading (every dash-arg
+    // dropped, no value skipped) is also searched for a listed subcommand at any operand
+    // position: a call that puts an unlisted value-taking option first is flagged, not missed.
+    // The cost is over-flagging (`docker logs push`), which errs safe.
     let plain: Vec<&str> = args
         .iter()
         .filter(|a| !a.starts_with('-'))
         .map(String::as_str)
         .collect();
-    [skipped, plain].iter().any(|operands| {
+    let at_start = |operands: &[&str]| {
         operands.first().is_some_and(|first| {
             subcommands.contains(first)
                 || operands.get(1).is_some_and(|second| {
                     subcommands.contains(&format!("{first} {second}").as_str())
                 })
         })
-    })
+    };
+    at_start(&skipped) || (0..plain.len()).any(|i| at_start(&plain[i..]))
 }
 
 fn installer(program: &str, args: &[String]) -> bool {

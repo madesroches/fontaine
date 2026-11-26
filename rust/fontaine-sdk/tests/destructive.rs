@@ -144,6 +144,17 @@ fn every_remote_write_subcommand_is_destructive_and_its_reads_are_not() {
         }
     }
     for command in [
+        "docker compose -f docker-compose.yml up -d",
+        "docker compose -p proj up",
+        "docker compose --env-file .env up",
+        "docker --tlscacert ca.pem push img",
+        "npm --otp 123456 publish",
+        "systemctl --root /x enable foo",
+        "npm --unknown-option value publish",
+    ] {
+        assert!(shell_is(command), "{command}");
+    }
+    for command in [
         "gh pr view 1",
         "gh pr checks",
         "gh issue list",
