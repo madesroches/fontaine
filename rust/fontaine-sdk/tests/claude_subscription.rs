@@ -269,8 +269,6 @@ async fn an_unlisted_model_of_a_listed_shape_resolves_with_one_notice() {
 async fn a_listed_main_model_has_no_facts_notice() {
     let claude = Claude::new();
     claude.scenario(derived_scenario());
-    // Pinned, so the shipped `haiku` entry's derived facts do not make a second model.
-    with_guardian(&claude, "claude/sonnet");
     let models = claude.resolve(None).await.unwrap();
     assert!(derived_notices(&models).is_empty(), "{:?}", models.notices);
     assert_eq!(models.main.facts_notice, None);

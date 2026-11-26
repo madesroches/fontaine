@@ -796,12 +796,10 @@ most 3 seconds. Entries are ranked by catch rate, then false-deny rate, then lat
 
 With no `[guardian] model`, the guardian is the highest-ranked validated model that one of your
 accounts offers. If none is, the main model judges and Fontaine tells you once at startup. The
-shipped list has two entries, `anthropic/claude-haiku-5.5` on an `openrouter` account and `haiku`
-on a `claude-subscription` account. An `openrouter` account that holds a key offers the first when it lists the model, or, with no
-`models` list, when it is not the main model's account; the main model's account needs the model in
-the listing already fetched. A `claude-subscription` account is offered the second
-unless its `models` list rules it out, and it is used only if the Claude CLI's own listing then
-shows `haiku`.
+shipped list has one entry, `anthropic/claude-haiku-5.5` on an `openrouter` account. An
+`openrouter` account that holds a key offers it when it lists the model, or, with no `models`
+list, when it is not the main model's account; the main model's account needs the model in the
+listing already fetched.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
 non-Claude Messages models. A `databricks` account sends the Chat wire's parameter to the

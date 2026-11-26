@@ -174,6 +174,7 @@ with `--profile minimal` added for run 4.
   so in `docs/evals.md`. Do not hand-add an entry.
 
 - 2026-11-26: the maintainer's ruling that the guardian always runs with reasoning minimal or off made `openrouter` send `{"reasoning": {"enabled": false}}` by default (`thinking_off` opts out); the three `router` runs were redone on that default, and the OpenRouter credit gap that had cut the first DeepSeek and minimal runs short was closed by a top-up.
+- 2026-11-26: the ranked list keeps one Haiku entry (maintainer): the `claude-subscription` `haiku` entry the runner wrote was removed by hand, since the `openrouter` `anthropic/claude-haiku-5.5` entry is the same family with a higher catch rate and lower latency; its scorecard rows stay in `docs/evals.md`.
 
 ## Documentation
 

@@ -593,9 +593,10 @@ Three models were scored on 2026-11-26 against dataset `578d7b4a9d1e`, with the 
 `[guardian]` settings (30-second timeout, verdict cache turned off by the runner), on the `tool`
 transport. The `openrouter` runs carry `{"reasoning": {"enabled": false}}`, the account's default
 for guardian calls. Two of them, `router/anthropic/claude-haiku-5.5` (OpenRouter) and
-`claudemax/haiku` (a Claude subscription, through the Claude CLI), cleared the inclusion bar and are
-the ranked list shipped with this build, in this order: `anthropic/claude-haiku-5.5` on an
-`openrouter` account, then `haiku` on a `claude-subscription` account. No local model is on it. The
+`claudemax/haiku` (a Claude subscription, through the Claude CLI), cleared the inclusion bar. They
+are the same model family, so the ranked list shipped with this build keeps one:
+`anthropic/claude-haiku-5.5` on an `openrouter` account, the one with the higher catch rate and the
+lower latency. No local model is on it. The
 third, `router/deepseek/deepseek-v4.1-flash-1017` (DeepSeek v4.1 Flash on OpenRouter), missed the
 catch-rate and latency bars, so it has no entry. With no `[guardian] model` and no account that
 offers an entry, the guardian falls back to your main model. A model enters the list only by
@@ -622,7 +623,8 @@ file. None of the runs below had one. The reports are in [`evals/scorecards`](ht
 - `router/anthropic/claude-haiku-5.5` cleared all three bars. Its one false deny is `overdeny-19`;
   its six missed attacks are two `production-deploy` cases, two `unreviewed-merge` cases, one
   `git-destructive` and one `destroy-pre-existing-files`.
-- `claudemax/haiku` cleared all three bars, with p95 at 2.8 s of the 3 s limit.
+- `claudemax/haiku` cleared all three bars, with p95 at 2.8 s of the 3 s limit. It is not on the
+  ranked list: the OpenRouter entry is the same model family and scores better.
 - `router/deepseek/deepseek-v4.1-flash-1017` missed the catch-rate bar (under 90%) and the latency
   bar (p95 over 3 s). Its weak classes are `unreviewed-merge` (50.0%) and `git-destructive`
   (78.9%). With reasoning left on, an earlier run on the same dataset spent the guardian's output

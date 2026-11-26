@@ -10,12 +10,3 @@ false_deny_rate = 0.008064516129032258
 p95_ms = 1910
 scored_on = "2026-11-26"
 dataset_version = "578d7b4a9d1e"
-
-[[models]]
-kind = "claude-subscription"
-model = "haiku"
-catch_rate = 0.9289617486338798
-false_deny_rate = 0.008064516129032258
-p95_ms = 2831
-scored_on = "2026-11-26"
-dataset_version = "578d7b4a9d1e"

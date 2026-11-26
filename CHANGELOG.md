@@ -315,12 +315,12 @@ All notable changes are recorded here. The format follows
   user's intent: it shows the scope the request was carried out in, so a plan's mechanical
   follow-ups no longer read as an unrequested change. Eval cases can set
   `session_facts.agent_task`.
-- The ranked guardian list has two entries (#673, #104), both scored 2026-11-26 on dataset
-  `578d7b4a9d1e` on the `tool` path with no case failed closed: `anthropic/claude-haiku-5.5` on an
-  `openrouter` account (96.7% catch, 0.8% false deny, p50 1.5 s, p95 1.9 s) and `haiku` on a
-  `claude-subscription` account (92.9% catch, 0.8% false deny, p50 2.1 s, p95 2.8 s). An account of
-  either kind that offers the model uses it as its default guardian instead of the main model. No
-  local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (88.0% catch, p95
+- The ranked guardian list has one entry (#673, #104): `anthropic/claude-haiku-5.5` on an
+  `openrouter` account, scored 2026-11-26 on dataset `578d7b4a9d1e` on the `tool` path with no case
+  failed closed (96.7% catch, 0.8% false deny, p50 1.5 s, p95 1.9 s). An `openrouter` account that
+  offers the model uses it as its default guardian instead of the main model. `haiku` on a
+  `claude-subscription` account also cleared the bar (92.9% catch, 0.8% false deny, p95 2.8 s) but
+  is left off: it is the same model family and scores lower. No local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (88.0% catch, p95
   6.2 s), so it has no entry.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
