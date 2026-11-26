@@ -11,7 +11,7 @@ use fontaine_sdk::core::ledger::{Ledger, Record};
 use fontaine_sdk::core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_sdk::core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
 use fontaine_sdk::guardian::{EnvironmentConfig, Guardian, RuleConfig};
-use fontaine_sdk::tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
+use fontaine_sdk::tools::gate::{CallView, ROOT_AGENT, ToolGate};
 use fontaine_sdk::tools::risk::{RiskClass, registered_risk};
 
 use crate::case::{Case, MaterializeError, materialize};
@@ -22,7 +22,7 @@ pub enum Outcome {
         decision: String,
         tier: String,
         latency_ms: u64,
-        /// The guardian's reason, for a call it denied: what the model is told.
+        /// The guardian's own reason, from its decision record, for a call it denied or escalated.
         explanation: Option<String>,
         /// Why the guardian failed closed, when it did.
         fail_closed: Option<String>,
@@ -179,7 +179,7 @@ pub async fn decide(
 
     let risk = registered_risk(&case.tool).unwrap_or(RiskClass::Arbitrary);
     let started = Instant::now();
-    let gate = pipeline
+    pipeline
         .check(CallView {
             tool: &case.tool,
             risk,
@@ -191,10 +191,6 @@ pub async fn decide(
         })
         .await;
     let latency_ms = started.elapsed().as_millis() as u64;
-    let message = match gate {
-        GateDecision::Deny { message } => Some(message),
-        GateDecision::Allow { .. } => None,
-    };
     let first = state
         .feed()
         .await
@@ -203,7 +199,7 @@ pub async fn decide(
     let tier = first.tier.as_str().to_string();
     Ok(Outcome::Decided {
         decision: first.decision.as_str().to_string(),
-        explanation: message.filter(|_| tier == "guardian"),
+        explanation: first.explanation.filter(|_| tier == "guardian"),
         fail_closed: first.fail_closed_reason,
         tier,
         latency_ms,

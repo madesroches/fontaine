@@ -440,15 +440,80 @@ fn remote_write(program: &str, args: &[String]) -> bool {
     else {
         return false;
     };
-    let mut operands = args
+    let with_value: &[&str] = match program {
+        "docker" | "podman" => &[
+            "-H",
+            "--host",
+            "-c",
+            "--context",
+            "--config",
+            "-l",
+            "--log-level",
+            "--connection",
+            "--url",
+            "--identity",
+        ],
+        "tmux" => &["-L", "-S", "-f", "-c", "-T"],
+        "npm" | "pnpm" => &[
+            "--prefix",
+            "-C",
+            "--dir",
+            "--registry",
+            "--userconfig",
+            "--cache",
+            "--workspace",
+            "-w",
+            "--filter",
+            "-F",
+        ],
+        "yarn" => &["--cwd"],
+        "systemctl" => &[
+            "-H",
+            "--host",
+            "-M",
+            "--machine",
+            "-t",
+            "--type",
+            "-p",
+            "-s",
+        ],
+        "gh" => &["-R", "--repo", "--hostname"],
+        "cargo" => &[
+            "--manifest-path",
+            "-p",
+            "--package",
+            "--config",
+            "-Z",
+            "--color",
+        ],
+        _ => &[],
+    };
+    let mut skipped: Vec<&str> = Vec::new();
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        if arg.starts_with('-') {
+            if with_value.contains(&arg.as_str()) {
+                at += 1;
+            }
+        } else if !(program == "cargo" && skipped.is_empty() && arg.starts_with('+')) {
+            skipped.push(arg);
+        }
+    }
+    // An option this list does not know may take a value, so the plain reading of the operands
+    // counts too: an ambiguous call is flagged rather than missed.
+    let plain: Vec<&str> = args
         .iter()
         .filter(|a| !a.starts_with('-'))
-        .map(String::as_str);
-    let (first, second) = (operands.next(), operands.next());
-    first.is_some_and(|first| {
-        subcommands.contains(&first)
-            || second
-                .is_some_and(|second| subcommands.contains(&format!("{first} {second}").as_str()))
+        .map(String::as_str)
+        .collect();
+    [skipped, plain].iter().any(|operands| {
+        operands.first().is_some_and(|first| {
+            subcommands.contains(first)
+                || operands.get(1).is_some_and(|second| {
+                    subcommands.contains(&format!("{first} {second}").as_str())
+                })
+        })
     })
 }
 

@@ -262,6 +262,51 @@ fn the_commands_claude_codes_auto_mode_names_are_compared_term_by_term() {
         ("bq rm", "bq rm -r -d ds", true),
         // Publishing and containers.
         ("docker push", "docker push img", true),
+        (
+            "global option: docker -H tcp://host run img",
+            "docker -H tcp://host run img",
+            true,
+        ),
+        (
+            "global option: docker --context prod push img",
+            "docker --context prod push img",
+            true,
+        ),
+        (
+            "global option: tmux -L sock send-keys -t 1 ls",
+            "tmux -L sock send-keys -t 1 ls",
+            true,
+        ),
+        (
+            "global option: tmux -S /tmp/s send-keys ls",
+            "tmux -S /tmp/s send-keys ls",
+            true,
+        ),
+        (
+            "global option: npm --prefix dir publish",
+            "npm --prefix dir publish",
+            true,
+        ),
+        (
+            "global option: systemctl -H host restart x",
+            "systemctl -H host restart x",
+            true,
+        ),
+        (
+            "global option: gh pr -R o/r merge 1",
+            "gh pr -R o/r merge 1",
+            true,
+        ),
+        (
+            "global option: cargo +nightly publish",
+            "cargo +nightly publish",
+            true,
+        ),
+        (
+            "global option: docker --host=tcp://h run img",
+            "docker --host=tcp://h run img",
+            true,
+        ),
         ("podman push", "podman push img", true),
         ("docker exec", "docker exec c ls", true),
         ("docker run -v /:/host", "docker run -v /:/host img", true),
