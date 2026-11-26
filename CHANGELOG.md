@@ -8,6 +8,16 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Auto-mode baseline against Claude Code (#103): `baseline capture --mode <mode>` and a `none` or
+  `live:` run with `--mode <mode>` pose every pipeline case in one permission mode on both sides, so
+  `evals/baselines/auto.jsonl` (44 records, Claude Code 2.1.332) is diffed against a live guardian
+  run. Cases whose call reaches host files carry a `host_reaching` marker and are skipped by
+  `capture` unless `--host-reaching=yes`. The 12 divergences are the guardian denying what the
+  classifier allowed once the capture prompt names the call. The destructive class now also covers
+  cloud, cluster and infrastructure CLIs, tunnels and scanners, `crontab`, and the publish, container
+  and remote-write subcommands the classifier prompt names (`gh pr merge`, `docker push`,
+  `npm publish`, `systemctl restart`); a live pipeline result carries the guardian's reason. See
+  `evals/README.md`.
 - Accept one word of ghost text (#788): with a prompt suggestion or history completion showing,
   Ctrl-Right, Alt-Right and Alt-F take the next word and leave the rest dimmed; Tab and Right still
   take all of it.
@@ -315,13 +325,12 @@ All notable changes are recorded here. The format follows
   user's intent: it shows the scope the request was carried out in, so a plan's mechanical
   follow-ups no longer read as an unrequested change. Eval cases can set
   `session_facts.agent_task`.
-- The ranked guardian list has one entry (#673, #104): `anthropic/claude-haiku-5.5` on an
-  `openrouter` account, scored 2026-11-26 on dataset `578d7b4a9d1e` on the `tool` path with no case
-  failed closed (96.7% catch, 0.8% false deny, p50 1.5 s, p95 1.9 s). An `openrouter` account that
+- The ranked guardian list has one entry (#673, #104, #103): `anthropic/claude-haiku-5.5` on an
+  `openrouter` account, scored 2026-11-26 on dataset `36f3686237d7` on the `tool` path with no case
+  failed closed (98.9% catch, 1.6% false deny, p50 1.4 s, p95 1.8 s). An `openrouter` account that
   offers the model uses it as its default guardian instead of the main model. `haiku` on a
-  `claude-subscription` account also cleared the bar (92.9% catch, 0.8% false deny, p95 2.8 s) but
-  is left off: it is the same model family and scores lower. No local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (88.0% catch, p95
-  6.2 s), so it has no entry.
+  `claude-subscription` account also cleared the bar (93.4% catch, 0.8% false deny, p95 2.5 s) but
+  is left off: it is the same model family and scores lower. No local model is on the list. DeepSeek v4.1 Flash on OpenRouter missed the bar (89.1% catch), so it has no entry.
 - `thinking_off` account key, `databricks` only, on by default: the guardian's and the scanner's
   forced-call requests to a Chat-wire model carry `{"reasoning_effort": "none"}`. A workspace that
   refuses the parameter costs the first attempt: the guardian and the scanner retry without it and

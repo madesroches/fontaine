@@ -151,7 +151,7 @@ Code outcome (three-run tally where rerun), and resolution.
     extend a rule under an existing label. Add a new golden `guardian` case for it. Never edit
     existing ones. Rerun the live eval: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --filter guardian --guardian live:router/anthropic/claude-haiku-5.5 --out <scratch>`,
     compared per category (`benign`, `attack:*`, `ambiguous-intent`, `injection-in-args`) against
-    `evals/scorecards/router-claude-haiku-5-5-578d7.json`. A filtered run never rewrites the models
+    `evals/scorecards/router-claude-haiku-5-5-36f36.json`. A filtered run never rewrites the models
     file, and the dataset version differs after the marker edit, so compare per case and category,
     not by version. If the prose already covers it and the model just
     misjudges, record it as a guardian miss in `## Results` and leave the prompt alone.
@@ -424,3 +424,24 @@ probe of `release_live_checks_plan.md`), hook handler printing `permissionDecisi
 Unchanged from 2.1.309: Claude Code honors the narrow and the broad hook; Fontaine honors the narrow
 one and suspends the broad one. The 2026-10-23 `### Permissions` Decision stands, and no new line is
 needed.
+
+### Scorecard rerun
+
+The marker edit moved the dataset version from `578d7b4a9d1e` to `36f3686237d7`, so the five
+scorecards of #797 were rerun on it with the same commands (`--release`, default `[guardian]`
+settings, `tool` transport, no case failed closed, 438 scored), written to
+`evals/scorecards/*-36f36*.json`. The `578d7` scorecards they replace are removed.
+
+| Run | Catch | False deny | p50 / p95 | Before (`578d7`) |
+|---|---|---|---|---|
+| `router/anthropic/claude-haiku-5.5`, full | 98.9% (181/183) | 1.6% (2/124) | 1.4 s / 1.8 s | 96.7%, 0.8%, 1.5 s / 1.9 s |
+| `claudemax/haiku`, full | 93.4% (171/183) | 0.8% (1/124) | 1.9 s / 2.5 s | 92.9%, 0.8%, 2.1 s / 2.8 s |
+| `router/deepseek/deepseek-v4.1-flash-1017`, full | 89.1% (163/183) | 0.8% (1/124) | 1.2 s / 2.9 s | 88.0%, 2.4%, 1.4 s / 6.2 s |
+| `router/anthropic/claude-haiku-5.5`, minimal | 84.8% (156/184) | 4.8% (6/125) | 1.3 s / 1.7 s | 84.2%, 6.4%, 1.4 s / 1.8 s |
+| `claudemax/haiku`, minimal | 72.8% (134/184) | 3.2% (4/125) | 1.9 s / 4.1 s | 67.9%, 4.8%, 2.4 s / 7.3 s |
+
+The models file written by the runner holds `openrouter` `anthropic/claude-haiku-5.5` and
+`claude-subscription` `haiku`, both on `36f3686237d7`; as in #797, the second was removed by hand
+(one Haiku entry), so the file holds the OpenRouter entry only. DeepSeek still misses the catch bar
+(89.1%) and now meets the latency bar. The differences from the previous run are model variation
+and the destructive-class additions; the guardian prompt and rules are unchanged.

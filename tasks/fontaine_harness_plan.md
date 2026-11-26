@@ -131,7 +131,7 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
         empty; see `completed/release_live_checks_plan.md` `## Results`)
   - [ ] Check the run against the Risk Gates' catch-rate kill floor. (#105; needs #96, #97)
   - [x] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104;
-        2026-11-26, dataset `578d7b4a9d1e`, ranked list `openrouter` `anthropic/claude-haiku-5.5`)
+        2026-11-26, dataset `578d7b4a9d1e`, ranked list `openrouter` `anthropic/claude-haiku-5.5`; rerun on dataset `36f3686237d7` after the #103 marker edit)
 - **Claude Code baselines (`claude -p`)**
   - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
         `completed/release_live_checks_plan.md`; #101 resolved 2026-11-15: 66 baseline records, every
