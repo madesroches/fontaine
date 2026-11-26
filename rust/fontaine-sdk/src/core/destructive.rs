@@ -67,8 +67,8 @@ pub const CLUSTER_CLI_WORDS: [&str; 7] = [
 ];
 
 /// Programs that are routine to run except for these subcommands, which publish, run a container,
-/// act on a remote service or change what the machine starts. A subcommand of two words (`pr
-/// merge`) matches the first two operands.
+/// act on a remote service or change what the machine starts. A listed subcommand, of one word or
+/// of two adjacent words (`pr merge`), matches at any operand position.
 pub const REMOTE_WRITE_SUBCOMMANDS: [(&str, &[&str]); 11] = [
     (
         "gh",
@@ -527,14 +527,6 @@ fn remote_write(program: &str, args: &[String]) -> bool {
             "-s",
         ],
         "gh" => &["-R", "--repo", "--hostname"],
-        "cargo" => &[
-            "--manifest-path",
-            "-p",
-            "--package",
-            "--config",
-            "-Z",
-            "--color",
-        ],
         _ => &[],
     };
     let mut skipped: Vec<&str> = Vec::new();
@@ -545,7 +537,7 @@ fn remote_write(program: &str, args: &[String]) -> bool {
             if with_value.contains(&arg.as_str()) {
                 at += 1;
             }
-        } else if !(program == "cargo" && skipped.is_empty() && arg.starts_with('+')) {
+        } else {
             skipped.push(arg);
         }
     }

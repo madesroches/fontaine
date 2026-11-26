@@ -383,9 +383,12 @@ The Claude Code terms (HARD BLOCK, SOFT BLOCK, Definitions) were run through `de
   `ray`, `scancel`, `scontrol`; `ngrok`, `cloudflared`, `autossh`, `localtunnel`, `chisel`, `frp`,
   `frpc`, `bore`, `tailscale`, `nmap`, `masscan`; `crontab`; `gh pr merge|review|comment|edit|ready`,
   `gh release create`, `gh repo create|fork`, `gh secret set`, `gh workflow disable`,
-  `gh gist create`, `gh api`; `docker push|exec|run|service`, `podman push|exec|run`;
+  `gh gist create`, `gh api`; `docker push|exec|run|service|container run|container exec|image push|compose run|compose exec|
+  compose up`, `podman push|exec|run|container run|container exec|image push`;
   `npm|pnpm|yarn|cargo publish`, `gem push`, `twine upload`; `systemctl start|stop|restart|enable|
-  disable|mask|reload`; `tmux send-keys`; `git commit --amend`; `git worktree remove --force`.
+  disable|mask|reload|try-restart|reload-or-restart|kill|isolate|link|edit|daemon-reload|reboot|
+  poweroff|halt`; `tmux send-keys|send`. A listed subcommand matches at any operand position, after
+  skipping the values of known global options; `git commit --amend`; `git worktree remove --force`.
 - Claude Code terms Fontaine already flagged: `rm`, `rmdir`, `mv`, `cp`, `sed -i`, `find -delete`,
   `rsync --delete`, the `git` reset/clean/checkout/restore/stash/push/pull/remote/branch/filter-branch
   forms, `curl`, `nc`, `ncat`, `socat`, `ssh`, package installs, `python`, `bash`, `sh`, `nsenter`
