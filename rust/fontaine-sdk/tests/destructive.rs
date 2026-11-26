@@ -309,6 +309,17 @@ fn the_commands_claude_codes_auto_mode_names_are_compared_term_by_term() {
         ),
         ("podman push", "podman push img", true),
         ("docker exec", "docker exec c ls", true),
+        ("docker container run", "docker container run img", true),
+        ("docker container exec", "docker container exec c ls", true),
+        ("docker image push", "docker image push img", true),
+        ("docker compose up", "docker compose up -d", true),
+        ("docker compose run", "docker compose run web sh", true),
+        (
+            "global option: docker -H h container run",
+            "docker -H h container run img",
+            true,
+        ),
+        ("podman container run", "podman container run img", true),
         ("docker run -v /:/host", "docker run -v /:/host img", true),
         (
             "docker run --privileged",
@@ -351,6 +362,10 @@ fn the_commands_claude_codes_auto_mode_names_are_compared_term_by_term() {
         ("bash -i", "bash -i", true),
         ("sh", "sh -c ls", true),
         ("systemctl restart", "systemctl restart x", true),
+        ("systemctl try-restart", "systemctl try-restart x", true),
+        ("systemctl isolate", "systemctl isolate rescue.target", true),
+        ("systemctl daemon-reload", "systemctl daemon-reload", true),
+        ("systemctl poweroff", "systemctl poweroff", true),
         ("tmux send-keys", "tmux send-keys -t 1 ls Enter", true),
         ("nsenter", "nsenter -t 1 rm x", true),
         // Left out on purpose; see the guardian Decision on the auto-mode comparison.
