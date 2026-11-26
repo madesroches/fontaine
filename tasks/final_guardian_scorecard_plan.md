@@ -51,14 +51,16 @@ All runs are from `rust/` with the default `[guardian]` settings and timeout (ve
 the runner), and with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)"` exported
 without printing it. Let `<v>` be the first five hex characters of the `dataset_version` printed by
 the first run. The file names follow the existing `<account-prefix>-<model-slug>-<v>.json`
-convention.
+convention. Every run is
+`cargo run -p fontaine-evals --release -- --dataset ../evals/dataset --guardian <spec> --out <out>`,
+with `--profile minimal` added for run 4.
 
 | # | Guardian | Profile | `--out` |
 |---|---|---|---|
 | 1 | `live:router/anthropic/claude-haiku-5.5` | full | `../evals/scorecards/router-claude-haiku-5-5-<v>.json` |
 | 2 | `live:router/deepseek/deepseek-v4.1-flash-1017` | full | `../evals/scorecards/router-deepseek-v4-1-flash-<v>.json` |
 | 3 | `live:claudemax/haiku` | full | `../evals/scorecards/claudemax-haiku-<v>.json` |
-| 4 | each model from 1-3 that cleared the bar | minimal | `…-<v>-minimal.json` |
+| 4 | each model from 1-3 that cleared the bar, else run 1's model | minimal | `…-<v>-minimal.json` |
 
 - Full runs write the shipped models file at its default path, so the runner, not a hand edit,
   decides the ranked list. Run 1 drops the stale Databricks entry (its `dropped from the models
@@ -67,13 +69,14 @@ convention.
   account's listed Haiku alias. If the account is not signed in, record that and skip the run; it
   is not a blocker.
 - An interrupted run continues with `--resume <out>.partial.jsonl`. If a finished full run has
-  `infrastructure_failures`, rerun those with `--resume` on a fresh copy before accepting the
-  result. If they persist, keep the report and leave the file as the runner left it. **No hand-added
+  `infrastructure_failures`, rerun the same command, with the same `--out`, guardian and profile and no filter, adding
+  `--resume <out>.partial.jsonl`, before accepting the result. If they persist, keep the report and leave the file as the runner left it. **No hand-added
   entries.**
 - If the dataset changes during the run (a rebase onto a `main` that touched `evals/dataset/`),
   restart the runs. Every run must share one `dataset_version`.
 - After the runs, check that the `dataset_version` in the models file matches every new
-  scorecard, and that the file still passes `the_shipped_file_is_a_models_array`.
+  scorecard, and that the file still passes `the_shipped_file_is_a_models_array` and
+  `the_shipped_model_list_parses_and_every_entry_clears_the_bar`.
 
 ### `docs/evals.md` §Results rewrite
 
@@ -91,12 +94,15 @@ convention.
 5. **Earlier datasets.** Move the `5a79aa741c27` kimi/qwen3 full-profile and per-class tables, the
    `d1740a7c65ae` schema-constrained section and the "Other small and hosted guardian models"
    section under one heading, `### Earlier datasets`. Each subsection already names its dataset.
+   Keep the moved subsections in their current order and reword their relative references ("the
+   next section", "the rows above") to name their targets.
    Remove the sentences that are no longer true: "is to be rerun", "It is the ranked list's only
    entry", and the haiku hand-added-entry paragraph (replace that with one sentence: it was on the
    list for `d1740a7c65ae` and is re-scored above). Keep the measurements themselves, since they are
    the only record for models not rerun here.
 6. Anchors other pages link to (`#other-small-and-hosted-guardian-models`, `#verdict-transport`)
-   stay valid. Grep `docs/` for `evals.md#` before renaming any heading.
+   stay valid. Before renaming any heading, grep `docs/` for `evals.md#` and, within `evals.md`,
+   for in-page `](#` links. lychee in `.github/scripts/docs-site.sh` is what checks fragments.
 
 ### Other docs
 
@@ -118,10 +124,11 @@ convention.
    profile for run 1's model anyway, so that the release has a current `minimal` row.
 5. Rewrite `docs/evals.md` §Results as in Design. Update `docs/guardian.md` if the entry set changed.
 6. Add the `CHANGELOG.md` entry.
-7. From `rust/`: `cargo test -p fontaine-sdk --test docs`,
-   `cargo test -p fontaine-sdk guardian::models`, and `cargo fmt --check`. Then run the fixture
+7. From `rust/`: `cargo test` for the whole workspace (it includes the docs test and the models
+   tests) and `cargo fmt --check`. Then run the fixture
    evals from AGENTS.md (they read the dataset, not the models file, so they should be unchanged).
-8. Commit the scorecards, models file and docs.
+8. Delete any leftover `<out>.partial.jsonl` sidecar, then commit the scorecards, models file and
+   docs.
 
 ## Files to Modify
 
@@ -131,6 +138,7 @@ convention.
 - `docs/evals.md` (§Results)
 - `docs/guardian.md` (the Databricks-entry clause, conditionally)
 - `CHANGELOG.md`
+- Leftover `<out>.partial.jsonl` sidecars are deleted, not committed.
 
 ## Trade-offs
 
@@ -141,7 +149,7 @@ convention.
 - **Runner-written models file over hand edits.** The 2026-10-27 haiku entry was hand-added and
   then needed a paragraph of caveats. Letting `update_models` decide keeps the file and the JSONs
   in agreement by construction.
-- **Same model over two transports.** Run 2 (DeepSeek through OpenRouter) gives the model the old
+- **Same model on two providers.** Run 2 (DeepSeek on OpenRouter) gives the model the old
   Databricks entry measured a current number on an authorized account.
 
 ## Decisions
@@ -160,10 +168,15 @@ No plan or phase citations in `docs/`, and no `TODO`/`TBD`.
 
 ## Testing Strategy
 
-- `cargo test -p fontaine-sdk --test docs`: the docs links resolve, there are no `TODO`/`TBD`, and
-  every page is listed in `SUMMARY.md`/`index.md`.
-- `cargo test -p fontaine-sdk guardian::models`: the rewritten embedded models file still parses
-  (`the_shipped_file_is_a_models_array` and the ranking tests).
+- `cargo test` (workspace, from `rust/`) includes the docs test: the docs links resolve, there are
+  no `TODO`/`TBD`, and every page is listed in `SUMMARY.md`/`index.md`.
+- The shipped models file is checked by `the_shipped_model_list_parses_and_every_entry_clears_the_bar`
+  in `rust/fontaine-sdk/tests/models.rs` (parse and bar), not only by the string check
+  `the_shipped_file_is_a_models_array`.
+- A new `openrouter` or `claude-subscription` entry changes the default guardian
+  (`default_guardian`/`available_validated` in `rust/fontaine-sdk/src/core/models.rs`) for accounts
+  of that kind, so default-guardian tests in the claude-subscription, openrouter, provider and TUI
+  suites may need updating to the new shipped list.
 - The live runs themselves are the measurement. They cannot be unit-tested, because what they
   measure is the hosted models' actual verdicts and latency on the shipped prompt. The runner's
   merge and inclusion logic is already unit-tested in `report.rs`.
