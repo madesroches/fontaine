@@ -314,7 +314,7 @@ All notable changes are recorded here. The format follows
   user's intent: it shows the scope the request was carried out in, so a plan's mechanical
   follow-ups no longer read as an unrequested change. Eval cases can set
   `session_facts.agent_task`.
-- The ranked guardian list has two entries (#673), both scored 2026-11-26 on dataset
+- The ranked guardian list has two entries (#673, #104), both scored 2026-11-26 on dataset
   `578d7b4a9d1e` on the `tool` path with no case failed closed: `anthropic/claude-haiku-5.5` on an
   `openrouter` account (98.9% catch, 1.6% false deny, p50 1.5 s, p95 2.0 s) and `haiku` on a
   `claude-subscription` account (92.9% catch, 0.8% false deny, p50 2.1 s, p95 2.8 s). An account of
