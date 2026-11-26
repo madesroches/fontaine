@@ -25,10 +25,10 @@ run for real on the host. The rest is live runs, data, and the triage record.
 - **Skips** (`capture_skip_reason`, `:113`): non-pipeline cases, `allow_extra`, `session_facts`,
   `auto_mode`, `environment`, `recent_user_messages`, and tools with no Claude Code name
   (`send_message`, `board_update`). The cases that reach the host are another matter. The 2026-11-15 `### Evals` Decision
-  names them: `floor-critical-deletion-*` (`rm -rf ~`, `rm -rf /`), `floor-secret-*`,
-  `tier05-chain-curl-sh`, `-command-substitution-rm`, `-parameter-expansion`,
-  `-brace-expansion-rm-root` and `-dont-ask-chain`. Nothing in the data marks them, and they were
-  left out only because the operator left them out. In `manual`/`dontAsk`, headless Claude Code
+  names 13: `floor-critical-deletion-*` (`rm -rf ~`, `rm -rf /`), `floor-secret-*` and five
+  `tier05` ones. Nothing in the data marks them, and they were left out only because the operator
+  left them out. That set is not the right one: `floor-secret-*` have no `workspace`, so `.env`
+  resolves inside the empty scratch dir, while other cases do reach host files. In `manual`/`dontAsk`, headless Claude Code
   denies them before anything runs. In `auto`, its classifier could allow one, and the command would
   then run on the host with the real `HOME`.
 - **Fontaine side** (`rust/fontaine-evals/src/runner.rs:920-960`): `--guardian none` skips any case
@@ -79,14 +79,21 @@ the cases stay as they are, and the run states the mode.
   rule then uses the effective mode, so `--guardian none --mode auto` skips everything and says so.
   `--mode` is a usage error with `--guardian fixture` or `screen:`, because those don't run the
   pipeline. The case's `expected` labels belong to its own mode, so under `--mode`, `pass` is
-  computed against labels that don't apply. The summary prints one line saying so, and nothing
-  else changes: a live run already exits 0, and the run exists to produce its `--out` file.
+  computed against labels that don't apply. The summary prints one line saying so, and a
+  `--mode` run is a measurement like `live:` and `screen:`: `measurement` in `runner.rs` also covers
+  `--mode`, so it exits 0 whatever it scored (only infrastructure failures fail it).
 
 ### Host-reaching marker
 
 Add an optional pipeline-only case field `host_reaching: true` (in `case.rs`, with
 `deny_unknown_fields` already in force). `validate_case` rejects it on non-pipeline cases. Set it on
-the 10 cases the 2026-11-15 Decision names. `capture_skip_reason` returns "reaches host files outside
+the cases whose call reaches host files outside the scratch workspace, re-derived from
+`evals/dataset/{floor,tier05,spawn}.jsonl`: `floor-critical-deletion-{home-manual,dont-ask,allow-rule}`;
+`floor-external-read-{deny-rule,deny-rule-dont-ask,ask-rule,ask-rule-dont-ask,allow-rule,manual,dont-ask,auto-no-guardian,deny-beats-allow}`;
+`floor-external-write-` with the same nine suffixes; and `tier05-{chain-curl-sh,out-of-scope-home-path,command-substitution-rm,symlink-escape,tilde-argument,parameter-expansion,brace-expansion-escape,brace-expansion-rm-root,out-of-scope-cwd,dont-ask-chain}`
+(31 cases). `floor-secret-*` are not marked: they never leave the scratch dir. The marker applies
+in every mode, so #101's manual/dontAsk external-path captures are skipped too unless
+`--host-reaching=yes`. `capture_skip_reason` returns "reaches host files outside
 the scratch workspace; capture it only in a disposable container or VM" for such a case, unless
 `baseline capture` is given `--host-reaching=yes`. That flag is for the container run, and the
 negative-option style follows `--foo=no`. Fontaine's own pipeline never runs the call, so the
@@ -97,8 +104,13 @@ where Claude Code may run what it allows.
 
 From `rust/`, with `OPENROUTER_API_KEY="$(tr -d '[:space:]' < ~/open_router_key)"`:
 
-1. Smoke test first: `baseline capture --dataset ../evals/dataset --filter tier05-adversarial --mode auto --out <scratch>/smoke.jsonl` on a throwaway copy with one case, or just watch the first record. It
-   confirms that `claude -p --permission-mode auto` runs headless on this account. If auto mode
+1. Smoke test first: `baseline capture --dataset <scratch>/smoke-dataset --mode auto --out <scratch>/smoke.jsonl`,
+   where the scratch dataset dir holds one case Claude Code's classifier is known to block (a
+   `tier05-git-push`-like case, or an external destructive call that is harmless in scratch). It
+   confirms that `claude -p --permission-mode auto` runs headless on this account, and that on
+   2.1.332 a classifier block lands in `permission_denials`. The classifier's output is binary
+   (`<block>yes|no</block>`, `research/research-claude-code-auto-mode-prompt.md:307-316`), so asks in
+   auto come only from rules and protected paths, which headless `-p` turns into denials. If auto mode
    is unavailable, for example on a plan or account without it, stop and report that. That counts as a hard
    blocker for the live half.
 2. `baseline capture --dataset ../evals/dataset --filter pipeline --mode auto --out ../evals/baselines/auto.jsonl`.
@@ -146,13 +158,15 @@ Code outcome (three-run tally where rerun), and resolution.
    `docker run --privileged`. Pull every term from Fontaine's lists and the special cases in
    `destructive_argv`.
 2. For each Claude Code term, check whether `derive("shell", {command: <term with a representative
-   argument>}, facts)` returns `true`. Do the check as a table-driven unit test in `destructive.rs`'s
-   test module, so the comparison stays pinned after this issue closes.
+   argument>}, facts)` returns `true`. Do the check as a table-driven test in `rust/fontaine-sdk/tests/destructive.rs` (using its `world()` and
+   `shell_is` helpers), so the comparison stays pinned after this issue closes.
 3. Report the terms present on one side only as two lists in `## Results`.
 4. A Claude Code term that reaches outside the machine or is irreversible and that `derive` misses
    goes into the matching Fontaine list (a new `CLOUD_CLI_WORDS` / `CLUSTER_CLI_WORDS` constant if
-   none fits), with its test row. Being on the list only raises the confidence bar on an Allow. It
-   never denies by itself, so adding terms costs only the lower-confidence allows on those commands.
+   none fits), with its test row. Membership raises the confidence bar on an Allow and
+   never denies by itself, but it also feeds the guardian prompt (`prompt_builder.rs:469-471` renders
+   `destructive:`), composition scripts (`call.destructive()` in `guardian/composition/host.rs`) and
+   the cache key (`guardian/cache.rs:84`), so an addition can change verdicts on those commands.
    A term outside Fontaine's scope gets one dated `### Guardian` line covering the group:
    browser/Chrome-MCP terms (Fontaine has no browser tools), Claude Code scheduling, and the
    memory-directory allow. A Fontaine-only term is listed and needs no action.
@@ -168,7 +182,7 @@ behavior changed.
 ## Implementation Steps
 
 1. **Marker**: add `host_reaching: Option<bool>` to `Case` (`case.rs`). Make `validate_case` reject
-   it off pipeline cases, with a unit test. Set it on the 10 cases in `evals/dataset/floor.jsonl`
+   it off pipeline cases, with a unit test. Set it on the 31 cases listed in Design, in `evals/dataset/floor.jsonl`
    and `tier05.jsonl`. The dataset version hash changes, so check `evals/scorecards` don't assert
    it (they record it, which is fine).
 2. **Capture**: in `baseline.rs`, add the host-reaching skip to `capture_skip_reason`, gated by an
@@ -176,7 +190,8 @@ behavior changed.
    and `allow_host: bool` through `capture`. In `runner.rs` `BaselineAction::Capture`, add
    `--mode <MODE>` and `--host-reaching=<yes|no>` (default `no`).
 3. **Run**: add `--mode <MODE>` to `RunArgs`. Thread the effective mode into `none::decide` and
-   `score_pipeline`. Make it a usage error with `fixture`/`screen:`. Print the summary note.
+   `score_pipeline`. Add the effective `--mode` to the sidecar `Header` (`output.rs`) and to `check_header`, so
+   resuming a run made under a different mode is refused. Make it a usage error with `fixture`/`screen:`. Print the summary note and count `--mode` as a measurement for the exit code.
 4. **Tests**: see Testing Strategy.
 5. **Docs**: `evals/README.md` §Baselines gets `--mode`, `--host-reaching`, the auto-mode
    recipe, and the field in the case table. Update the run's flag table for `--mode`.
@@ -185,7 +200,10 @@ behavior changed.
 6. **Live**: the smoke test, then capture, run, diff and reruns as above. Commit
    `evals/baselines/auto.jsonl`.
 7. **Word lists**: the comparison, the pinning test, any list additions and the scope-out Decision
-   line.
+   line. When a list changes, rerun the live eval as the triage rule says (benign, attack,
+   ambiguous, injection, overdeny) and compare with the last scorecard in `evals/scorecards/`:
+   `live.rs:422` derives `destructive` for every golden guardian case, so additions can move
+   existing verdicts.
 8. **Hook legs**: the observation.
 9. **Triage**: fixes (each with its test, plus the live eval if guardian prose changed) and
    Decisions lines. Add this plan's `## Results`.
@@ -198,9 +216,11 @@ behavior changed.
 - `rust/fontaine-evals/src/case.rs`: `host_reaching`, plus validation
 - `rust/fontaine-evals/src/baseline.rs`: skip, `claude_command_args`, mode override
 - `rust/fontaine-evals/src/runner.rs`: `--mode` on capture and run, `--host-reaching`
+- `rust/fontaine-evals/src/output.rs`: `mode` in the sidecar `Header` and `check_header`
 - `rust/fontaine-evals/src/none.rs`: effective mode
 - `rust/fontaine-evals/tests/baseline.rs`, `tests/none_mode.rs`: tests
-- `rust/fontaine-sdk/src/core/destructive.rs`: the pinning test and any list additions
+- `rust/fontaine-sdk/src/core/destructive.rs`: any list additions
+- `rust/fontaine-sdk/tests/destructive.rs`: the pinning table
 - `rust/fontaine-sdk/src/guardian/rules.rs` and `evals/dataset/*.jsonl` (new cases only): only if
   triage finds a guardian gap
 - `evals/dataset/floor.jsonl`, `evals/dataset/tier05.jsonl`: the marker
@@ -246,10 +266,11 @@ Unit and integration tests, none of which touches `claude` or a live model:
 - `validate_case`: `host_reaching` on a guardian case is an error.
 - `--guardian none --mode dontAsk` over a `manual` case (`tests/none_mode.rs`): the result's `mode`
   is `dontAsk`, and the decision is the `dontAsk` one, e.g. `floor-protected-path-write` goes from
-  `prompt` to `deny`. With `--mode auto`, every case is skipped with "auto mode needs the guardian".
+  `prompt` to `deny`, and the run exits 0 although that case's label now mismatches. With `--mode auto`, every case is skipped with "auto mode needs the guardian".
   That pins the effective-mode threading end to end through the real pipeline.
 - `--mode` with `--guardian fixture`: usage error (exit 2).
-- Word-list pinning (`destructive.rs`): one row per Claude Code term from the comparison, with
+- `--resume` with a sidecar whose header holds a different `--mode`: refused.
+- Word-list pinning (`rust/fontaine-sdk/tests/destructive.rs`): one row per Claude Code term from the comparison, with
   the expected `derive` result. That includes the terms deliberately left out, asserted `false`
   with a comment pointing to the Decision, so a later list edit shows up.
 
@@ -261,9 +282,3 @@ committed baseline file and `## Results`.
 
 Steps 1-5 of "The live runs" and the hook observation, as written above. They need the live
 `claude` subscription CLI and a hosted guardian, which tests and CI must never call.
-
-## Open Questions
-
-- What does Claude Code 2.1.332's headless `auto` do when its classifier would "ask"? Headless auto
-  could deny, or fall back to the `default` prompt, which is a denial in `-p` either way. Both
-  read as `denied`, so this doesn't change the mapping. Note what the smoke test shows.
